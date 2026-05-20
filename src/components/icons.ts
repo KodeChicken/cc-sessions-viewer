@@ -1,0 +1,100 @@
+// 统一图标层：所有图标改用 Iconify（lucide 集合）按需打包，编译期内联 SVG，
+// 运行时不联网（Tauri 离线友好）。如需替换图标，直接换 import 路径即可：
+//   import IconFoo from '~icons/lucide/foo-name'
+// 浏览所有可用图标：https://iconify.design/
+
+import IconPinUpRaw from '~icons/lucide/arrow-up-to-line'
+import IconPinDownRaw from '~icons/lucide/arrow-down-to-line'
+import IconTrashRaw from '~icons/lucide/trash-2'
+import IconTrashOpenRaw from '~icons/quill/folder-trash'
+import IconSettingsRaw from '~icons/lucide/settings'
+import IconPlayRaw from '~icons/lucide/play'
+import IconChatRaw from '~icons/lucide/message-circle'
+import IconFolderRaw from '~icons/lucide/folder'
+import IconInboxRaw from '~icons/lucide/inbox'
+import IconRefreshRaw from '~icons/lucide/rotate-cw'
+import IconArrowLeftRaw from '~icons/lucide/arrow-left'
+import IconArrowUpRaw from '~icons/lucide/arrow-up'
+import IconArrowDownRaw from '~icons/lucide/arrow-down'
+import IconChevronRightRaw from '~icons/lucide/chevron-right'
+import IconEmptyBoxRaw from '~icons/lucide/package'
+import IconPointLeftRaw from '~icons/lucide/chevron-left'
+import IconSidebarRaw from '~icons/lucide/panel-left'
+import IconCloseRaw from '~icons/lucide/x'
+import IconSunRaw from '~icons/lucide/sun'
+import IconMoonRaw from '~icons/lucide/moon'
+import IconMonitorRaw from '~icons/lucide/monitor'
+import IconLanguagesRaw from '~icons/lucide/languages'
+import IconDatabaseRaw from '~icons/lucide/database'
+import IconInfoRaw from '~icons/lucide/info'
+import IconPaletteRaw from '~icons/lucide/palette'
+import IconCheckRaw from '~icons/lucide/check'
+import IconPencilRaw from '~icons/lucide/pencil'
+import IconCopyRaw from '~icons/lucide/copy'
+import IconClaudeRaw from '~icons/material-icon-theme/claude'
+import IconCodexRaw from '~icons/arcticons/openai-chatgpt'
+
+export const IconPinUp = IconPinUpRaw
+export const IconPinDown = IconPinDownRaw
+export const IconTrash = IconTrashRaw
+export const IconTrashOpen = IconTrashOpenRaw
+export const IconSettings = IconSettingsRaw
+export const IconPlay = IconPlayRaw
+export const IconChat = IconChatRaw
+export const IconFolder = IconFolderRaw
+export const IconInbox = IconInboxRaw
+export const IconRefresh = IconRefreshRaw
+export const IconArrowLeft = IconArrowLeftRaw
+export const IconArrowUp = IconArrowUpRaw
+export const IconArrowDown = IconArrowDownRaw
+export const IconChevronRight = IconChevronRightRaw
+export const IconEmptyBox = IconEmptyBoxRaw
+export const IconPointLeft = IconPointLeftRaw
+export const IconSidebar = IconSidebarRaw
+export const IconClose = IconCloseRaw
+export const IconSun = IconSunRaw
+export const IconMoon = IconMoonRaw
+export const IconMonitor = IconMonitorRaw
+export const IconLanguages = IconLanguagesRaw
+export const IconDatabase = IconDatabaseRaw
+export const IconInfo = IconInfoRaw
+export const IconPalette = IconPaletteRaw
+export const IconCheck = IconCheckRaw
+export const IconPencil = IconPencilRaw
+export const IconCopy = IconCopyRaw
+// 「已 pin」状态的小圆点指示器；6×6 实心圆，自己拼比拉一整个集合便宜。
+import { defineComponent, h, type Component } from 'vue'
+import type { Agent } from '../types'
+export const IconPinFilled = defineComponent({
+  name: 'IconPinFilled',
+  setup() {
+    return () =>
+      h(
+        'svg',
+        {
+          viewBox: '0 0 24 24',
+          fill: 'currentColor',
+          'aria-hidden': 'true',
+        },
+        [h('circle', { cx: 12, cy: 12, r: 6 })],
+      )
+  },
+})
+
+// Brand marks for the two agents, pulled from iconify at build time so
+// runtime stays offline-friendly. Sources: `arcticons:claude` and
+// `arcticons:openai-chatgpt`. Re-exported individually for direct use
+// and aggregated into `agentIcons` for dispatch-by-agent.
+export const IconClaude = IconClaudeRaw
+export const IconCodex = IconCodexRaw
+
+/**
+ * Global dictionary of agent → brand-mark icon component. Use as
+ * `<component :is="agentIcons[agent]" />` so consumers don't have to
+ * branch on the agent name themselves. Keep additions to this map in
+ * sync with `Agent` in `src/types.ts`.
+ */
+export const agentIcons: Record<Agent, Component> = {
+  claude: IconClaudeRaw,
+  codex: IconCodexRaw,
+}
