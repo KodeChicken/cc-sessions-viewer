@@ -36,6 +36,10 @@ export const emptyTrash = () => invoke<void>('empty_trash')
 export const revealInFinder = (path: string) =>
   invoke<void>('reveal_in_finder', { path })
 
+/** 写入用户指定的绝对路径（覆盖同名）。返回最终路径以便后续 reveal。 */
+export const writeFile = (path: string, content: string) =>
+  invoke<string>('write_file', { path, content })
+
 export const resumeSession = (agent: Agent, sessionId: string, cwd: string) =>
   invoke<void>('resume_session', { agent, sessionId, cwd })
 

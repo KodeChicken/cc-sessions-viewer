@@ -29,12 +29,15 @@ The app is **read-only** against the originals — deletion is a soft move into 
 
 - 🗂 **Unified project view** — group sessions by working directory across both CLIs
 - 💬 **Faithful chat replay** — text, thinking blocks, tool calls, structured diffs, inline images
+- 🔎 **In-session search with scope** — search across the whole conversation or scope to user messages, agent replies (incl. edits), or tool noise; prev / next jump + match counter
+- 🪗 **Collapse / expand all tool calls** — one click to hide tool-call clutter and focus on the conversation
+- 📤 **Export session** — save a single session to Markdown or HTML (native Save-As, offline-renderable HTML with inlined avatars / styles)
 - 🔄 **One-click resume** — opens Terminal, `cd`s into the project, runs `claude --resume <id>` / `codex resume <id>`
 - 🗑 **Shared trash with undo** — soft-delete + restore, survives across both agents
 - 📌 **Pin / sink projects** — color-coded pins on the sidebar; sunk projects go to the bottom
-- ✏️ **Rename sessions** — alias persisted locally, original JSONL untouched
+- ✏️ **Rename sessions** — your new title syncs back to the CLI, so `claude` / `codex` resume pickers show it too
 - 🌗 **Light / dark / system theme** — Codex-inspired neutral palette with brand-color accents
-- 🌐 **i18n** — English / 简体中文 (Japanese coming)
+- 🌐 **i18n with auto-detect** — English / 简体中文 / 繁體中文 / 日本語; first launch matches the OS language, falls back to English
 - ⚡️ **Custom tooltip & agent brand icons** — no out-of-place native chrome
 - 🖼 **Image lightbox** for screenshots embedded in transcripts
 
@@ -80,7 +83,7 @@ npm run tauri build        # bundle .app / .dmg / .msi
 ## Tech stack
 
 - **Frontend** — Vue 3 + Vite + Tailwind CSS v4 (CSS-variable design tokens)
-- **Backend** — Rust + Tauri 2 (single file, `src-tauri/src/lib.rs`)
+- **Backend** — Rust + Tauri 2; each agent's JSONL parsing is isolated behind a `SessionSource` trait under `src-tauri/src/agents/<agent>.rs`
 - **JSONL parsing** — all on the Rust side; the frontend never touches the disk
 - **Icons** — [iconify](https://iconify.design) (`lucide`, `material-icon-theme`, `arcticons`) inlined at build time
 - **No store** — state lives in `App.vue` refs; `localStorage` only for lang / theme / pin prefs
@@ -89,10 +92,11 @@ See [`CLAUDE.md`](CLAUDE.md) for architecture notes aimed at contributors and [`
 
 ## Roadmap
 
-- [ ] Japanese locale
+- [ ] Gemini CLI session support (next)
+- [ ] Keyboard shortcuts (per-OS conventions: ⌘ on macOS, Ctrl on Windows / Linux)
+- [ ] Native application menu (macOS menu bar / Windows & Linux window menu)
 - [ ] Linux build target
 - [ ] Full-text search across sessions
-- [ ] Export single session to Markdown
 - [ ] Tauri auto-updater
 
 ## Contributing

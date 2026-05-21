@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import type { ProjectInfo, SessionMeta } from '../types'
 import { formatSize, formatTime, shortName } from '../format'
 import { t } from '../i18n'
@@ -10,6 +10,9 @@ import {
   IconInbox,
   IconPencil,
   IconCopy,
+  IconDownload,
+  IconMarkdown,
+  IconHtml,
 } from '../components/icons'
 
 defineProps<{
@@ -27,11 +30,37 @@ const emit = defineEmits<{
   (e: 'reveal', path: string): void
   (e: 'delete', s: SessionMeta): void
   (e: 'copy', text: string): void
+  (e: 'export', s: SessionMeta, kind: 'md' | 'html'): void
   (e: 'load-more'): void
   (e: 'scroll', scrollTop: number): void
 }>()
 
 const scrollEl = ref<HTMLElement>()
+
+// 每张卡片自己的导出菜单状态：只允许一个打开，按 session path 标识。
+const openExportFor = ref<string | null>(null)
+const exportMenuEls = ref<Record<string, HTMLElement | null>>({})
+function setExportMenuEl(path: string, el: Element | null) {
+  exportMenuEls.value[path] = el as HTMLElement | null
+}
+function toggleExport(path: string, e: Event) {
+  e.stopPropagation()
+  openExportFor.value = openExportFor.value === path ? null : path
+}
+function pickExport(s: SessionMeta, kind: 'md' | 'html', e: Event) {
+  e.stopPropagation()
+  openExportFor.value = null
+  emit('export', s, kind)
+}
+function onDocClick(e: MouseEvent) {
+  const p = openExportFor.value
+  if (!p) return
+  const anchor = exportMenuEls.value[p]
+  if (anchor && anchor.contains(e.target as Node)) return
+  openExportFor.value = null
+}
+onMounted(() => document.addEventListener('click', onDocClick))
+onUnmounted(() => document.removeEventListener('click', onDocClick))
 
 function shortId(id: string): string {
   if (!id) return ''
@@ -107,6 +136,37 @@ defineExpose({ scrollEl })
         >
           <IconFolder />
         </button>
+        <div
+          :ref="(el) => setExportMenuEl(s.path, el as Element | null)"
+          class="export-menu-wrap"
+        >
+          <button
+            class="icon-btn"
+            :class="{ active: openExportFor === s.path }"
+            v-tooltip:top="t('chat.tb.export.md') + ' / ' + t('chat.tb.export.html')"
+            @click.stop="toggleExport(s.path, $event)"
+          >
+            <IconDownload />
+          </button>
+          <div v-if="openExportFor === s.path" class="export-menu" role="menu">
+            <button
+              class="export-menu-item"
+              role="menuitem"
+              @click.stop="pickExport(s, 'md', $event)"
+            >
+              <IconMarkdown />
+              <span>{{ t('chat.tb.export.md') }}</span>
+            </button>
+            <button
+              class="export-menu-item"
+              role="menuitem"
+              @click.stop="pickExport(s, 'html', $event)"
+            >
+              <IconHtml />
+              <span>{{ t('chat.tb.export.html') }}</span>
+            </button>
+          </div>
+        </div>
         <button
           class="icon-btn danger"
           v-tooltip="t('list.action.trash')"

@@ -1,8 +1,10 @@
 import { lang } from './settings'
 import en from './locales/en'
 import zh from './locales/zh'
+import zhTW from './locales/zh-TW'
+import ja from './locales/ja'
 
-const dicts = { en, zh } as const
+const dicts = { en, zh, 'zh-TW': zhTW, ja } as const
 
 /**
  * 翻译函数：根据当前语言取词，模板内调用会自动随 lang 变化重渲染

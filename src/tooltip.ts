@@ -4,8 +4,11 @@
 // 才出现、字号小、深浅模式无法跟随。
 import type { Directive } from 'vue'
 
+type Placement = 'top' | 'bottom' | 'auto'
+
 interface BindData {
   text: string
+  placement: Placement
   enter: () => void
   leave: () => void
   focusin: () => void
@@ -27,7 +30,7 @@ function ensureTipEl(): HTMLDivElement {
   return el
 }
 
-function showFor(target: HTMLElement, text: string) {
+function showFor(target: HTMLElement, text: string, placement: Placement) {
   const el = ensureTipEl()
   el.textContent = text
   // 重置位置以便测量真实尺寸（max-width 由 CSS 控制）
@@ -38,11 +41,22 @@ function showFor(target: HTMLElement, text: string) {
   const rect = el.getBoundingClientRect()
   const gap = 6
   const margin = 6
-  let placeAbove = false
-  let top = targetRect.bottom + gap
-  if (top + rect.height + margin > window.innerHeight) {
-    top = targetRect.top - rect.height - gap
-    placeAbove = true
+  // 'top' / 'bottom' 强制方向；'auto' 默认朝下，碰到下边界再翻到上
+  let placeAbove =
+    placement === 'top'
+      ? true
+      : placement === 'bottom'
+        ? false
+        : targetRect.bottom + gap + rect.height + margin > window.innerHeight
+  let top = placeAbove
+    ? targetRect.top - rect.height - gap
+    : targetRect.bottom + gap
+  // 强制方向时若越界仍 clamp 到可视区，避免被裁掉
+  if (top < margin) {
+    top = margin
+    placeAbove = false
+  } else if (top + rect.height + margin > window.innerHeight) {
+    top = window.innerHeight - rect.height - margin
   }
   let left = targetRect.left + targetRect.width / 2 - rect.width / 2
   left = Math.max(margin, Math.min(window.innerWidth - rect.width - margin, left))
@@ -61,15 +75,16 @@ function hide() {
   tipEl?.classList.remove('is-visible')
 }
 
-function bind(el: HTMLElement, text: string) {
+function bind(el: HTMLElement, text: string, placement: Placement) {
   const data: BindData = {
     text,
+    placement,
     enter() {
       if (!data.text) return
       activeEl = el
       if (showTimer) clearTimeout(showTimer)
       showTimer = window.setTimeout(() => {
-        if (activeEl === el) showFor(el, data.text)
+        if (activeEl === el) showFor(el, data.text, data.placement)
       }, 250)
     },
     leave() {
@@ -79,7 +94,7 @@ function bind(el: HTMLElement, text: string) {
       if (!data.text) return
       activeEl = el
       // 键盘聚焦时不延迟
-      showFor(el, data.text)
+      showFor(el, data.text, data.placement)
     },
     focusout() {
       if (activeEl === el) hide()
@@ -103,27 +118,33 @@ function unbind(el: HTMLElement) {
   bindings.delete(el)
 }
 
+function readPlacement(arg: string | undefined): Placement {
+  return arg === 'top' || arg === 'bottom' ? arg : 'auto'
+}
+
 export const vTooltip: Directive<HTMLElement, string | undefined | null> = {
   mounted(el, binding) {
     const text = typeof binding.value === 'string' ? binding.value : ''
     if (!text) return
-    bind(el, text)
+    bind(el, text, readPlacement(binding.arg))
     el.setAttribute('aria-label', text)
   },
   updated(el, binding) {
     const next = typeof binding.value === 'string' ? binding.value : ''
+    const placement = readPlacement(binding.arg)
     const prev = bindings.get(el)
-    if (next === (prev?.text ?? '')) return
+    if (next === (prev?.text ?? '') && placement === (prev?.placement ?? 'auto')) return
     if (prev) {
       if (next) {
         prev.text = next
+        prev.placement = placement
         el.setAttribute('aria-label', next)
       } else {
         unbind(el)
         el.removeAttribute('aria-label')
       }
     } else if (next) {
-      bind(el, next)
+      bind(el, next, placement)
       el.setAttribute('aria-label', next)
     }
   },

@@ -38,6 +38,8 @@ onMounted(async () => {
 const langOptions: { v: Lang; key: string }[] = [
   { v: 'en', key: 'settings.lang.en' },
   { v: 'zh', key: 'settings.lang.zh' },
+  { v: 'zh-TW', key: 'settings.lang.zhTw' },
+  { v: 'ja', key: 'settings.lang.ja' },
 ]
 type ThemeOpt = { v: Theme; key: string; icon: typeof IconSun }
 const themeOptions: ThemeOpt[] = [

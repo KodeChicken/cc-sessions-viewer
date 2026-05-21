@@ -5,11 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this app is
 
 A macOS Tauri 2 desktop app (Vue 3 + Rust) for browsing, viewing, and trashing
-**Claude Code** and **Codex** local session transcripts. Two CLIs store their
-JSONL transcripts in different layouts; this app normalizes both into the same
-project → sessions → chat UI, plus a soft-delete trash that survives across
-agents. The app is read-only against the original transcripts — deletion is a
-`move` into a trash dir, never `rm`.
+local session transcripts from coding agent CLIs — currently **Claude Code** and
+**Codex**, with **Gemini** next on deck. Each CLI stores JSONL transcripts in
+its own on-disk layout; this app normalizes them all into the same project →
+sessions → chat UI, plus a soft-delete trash that survives across agents. The
+app is read-only against the original transcripts — deletion is a `move` into a
+trash dir, never `rm`.
 
 ## Commands
 
@@ -34,58 +35,101 @@ picked up by Tauri's own dev loop.
 - **Frontend** (`src/`) is a thin Vue 3 SPA. State lives in `App.vue` refs;
   there is no store. All persistence besides `localStorage` (lang/theme/pin
   prefs) goes through Tauri.
-- **Backend** (`src-tauri/src/lib.rs`, single file) owns *all*
-  filesystem I/O and JSONL parsing. Frontend calls it via the
-  `#[tauri::command]` functions wrapped in `src/api.ts`. The full
-  list is registered in `tauri::generate_handler!` at the bottom
-  of `lib.rs`; keep it in sync.
+- **Backend** (`src-tauri/src/`) owns *all* filesystem I/O and JSONL parsing.
+  Frontend calls it via the `#[tauri::command]` functions in `lib.rs`, wrapped
+  by `src/api.ts`. The full handler list lives in `tauri::generate_handler!` at
+  the bottom of `lib.rs`; keep it in sync.
 
-When adding a feature that touches files, add a command in `lib.rs`, register
-it in `tauri::generate_handler!` at the bottom, then expose it from `api.ts`
-with the matching TypeScript types in `types.ts`. `serde(rename_all =
-"camelCase")` is used everywhere so Rust snake_case fields land in JS as
-camelCase.
+The backend is split into:
 
-### Session-source abstraction
+```
+src-tauri/src/
+├── lib.rs           // Tauri commands + macOS setup; pure dispatch, no parsing
+├── types.rs         // Serializable types shared with the frontend
+├── util.rs          // dirs / time / jsonl / text helpers (agent-agnostic)
+├── trash.rs         // soft-delete / restore / list / empty (agent-agnostic)
+└── agents/
+    ├── mod.rs       // `SessionSource` trait + `source(agent)` dispatcher
+    ├── claude.rs    // ClaudeSource impl  (~/.claude/projects/<dir>/...)
+    └── codex.rs     // CodexSource impl   (~/.codex/sessions/<YYYY>/...)
+```
 
-The backend hides two very different on-disk layouts behind a uniform `Msg[]`
-shape (see `src/types.ts`):
+When adding a Tauri command, define it in `lib.rs`, register it in
+`tauri::generate_handler!`, then expose it from `api.ts` with the matching
+TypeScript types in `src/types.ts`. `serde(rename_all = "camelCase")` is set on
+every type in `types.rs` so Rust snake_case fields land in JS as camelCase.
+
+### Session-source abstraction (adding a new agent)
+
+The backend hides each agent's on-disk layout behind a single `SessionSource`
+trait defined in `agents/mod.rs`. Currently:
 
 | Agent  | Layout                                                              | Project grouping                |
 | ------ | ------------------------------------------------------------------- | ------------------------------- |
 | Claude | `~/.claude/projects/<dir>/<sessionId>.jsonl`                        | by project directory            |
 | Codex  | `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`                | by the `cwd` recorded *inside* each file |
 
-Each of the three public commands (`list_projects`, `list_sessions`,
-`read_session`) dispatches on the `agent: "claude" | "codex"` argument to a
-pair of `list_claude_*` / `list_codex_*` (or `read_*`) helpers. When adding a
-new agent or extending parsing, keep that branching pattern — do not push
-agent-specific shapes up to the frontend.
+To add a new agent (e.g. Gemini):
+
+1. Create `src-tauri/src/agents/gemini.rs` with a `GeminiSource` unit struct
+   that implements `SessionSource` (every method calls the agent's private
+   parsing helpers in the same file).
+2. Add `pub mod gemini;` and a match arm in `agents::source()`.
+3. Add `"gemini"` to the `Agent` union type in `src/types.ts` — sidebar /
+   agent-switcher pick it up automatically.
+
+That's it. The Tauri commands (`list_projects`, `list_sessions`,
+`read_session`, `rename_session`, `soft_delete_session`, `resume_session`, …)
+all dispatch through `agents::source(&agent)?.<method>()`, so no command
+plumbing changes. **Do not** add agent-specific match arms in `lib.rs` or
+`trash.rs`; if you can't fit a piece of logic on the trait, the trait shape is
+wrong — fix it there.
 
 `list_sessions` is paginated; it sorts by mtime cheaply and only deep-parses
 the window slice. `read_session` is the only call that walks the full file.
 
+### Image extraction is per-agent
+
+Image rendering is uniform on the frontend (`Block { kind: "image", imageSrc }`
+→ `<img :src="b.imageSrc">`), but each agent encodes images differently:
+
+- Claude: `content[].type == "image"`, `source.{base64|url}`.
+- Codex: paired records — `response_item.message` (role=user) carries
+  `input_image` blocks with the actual `image_url`, while `event_msg.user_message`
+  carries the clean typed text. `agents/codex.rs::read` buffers the images and
+  attaches them to the matching `event_msg.user_message` so the user bubble
+  ends up as `[image, text]`.
+
+The agent contract is `SessionSource::image_src(block) -> Option<String>`; a
+new agent just implements that and uses it inside its own `read_session`.
+
 ### Trash is shared across agents
 
-`soft_delete_session` moves the JSONL into `~/.claude/.session-viewer-trash/`
-with a sibling `<file>.meta.json` describing original path, agent, project
-label, deletion timestamp, etc. The trash dir lives under `~/.claude` even for
-Codex deletions — there is one trash, not two. `restore_session` reads the
-`.meta.json` to recreate the original parent directory and move the file back.
+`trash.rs` (one shared module, not per-agent) moves the JSONL into
+`~/.claude/.session-viewer-trash/` with a sibling `<file>.meta` file describing
+original path, agent, project label, deletion timestamp, etc. The trash dir
+lives under `~/.claude` regardless of which agent the file came from — there
+is one trash, not N. Restore reads the `.meta` to recreate the original parent
+directory and move the file back. The only agent-specific bit is the display
+title in the trash list, which is delegated to `SessionSource::trash_title`.
 
 ### Diff parsing in tool results
 
 When a Claude `tool_result` carries a `structuredPatch`, `parse_structured_patch`
-in `lib.rs` converts it into the `DiffHunk[]` shape consumed by
+in `agents/claude.rs` converts it into the `DiffHunk[]` shape consumed by
 `components/DiffBlock.vue`. Anything not in that shape just shows as text in
-`<pre>`. The frontend does not parse diffs itself.
+`<pre>`. The frontend does not parse diffs itself. If a future agent also
+emits structured diffs, give it its own parser in its agent module rather than
+hoisting `parse_structured_patch` into `util.rs`.
 
 ### Resume = AppleScript → Terminal
 
 `resume_session` shells out to `osascript` to open Terminal.app, `cd` into the
-project dir, and run `claude --resume <id>` or `codex resume <id>`. It
-validates the session id with a strict allowlist (`[A-Za-z0-9-]+`) because the
-id is interpolated into a shell command.
+project dir, and run a per-agent CLI (`claude --resume <id>` /
+`codex resume <id>` / …). The CLI string comes from
+`SessionSource::resume_cli`, and `lib.rs` validates the session id with a
+strict allowlist (`[A-Za-z0-9-]+`) because the id is interpolated into a shell
+command.
 
 ### macOS titlebar / traffic lights
 

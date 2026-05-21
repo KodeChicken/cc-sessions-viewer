@@ -8,31 +8,29 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
-### Added
-
-- Custom singleton `v-tooltip` directive — replaces native `title=` attribute everywhere, fades in / out with 250 ms hover delay, flips above when no room below.
-- Agent brand icons next to "Claude" / "Codex" labels in the chat role tag, dispatched via a global `agentIcons` dictionary (`material-icon-theme:claude`, `arcticons:openai-chatgpt`).
-- Tool calls whose tool is **not** Write / Edit / MultiEdit / NotebookEdit / `apply_patch` now embed their `tool_result` block inside the call's collapsible body, so the diff-bearing file mutations remain visually distinct.
-
-### Changed
-
-- Tightened the gap between an assistant tool-call row and the following tool-only result row (collapsed the 22 px row margin when a tool-only row follows).
-- README localized to English / 简体中文 / 日本語.
+_No changes yet._
 
 ---
 
-## [0.1.0] - 2026-05-20
+## [0.1.0] - 2026-05-21
 
 Initial public build.
 
 ### Added
 
-- Browse Claude Code (`~/.claude/projects/`) and Codex (`~/.codex/sessions/`) sessions in one app.
-- Project sidebar with pin / sink / rename, agent switch (Claude 🟠 / Codex 🟢) at the top.
-- Chat replay: text, thinking, tool calls, structured diffs (Claude `structuredPatch`), inline images, sidechain badge.
-- Resume a session via Terminal: `claude --resume <id>` / `codex resume <id>`, with session-id allowlist validation.
-- Soft-delete trash shared across both agents under `~/.claude/.session-viewer-trash/`; restore puts the JSONL back to its original parent dir.
-- Light / dark / system theme; reactive i18n (English / 简体中文).
+- Browse **Claude Code** (`~/.claude/projects/`) and **Codex** (`~/.codex/sessions/`) sessions in one app, normalized into a shared project → sessions → chat view.
+- Project sidebar with pin / sink / rename and an agent switch (Claude 🟠 / Codex 🟢) at the top.
+- Chat replay: text, thinking blocks, tool calls, structured diffs (Claude `structuredPatch`), inline images, sidechain badge.
+- Resume a session via Terminal — `claude --resume <id>` / `codex resume <id>` — with strict session-id allowlist validation before shelling out.
+- Soft-delete trash shared across both agents under `~/.claude/.session-viewer-trash/`; restore puts the JSONL back to its original parent dir; in-chat system-event row surfaces session renames.
+- **In-session search with scope filter** — search across the whole conversation or scope to user messages, agent replies (incl. file-mutating edits), or tool noise; previous / next jump with a live match counter.
+- **Collapse / expand all tool calls** in one click to hide tool clutter and focus on the conversation.
+- **Export single session** to Markdown or HTML via native Save-As dialog; HTML inlines avatar SVGs and the full stylesheet so the file renders offline.
+- Tool results of non-file-mutating tools (read / search / shell etc.) embed inside the parent tool call's collapsible body — only Write / Edit / MultiEdit / NotebookEdit / `apply_patch` results stay as standalone diff rows, so file mutations remain visually distinct.
+- Custom singleton `v-tooltip` directive — replaces the native `title=` attribute everywhere; fades in / out with a 250 ms hover delay and flips above when there is no room below.
+- Agent brand icons next to "Claude" / "Codex" labels in the chat role tag, dispatched via a global `agentIcons` dictionary (`material-icon-theme:claude`, `arcticons:openai-chatgpt`).
+- Image lightbox for screenshots embedded in transcripts.
+- Light / dark / system theme; reactive i18n in **English / 简体中文 / 繁體中文 / 日本語**, with first-launch auto-detection from the OS language (falls back to English when no locale matches).
 - macOS native chrome: unified topbar (`NSToolbar` `unifiedCompact`), hidden title, drag region.
 
 [Unreleased]: https://github.com/wuchao/claude-session-viewer/compare/v0.1.0...HEAD

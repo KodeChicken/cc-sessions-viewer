@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Agent, Msg, SessionMeta, Block } from '../types'
-import { renderText, formatTime } from '../format'
+import { renderText, formatTime, isCaveatOnlyMsg, parseSystemEvent } from '../format'
 import { t } from '../i18n'
 import ToolResult from '../components/ToolResult.vue'
 import CollapsibleBox from '../components/CollapsibleBox.vue'
 import VueEasyLightbox from 'vue-easy-lightbox'
+import {
+  search,
+  searchCount,
+  searchIndex,
+  searchScope,
+  setSearchNavigator,
+  toolsCollapsed,
+} from '../chatToolbar'
 import {
   IconArrowLeft,
   IconRefresh,
@@ -17,6 +25,9 @@ import {
   IconChevronRight,
   IconPencil,
   IconCopy,
+  IconDownload,
+  IconMarkdown,
+  IconHtml,
   agentIcons,
 } from '../components/icons'
 
@@ -34,6 +45,8 @@ defineEmits<{
   rename: []
   reveal: []
   copyId: []
+  exportMd: []
+  exportHtml: []
 }>()
 
 function shortId(id: string): string {
@@ -61,6 +74,20 @@ const FILE_MUTATING_TOOLS = new Set([
   'NotebookEdit',
   'apply_patch',
 ])
+
+// 搜索范围分类 —— 给 .msg-row / tool_use <details> 打 data-search-scope，
+// applySearch 沿祖先链找最近的 scope 决定是否收录该文本节点。
+//   'user' / 'assistant'：用户消息 / 助手文本（含 thinking）
+//   'tools-edit'：文件改动型工具（与 'agent' 选项合并）
+//   'tools-other'：其它工具调用（与 'tools' 选项匹配）
+function rowScope(m: Msg): string {
+  // tool-only 行只在 FILE_MUTATING_TOOLS 的 tool_result 拆出来时出现，所以一定是 edit 类
+  if (isToolOnly(m)) return 'tools-edit'
+  return m.role
+}
+function toolUseScope(b: Block): string {
+  return FILE_MUTATING_TOOLS.has(b.toolName ?? '') ? 'tools-edit' : 'tools-other'
+}
 
 const resultByToolId = computed(() => {
   const map = new Map<string, Block>()
@@ -100,6 +127,8 @@ function isInlinedResult(b: Block): boolean {
 }
 
 function rowHasContent(m: Msg): boolean {
+  // Local-command caveat user messages are pure plumbing — hide the row entirely.
+  if (isCaveatOnlyMsg(m)) return false
   if (!isToolOnly(m)) return true
   return m.blocks.some((b) => !isInlinedResult(b))
 }
@@ -108,8 +137,21 @@ const assistantName = computed(() =>
   props.agent === 'codex' ? 'Codex' : 'Claude',
 )
 
+function systemEventLabel(m: Msg): string | null {
+  const ev = parseSystemEvent(m)
+  if (!ev) return null
+  if (ev.kind === 'rename') return t('chat.systemEvent.rename', { name: ev.name })
+  return null
+}
+
 const stats = computed(() => {
-  const u = props.messages.filter((m) => m.role === 'user' && !isToolOnly(m)).length
+  const u = props.messages.filter(
+    (m) =>
+      m.role === 'user' &&
+      !isToolOnly(m) &&
+      !isCaveatOnlyMsg(m) &&
+      !systemEventLabel(m),
+  ).length
   const a = props.messages.filter((m) => m.role === 'assistant').length
   return { u, a }
 })
@@ -203,6 +245,183 @@ onUnmounted(() => {
   if (rafEdge) cancelAnimationFrame(rafEdge)
   cancelScroll()
 })
+
+// ============================ 顶栏功能：折叠工具 / 搜索 ============================
+
+const innerEl = ref<HTMLElement>()
+
+// ---- 一键折叠/展开所有 <details> （工具调用 + thinking 块）
+//
+// 实现方式：当 toolsCollapsed 切换时，扫一遍 chat-inner 下所有 <details>，
+// 把它们的 `open` 属性同步过去。之后用户单独点哪个 <summary> 仍然能再次展开 /
+// 收起——直到下次点击 topbar 的折叠按钮全局再 sweep 一次。
+function sweepDetails(open: boolean) {
+  const root = innerEl.value
+  if (!root) return
+  for (const el of root.querySelectorAll<HTMLDetailsElement>('details')) {
+    el.open = open
+  }
+}
+watch(toolsCollapsed, (v) => sweepDetails(!v))
+
+// ---- 消息内搜索：DOM walker 把匹配文本包成 <mark class="search-hit">
+//
+// 不修改渲染管线（renderText 走 v-html），而是渲染完之后再扫一遍 DOM，
+// 把所有匹配的纯文本节点替换成带 <mark> 的片段。然后维护一组 mark 元素
+// 让 ↑/↓ 按钮 / Enter 键能在它们之间跳转。messages / search 变化时整体重做。
+
+let marks: HTMLElement[] = []
+let searchDebounce = 0
+
+function unmarkAll() {
+  const root = innerEl.value
+  if (!root) return
+  const list = root.querySelectorAll<HTMLElement>('mark.search-hit')
+  list.forEach((m) => {
+    const parent = m.parentNode
+    if (!parent) return
+    parent.replaceChild(document.createTextNode(m.textContent ?? ''), m)
+    parent.normalize()
+  })
+  marks = []
+}
+
+function applySearch() {
+  unmarkAll()
+  const root = innerEl.value
+  const q = search.value.trim()
+  if (!q || !root) {
+    searchCount.value = 0
+    searchIndex.value = 0
+    return
+  }
+  const lower = q.toLowerCase()
+  const filter = searchScope.value
+  // 沿祖先链找到最近的 data-search-scope 标签，再决定是否计入当前筛选项。
+  function scopeOk(parent: HTMLElement): boolean {
+    if (filter === 'all') return true
+    const node = parent.closest<HTMLElement>('[data-search-scope]')
+    const scope = node?.dataset.searchScope ?? null
+    if (filter === 'user') return scope === 'user'
+    if (filter === 'agent') return scope === 'assistant' || scope === 'tools-edit'
+    if (filter === 'tools') return scope === 'tools-other'
+    return true
+  }
+  // 收集所有候选文本节点（跳过 <script>/<style>/已经是 mark 内部的）
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const txt = node.textContent
+      if (!txt || !txt.toLowerCase().includes(lower)) return NodeFilter.FILTER_REJECT
+      const parent = (node as Text).parentElement
+      if (!parent) return NodeFilter.FILTER_REJECT
+      // 不在脚本/样式里搜
+      const tag = parent.tagName
+      if (tag === 'SCRIPT' || tag === 'STYLE') return NodeFilter.FILTER_REJECT
+      if (!scopeOk(parent)) return NodeFilter.FILTER_REJECT
+      return NodeFilter.FILTER_ACCEPT
+    },
+  })
+  const targets: Text[] = []
+  let n: Node | null
+  while ((n = walker.nextNode())) targets.push(n as Text)
+
+  const collected: HTMLElement[] = []
+  for (const text of targets) {
+    const s = text.data
+    const lowerS = s.toLowerCase()
+    const frag = document.createDocumentFragment()
+    let cur = 0
+    let idx = lowerS.indexOf(lower, cur)
+    while (idx >= 0) {
+      if (idx > cur) frag.appendChild(document.createTextNode(s.slice(cur, idx)))
+      const mark = document.createElement('mark')
+      mark.className = 'search-hit'
+      mark.textContent = s.slice(idx, idx + lower.length)
+      frag.appendChild(mark)
+      collected.push(mark)
+      cur = idx + lower.length
+      idx = lowerS.indexOf(lower, cur)
+    }
+    if (cur < s.length) frag.appendChild(document.createTextNode(s.slice(cur)))
+    text.parentNode?.replaceChild(frag, text)
+  }
+  marks = collected
+  searchCount.value = marks.length
+  searchIndex.value = marks.length > 0 ? 1 : 0
+  setCurrentMark()
+}
+
+function setCurrentMark() {
+  marks.forEach((m) => m.classList.remove('current'))
+  if (searchIndex.value < 1 || searchIndex.value > marks.length) return
+  const target = marks[searchIndex.value - 1]
+  target.classList.add('current')
+  // 匹配可能藏在 collapsed 的 <details> 里 —— 沿着祖先链全部打开，确保可见
+  let p: HTMLElement | null = target.parentElement
+  while (p) {
+    if (p.tagName === 'DETAILS' && !(p as HTMLDetailsElement).open) {
+      ;(p as HTMLDetailsElement).open = true
+    }
+    p = p.parentElement
+  }
+  // 不用 smooth scroll：长会话里成百上千次跳转会卡，且我们已有自定义滚动 RAF。
+  // block: 'center' 让 mark 出现在视区中部，符合搜索体验直觉。
+  target.scrollIntoView({ block: 'center' })
+}
+
+function navigateMatches(dir: 1 | -1) {
+  if (marks.length === 0) return
+  const next = ((searchIndex.value - 1 + dir + marks.length) % marks.length) + 1
+  searchIndex.value = next
+  setCurrentMark()
+}
+
+watch(search, () => {
+  // 短文本输入会快速变更，debounce 避免每按一键都重写一遍 DOM
+  window.clearTimeout(searchDebounce)
+  searchDebounce = window.setTimeout(applySearch, 120)
+})
+
+// 切换搜索范围时立即重做（不 debounce —— 是离散操作）
+watch(searchScope, () => {
+  if (search.value) applySearch()
+})
+
+// 消息变化（切换会话 / 刷新）后重新建立标记 + 重新 sweep 折叠态
+watch(
+  () => props.messages,
+  () => {
+    nextTick(() => {
+      if (toolsCollapsed.value) sweepDetails(false)
+      if (search.value) applySearch()
+    })
+  },
+  { flush: 'post' },
+)
+
+onMounted(() => {
+  setSearchNavigator(navigateMatches)
+  document.addEventListener('click', onDocClick)
+})
+onUnmounted(() => {
+  setSearchNavigator(null)
+  window.clearTimeout(searchDebounce)
+  unmarkAll()
+  document.removeEventListener('click', onDocClick)
+})
+
+// 导出下拉菜单：点空白处关闭。锚定到导出按钮容器，点容器内的项不触发关闭。
+const exportMenuOpen = ref(false)
+const exportMenuEl = ref<HTMLElement>()
+function toggleExportMenu(e: Event) {
+  e.stopPropagation()
+  exportMenuOpen.value = !exportMenuOpen.value
+}
+function onDocClick(e: MouseEvent) {
+  if (!exportMenuOpen.value) return
+  if (exportMenuEl.value && exportMenuEl.value.contains(e.target as Node)) return
+  exportMenuOpen.value = false
+}
 </script>
 
 <template>
@@ -263,6 +482,34 @@ onUnmounted(() => {
     >
       <IconRefresh />
     </button>
+    <div ref="exportMenuEl" class="export-menu-wrap">
+      <button
+        class="icon-btn"
+        :class="{ active: exportMenuOpen }"
+        v-tooltip:top="t('chat.tb.export.md') + ' / ' + t('chat.tb.export.html')"
+        @click="toggleExportMenu"
+      >
+        <IconDownload />
+      </button>
+      <div v-if="exportMenuOpen" class="export-menu" role="menu">
+        <button
+          class="export-menu-item"
+          role="menuitem"
+          @click="exportMenuOpen = false; $emit('exportMd')"
+        >
+          <IconMarkdown />
+          <span>{{ t('chat.tb.export.md') }}</span>
+        </button>
+        <button
+          class="export-menu-item"
+          role="menuitem"
+          @click="exportMenuOpen = false; $emit('exportHtml')"
+        >
+          <IconHtml />
+          <span>{{ t('chat.tb.export.html') }}</span>
+        </button>
+      </div>
+    </div>
     <button
       class="icon-btn danger"
       v-tooltip="t('chat.action.delete')"
@@ -273,15 +520,22 @@ onUnmounted(() => {
   </div>
 
   <div ref="scrollEl" class="chat-scroll">
-    <div class="chat-inner">
+    <div ref="innerEl" class="chat-inner">
       <div
         v-for="(m, i) in messages"
         :key="m.uuid ?? i"
         v-show="rowHasContent(m)"
         class="msg-row"
-        :class="isToolOnly(m) ? 'tool-only' : m.role"
+        :class="systemEventLabel(m) ? 'system' : isToolOnly(m) ? 'tool-only' : m.role"
+        :data-search-scope="rowScope(m)"
       >
-        <div v-if="isToolOnly(m)" style="max-width: 86%; min-width: 0">
+        <!-- System events (e.g. /rename) render as a small centered line,
+             not a "Me" bubble — they're meta facts, not user prose. -->
+        <div v-if="systemEventLabel(m)" class="system-event">
+          {{ systemEventLabel(m) }}
+        </div>
+
+        <div v-else-if="isToolOnly(m)" style="max-width: 86%; min-width: 0">
           <template v-for="(b, bi) in m.blocks" :key="bi">
             <ToolResult v-if="!isInlinedResult(b)" :block="b" />
           </template>
@@ -338,6 +592,7 @@ onUnmounted(() => {
                 v-else-if="b.kind === 'tool_use'"
                 class="block-card"
                 :class="{ 'in-user': m.role === 'user' }"
+                :data-search-scope="toolUseScope(b)"
               >
                 <summary class="block-summary">
                   <span class="chev"><IconChevronRight /></span>

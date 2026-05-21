@@ -31,6 +31,14 @@ import IconPaletteRaw from '~icons/lucide/palette'
 import IconCheckRaw from '~icons/lucide/check'
 import IconPencilRaw from '~icons/lucide/pencil'
 import IconCopyRaw from '~icons/lucide/copy'
+import IconSearchRaw from '~icons/lucide/search'
+import IconChevronUpRaw from '~icons/lucide/chevron-up'
+import IconChevronDownRaw from '~icons/lucide/chevron-down'
+import IconFoldRaw from '~icons/lucide/chevrons-down-up'
+import IconUnfoldRaw from '~icons/lucide/chevrons-up-down'
+import IconDownloadRaw from '~icons/lucide/download'
+import IconMarkdownRaw from '~icons/lucide/file-text'
+import IconHtmlRaw from '~icons/lucide/file-code'
 import IconClaudeRaw from '~icons/material-icon-theme/claude'
 import IconCodexRaw from '~icons/arcticons/openai-chatgpt'
 
@@ -62,6 +70,14 @@ export const IconPalette = IconPaletteRaw
 export const IconCheck = IconCheckRaw
 export const IconPencil = IconPencilRaw
 export const IconCopy = IconCopyRaw
+export const IconSearch = IconSearchRaw
+export const IconChevronUp = IconChevronUpRaw
+export const IconChevronDown = IconChevronDownRaw
+export const IconFold = IconFoldRaw
+export const IconUnfold = IconUnfoldRaw
+export const IconDownload = IconDownloadRaw
+export const IconMarkdown = IconMarkdownRaw
+export const IconHtml = IconHtmlRaw
 // 「已 pin」状态的小圆点指示器；6×6 实心圆，自己拼比拉一整个集合便宜。
 import { defineComponent, h, type Component } from 'vue'
 import type { Agent } from '../types'

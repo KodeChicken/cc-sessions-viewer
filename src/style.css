@@ -17,45 +17,52 @@
   --color-danger-soft: var(--danger-soft);
 }
 
-/* ---------- Light (default) ---------- */
+/* ---------- Design tokens（对齐 Vercel Geist DS）----------
+ * 抓自 nextjs.org 在线 :root：用 gray scale + 极致黑白对比作为底色，
+ * 蓝色仅用作 link / 极少的互动 highlight，品牌色（agent 橙/绿）只
+ * 出现在 agent badge / pin dot 这种小标识上。
+ * 关键约束：
+ *  - sidebar / 顶栏 跟主体同底色，靠 1px border 切区（不再用单独 sidebar-bg）
+ *  - dark 主底色用 #0a0a0a（hsl 0 0% 4%）而非纯黑，给 hover 留空间
+ *  - 主按钮用"中性反转"：light 黑底白字 / dark 白底黑字
+ */
 :root {
-  /* neutrals, calibrated against Codex' --color-text-foreground:#1a1c1f.
-     macOS convention: main content panel is pure white, sidebar is a
-     subtle off-white. This gives the unfocused traffic lights natural
-     contrast against the sidebar without needing a visible chip. */
-  --bg: #ffffff;
-  --surface: #ffffff;
-  --surface-2: #f1f1f2;
-  --sidebar-bg: #f6f6f7;
-  --surface-hover: rgba(26, 28, 31, 0.04);
-  --surface-active: rgba(26, 28, 31, 0.07);
-  --border: rgba(26, 28, 31, 0.08);
-  --border-strong: rgba(26, 28, 31, 0.14);
-  --text: #1a1c1f;
-  --text-dim: rgba(26, 28, 31, 0.62);
-  --text-mute: rgba(26, 28, 31, 0.42);
-  --accent: #1a1c1f;          /* primary action uses neutral foreground (Codex style) */
-  --accent-soft: rgba(26, 28, 31, 0.06);
+  --bg: hsl(0 0% 100%);            /* ds-background-100 */
+  --surface: hsl(0 0% 100%);
+  --surface-2: hsl(0 0% 98%);      /* ds-background-200 */
+  --sidebar-bg: var(--bg);          /* 取消独立底色：和主体共底，靠 border 切区 */
+  --surface-hover: hsl(0 0% 95%);   /* ds-gray-100 */
+  --surface-active: hsl(0 0% 92%);  /* ds-gray-200 */
+  --border: hsl(0 0% 92%);          /* ds-gray-200，比 Codex 风更明确 */
+  --border-strong: hsl(0 0% 79%);   /* ds-gray-500 */
+  --text: hsl(0 0% 9%);             /* ds-gray-1000 ≈ #171717 */
+  --text-dim: hsl(0 0% 30%);        /* ds-gray-900 */
+  --text-mute: hsl(0 0% 56%);       /* ds-gray-700 */
+  --accent: hsl(0 0% 9%);           /* 主按钮 = 中性反转，沿用文字色 */
+  --accent-soft: hsl(0 0% 95%);
+  --link: hsl(212 100% 48%);        /* ds-blue-700，仅文本链接 */
   --brand-claude: #c2410c;
   --brand-codex: #047857;
   --brand: var(--brand-claude);
   --brand-soft: rgba(194, 65, 12, 0.10);
   --danger: #b91c1c;
   --danger-soft: rgba(185, 28, 28, 0.08);
-  --user-bubble: #f3f4f6;
+  --user-bubble: hsl(0 0% 96%);
   --assistant-bubble: transparent;
-  --code-bg: #f6f7f9;
-  --code-fg: #1a1c1f;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.12);
+  --code-bg: hsl(0 0% 97%);
+  --code-fg: hsl(0 0% 9%);
+  --shadow-sm: 0 0 0 1px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 0 0 1px rgba(0, 0, 0, 0.10), 0 12px 40px rgba(0, 0, 0, 0.12);
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
   --radius-xl: 16px;
   --titlebar-h: 40px;
   --traffic-lights-w: 0px;
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter',
+  /* Geist 字体栈：自家字体先不引（避免 woff2 ~200KB），用 Inter 占位，
+     系统字体回落保证渲染权重一致。 */
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text',
     'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
   font-feature-settings: 'cv11', 'ss01', 'ss03';
 }
@@ -66,32 +73,33 @@
 
 /* ---------- Dark ---------- */
 :root.theme-dark {
-  --bg: #0f0f10;
-  --surface: #18181a;
-  --surface-2: #1f1f22;
-  --sidebar-bg: #16161a;
-  --surface-hover: rgba(255, 255, 255, 0.05);
-  --surface-active: rgba(255, 255, 255, 0.08);
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.14);
-  --text: #ededed;
-  --text-dim: rgba(237, 237, 237, 0.62);
-  --text-mute: rgba(237, 237, 237, 0.40);
-  --accent: #ededed;
-  --accent-soft: rgba(255, 255, 255, 0.08);
+  --bg: hsl(0 0% 4%);                /* ds-background-100 dark = #0a0a0a */
+  --surface: hsl(0 0% 4%);
+  --surface-2: hsl(0 0% 0%);          /* ds-background-200 dark = 纯黑，深一档 */
+  --sidebar-bg: var(--bg);
+  --surface-hover: hsl(0 0% 10%);    /* ds-gray-100 dark */
+  --surface-active: hsl(0 0% 12%);   /* ds-gray-200 dark */
+  --border: hsl(0 0% 16%);           /* ds-gray-300 dark */
+  --border-strong: hsl(0 0% 27%);    /* ds-gray-500 dark */
+  --text: hsl(0 0% 93%);             /* ds-gray-1000 dark ≈ #ededed */
+  --text-dim: hsl(0 0% 63%);
+  --text-mute: hsl(0 0% 53%);        /* ds-gray-600 dark */
+  --accent: hsl(0 0% 93%);
+  --accent-soft: hsl(0 0% 12%);
+  --link: hsl(210 100% 66%);          /* ds-blue-900 dark */
   --brand-claude: #f97316;
   --brand-codex: #10b981;
   --brand: var(--brand-claude);
   --brand-soft: rgba(249, 115, 22, 0.14);
   --danger: #f87171;
   --danger-soft: rgba(248, 113, 113, 0.14);
-  --user-bubble: #26272a;
+  --user-bubble: hsl(0 0% 10%);
   --assistant-bubble: transparent;
-  --code-bg: #0c0c0d;
-  --code-fg: #e6e6e6;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.45);
-  --shadow-lg: 0 16px 50px rgba(0, 0, 0, 0.6);
+  --code-bg: hsl(0 0% 8%);
+  --code-fg: hsl(0 0% 93%);
+  --shadow-sm: 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-md: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 2px 8px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 0 0 1px rgba(255, 255, 255, 0.10), 0 16px 50px rgba(0, 0, 0, 0.6);
 }
 
 /* Brand swap by agent (used only for tiny accents like project count badge) */
@@ -241,6 +249,208 @@ button {
   font-style: italic;
 }
 
+/* ---------- ChatTopbar：搜索框 / 折叠 / 导出 ---------- */
+.chat-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+.ct-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  max-width: 520px;
+  height: 28px;
+  padding: 0 6px 0 8px;
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.ct-search:focus-within,
+.ct-search.active {
+  border-color: var(--border);
+  background: var(--surface);
+}
+/* Custom scope dropdown — same Geist-style menu as the export download
+   dropdown in ChatView. Replaces the native <select> so its open panel
+   doesn't drop into AppKit's blue popover. */
+.ct-scope-wrap {
+  position: relative;
+  flex-shrink: 0;
+  margin-right: 4px;
+  padding-right: 4px;
+  border-right: 1px solid var(--border);
+}
+.ct-scope-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--text-mute);
+  font: inherit;
+  font-size: 11.5px;
+  height: 22px;
+  padding: 0 4px 0 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 4px;
+  transition: background 0.12s, color 0.12s;
+}
+.ct-scope-btn:hover,
+.ct-scope-btn.active {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.ct-scope-label {
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ct-scope-chev {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+}
+.ct-scope-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ct-scope-item {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  padding: 7px 10px 7px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.12s;
+}
+.ct-scope-item:hover {
+  background: var(--surface-hover);
+}
+.ct-scope-item.active {
+  color: var(--text);
+}
+.ct-scope-check {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.ct-scope-check svg {
+  width: 13px;
+  height: 13px;
+}
+.ct-search-ic {
+  display: inline-flex;
+  color: var(--text-mute);
+  flex-shrink: 0;
+  font-size: 13px;
+}
+.ct-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 0 2px;
+}
+.ct-search-input::placeholder {
+  color: var(--text-mute);
+}
+.ct-search-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+.ct-search-count.none {
+  color: var(--brand);
+}
+.ct-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.ct-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-mute);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.12s, color 0.12s;
+}
+.ct-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.ct-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* 聊天内容里搜索命中：黄底加深当前命中 —— 跟 macOS Spotlight 一致的体验 */
+.chat-inner mark.search-hit {
+  background: rgba(255, 213, 79, 0.55);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.chat-inner mark.search-hit.current {
+  background: #ffb300;
+  color: #1a1a1a;
+  outline: 2px solid rgba(255, 153, 0, 0.55);
+  outline-offset: 1px;
+}
+:root.theme-dark .chat-inner mark.search-hit {
+  background: rgba(255, 213, 79, 0.35);
+  color: inherit;
+}
+:root.theme-dark .chat-inner mark.search-hit.current {
+  background: #ffb300;
+  color: #1a1a1a;
+}
+
 .sidebar {
   width: 248px;
   flex-shrink: 0;
@@ -276,11 +486,11 @@ button {
 .agent-switch button.active {
   background: var(--surface);
   color: var(--text);
-  box-shadow: var(--shadow-sm), 0 0 0 1px var(--border);
+  box-shadow: 0 0 0 1px var(--border);
 }
 .theme-dark .agent-switch button.active {
-  background: color-mix(in srgb, var(--text) 8%, transparent);
-  box-shadow: none;
+  background: var(--surface-active);
+  box-shadow: 0 0 0 1px var(--border);
 }
 
 .sidebar-sub {
@@ -367,18 +577,20 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Geist 风：项目数 chip 用 1px 描边替代 pill 底色，跟整体"线条派"一致 */
 .proj-count {
   font-size: 11px;
   color: var(--text-mute);
-  background: var(--surface-2);
-  padding: 1px 7px;
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 0 6px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
   border-radius: 999px;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
   font-weight: 500;
-}
-.theme-dark .proj-count {
-  background: color-mix(in srgb, var(--text) 6%, transparent);
 }
 .proj-item.active .proj-count {
   background: color-mix(in srgb, var(--brand) 16%, transparent);
@@ -648,6 +860,54 @@ button {
   background: var(--danger-soft);
   color: var(--danger);
 }
+.icon-btn.active {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* Export dropdown: anchored under the .icon-btn that opens it. */
+.export-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.export-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 50;
+  min-width: 168px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.export-menu-item {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: background 0.12s;
+}
+.export-menu-item:hover {
+  background: var(--surface-hover);
+}
+.export-menu-item svg {
+  width: 16px;
+  height: 16px;
+  color: var(--text-dim);
+}
 
 /* ---------- Empty / loading ---------- */
 .empty,
@@ -792,6 +1052,17 @@ button {
 .msg-row.tool-only {
   margin-top: 0;
 }
+.msg-row.system {
+  justify-content: center;
+  margin-bottom: 16px;
+}
+.system-event {
+  color: var(--text-mute);
+  font-size: 12px;
+  text-align: center;
+  padding: 2px 12px;
+  user-select: text;
+}
 
 .bubble {
   max-width: 86%;
@@ -932,8 +1203,12 @@ button {
   margin: 10px 0 4px;
   font-weight: 600;
 }
+/* Geist 风：链接默认无下划线，hover 才出来，颜色用 ds-blue */
 .text-run a {
-  color: var(--brand);
+  color: var(--link);
+  text-decoration: none;
+}
+.text-run a:hover {
   text-decoration: underline;
   text-underline-offset: 2px;
   text-decoration-thickness: 0.5px;

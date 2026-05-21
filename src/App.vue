@@ -5,6 +5,8 @@ import * as api from './api'
 import { shortName } from './format'
 import { t } from './i18n'
 import { clearAppCache } from './settings'
+import { resetChatToolbar } from './chatToolbar'
+import { exportMarkdown, exportHtml } from './export'
 import ChatView from './views/ChatView.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ChatTopbar from './components/topbar/ChatTopbar.vue'
@@ -107,6 +109,9 @@ const listScrollEl = computed<HTMLElement | undefined>(
 let savedListScroll = 0
 
 watch(openSession, (val, old) => {
+  // 切换 / 关闭会话时把聊天页顶栏（搜索 / 折叠 / 等）状态归零，
+  // 否则前一个会话的搜索词 / 折叠态会留到下一个，体验古怪。
+  if (val?.path !== old?.path) resetChatToolbar()
   if (!val && old) {
     nextTick(() => {
       if (listScrollEl.value) listScrollEl.value.scrollTop = savedListScroll
@@ -507,6 +512,34 @@ async function reveal(path: string) {
   }
 }
 
+async function exportSession(kind: 'md' | 'html') {
+  if (!openSession.value) return
+  try {
+    const fn = kind === 'md' ? exportMarkdown : exportHtml
+    const path = await fn(openSession.value, chatMsgs.value, agent.value)
+    // 用户在 Save As 对话框点了取消时返回 null —— 静默放弃
+    if (!path) return
+    notify(t('toast.exported', { path }))
+    api.revealInFinder(path).catch(() => {})
+  } catch (e) {
+    notify(t('toast.exportFail', { e: String(e) }), true)
+  }
+}
+
+// 列表里直接导出某个会话：不打开会话，临时把消息读出来即可。
+async function exportFromList(s: SessionMeta, kind: 'md' | 'html') {
+  try {
+    const msgs = await api.readSession(agent.value, s.path)
+    const fn = kind === 'md' ? exportMarkdown : exportHtml
+    const path = await fn(s, msgs, agent.value)
+    if (!path) return
+    notify(t('toast.exported', { path }))
+    api.revealInFinder(path).catch(() => {})
+  } catch (e) {
+    notify(t('toast.exportFail', { e: String(e) }), true)
+  }
+}
+
 async function copyText(text: string) {
   try {
     await navigator.clipboard.writeText(text)
@@ -595,7 +628,7 @@ onMounted(() => {
       <!-- 顶栏右侧分发：每个页面把自己的工具栏组件挂这里。
            本身仍是 macOS 拖动区域，组件内部的可交互元素由 CSS 单独标 no-drag。 -->
       <div class="topbar-drag">
-        <ChatTopbar v-if="openSession" :session="openSession" />
+        <ChatTopbar v-if="openSession" />
         <TrashTopbar v-else-if="showTrash" :count="trash.length" />
         <SessionsTopbar v-else-if="activeProject" :project="activeProject" />
         <EmptyTopbar v-else />
@@ -633,6 +666,8 @@ onMounted(() => {
           @rename="openRename(openSession)"
           @reveal="reveal(openSession.path)"
           @copy-id="copyText(openSession.id)"
+          @export-md="exportSession('md')"
+          @export-html="exportSession('html')"
         />
       </template>
 
@@ -661,6 +696,7 @@ onMounted(() => {
         @reveal="reveal"
         @delete="deleteSession"
         @copy="copyText"
+        @export="exportFromList"
         @load-more="loadMore"
         @scroll="onListScroll"
       />

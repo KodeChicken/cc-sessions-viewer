@@ -29,6 +29,51 @@ function inline(text: string): string {
 // so the inner text still goes through escapeHtml safely.
 const COMMAND_MESSAGE_RE = /\s*<command-message>[\s\S]*?<\/command-message>\s*/g
 const COMMAND_TAG_RE = /<(command-(?:name|args))>([\s\S]*?)<\/\1>/g
+// Claude Code injects a `<local-command-caveat>…</local-command-caveat>` user
+// message right before every shell-output relay (e.g. when the user types `!ls`).
+// It's plumbing for the model and pure noise to humans — hide it everywhere.
+const LOCAL_COMMAND_CAVEAT_RE = /^\s*<local-command-caveat>[\s\S]*?<\/local-command-caveat>\s*$/
+
+/** True if a user "Me" message is just a Claude Code local-command caveat
+ *  (no other text/image/tool content). Such messages should be hidden in
+ *  the chat view and skipped in exports. */
+export function isCaveatOnlyMsg(m: { role: string; blocks: Array<{ kind: string; text?: string }> }): boolean {
+  if (m.role !== 'user') return false
+  if (m.blocks.length === 0) return false
+  return m.blocks.every(
+    (b) => b.kind === 'text' && LOCAL_COMMAND_CAVEAT_RE.test(b.text ?? ''),
+  )
+}
+
+// Claude Code wraps various app-level facts in <system-reminder> tags inside a
+// synthetic user message. The /rename command shows up as:
+//   <system-reminder>
+//   The user named this session "批量导入". This may indicate the session's focus or intent.
+//   </system-reminder>
+// Rendering that verbatim looks like a "Me" said an English meta-line. We turn
+// it into a centered, localized system-event line instead.
+const SYSTEM_REMINDER_RE = /<system-reminder>([\s\S]*?)<\/system-reminder>/
+const RENAME_INNER_RE = /The user named this session\s+"([^"]+)"/i
+
+export type SystemEvent = { kind: 'rename'; name: string }
+
+/** Parse a user message into a SystemEvent if it consists solely of a
+ *  recognized <system-reminder>. Returns null otherwise. */
+export function parseSystemEvent(m: {
+  role: string
+  blocks: Array<{ kind: string; text?: string }>
+}): SystemEvent | null {
+  if (m.role !== 'user') return null
+  if (m.blocks.length !== 1 || m.blocks[0].kind !== 'text') return null
+  const text = (m.blocks[0].text ?? '').trim()
+  const sr = SYSTEM_REMINDER_RE.exec(text)
+  if (!sr) return null
+  // The whole message must be just the reminder — no other prose around it.
+  if (text.replace(SYSTEM_REMINDER_RE, '').trim() !== '') return null
+  const rn = RENAME_INNER_RE.exec(sr[1])
+  if (rn) return { kind: 'rename', name: rn[1] }
+  return null
+}
 function extractCommandTags(raw: string): { text: string; codes: string[] } {
   const codes: string[] = []
   const stripped = raw.replace(COMMAND_MESSAGE_RE, '')
