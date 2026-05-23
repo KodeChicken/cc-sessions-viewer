@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { getRecents, recordRecent, recents } from '../src/recents'
+import { getRecents, recordRecent, removeRecent, recents } from '../src/recents'
 
 beforeEach(() => {
   localStorage.clear()
@@ -49,5 +49,38 @@ describe('recents', () => {
     const raw = localStorage.getItem('recents:v1')
     expect(raw).toBeTruthy()
     expect(JSON.parse(raw!)).toEqual({ claude: ['persisted'] })
+  })
+
+  describe('removeRecent', () => {
+    it('removes a single entry without touching the rest', () => {
+      recordRecent('claude', 'a')
+      recordRecent('claude', 'b')
+      recordRecent('claude', 'c')
+      removeRecent('claude', 'b')
+      expect(getRecents('claude')).toEqual(['c', 'a'])
+    })
+
+    it('persists the removal to localStorage', () => {
+      recordRecent('claude', 'a')
+      recordRecent('claude', 'b')
+      removeRecent('claude', 'a')
+      expect(JSON.parse(localStorage.getItem('recents:v1')!)).toEqual({
+        claude: ['b'],
+      })
+    })
+
+    it('is a no-op for an unknown dir', () => {
+      recordRecent('claude', 'a')
+      removeRecent('claude', 'nope')
+      expect(getRecents('claude')).toEqual(['a'])
+    })
+
+    it('only touches the targeted agent bucket', () => {
+      recordRecent('claude', 'shared')
+      recordRecent('codex', 'shared')
+      removeRecent('claude', 'shared')
+      expect(getRecents('claude')).toEqual([])
+      expect(getRecents('codex')).toEqual(['shared'])
+    })
   })
 })

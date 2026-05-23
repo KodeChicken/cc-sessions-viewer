@@ -26,6 +26,8 @@ dirs = "5"
 # bundled = 编译期把 SQLite 源码静态链进来，不依赖系统 libsqlite3，
 # macOS 系统库版本太旧，Windows 也没有，bundled 一劳永逸
 rusqlite = { version = "0.32", features = ["bundled"] }
+# 全局搜索时跨 session 并行扫描；rayon 是纯 CPU work-stealing 线程池，零运行时配置。
+rayon = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

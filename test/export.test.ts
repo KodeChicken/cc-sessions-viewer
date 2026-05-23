@@ -11,6 +11,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ save: saveMock }))
 vi.mock('../src/api', () => ({ writeFile: writeFileMock }))
 
 import {
+  batchExportFolderName,
   exportHtml,
   exportMarkdown,
   messagesToHtml,
@@ -381,5 +382,19 @@ describe('exportMarkdown / exportHtml', () => {
     saveMock.mockResolvedValue(null)
     await exportMarkdown(session({ title: '   ' }), [], 'claude')
     expect(saveMock.mock.calls[0][0].defaultPath).toBe('session.md')
+  })
+})
+
+describe('batchExportFolderName', () => {
+  it('formats the local date and time and the kind suffix', () => {
+    // 2026-05-23T08:09:07 (local) → `export-20260523-080907-md`
+    const now = new Date(2026, 4, 23, 8, 9, 7)
+    expect(batchExportFolderName('md', now)).toBe('export-20260523-080907-md')
+    expect(batchExportFolderName('html', now)).toBe('export-20260523-080907-html')
+  })
+
+  it('zero-pads every numeric segment', () => {
+    const now = new Date(2026, 0, 5, 3, 4, 5)
+    expect(batchExportFolderName('md', now)).toBe('export-20260105-030405-md')
   })
 })

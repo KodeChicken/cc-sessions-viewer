@@ -1,6 +1,11 @@
-name: build
+name: Release
 
-# Run manually or on tag push (e.g. `git tag v0.1.0 && git push --tags`).
+# Release pipeline — triggers when a `v*` tag lands on the repo.
+# Use `npm run release` locally (see package.json) to bump the version in
+# package.json / tauri.conf.json / Cargo.toml, commit, tag, and push in one
+# go; the pushed tag fires this workflow. `workflow_dispatch` is left in
+# for emergency re-runs from the Actions UI.
+#
 # Tauri cross-compile from macOS to a Windows installer isn't practical
 # locally because NSIS/WiX bundling needs a Windows toolchain, so the
 # Windows artifacts are produced on a `windows-latest` runner here.

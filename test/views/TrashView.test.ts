@@ -63,7 +63,7 @@ describe('TrashView', () => {
     it('shows a checkbox on each card and hides the row actions', () => {
       selectMode.value = true
       const wrapper = factory([item({ trashFile: 'a' })])
-      expect(wrapper.find('.trash-check').exists()).toBe(true)
+      expect(wrapper.find('.list-check').exists()).toBe(true)
       expect(wrapper.find('.session-actions').exists()).toBe(false)
     })
 

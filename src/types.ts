@@ -1,4 +1,4 @@
-export type Agent = 'claude' | 'codex'
+export type Agent = 'claude' | 'codex' | 'gemini'
 
 export interface ProjectInfo {
   dirName: string
@@ -60,6 +60,21 @@ export interface Msg {
   model?: string
   sidechain: boolean
   blocks: Block[]
+}
+
+/** 全局搜索的命中条目（与 Rust 端 SearchHit 同形）。 */
+export type SearchField = 'title' | 'id' | 'path' | 'text'
+export interface SearchHit {
+  projectKey: string
+  projectDisplay: string
+  session: SessionMeta
+  matchedField: SearchField
+  /** 命中片段：title/id/path 等于原值；text 上是带前后文（带省略号）的小段。 */
+  snippet: string
+  /** 文本命中所在消息的索引（read_session 返回的数组下标）；metadata 命中为 undefined。 */
+  matchMsgIndex?: number
+  /** 文本命中所在消息的 uuid（若 agent 写了）；前端定位时优先用 uuid 兜底。 */
+  matchMsgUuid?: string
 }
 
 export interface TrashItem {

@@ -97,6 +97,28 @@ pub struct TrashItem {
     pub size: u64,
 }
 
+/// 全局搜索的命中条目 —— 包含足以「打开这条会话 + 滚到那条消息」的所有上下文。
+/// `matched_field` 是字符串而非枚举，方便前端按 i18n key 直接拼一行说明。
+/// `snippet` 是命中文本周围一小段（约 120 字符）；前端再按关键词高亮。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    /// 命中所属项目，给前端「先 selectProject 再 openSession」的跳转用。
+    pub project_key: String,
+    pub project_display: String,
+    pub session: SessionMeta,
+    /// "title" | "id" | "path" | "text"
+    pub matched_field: String,
+    /// 命中片段；title/id/path 上等于原值，text 上是带前后文的一小段。
+    pub snippet: String,
+    /// 文本命中所在消息的索引（在 read_session 返回的 Msg 数组里）。
+    /// metadata 命中（title/id/path）时为 None —— 这种情况只需打开会话，不需要滚动。
+    pub match_msg_index: Option<usize>,
+    /// 文本命中所在消息的 uuid（若该 agent 写了 uuid）。和 index 同源；前端优先用 uuid，
+    /// 万一从打开会话到滚动之间消息数组发生重排，uuid 能比 index 更稳。
+    pub match_msg_uuid: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {

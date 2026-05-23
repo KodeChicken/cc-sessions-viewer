@@ -11,13 +11,82 @@
 // 不要把 agent-specific 的解析细节漏到 lib.rs 或 trash.rs —— 加 agent 应该是
 // 一个文件加一个 match 分支，超出这个范围就说明 trait 的抽象出了问题，需要重新设计。
 
+use rayon::prelude::*;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
-use crate::types::{Msg, ProjectInfo, SessionPage};
+use crate::types::{Msg, ProjectInfo, SearchHit, SessionMeta, SessionPage};
+
+/// 「会话 → 用户消息纯文本」缓存：搜索时跳过 JSONL 重新解析。
+/// key 是文件绝对路径；value 是 (mtime, Vec<(msg_index, msg_uuid, text)>)。
+/// mtime 用来失效检测：文件被改写后下一次搜索会自然重建。
+///
+/// 这一层只在「全文兜底」分支里读 / 写 —— 命中 title 不会触碰它。
+/// 用 Mutex 即可：rayon 把 lock 切片得很小，竞争忽略不计；
+/// 真正贵的事在 JSONL 解析 + 字节扫描，不在拿锁。
+struct UserTextEntry {
+    mtime: u64,
+    /// (消息下标, 消息 uuid, 用户消息正文) —— 每条一行。
+    msgs: Vec<(usize, Option<String>, String)>,
+}
+static USER_TEXT_CACHE: Mutex<Option<HashMap<String, UserTextEntry>>> = Mutex::new(None);
+
+fn mtime_of(path: &str) -> u64 {
+    use std::time::UNIX_EPOCH;
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 从缓存里拿用户消息正文；命中即返回，否则 None（调用方再去 read_session 重建）。
+fn cached_user_text(path: &str, mtime: u64) -> Option<Vec<(usize, Option<String>, String)>> {
+    let guard = USER_TEXT_CACHE.lock().ok()?;
+    let map = guard.as_ref()?;
+    let entry = map.get(path)?;
+    if entry.mtime != mtime {
+        return None;
+    }
+    Some(entry.msgs.clone())
+}
+
+/// 把刚解析好的用户消息正文写回缓存。
+fn store_user_text(path: String, mtime: u64, msgs: Vec<(usize, Option<String>, String)>) {
+    if let Ok(mut guard) = USER_TEXT_CACHE.lock() {
+        let map = guard.get_or_insert_with(HashMap::new);
+        map.insert(path, UserTextEntry { mtime, msgs });
+    }
+}
+
+/// 搜索取消令牌：每次 `search_sessions` 调用都把自己的 `request_id` 写入
+/// `gen`；循环里读到不一样就主动 bail。新搜索 / 显式 `cancel_search` 都会
+/// 更新 `gen`，让旧的在跑的搜索立刻让位。
+#[derive(Clone, Copy)]
+pub struct Cancel<'a> {
+    pub request_id: u64,
+    pub gen: &'a AtomicU64,
+}
+impl<'a> Cancel<'a> {
+    pub fn cancelled(&self) -> bool {
+        self.gen.load(Ordering::Relaxed) != self.request_id
+    }
+}
+
+/// 全局搜索单次返回上限 —— 防止前端在极端项目下一次性收到上万条命中。
+/// UI 用户其实只看头几条，更多结果让用户 narrow query 即可。
+const SEARCH_MAX_HITS: usize = 200;
+
+/// 命中片段窗口（字符数）。`text` 字段的匹配返回的小段长度大致 = SNIPPET_WIN * 2。
+const SNIPPET_WIN: usize = 60;
 
 pub mod claude;
 pub mod codex;
+pub mod gemini;
 
 #[allow(dead_code)] // `name` / `image_src` 暂时只在调试/未来扩展中使用，但保留在 trait 上让 agent 契约完整。
 pub trait SessionSource: Send + Sync {
@@ -55,6 +124,263 @@ pub trait SessionSource: Send + Sync {
     /// 从单个 content 块中尝试提取图片 src（data:URL 或外链）。
     /// 主要供该 agent 自己的 `read_session` 内部使用，放在 trait 上也方便外部预览图片块。
     fn image_src(&self, block: &Value) -> Option<String>;
+
+}
+
+/// 全局搜索的具体实现 —— 拎到 trait 外的自由函数里，参数收 `&dyn SessionSource`，
+/// 这样可以在闭包 / rayon 里随意复制 `&dyn` 引用，绕开 trait 默认方法
+/// 对 `Self: ?Sized` 的限制。
+///
+/// 性能要点：
+///
+///   1. 元数据（title / id / cwd / 项目路径）匹配先做，命中即返回，不读文件；
+///   2. 元数据未中再走全文 —— 但先用 `file_contains_ci` 在字节层快速过滤，
+///      只有可能命中的会话才会触发 `read_session` 的完整 JSON 解析；
+///   3. 项目内所有会话用 rayon 并行扫描，CPU 多核场景下接近线性加速；
+///   4. **可取消**：循环里多处检查 `Cancel::cancelled()`，被新搜索 / 显式 cancel
+///      让位时立即 bail；返回 `Ok(Vec::new())`，前端的 reqSeq 守卫负责丢掉结果。
+///
+/// 命中按「项目 last_modified → 会话 modified」降序输出（与侧栏 / 会话列表一致）。
+pub fn search(
+    src: &(dyn SessionSource + Sync),
+    query: &str,
+    project_filter: Option<&str>,
+    cancel: Cancel<'_>,
+) -> Result<Vec<SearchHit>, String> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    // 没指定项目就扫全部；指定时只搜该项目，跳过其它项目的 list_sessions 调用。
+    let projects = src.list_projects()?;
+    let projects: Vec<ProjectInfo> = match project_filter {
+        Some(key) => projects.into_iter().filter(|p| p.dir_name == key).collect(),
+        None => projects,
+    };
+    let mut hits: Vec<SearchHit> = Vec::new();
+    for proj in projects {
+        if cancel.cancelled() {
+            return Ok(Vec::new());
+        }
+        if hits.len() >= SEARCH_MAX_HITS {
+            break;
+        }
+        let page = match src.list_sessions(&proj.dir_name, 0, usize::MAX) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let q_ref = q.as_str();
+        let project_display = proj.display_path.clone();
+        let project_key = proj.dir_name.clone();
+        let mut scanned: Vec<SearchHit> = page
+            .sessions
+            .into_par_iter()
+            // 每条 session 入口检查一次取消标志 —— rayon 里其他 worker 还会继续
+            // 跑到这个检查点，但 work-steal 的尾巴很短，CPU 让位非常及时。
+            .filter_map(|session| {
+                if cancel.cancelled() {
+                    return None;
+                }
+                classify_hit(src, &project_key, &project_display, session, q_ref, cancel)
+            })
+            .collect();
+        // collect 后顺序被 rayon 打乱；按 session.modified 倒序还原。
+        scanned.sort_by_key(|h| std::cmp::Reverse(h.session.modified));
+        for h in scanned {
+            if hits.len() >= SEARCH_MAX_HITS {
+                break;
+            }
+            hits.push(h);
+        }
+    }
+    if cancel.cancelled() {
+        return Ok(Vec::new());
+    }
+    Ok(hits)
+}
+
+/// 对单个会话做完整的「命中分类」—— 元数据先 / 文本兜底。返回 None 表示该会话
+/// 没有任何命中字段（这条会话不进结果）。提到 trait 外是为了能拿 `&dyn SessionSource`
+/// 在闭包里随便用，避免对 `Self` 的 sized 限制。
+fn classify_hit(
+    src: &(dyn SessionSource + Sync),
+    project_key: &str,
+    project_display: &str,
+    session: SessionMeta,
+    q: &str,
+    cancel: Cancel<'_>,
+) -> Option<SearchHit> {
+    // 全局搜索范围：只看「会话标题」+「用户发的消息」—— 助手回复 / thinking /
+    // 工具调用 / 工具结果 / 项目路径 / 会话 ID 都不再参与匹配。
+    let title_l = session.title.to_lowercase();
+    let mut match_msg_index: Option<usize> = None;
+    let mut match_msg_uuid: Option<String> = None;
+    let (field, snippet) = if title_l.contains(q) {
+        ("title", session.title.clone())
+    } else {
+        // 走「用户消息」全文：先字节层粗筛（避开几十 MB JSON 的解析开销），
+        // 再 JSON 精确定位仅在 user 消息的 text 块里匹配。
+        // 取消令牌在 read_session 之前再 check 一次 —— 这是单条会话里最重的一步。
+        if cancel.cancelled() {
+            return None;
+        }
+        if !file_contains_ci(&session.path, q) {
+            return None;
+        }
+        if cancel.cancelled() {
+            return None;
+        }
+        match find_text_hit(|p| src.read_session(p), &session.path, q) {
+            Some(hit) => {
+                match_msg_index = Some(hit.msg_index);
+                match_msg_uuid = hit.msg_uuid;
+                ("text", hit.snippet)
+            }
+            None => return None,
+        }
+    };
+    Some(SearchHit {
+        project_key: project_key.to_string(),
+        project_display: project_display.to_string(),
+        session,
+        matched_field: field.to_string(),
+        snippet,
+        match_msg_index,
+        match_msg_uuid,
+    })
+}
+
+/// 命中一条文本时返回的元信息：片段 + 消息在数组里的索引 + 消息 uuid（可选）。
+/// 前端用 (uuid 或 index) 在加载完会话后定位到具体消息并触发闪烁动画。
+struct TextHit {
+    snippet: String,
+    msg_index: usize,
+    msg_uuid: Option<String>,
+}
+
+/// 读一个会话，找第一条命中。仅匹配「用户消息的 text 块」 ——
+/// 助手回复 / thinking / tool_use / tool_result / 图片全部跳过。
+/// 「我之前问过什么」是用户最常想检索的轴，这条策略让结果直接得多。
+/// `q` 必须已经小写化。失败 / 无命中返回 None。
+///
+/// 走 `USER_TEXT_CACHE`：相同 (path, mtime) 第二次搜索直接拿纯文本，跳过
+/// JSONL 反序列化。冷启动仍然走 `read_session`（FnOnce 闭包提供），但解析完
+/// 立刻把「用户消息正文」抽出来缓存，下一次搜任何关键词都是 in-memory 操作。
+fn find_text_hit<F>(read: F, path: &str, q: &str) -> Option<TextHit>
+where
+    F: FnOnce(&str) -> Result<Vec<Msg>, String>,
+{
+    let mtime = mtime_of(path);
+    if let Some(cached) = cached_user_text(path, mtime) {
+        return scan_user_text(&cached, q);
+    }
+    // 冷路径：解析 + 抽取 + 缓存
+    let msgs = read(path).ok()?;
+    let mut user_texts: Vec<(usize, Option<String>, String)> = Vec::new();
+    for (i, msg) in msgs.into_iter().enumerate() {
+        if msg.role != "user" {
+            continue;
+        }
+        let uuid = msg.uuid.clone();
+        // 用户消息可能有多个 text 块（图片附件 + 文字、连续 prompt 等）—— 拼成一段
+        // 避免缓存太碎，搜索时一行一次 substring 比若干次小串更高效。
+        let mut combined = String::new();
+        for blk in msg.blocks {
+            if blk.kind != "text" {
+                continue;
+            }
+            if let Some(text) = blk.text {
+                if !combined.is_empty() {
+                    combined.push('\n');
+                }
+                combined.push_str(&text);
+            }
+        }
+        if !combined.is_empty() {
+            user_texts.push((i, uuid, combined));
+        }
+    }
+    let hit = scan_user_text(&user_texts, q);
+    store_user_text(path.to_string(), mtime, user_texts);
+    hit
+}
+
+/// 在已抽取的「用户消息正文」列表里扫第一条命中。
+fn scan_user_text(
+    texts: &[(usize, Option<String>, String)],
+    q: &str,
+) -> Option<TextHit> {
+    for (idx, uuid, text) in texts {
+        if let Some(snip) = match_snippet(text, q) {
+            return Some(TextHit {
+                snippet: snip,
+                msg_index: *idx,
+                msg_uuid: uuid.clone(),
+            });
+        }
+    }
+    None
+}
+
+/// 廉价的「文件里有没有这个串」检查 —— 用来在跑 JSON 全量解析前先把一堆
+/// 显然不命中的会话筛掉。`q_lower` 必须已经小写化。
+///
+/// ASCII 查询走快路径：`windows().eq_ignore_ascii_case`，不分配。
+/// 含非 ASCII 字符的查询退到 `to_lowercase().contains` —— 多一次分配，
+/// 但 CJK / 重音字母按 unicode 折叠的场景本来就少。
+fn file_contains_ci(path: &str, q_lower: &str) -> bool {
+    if q_lower.is_empty() {
+        return false;
+    }
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    if q_lower.is_ascii() {
+        let q = q_lower.as_bytes();
+        if bytes.len() < q.len() {
+            return false;
+        }
+        // windows().any() 在编译器优化下接近 memmem 性能；够用且零额外依赖。
+        bytes.windows(q.len()).any(|w| w.eq_ignore_ascii_case(q))
+    } else {
+        match std::str::from_utf8(&bytes) {
+            Ok(s) => s.to_lowercase().contains(q_lower),
+            Err(_) => false,
+        }
+    }
+}
+
+/// 在 `hay` 中按小写匹配 `q`，命中时返回前后各 SNIPPET_WIN 字符的片段
+/// （按字符切，不按字节，避免切到 utf-8 中间）。
+fn match_snippet(hay: &str, q: &str) -> Option<String> {
+    let hay_l = hay.to_lowercase();
+    let byte_idx = hay_l.find(q)?;
+    // 把 byte index 翻成 char index 才能安全切 utf-8。
+    let char_idx = hay_l[..byte_idx].chars().count();
+    let chars: Vec<char> = hay.chars().collect();
+    let start = char_idx.saturating_sub(SNIPPET_WIN);
+    let end = (char_idx + q.chars().count() + SNIPPET_WIN).min(chars.len());
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(&chars[start..end]);
+    if end < chars.len() {
+        out.push('…');
+    }
+    // 长行（粘进来的代码 / json）里可能有大量 newline / 控制空白 —— 折叠成单空格
+    // 便于在一行结果里渲染。
+    let collapsed: String = out
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .collect();
+    Some(
+        collapsed
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 /// 按 agent 名拿到一个具体的会话源。未知 agent 返回错误，调用方应直接透传给前端。
@@ -62,6 +388,206 @@ pub fn source(agent: &str) -> Result<Box<dyn SessionSource>, String> {
     match agent {
         "claude" => Ok(Box::new(claude::ClaudeSource)),
         "codex" => Ok(Box::new(codex::CodexSource)),
+        "gemini" => Ok(Box::new(gemini::GeminiSource)),
         other => Err(format!("未知 agent: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snippet_returns_match_with_surrounding_context() {
+        let hay = "the quick brown fox jumps over the lazy dog";
+        let snip = match_snippet(hay, "fox").unwrap();
+        // 命中片段保留命中前后；上下文够短就不会带省略号。
+        assert!(snip.contains("fox"));
+        assert!(snip.contains("brown"));
+        assert!(snip.contains("jumps"));
+    }
+
+    #[test]
+    fn snippet_collapses_whitespace_into_single_spaces() {
+        let hay = "alpha\n\tbeta   gamma";
+        let snip = match_snippet(hay, "beta").unwrap();
+        assert!(!snip.contains('\n'));
+        assert!(!snip.contains('\t'));
+        assert!(snip.contains("alpha beta gamma"));
+    }
+
+    #[test]
+    fn snippet_is_case_insensitive_but_preserves_original_case() {
+        let snip = match_snippet("Hello World", "world").unwrap();
+        assert!(snip.contains("World")); // 命中段原样保留大写
+    }
+
+    #[test]
+    fn snippet_returns_none_when_query_absent() {
+        assert!(match_snippet("nothing here", "missing").is_none());
+    }
+
+    #[test]
+    fn snippet_handles_multibyte_characters_safely() {
+        // 验证按 char 切而非按 byte 切——切到 CJK 中间会 panic。
+        let hay = "我们今天搜索一段中文然后再来一点english tail";
+        let snip = match_snippet(hay, "english").unwrap();
+        assert!(snip.contains("english"));
+    }
+
+    #[test]
+    fn snippet_marks_truncation_with_ellipsis() {
+        let hay: String = "a".repeat(200) + "needle" + &"b".repeat(200);
+        let snip = match_snippet(&hay, "needle").unwrap();
+        assert!(snip.starts_with('…'));
+        assert!(snip.ends_with('…'));
+    }
+
+    // ---- find_text_hit: 只匹配「用户消息的 text 块」 ----
+    fn block(kind: &str, text: Option<&str>) -> crate::types::Block {
+        crate::types::Block {
+            kind: kind.to_string(),
+            text: text.map(String::from),
+            tool_name: None,
+            tool_input: None,
+            tool_id: None,
+            is_error: false,
+            file_path: None,
+            diff: None,
+            image_src: None,
+        }
+    }
+    fn msg_with_role(role: &str, blocks: Vec<crate::types::Block>) -> Msg {
+        Msg {
+            uuid: None,
+            role: role.to_string(),
+            timestamp: None,
+            model: None,
+            sidechain: false,
+            blocks,
+        }
+    }
+    fn msg(blocks: Vec<crate::types::Block>) -> Msg {
+        msg_with_role("user", blocks)
+    }
+
+    // 用唯一 path 每个测试 —— USER_TEXT_CACHE 是进程级 Mutex，path 重名会让用例互相
+    // 污染。tests 在不存在的文件路径上跑（read 闭包注入 msgs），所以 path 只是缓存 key。
+    fn unique_path(tag: &str) -> String {
+        format!("__test_find_text_hit_{tag}__")
+    }
+
+    #[test]
+    fn find_text_hit_skips_tool_use_and_tool_result_blocks() {
+        let mut tool_call = block("tool_use", None);
+        tool_call.tool_name = Some("needle-runner".to_string());
+        tool_call.tool_input = Some("{\"q\":\"needle\"}".to_string());
+        let tool_result = block("tool_result", Some("needle was found in stack"));
+        let msgs = vec![msg(vec![tool_call, tool_result])];
+        let read = move |_p: &str| Ok(msgs);
+        let p = unique_path("tool_blocks");
+        assert!(find_text_hit(read, &p, "needle").is_none());
+    }
+
+    #[test]
+    fn find_text_hit_matches_only_in_user_text_blocks() {
+        let msgs = vec![msg(vec![block("text", Some("hello world"))])];
+        let read = move |_p: &str| Ok(msgs);
+        let p = unique_path("user_text");
+        let hit = find_text_hit(read, &p, "world").expect("expected a hit");
+        assert_eq!(hit.msg_index, 0);
+    }
+
+    #[test]
+    fn find_text_hit_skips_assistant_messages() {
+        let msgs = vec![msg_with_role(
+            "assistant",
+            vec![block("text", Some("I think the needle is in the haystack"))],
+        )];
+        let read = move |_p: &str| Ok(msgs);
+        let p = unique_path("assistant");
+        assert!(find_text_hit(read, &p, "needle").is_none());
+    }
+
+    #[test]
+    fn find_text_hit_skips_thinking_blocks() {
+        let msgs = vec![msg(vec![block("thinking", Some("planning carefully"))])];
+        let read = move |_p: &str| Ok(msgs);
+        let p = unique_path("thinking");
+        assert!(find_text_hit(read, &p, "carefully").is_none());
+    }
+
+    #[test]
+    fn find_text_hit_returns_the_index_of_the_first_matching_user_message() {
+        let msgs = vec![
+            msg_with_role("assistant", vec![block("text", Some("the needle ignored"))]),
+            msg(vec![block("text", Some("the needle is here"))]),
+        ];
+        let read = move |_p: &str| Ok(msgs);
+        let p = unique_path("first_user");
+        let hit = find_text_hit(read, &p, "needle").expect("expected a hit");
+        assert_eq!(hit.msg_index, 1);
+    }
+
+    #[test]
+    fn find_text_hit_warm_cache_skips_the_read_closure() {
+        // 第一次：read 闭包被调用，缓存写入
+        let msgs = vec![msg(vec![block("text", Some("cached message"))])];
+        let read1 = move |_p: &str| Ok(msgs);
+        let p = unique_path("warm_cache");
+        find_text_hit(read1, &p, "cached").expect("first call should hit");
+        // 第二次：闭包应该完全不被调用（断言 panic 来证明）
+        let read2 = |_p: &str| -> Result<Vec<Msg>, String> {
+            panic!("read closure must not be called on warm cache")
+        };
+        let hit = find_text_hit(read2, &p, "message").expect("second call should still hit");
+        assert_eq!(hit.msg_index, 0);
+    }
+
+    // ---- file_contains_ci: 字节级 ASCII fast path + UTF-8 fallback ----
+    use std::io::Write as _;
+    fn tmp_file(name: &str, body: &[u8]) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("csv-search-{}-{}", std::process::id(), name));
+        let mut f = std::fs::File::create(&p).unwrap();
+        f.write_all(body).unwrap();
+        p
+    }
+
+    #[test]
+    fn file_contains_ci_finds_ascii_case_insensitive() {
+        let p = tmp_file("ascii", b"The Quick Brown Fox");
+        let path = p.to_string_lossy().to_string();
+        assert!(file_contains_ci(&path, "quick"));
+        assert!(file_contains_ci(&path, "fox"));
+        assert!(!file_contains_ci(&path, "missing"));
+        std::fs::remove_file(p).ok();
+    }
+
+    #[test]
+    fn file_contains_ci_handles_utf8_query() {
+        let p = tmp_file("utf8", "我们今天搜索一段中文".as_bytes());
+        let path = p.to_string_lossy().to_string();
+        assert!(file_contains_ci(&path, "中文"));
+        assert!(!file_contains_ci(&path, "英文"));
+        std::fs::remove_file(p).ok();
+    }
+
+    #[test]
+    fn file_contains_ci_returns_false_for_missing_path() {
+        assert!(!file_contains_ci("/no/such/file/for/csv-test.txt", "anything"));
+    }
+
+    #[test]
+    fn cancel_token_reports_cancellation_when_gen_changes() {
+        let gen = AtomicU64::new(7);
+        let c = Cancel { request_id: 7, gen: &gen };
+        assert!(!c.cancelled(), "fresh token should not be cancelled");
+        gen.store(8, Ordering::SeqCst); // newer search took over
+        assert!(c.cancelled(), "old token should now be cancelled");
+        gen.store(7, Ordering::SeqCst); // restore — back to live
+        assert!(!c.cancelled());
+        gen.fetch_add(1, Ordering::SeqCst); // explicit cancel_search bump
+        assert!(c.cancelled());
     }
 }

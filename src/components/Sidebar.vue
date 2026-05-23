@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import type { Agent, ProjectInfo } from '../types'
 import { shortName } from '../format'
 import { t } from '../i18n'
-import { IconSettings } from './icons'
+import { IconSettings, agentIcons } from './icons'
 
 type ProjState = 'pinned' | 'sunk'
 
@@ -22,7 +22,10 @@ const emit = defineEmits<{
   (e: 'open-settings'): void
 }>()
 
-const agentName = computed(() => (props.agent === 'codex' ? 'Codex' : 'Claude'))
+const agents: Agent[] = ['claude', 'codex', 'gemini']
+const agentLabel = (a: Agent) =>
+  a === 'codex' ? 'Codex' : a === 'gemini' ? 'Gemini' : 'Claude'
+const agentName = computed(() => agentLabel(props.agent))
 
 function prefKey(p: ProjectInfo): string {
   return `${props.agent}::${p.dirName}`
@@ -51,16 +54,13 @@ function pinColor(p: ProjectInfo): string {
     <div class="sidebar-top">
       <div class="agent-switch">
         <button
-          :class="{ active: agent === 'claude' }"
-          @click="emit('switch-agent', 'claude')"
+          v-for="a in agents"
+          :key="a"
+          :class="{ active: agent === a }"
+          @click="emit('switch-agent', a)"
         >
-          Claude
-        </button>
-        <button
-          :class="{ active: agent === 'codex' }"
-          @click="emit('switch-agent', 'codex')"
-        >
-          Codex
+          <component :is="agentIcons[a]" />
+          <span>{{ agentLabel(a) }}</span>
         </button>
       </div>
       <div class="sidebar-sub">

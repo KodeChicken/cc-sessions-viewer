@@ -1,7 +1,7 @@
 name: ci
 
 # Quality gate for pull requests and pushes to main. Releases are built
-# separately by build.yml (tag-triggered) — this workflow never bundles, it
+# separately by release.yml (tag-triggered) — this workflow never bundles, it
 # only type-checks, lints and runs the unit tests.
 on:
   pull_request:
@@ -38,7 +38,7 @@ jobs:
     name: rust (clippy + cargo test)
     # macOS runners ship the WebKit framework Tauri's crate links against, so
     # `cargo` builds with no extra system packages — unlike Linux, which would
-    # need the webkit2gtk apt stack. build.yml already uses macOS too.
+    # need the webkit2gtk apt stack. release.yml already uses macOS too.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

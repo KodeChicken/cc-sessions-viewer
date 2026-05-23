@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this app is
 
 A macOS Tauri 2 desktop app (Vue 3 + Rust) for browsing, viewing, and trashing
-local session transcripts from coding agent CLIs — currently **Claude Code** and
-**Codex**, with **Gemini** next on deck. Each CLI stores JSONL transcripts in
+local session transcripts from coding agent CLIs — currently **Claude Code**,
+**Codex**, and **Gemini CLI**. Each CLI stores JSONL transcripts in
 its own on-disk layout; this app normalizes them all into the same project →
 sessions → chat UI, plus a soft-delete trash that survives across agents. The
 app is read-only against the original transcripts — deletion is a `move` into a
@@ -83,14 +83,15 @@ trait defined in `agents/mod.rs`. Currently:
 | ------ | ------------------------------------------------------------------- | ------------------------------- |
 | Claude | `~/.claude/projects/<dir>/<sessionId>.jsonl`                        | by project directory            |
 | Codex  | `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`                | by the `cwd` recorded *inside* each file |
+| Gemini | `~/.gemini/tmp/<slug>/chats/session-*.jsonl` (+ `.project_root` sibling) | by `slug`; cwd read from `.project_root` |
 
-To add a new agent (e.g. Gemini):
+To add a new agent (template: see `agents/gemini.rs`):
 
-1. Create `src-tauri/src/agents/gemini.rs` with a `GeminiSource` unit struct
+1. Create `src-tauri/src/agents/<name>.rs` with a `<Name>Source` unit struct
    that implements `SessionSource` (every method calls the agent's private
    parsing helpers in the same file).
-2. Add `pub mod gemini;` and a match arm in `agents::source()`.
-3. Add `"gemini"` to the `Agent` union type in `src/types.ts` — sidebar /
+2. Add `pub mod <name>;` and a match arm in `agents::source()`.
+3. Add `"<name>"` to the `Agent` union type in `src/types.ts` — sidebar /
    agent-switcher pick it up automatically.
 
 That's it. The Tauri commands (`list_projects`, `list_sessions`,

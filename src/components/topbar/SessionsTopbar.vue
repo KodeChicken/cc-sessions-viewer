@@ -1,18 +1,51 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { t } from '../../i18n'
+import type { SessionMeta } from '../../types'
 import {
   sessionSearch,
   sessionSort,
   sessionWithIdOnly,
+  sessionSelectMode,
+  selectedSessions,
+  exitSessionSelectMode,
+  filterSessions,
   type SessionSort,
 } from '../../sessionsToolbar'
-import { IconSearch, IconClose, IconHash, IconChevronDown, IconCheck } from '../icons'
+import { useDebouncedSearch } from '../../useDebouncedSearch'
+import {
+  IconSearch,
+  IconClose,
+  IconHash,
+  IconChevronDown,
+  IconCheck,
+  IconSelect,
+  IconTrash,
+  IconDownload,
+  IconMarkdown,
+  IconHtml,
+} from '../icons'
 
-const hasQuery = computed(() => sessionSearch.value.length > 0)
+const props = defineProps<{ sessions: SessionMeta[] }>()
+const emit = defineEmits<{
+  (e: 'batch-delete'): void
+  (e: 'batch-export', kind: 'md' | 'html'): void
+}>()
+
+// 搜索框防抖：打字时 `draft` 立即跟着光标走，静止 220ms 后才同步到共享
+// `sessionSearch`，避免每个按键都触发整张会话列表的 filter / 高亮重算。
+// IME 组合中（中文 / 日文输入法）不会触发 —— 等 compositionend 才同步。
+const {
+  draft: searchDraft,
+  commit: commitSearch,
+  onInput: onSearchInput,
+  onCompositionStart: onSearchCompStart,
+  onCompositionEnd: onSearchCompEnd,
+} = useDebouncedSearch(sessionSearch, 220)
+const hasQuery = computed(() => searchDraft.value.length > 0)
 
 function clearSearch() {
-  sessionSearch.value = ''
+  commitSearch('')
 }
 
 // 排序下拉 —— 复用 .ct-scope-* 样式（同 ChatTopbar 的 scope / TrashTopbar 的项目筛选）。
@@ -56,12 +89,50 @@ function onFindShortcut(e: KeyboardEvent) {
   searchInput.value?.select()
 }
 
+// 当前筛选下可见的会话 —— 全选 / 计数都基于它。
+const visible = computed(() => filterSessions(props.sessions))
+const selectedCount = computed(
+  () => props.sessions.filter((s) => selectedSessions.value.has(s.path)).length,
+)
+const allSelected = computed(
+  () =>
+    visible.value.length > 0 &&
+    visible.value.every((s) => selectedSessions.value.has(s.path)),
+)
+function toggleSelectAll() {
+  const next = new Set(selectedSessions.value)
+  for (const s of visible.value) {
+    if (allSelected.value) next.delete(s.path)
+    else next.add(s.path)
+  }
+  selectedSessions.value = next
+}
+
+// 批量导出的小菜单（MD / HTML），与列表卡片自带的 export-menu 一致。
+const exportMenuOpen = ref(false)
+const exportMenuEl = ref<HTMLElement>()
+function toggleExportMenu(e: Event) {
+  e.stopPropagation()
+  exportMenuOpen.value = !exportMenuOpen.value
+}
+function pickExport(kind: 'md' | 'html', e: Event) {
+  e.stopPropagation()
+  exportMenuOpen.value = false
+  emit('batch-export', kind)
+}
+function onDocClickAll(e: MouseEvent) {
+  onDocClick(e)
+  if (!exportMenuOpen.value) return
+  if (exportMenuEl.value && exportMenuEl.value.contains(e.target as Node)) return
+  exportMenuOpen.value = false
+}
+
 onMounted(() => {
-  document.addEventListener('click', onDocClick)
+  document.addEventListener('click', onDocClickAll)
   window.addEventListener('keydown', onFindShortcut)
 })
 onUnmounted(() => {
-  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('click', onDocClickAll)
   window.removeEventListener('keydown', onFindShortcut)
 })
 </script>
@@ -101,12 +172,15 @@ onUnmounted(() => {
       <span class="ct-search-ic"><IconSearch /></span>
       <input
         ref="searchInput"
-        v-model="sessionSearch"
+        :value="searchDraft"
         type="text"
         class="ct-search-input"
         :placeholder="t('list.tb.searchPlaceholder')"
         spellcheck="false"
         autocomplete="off"
+        @input="onSearchInput"
+        @compositionstart="onSearchCompStart"
+        @compositionend="onSearchCompEnd"
       />
       <button
         v-if="hasQuery"
@@ -119,14 +193,88 @@ onUnmounted(() => {
     </div>
 
     <div class="ct-actions">
-      <button
-        class="ct-btn"
-        :class="{ active: sessionWithIdOnly }"
-        v-tooltip="t('list.tb.withId')"
-        @click="sessionWithIdOnly = !sessionWithIdOnly"
-      >
-        <IconHash />
-      </button>
+      <template v-if="sessionSelectMode">
+        <span class="ct-search-count">{{
+          t('list.tb.selectedCount', { n: selectedCount })
+        }}</span>
+        <button
+          class="ct-btn"
+          :class="{ active: allSelected }"
+          v-tooltip="allSelected ? t('list.tb.selectNone') : t('list.tb.selectAll')"
+          @click="toggleSelectAll"
+        >
+          <IconCheck />
+        </button>
+        <!-- 批量导出：与卡片导出菜单同款 MD / HTML 小弹层 -->
+        <div ref="exportMenuEl" class="export-menu-wrap">
+          <button
+            class="ct-btn"
+            :class="{ active: exportMenuOpen }"
+            :disabled="selectedCount === 0"
+            v-tooltip="t('list.tb.exportSelected')"
+            @click="toggleExportMenu"
+          >
+            <IconDownload />
+          </button>
+          <div
+            v-if="exportMenuOpen"
+            class="export-menu"
+            role="menu"
+            @click.stop
+          >
+            <button
+              class="export-menu-item"
+              role="menuitem"
+              @click.stop="pickExport('md', $event)"
+            >
+              <IconMarkdown />
+              <span>{{ t('chat.tb.export.md') }}</span>
+            </button>
+            <button
+              class="export-menu-item"
+              role="menuitem"
+              @click.stop="pickExport('html', $event)"
+            >
+              <IconHtml />
+              <span>{{ t('chat.tb.export.html') }}</span>
+            </button>
+          </div>
+        </div>
+        <button
+          class="ct-btn danger"
+          :disabled="selectedCount === 0"
+          v-tooltip="t('list.tb.deleteSelected')"
+          @click="emit('batch-delete')"
+        >
+          <IconTrash />
+        </button>
+        <button
+          class="ct-btn"
+          v-tooltip="t('list.tb.selectCancel')"
+          @click="exitSessionSelectMode"
+        >
+          <IconClose />
+        </button>
+      </template>
+      <template v-else>
+        <button
+          class="ct-btn"
+          :class="{ active: sessionWithIdOnly }"
+          v-tooltip="t('list.tb.withId')"
+          @click="sessionWithIdOnly = !sessionWithIdOnly"
+        >
+          <IconHash />
+        </button>
+        <!-- 批量操作只在 2 条以上才有意义 -->
+        <button
+          v-if="sessions.length > 1"
+          class="ct-btn"
+          v-tooltip="t('list.tb.select')"
+          @click="sessionSelectMode = true"
+        >
+          <IconSelect />
+        </button>
+      </template>
     </div>
   </div>
 </template>

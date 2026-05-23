@@ -43,6 +43,22 @@ export function navigate(dir: 1 | -1) {
   navigator?.(dir)
 }
 
+// 「focus 搜索框」也走相同的注册模式 —— 让原生菜单的 Find in Session…（⌘F）
+// 跨过组件边界把焦点推到 ChatTopbar 的 <input>。ChatTopbar mount 时注册自己
+// 的 focus + select 函数，unmount 时清掉。
+type FocusFn = () => void
+let focuser: FocusFn | null = null
+
+/** ChatTopbar mount 时把 focus+select 函数注册进来；unmount 时传 null。 */
+export function setSearchFocuser(fn: FocusFn | null) {
+  focuser = fn
+}
+
+/** 菜单 / 全局快捷键调用：聚焦聊天页搜索框并全选已有内容。 */
+export function focusSearchBox() {
+  focuser?.()
+}
+
 /** 切换会话 / 关闭会话时把所有状态归零。 */
 export function resetChatToolbar() {
   toolsCollapsed.value = false

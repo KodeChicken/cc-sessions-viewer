@@ -10,6 +10,7 @@
 // 接入新 agent 的步骤详见 `agents/mod.rs` 顶部注释。
 
 mod agents;
+mod menu;
 mod trash;
 mod types;
 mod util;
@@ -17,8 +18,12 @@ mod util;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::types::{Msg, ProjectInfo, SessionPage, TrashItem, UpdateInfo};
+use crate::types::{Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, UpdateInfo};
 use crate::util::is_jsonl;
+
+/// 全局搜索的取消代际 —— 每次新搜索把自己的 `request_id` 写进来，正在跑的搜索循环
+/// 不停 check；一旦发现 gen ≠ 自己的 id 就主动 bail。`cancel_search()` 直接 bump 它。
+static SEARCH_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // ============================ Tauri 命令：分派层 ============================
 
@@ -40,6 +45,37 @@ fn list_sessions(
 #[tauri::command]
 fn read_session(agent: String, path: String) -> Result<Vec<Msg>, String> {
     agents::source(&agent)?.read_session(&path)
+}
+
+/// 全局搜索：跨当前 agent 的所有项目 / 会话查关键词。
+/// 命中范围在 `agents::search` 里：标题 / id / 项目路径 / 文本（仅 text + thinking 块）；
+/// 工具调用 / 工具结果 / 文件改动默认不参与匹配。
+/// 空字符串返回空数组（避免一次性把所有会话当结果返回）。
+///
+/// **可取消**：每次调用都会把 `request_id` 写进全局 SEARCH_GEN；之后任何 `cancel_search()`
+/// 或更大 id 的 `search_sessions` 都会让旧的搜索循环立刻 bail（返回空数组）。前端的
+/// reqSeq 守卫负责丢掉过期结果，所以即使后端返回了一堆结果也不会污染 UI。
+#[tauri::command]
+fn search_sessions(
+    agent: String,
+    query: String,
+    request_id: u64,
+    project_key: Option<String>,
+) -> Result<Vec<SearchHit>, String> {
+    SEARCH_GEN.store(request_id, std::sync::atomic::Ordering::SeqCst);
+    let src = agents::source(&agent)?;
+    let cancel = agents::Cancel {
+        request_id,
+        gen: &SEARCH_GEN,
+    };
+    agents::search(&*src, &query, project_key.as_deref(), cancel)
+}
+
+/// 显式取消正在跑的全局搜索 —— 前端每次新输入立即调一次，让 CPU 让位给打字。
+/// 仅仅 bump 一下 SEARCH_GEN —— 在跑的 search 循环下次 check 时就会 bail。
+#[tauri::command]
+fn cancel_search() {
+    SEARCH_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// 重命名会话：与 Claude Code `/rename` / Codex 内部重命名一致，
@@ -322,6 +358,8 @@ pub fn run() {
             list_projects,
             list_sessions,
             read_session,
+            search_sessions,
+            cancel_search,
             rename_session,
             soft_delete_session,
             list_trash,
@@ -336,11 +374,16 @@ pub fn run() {
             app_version,
             check_update,
         ])
-        .setup(|_app| {
+        .setup(|app| {
+            // 原生应用菜单 —— 主要价值在 macOS 顶部菜单栏。
+            // Windows / Linux 也会挂菜单，但视觉上不那么重要。
+            menu::build(app.handle())?;
+            menu::install_bridges(app.handle());
+
             #[cfg(target_os = "macos")]
             {
                 use tauri::Manager;
-                if let Some(win) = _app.get_webview_window("main") {
+                if let Some(win) = app.get_webview_window("main") {
                     pin_traffic_lights(&win);
                     // AppKit relays out standard window buttons on resize,
                     // so re-pin then. Avoid Focused / ThemeChanged: AppKit

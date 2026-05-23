@@ -3,14 +3,17 @@ import { computed } from 'vue'
 import type { Agent, ProjectInfo } from '../types'
 import { shortName } from '../format'
 import { t } from '../i18n'
-import { getRecents } from '../recents'
+import { getRecents, removeRecent } from '../recents'
 import {
   IconEmptyBox,
   IconHistory,
   IconChevronRight,
+  IconClose,
   IconGithub,
+  IconSearch,
   agentIcons,
 } from '../components/icons'
+import { openGlobalSearch } from '../globalSearch'
 
 const props = defineProps<{
   agent: Agent
@@ -23,8 +26,9 @@ const emit = defineEmits<{
   (e: 'open-repo'): void
 }>()
 
-const agents: Agent[] = ['claude', 'codex']
-const agentLabel = (a: Agent) => (a === 'codex' ? 'Codex' : 'Claude')
+const agents: Agent[] = ['claude', 'codex', 'gemini']
+const agentLabel = (a: Agent) =>
+  a === 'codex' ? 'Codex' : a === 'gemini' ? 'Gemini' : 'Claude'
 
 // 最近打开过的项目：拿 recents 里的 dirName 去当前 projects 取真身，
 // 过滤掉已删除 / 换 agent 后不存在的（getRecents 读 recents.value，computed 自动随它刷新）。
@@ -34,6 +38,10 @@ const recentProjects = computed<ProjectInfo[]>(() => {
     .map((dir) => byDir.get(dir))
     .filter((p): p is ProjectInfo => !!p)
 })
+
+// 跨平台修饰符：mac 用 ⌘、其他用 Ctrl。给底部「⌘⇧F 全局搜索」提示用。
+const isMac = /Mac/i.test(navigator.platform)
+const modKey = isMac ? '⌘' : 'Ctrl'
 </script>
 
 <template>
@@ -64,24 +72,52 @@ const recentProjects = computed<ProjectInfo[]>(() => {
         </button>
       </div>
 
+      <!-- 全局搜索快捷键提示 / 入口 —— 点了等同于按 ⌘⇧F；放在 tab 下方与最近列表上方 -->
+      <button
+        class="welcome-search-hint"
+        v-tooltip="t('search.global.placeholder')"
+        @click="openGlobalSearch"
+      >
+        <IconSearch class="welcome-search-ic" />
+        <span class="welcome-search-label">{{ t('search.global.placeholder') }}</span>
+        <span class="welcome-search-kbd">
+          <kbd class="gs-kbd">{{ modKey }}</kbd>
+          <kbd class="gs-kbd">⇧</kbd>
+          <kbd class="gs-kbd">F</kbd>
+        </span>
+      </button>
+
       <!-- 最近打开过的项目 —— 快捷跳转 -->
       <div v-if="recentProjects.length" class="welcome-recents">
         <div class="welcome-section">
           <IconHistory />
           <span>{{ t('welcome.recent') }}</span>
         </div>
-        <button
+        <div
           v-for="p in recentProjects"
           :key="p.dirName"
           class="welcome-recent"
           :class="{ missing: !p.exists }"
+          role="button"
+          tabindex="0"
           v-tooltip:right="p.exists ? p.displayPath : p.displayPath + t('proj.missing')"
           @click="emit('select-project', p.dirName)"
+          @keydown.enter.prevent="emit('select-project', p.dirName)"
         >
           <span class="welcome-recent-name">{{ shortName(p.displayPath) }}</span>
           <span class="proj-count">{{ p.sessionCount }}</span>
+          <!-- hover 时浮出来的小 × ；只删 recents 里的记录，不动磁盘上的 jsonl。 -->
+          <button
+            class="welcome-recent-remove"
+            v-tooltip="t('welcome.removeRecent')"
+            :aria-label="t('welcome.removeRecent')"
+            @click.stop="removeRecent(agent, p.dirName)"
+            @keydown.enter.stop
+          >
+            <IconClose />
+          </button>
           <IconChevronRight class="welcome-recent-go" />
-        </button>
+        </div>
       </div>
 
       <!-- 没有最近记录时回退到原提示 -->

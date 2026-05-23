@@ -1,19 +1,60 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import { mount } from '@vue/test-utils'
-import SessionsView from '../../src/views/SessionsView.vue'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { vTooltip } from '../../src/tooltip'
 import { setLang } from '../../src/settings'
+
+// 关键词搜索走后端：mock 掉，让规格用例驱动返回值。
+// cancelSearch 在每次新输入时调一次，桩成 no-op 即可。
+const { searchMock, cancelMock } = vi.hoisted(() => ({
+  searchMock: vi.fn(),
+  cancelMock: vi.fn().mockResolvedValue(undefined),
+}))
+let _id = 0
+vi.mock('../../src/api', () => ({
+  searchSessions: searchMock,
+  cancelSearch: cancelMock,
+  nextSearchRequestId: () => ++_id,
+}))
+
+import SessionsView from '../../src/views/SessionsView.vue'
 import {
   resetSessionsToolbar,
+  selectedSessions,
   sessionSearch,
+  sessionSelectMode,
   sessionWithIdOnly,
 } from '../../src/sessionsToolbar'
-import type { ProjectInfo, SessionMeta } from '../../src/types'
+import type { ProjectInfo, SearchHit, SessionMeta } from '../../src/types'
+
+// 每个 case 后卸载它挂载的 wrapper。否则旧实例的 watch 仍订阅 sessionSearch，
+// 一旦设值，所有历史实例都会一起调 searchSessions，把 mockResolvedValueOnce
+// 提前消费掉，当前 case 拿到 undefined → 渲染空列表。
+enableAutoUnmount(afterEach)
 
 beforeEach(() => {
   setLang('en')
   resetSessionsToolbar()
+  searchMock.mockReset()
+  cancelMock.mockClear()
+  cancelMock.mockResolvedValue(undefined)
+  _id = 0
 })
+
+// 防抖 ≥ 280ms + 后端 promise；给个 320ms 余量再 flush，等 visibleSessions 切到 searchHits。
+async function waitForSearchSettle() {
+  await new Promise((r) => setTimeout(r, 320))
+  await flushPromises()
+}
+
+// 把元数据数组包成后端会返回的 SearchHit 形状。
+const toHits = (sessions: SessionMeta[]): SearchHit[] =>
+  sessions.map((s) => ({
+    projectKey: 'proj',
+    projectDisplay: '/work/proj',
+    matchedField: 'title' as const,
+    snippet: s.title,
+    session: s,
+  }))
 
 const project: ProjectInfo = {
   dirName: 'proj',
@@ -38,6 +79,7 @@ type Props = InstanceType<typeof SessionsView>['$props']
 const factory = (sessions: SessionMeta[] = [session()]) =>
   mount(SessionsView, {
     props: {
+      agent: 'claude',
       project,
       sessions,
       sessionTotal: sessions.length,
@@ -82,19 +124,35 @@ describe('SessionsView', () => {
   })
 
   describe('toolbar filters', () => {
-    it('renders only the sessions matching the search term', () => {
+    it('renders only the sessions returned by the backend search', async () => {
+      const a = session({ path: 'a', title: 'Refactor parser' })
+      const b = session({ path: 'b', title: 'Fix login bug' })
+      searchMock.mockResolvedValueOnce(toHits([a]))
+      const wrapper = factory([a, b])
       sessionSearch.value = 'parser'
-      const wrapper = factory([
-        session({ path: 'a', title: 'Refactor parser' }),
-        session({ path: 'b', title: 'Fix login bug' }),
-      ])
+      await waitForSearchSettle()
       expect(wrapper.findAll('.session-card')).toHaveLength(1)
       expect(wrapper.text()).toContain('Refactor parser')
+      expect(searchMock).toHaveBeenCalledWith(
+        'claude',
+        'parser',
+        expect.any(Number),
+        'proj',
+      )
     })
 
     it('shows the no-match state when filters exclude every session', () => {
       sessionWithIdOnly.value = true
       const wrapper = factory([session({ path: 'a', id: '' })])
+      expect(wrapper.findAll('.session-card')).toHaveLength(0)
+      expect(wrapper.text()).toContain('No sessions match')
+    })
+
+    it('shows the no-match state when the backend search returns nothing', async () => {
+      searchMock.mockResolvedValueOnce([])
+      const wrapper = factory([session({ path: 'a', title: 'Refactor parser' })])
+      sessionSearch.value = 'zzznoop'
+      await waitForSearchSettle()
       expect(wrapper.findAll('.session-card')).toHaveLength(0)
       expect(wrapper.text()).toContain('No sessions match')
     })
@@ -105,21 +163,23 @@ describe('SessionsView', () => {
   })
 
   describe('keyword highlight', () => {
-    it('wraps the matched keyword in the title in a .kw-hit', () => {
+    it('wraps the matched keyword in the title in a .kw-hit', async () => {
+      const s = session({ path: 'a', title: 'workflow with obsidian' })
+      searchMock.mockResolvedValueOnce(toHits([s]))
+      const wrapper = factory([s])
       sessionSearch.value = 'obsidian'
-      const wrapper = factory([
-        session({ path: 'a', title: 'workflow with obsidian' }),
-      ])
+      await waitForSearchSettle()
       const hits = wrapper.findAll('.session-title-text .kw-hit')
       expect(hits).toHaveLength(1)
       expect(hits[0].text()).toBe('obsidian')
     })
 
-    it('highlights a match in the session ID', () => {
+    it('highlights a match in the session ID', async () => {
+      const s = session({ path: 'a', title: 'no match here', id: 'abcdef12' })
+      searchMock.mockResolvedValueOnce(toHits([s]))
+      const wrapper = factory([s])
       sessionSearch.value = 'abcd'
-      const wrapper = factory([
-        session({ path: 'a', title: 'no match here', id: 'abcdef12' }),
-      ])
+      await waitForSearchSettle()
       const hits = wrapper.findAll('.session-id-text .kw-hit')
       expect(hits).toHaveLength(1)
       expect(hits[0].text()).toBe('abcd')
@@ -213,6 +273,36 @@ describe('SessionsView', () => {
       const wrapper = factory()
       expect(wrapper.find('.title-rename-ic').exists()).toBe(true)
       expect(wrapper.findAll('.session-actions .icon-btn')).toHaveLength(5)
+    })
+  })
+
+  describe('select mode', () => {
+    it('shows a checkbox on each card and hides the row actions', () => {
+      sessionSelectMode.value = true
+      const wrapper = factory([session({ path: 'a' })])
+      expect(wrapper.find('.list-check').exists()).toBe(true)
+      expect(wrapper.find('.session-actions').exists()).toBe(false)
+      expect(wrapper.find('.title-rename-ic').exists()).toBe(false)
+      expect(wrapper.find('.session-id-copy').exists()).toBe(false)
+    })
+
+    it('toggles selection — and does not open — when a card is clicked', async () => {
+      sessionSelectMode.value = true
+      const wrapper = factory([session({ path: 'a' })])
+
+      await wrapper.find('.session-card').trigger('click')
+      expect(selectedSessions.value.has('a')).toBe(true)
+      expect(wrapper.emitted('open')).toBeUndefined()
+
+      await wrapper.find('.session-card').trigger('click')
+      expect(selectedSessions.value.has('a')).toBe(false)
+    })
+
+    it('marks the row as selected via the list-selected class', async () => {
+      sessionSelectMode.value = true
+      selectedSessions.value = new Set(['a'])
+      const wrapper = factory([session({ path: 'a' })])
+      expect(wrapper.find('.session-card').classes()).toContain('list-selected')
     })
   })
 })

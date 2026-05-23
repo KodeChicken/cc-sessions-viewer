@@ -1,9 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import type { ProjectInfo, SessionMeta } from '../types'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { Agent, ProjectInfo, SessionMeta } from '../types'
 import { formatSize, formatTime, highlightSegments, shortName } from '../format'
 import { t } from '../i18n'
-import { filterSessions, sessionSearch, sessionsFilterActive } from '../sessionsToolbar'
+import {
+  filterSessions,
+  sessionSearch,
+  sessionsFilterActive,
+  sessionSelectMode,
+  selectedSessions,
+  toggleSessionSelected,
+} from '../sessionsToolbar'
+import { searchSessions, cancelSearch, nextSearchRequestId } from '../api'
 import {
   IconTrash,
   IconPlay,
@@ -15,11 +23,13 @@ import {
   IconMarkdown,
   IconHtml,
   IconRefresh,
+  IconCheck,
   IconSearch,
   IconPlus,
 } from '../components/icons'
 
 const props = defineProps<{
+  agent: Agent
   project: ProjectInfo
   sessions: SessionMeta[]
   sessionTotal: number
@@ -44,8 +54,92 @@ const emit = defineEmits<{
 
 const scrollEl = ref<HTMLElement>()
 
+// ============================ 后端搜索（title + 用户消息正文） ============================
+// 关键词搜索走后端：能命中 user-message 正文，而本地数组只有元数据。
+// 防抖 + 可中断（cancelSearch + reqSeq 守卫）：保持与全局搜索一致的体感。
+const SEARCH_DEBOUNCE_MS = 280
+const SEARCH_MIN_LEN = 2
+const searchHits = ref<SessionMeta[]>([])
+const searching = ref(false)
+let searchDebounceTimer = 0
+let searchReqSeq = 0
+let searchInFlight = false
+
+function abortInFlightSearch() {
+  if (!searchInFlight) return
+  searchInFlight = false
+  cancelSearch().catch(() => {})
+}
+
+async function runProjectSearch(query: string) {
+  const trimmed = query.trim()
+  if (trimmed.length < SEARCH_MIN_LEN) {
+    searchHits.value = []
+    searching.value = false
+    return
+  }
+  const mySeq = ++searchReqSeq
+  const reqId = nextSearchRequestId()
+  searchInFlight = true
+  try {
+    const hits = await searchSessions(
+      props.agent,
+      trimmed,
+      reqId,
+      props.project.dirName,
+    )
+    if (mySeq !== searchReqSeq) return
+    // 后端返回 SearchHit[]；这里只关心 session 元数据，sort/withIdOnly 在 computed 里加。
+    searchHits.value = hits.map((h) => h.session)
+  } catch {
+    if (mySeq !== searchReqSeq) return
+    searchHits.value = []
+  } finally {
+    if (mySeq === searchReqSeq) {
+      searchInFlight = false
+      searching.value = false
+    }
+  }
+}
+
+// 关键词变化：每次新输入立刻打断在跑的搜索（fiber 风格），等防抖窗口稳定再发新请求。
+watch(
+  sessionSearch,
+  (q) => {
+    window.clearTimeout(searchDebounceTimer)
+    abortInFlightSearch()
+    if (q.trim().length < SEARCH_MIN_LEN) {
+      searchHits.value = []
+      searching.value = false
+      return
+    }
+    searching.value = true
+    searchDebounceTimer = window.setTimeout(() => {
+      runProjectSearch(q)
+    }, SEARCH_DEBOUNCE_MS)
+  },
+  { immediate: false },
+)
+
+// 切项目（dirName 变化）→ 清搜索结果；防抖里读的是更新后的 props
+watch(
+  () => props.project.dirName,
+  () => {
+    window.clearTimeout(searchDebounceTimer)
+    abortInFlightSearch()
+    searchHits.value = []
+    searching.value = false
+  },
+)
+
 // 工具栏（搜索 / 排序 / 仅带 ID）作用后的可见列表 —— 状态来自 sessionsToolbar 模块。
-const visibleSessions = computed(() => filterSessions(props.sessions))
+// 关键词非空时走后端搜索结果；空时走 props.sessions（分页 / 完整数组）。
+// 两条路径都过 filterSessions，因为 sort + withIdOnly 是纯本地的策略。
+const visibleSessions = computed(() => {
+  const base =
+    sessionSearch.value.trim().length >= SEARCH_MIN_LEN ? searchHits.value : props.sessions
+  return filterSessions(base)
+})
 
 // 每张卡片自己的导出菜单状态：只允许一个打开，按 session path 标识。
 const openExportFor = ref<string | null>(null)
@@ -85,8 +179,16 @@ function idSegs(id: string) {
   return highlightSegments(shortId(id), sessionSearch.value)
 }
 
+// 批量模式下点整张卡片即勾选；否则按以往打开会话。
+function onCardClick(s: SessionMeta) {
+  if (sessionSelectMode.value) toggleSessionSelected(s.path)
+  else emit('open', s)
+}
+
 onUnmounted(() => {
   clearTimeout(scrollIdle)
+  window.clearTimeout(searchDebounceTimer)
+  abortInFlightSearch()
 })
 
 // 滚动期间临时关掉 hover 滑块：滚动时 content 在静止光标下移动会狂发
@@ -238,10 +340,20 @@ defineExpose({ scrollEl })
         :class="{
           'is-hover': s.path === hoverPath,
           'menu-open': openExportFor === s.path,
+          'list-selectable': sessionSelectMode,
+          'list-selected': sessionSelectMode && selectedSessions.has(s.path),
         }"
         :data-path="s.path"
-        @click="emit('open', s)"
+        @click="onCardClick(s)"
       >
+      <span
+        v-if="sessionSelectMode"
+        class="list-check"
+        :class="{ on: selectedSessions.has(s.path) }"
+        aria-hidden="true"
+      >
+        <IconCheck v-if="selectedSessions.has(s.path)" />
+      </span>
       <div class="session-main">
         <div class="session-title">
           <span class="session-title-text"><span
@@ -250,6 +362,7 @@ defineExpose({ scrollEl })
             :class="{ 'kw-hit': seg.hit }"
           >{{ seg.text }}</span></span>
           <button
+            v-if="!sessionSelectMode"
             class="title-rename-ic"
             v-tooltip="t('list.action.rename')"
             @click.stop="emit('rename', s)"
@@ -269,6 +382,7 @@ defineExpose({ scrollEl })
               :class="{ 'kw-hit': seg.hit }"
             >{{ seg.text }}</span></span>
             <button
+              v-if="!sessionSelectMode"
               class="session-id-copy"
               v-tooltip="t('list.action.copyId')"
               @click.stop="emit('copy', s.id)"
@@ -278,7 +392,7 @@ defineExpose({ scrollEl })
           </span>
         </div>
       </div>
-      <div class="session-actions">
+      <div v-if="!sessionSelectMode" class="session-actions">
         <button
           v-if="project.exists"
           class="icon-btn"

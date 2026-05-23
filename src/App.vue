@@ -1,16 +1,32 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import type { Agent, ProjectInfo, SessionMeta, TrashItem, Msg } from './types'
 import * as api from './api'
 import { shortName } from './format'
 import { t } from './i18n'
-import { clearAppCache } from './settings'
-import { resetChatToolbar } from './chatToolbar'
+import { clearAppCache, lang, setLang, setTheme, theme } from './settings'
+import { focusSearchBox, navigate as chatNavigate, resetChatToolbar } from './chatToolbar'
+import { emitMenuSync, installMenuRouter } from './menu'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import { resetTrashToolbar, exitSelectMode, selectedTrash } from './trashToolbar'
-import { resetSessionsToolbar, sessionsFilterActive } from './sessionsToolbar'
-import { exportMarkdown, exportHtml } from './export'
+import {
+  resetSessionsToolbar,
+  sessionsFilterActive,
+  selectedSessions,
+  exitSessionSelectMode,
+} from './sessionsToolbar'
+import {
+  exportMarkdown,
+  exportHtml,
+  exportMarkdownToDir,
+  exportHtmlToDir,
+  pickExportDir,
+  batchExportFolderName,
+} from './export'
 import { fly } from './fly'
 import { recordRecent } from './recents'
+import { globalSearchOpen, openGlobalSearch } from './globalSearch'
+import type { SearchHit } from './types'
 import ChatView from './views/ChatView.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ChatTopbar from './components/topbar/ChatTopbar.vue'
@@ -23,6 +39,7 @@ import Sidebar from './components/Sidebar.vue'
 import SidebarTopbar from './components/SidebarTopbar.vue'
 import ConfirmModal from './modals/ConfirmModal.vue'
 import RenameModal from './modals/RenameModal.vue'
+import GlobalSearchModal from './modals/GlobalSearchModal.vue'
 import ProjectContextMenu from './modals/ProjectContextMenu.vue'
 
 // ---------- 状态 ----------
@@ -108,6 +125,7 @@ const chatMsgs = ref<Msg[]>([])
 const loadingChat = ref(false)
 
 const sessionsViewRef = ref<InstanceType<typeof SessionsView> | null>(null)
+const chatViewRef = ref<InstanceType<typeof ChatView> | null>(null)
 const listScrollEl = computed<HTMLElement | undefined>(
   () => sessionsViewRef.value?.scrollEl,
 )
@@ -676,6 +694,81 @@ function batchRestore() {
   })
 }
 
+// 批量删除：把会话列表里勾选的会话一并 soft-delete 进回收站。失败项跳过，
+// 不重置滚动；单条删除的弧线动画在此处一并跳过（一次性 N 个抛物线太喧闹）。
+function batchDeleteSessions() {
+  const keys = new Set(selectedSessions.value)
+  const items = sessions.value.filter((s) => keys.has(s.path))
+  if (!items.length) return
+  ask({
+    title: t('dialog.batchDelete.title'),
+    message: t('dialog.batchDelete.body', { n: items.length }),
+    okText: t('dialog.batchDelete.ok'),
+    danger: true,
+    onOk: async () => {
+      const dir = activeProject.value?.displayPath ?? ''
+      const deleted = new Set<string>()
+      for (const s of items) {
+        try {
+          await api.softDeleteSession(agent.value, s.path, dir)
+          deleted.add(s.path)
+        } catch {
+          /* 跳过失败项，继续删除其余 */
+        }
+      }
+      sessions.value = sessions.value.filter((x) => !deleted.has(x.path))
+      sessionTotal.value = Math.max(0, sessionTotal.value - deleted.size)
+      if (openSession.value && deleted.has(openSession.value.path)) {
+        openSession.value = null
+      }
+      exitSessionSelectMode()
+      await loadProjects()
+      api.listTrash().then((items) => { trash.value = items }).catch(() => {})
+      notify(t('toast.batchDeleted', { n: deleted.size }))
+    },
+  })
+}
+
+// 批量导出：让用户挑一个目标目录，把勾选的会话一次性写成 MD / HTML 文件。
+// 失败项跳过，结尾给一个汇总 toast。逐个 readSession 是简单可控的做法
+// （会话数量本就不会很大），可以接受。
+async function batchExportSessions(kind: 'md' | 'html') {
+  const keys = new Set(selectedSessions.value)
+  const items = sessions.value.filter((s) => keys.has(s.path))
+  if (!items.length) return
+  let parent: string | null = null
+  try {
+    parent = await pickExportDir()
+  } catch (e) {
+    notify(t('toast.batchExportFail', { e: String(e) }), true)
+    return
+  }
+  if (!parent) return
+  // 在用户选的目录里按约定再开一个子目录：`export-YYYYMMDD-HHMMSS-<kind>/`。
+  // 这样多次批量导出不会互相覆盖，文件夹名一眼就能看出是什么时候、哪种格式的导出。
+  // write_file 会自动 create_dir_all 父目录，不需要单独再发一次"建目录"命令。
+  const dir = `${parent}/${batchExportFolderName(kind)}`
+  let ok = 0
+  let lastPath = ''
+  for (const s of items) {
+    try {
+      const msgs = await api.readSession(agent.value, s.path)
+      const fn = kind === 'md' ? exportMarkdownToDir : exportHtmlToDir
+      lastPath = await fn(s, msgs, agent.value, dir)
+      ok++
+    } catch {
+      /* 跳过失败项，继续导出其余 */
+    }
+  }
+  exitSessionSelectMode()
+  if (ok > 0) {
+    notify(t('toast.batchExported', { n: ok, dir }))
+    if (lastPath) api.revealInFinder(lastPath).catch(() => {})
+  } else {
+    notify(t('toast.batchExportFail', { e: t('toast.batchExportNone') }), true)
+  }
+}
+
 function clearTrash() {
   if (!trash.value.length) return
   ask({
@@ -812,7 +905,97 @@ onMounted(() => {
   })
   window.addEventListener('blur', closeCtxMenu)
   document.addEventListener('wheel', closeCtxMenu, { passive: true })
+
+  // 全局搜索：⌘⇧F (macOS) / Ctrl⇧F (Win/Linux)；与文本输入框里的 ⌘F 互不冲突。
+  // 在 capture 阶段拦截，确保不会被任何子组件 stopPropagation 掉。
+  // 注：macOS 上若菜单 accelerator 抢先触发会走 menu://action，这条监听吃不到事件；
+  // 二者结果相同（都开浮层），保留这条是给菜单未注册成功时兜底。
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.key !== 'f' && e.key !== 'F') return
+      if (!e.shiftKey) return
+      const isMac = /Mac/i.test(navigator.platform)
+      const want = isMac ? e.metaKey : e.ctrlKey
+      const other = isMac ? e.ctrlKey : e.metaKey
+      if (!want || other || e.altKey) return
+      e.preventDefault()
+      openGlobalSearch()
+    },
+    true,
+  )
+
+  // 原生菜单 → 前端动作路由。菜单项的 id 在 src-tauri/src/menu.rs 里定义。
+  installMenuRouter({
+    'open-global-search': () => openGlobalSearch(),
+    'find-in-session': () => focusSearchBox(),
+    'find-next': () => chatNavigate(1),
+    'find-prev': () => chatNavigate(-1),
+    'toggle-sidebar': toggleSidebar,
+    'new-session': () => newSession(),
+    'open-settings': () => {
+      showSettings.value = true
+    },
+    'export-session': () => {
+      if (!openSession.value) {
+        notify(t('toast.exportNoSession'))
+        return
+      }
+      // 没法在原生菜单里二选一 —— 默认走 Markdown；HTML 仍可在卡片导出菜单里选。
+      exportSession('md')
+    },
+    'open-trash': () => loadTrash(),
+    'check-update': () => {
+      showSettings.value = true
+    },
+    'theme:light': () => setTheme('light'),
+    'theme:dark': () => setTheme('dark'),
+    'theme:system': () => setTheme('system'),
+    'lang:en': () => setLang('en'),
+    'lang:zh': () => setLang('zh'),
+    'lang:zh-TW': () => setLang('zh-TW'),
+    'lang:ja': () => setLang('ja'),
+    'help-docs': () => api.openUrl(`${REPO_URL}#readme`).catch((e) => notify(`${e}`, true)),
+    'help-repo': () => openRepo(),
+    'help-issue': () => api.openUrl(`${REPO_URL}/issues`).catch((e) => notify(`${e}`, true)),
+  }).then((fn) => {
+    menuUnlisten = fn
+  })
+
+  // 启动时把当前 theme / lang 同步给菜单的 CheckMenuItem 勾选态。
+  emitMenuSync('theme', theme.value)
+  emitMenuSync('lang', lang.value)
 })
+
+// 主题 / 语言变化 → 同步菜单勾选态。
+watch(theme, (v) => emitMenuSync('theme', v))
+watch(lang, (v) => emitMenuSync('lang', v))
+
+let menuUnlisten: UnlistenFn | null = null
+onUnmounted(() => {
+  menuUnlisten?.()
+  menuUnlisten = null
+})
+
+// 全局搜索命中：跳到对应项目并打开会话；正文命中再滚到目标消息并触发闪烁动画。
+// 如果命中所在项目不在已加载列表里（极少见 —— list_projects 通常涵盖全部），
+// 先刷一次项目列表再跳。
+async function onGlobalSearchOpen(hit: SearchHit) {
+  if (activeDir.value !== hit.projectKey) {
+    if (!projects.value.some((p) => p.dirName === hit.projectKey)) {
+      await loadProjects()
+    }
+    await selectProject(hit.projectKey)
+  }
+  await openChat(hit.session)
+  // 文本命中带上消息坐标 —— 等 ChatView 挂载并把 messages 渲染出来后再跳。
+  // 这里走 2 次 nextTick：一次让 ChatView 拿到 ref，一次让长列表渲染稳定后再 query 节点。
+  if (hit.matchedField === 'text' && typeof hit.matchMsgIndex === 'number') {
+    await nextTick()
+    await nextTick()
+    chatViewRef.value?.flashMessage(hit.matchMsgIndex, hit.matchMsgUuid ?? undefined)
+  }
+}
 </script>
 
 <template>
@@ -846,7 +1029,12 @@ onMounted(() => {
           :items="trash"
           @batch-restore="batchRestore"
         />
-        <SessionsTopbar v-else-if="activeProject" />
+        <SessionsTopbar
+          v-else-if="activeProject"
+          :sessions="sessions"
+          @batch-delete="batchDeleteSessions"
+          @batch-export="batchExportSessions"
+        />
         <div v-else />
       </div>
     </div>
@@ -872,6 +1060,7 @@ onMounted(() => {
         <div v-if="loadingChat" class="loading">{{ t('common.loading') }}</div>
         <ChatView
           v-else
+          ref="chatViewRef"
           :agent="chatAgent"
           :session="openSession"
           :messages="chatMsgs"
@@ -904,6 +1093,7 @@ onMounted(() => {
       <SessionsView
         v-else-if="activeProject"
         ref="sessionsViewRef"
+        :agent="agent"
         :project="activeProject"
         :sessions="sessions"
         :session-total="sessionTotal"
@@ -962,6 +1152,14 @@ onMounted(() => {
       :default-title="renameModal.defaultTitle"
       @confirm="confirmRename"
       @cancel="renameModal.show = false"
+    />
+
+    <!-- 全局搜索（⌘⇧F / Ctrl⇧F） -->
+    <GlobalSearchModal
+      :show="globalSearchOpen"
+      :agent="agent"
+      @update:show="globalSearchOpen = $event"
+      @open="onGlobalSearchOpen"
     />
 
     <!-- 项目右键菜单 -->

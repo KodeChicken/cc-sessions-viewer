@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Agent, ProjectInfo, SessionPage, Msg, TrashItem } from './types'
+import type { Agent, ProjectInfo, SessionPage, Msg, TrashItem, SearchHit } from './types'
 
 export const listProjects = (agent: Agent) =>
   invoke<ProjectInfo[]>('list_projects', { agent })
@@ -13,6 +13,28 @@ export const listSessions = (
 
 export const readSession = (agent: Agent, path: string) =>
   invoke<Msg[]>('read_session', { agent, path })
+
+/** 跨当前 agent 的项目 / 会话搜索；空字符串返回空数组。
+ *  `requestId` 单调递增；后端在循环中比对，更新换代时立刻 bail —— 真正可中断的搜索。
+ *  `projectKey` 可选 —— 给会话列表搜索用：只搜当前项目，省掉全局扫描。
+ *  实际写：每次新调用前先 `cancelSearch()`，让 CPU 让位给打字。 */
+export const searchSessions = (
+  agent: Agent,
+  query: string,
+  requestId: number,
+  projectKey?: string,
+) =>
+  invoke<SearchHit[]>('search_sessions', { agent, query, requestId, projectKey })
+
+/** 立刻取消任何正在跑的全局搜索 —— 仅 bump 后端的代际计数器。 */
+export const cancelSearch = () => invoke<void>('cancel_search')
+
+/** 单调自增的搜索 request id 工厂。每次 `searchSessions` 调用前取一个。 */
+let _nextSearchId = 0
+export function nextSearchRequestId(): number {
+  _nextSearchId += 1
+  return _nextSearchId
+}
 
 export const renameSession = (agent: Agent, path: string, name: string) =>
   invoke<void>('rename_session', { agent, path, name })

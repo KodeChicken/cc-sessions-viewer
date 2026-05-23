@@ -33,3 +33,12 @@ export function recordRecent(agent: Agent, dir: string) {
   recents.value = { ...recents.value, [agent]: next }
   localStorage.setItem(KEY, JSON.stringify(recents.value))
 }
+
+/** 从最近打开中删除某条 dir —— Welcome 卡片 hover 时小 × 的入口。 */
+export function removeRecent(agent: Agent, dir: string) {
+  const prev = recents.value[agent] ?? []
+  if (!prev.includes(dir)) return
+  const next = prev.filter((d) => d !== dir)
+  recents.value = { ...recents.value, [agent]: next }
+  localStorage.setItem(KEY, JSON.stringify(recents.value))
+}

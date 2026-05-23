@@ -13,6 +13,7 @@ import {
   filterTrash,
   trashProjects,
 } from '../../trashToolbar'
+import { useDebouncedSearch } from '../../useDebouncedSearch'
 import {
   IconSearch,
   IconClose,
@@ -26,7 +27,15 @@ import {
 const props = defineProps<{ items: TrashItem[] }>()
 const emit = defineEmits<{ (e: 'batch-restore'): void }>()
 
-const hasQuery = computed(() => trashSearch.value.length > 0)
+// 搜索防抖 + IME 组合保护：见 useDebouncedSearch 的注释。
+const {
+  draft: searchDraft,
+  commit: commitSearch,
+  onInput: onSearchInput,
+  onCompositionStart: onSearchCompStart,
+  onCompositionEnd: onSearchCompEnd,
+} = useDebouncedSearch(trashSearch, 220)
+const hasQuery = computed(() => searchDraft.value.length > 0)
 const projects = computed(() => trashProjects(props.items))
 
 // 当前筛选下可见的条目 —— 全选 / 计数都基于它。
@@ -42,7 +51,7 @@ const allSelected = computed(
 )
 
 function clearSearch() {
-  trashSearch.value = ''
+  commitSearch('')
 }
 function toggleSort() {
   trashSort.value = trashSort.value === 'recent' ? 'oldest' : 'recent'
@@ -150,12 +159,15 @@ onUnmounted(() => {
       <span class="ct-search-ic"><IconSearch /></span>
       <input
         ref="searchInput"
-        v-model="trashSearch"
+        :value="searchDraft"
         type="text"
         class="ct-search-input"
         :placeholder="t('trash.tb.searchPlaceholder')"
         spellcheck="false"
         autocomplete="off"
+        @input="onSearchInput"
+        @compositionstart="onSearchCompStart"
+        @compositionend="onSearchCompEnd"
       />
       <button
         v-if="hasQuery"

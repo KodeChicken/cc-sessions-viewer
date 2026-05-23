@@ -58,14 +58,11 @@ describe('filterSessions', () => {
     expect(filterSessions(tied).map((s) => s.path)).toEqual(['new', 'old'])
   })
 
-  it('filters by a title substring, case-insensitively', () => {
+  // 关键词搜索现在走后端（searchSessions），filterSessions 不再做 title/id 文本匹配 ——
+  // 留 sessionSearch 这个开关只为让 sessionsFilterActive 触发 App.vue 一次性加载整个项目。
+  it('ignores sessionSearch — text matching moved to the backend', () => {
     sessionSearch.value = 'LOGIN'
-    expect(filterSessions(items).map((s) => s.path)).toEqual(['b'])
-  })
-
-  it('filters by a session-id substring', () => {
-    sessionSearch.value = 'id-c'
-    expect(filterSessions(items).map((s) => s.path)).toEqual(['c'])
+    expect(filterSessions(items).map((s) => s.path)).toEqual(['a', 'c', 'b'])
   })
 
   it('keeps only sessions with an id when withIdOnly is on', () => {
@@ -73,9 +70,8 @@ describe('filterSessions', () => {
     expect(filterSessions(items).map((s) => s.path)).toEqual(['a', 'c'])
   })
 
-  it('combines search, id filter and sort', () => {
+  it('combines id filter and sort', () => {
     sessionWithIdOnly.value = true
-    sessionSearch.value = 'a' // 'Refactor parser' / 'Add tests' both match
     sessionSort.value = 'oldest'
     expect(filterSessions(items).map((s) => s.path)).toEqual(['c', 'a'])
   })

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
-import type { TrashItem } from '../types'
+import type { Agent, TrashItem } from '../types'
 import { formatSize, formatTime, highlightSegments, shortName } from '../format'
 import { t } from '../i18n'
 import {
@@ -46,6 +46,9 @@ function titleSegs(title: string) {
 }
 function projSegs(projectLabel: string) {
   return highlightSegments(shortName(projectLabel), trashSearch.value)
+}
+function agentLabel(a: Agent): string {
+  return a === 'codex' ? 'Codex' : a === 'gemini' ? 'Gemini' : 'Claude'
 }
 
 // hover 跟随浮块：与会话列表一致的滑块交互。鼠标移到某张卡片上，把它的
@@ -125,14 +128,14 @@ onUnmounted(() => clearTimeout(scrollIdle))
         class="session-card"
         :data-trash="item.trashFile"
         :class="{
-          'trash-selectable': selectMode,
-          'trash-selected': selectMode && selectedTrash.has(item.trashFile),
+          'list-selectable': selectMode,
+          'list-selected': selectMode && selectedTrash.has(item.trashFile),
         }"
         @click="onCardClick(item)"
       >
         <span
           v-if="selectMode"
-          class="trash-check"
+          class="list-check"
           :class="{ on: selectedTrash.has(item.trashFile) }"
           aria-hidden="true"
         >
@@ -140,9 +143,7 @@ onUnmounted(() => clearTimeout(scrollIdle))
         </span>
         <div class="session-main">
           <div class="session-title">
-            <span class="agent-badge" :class="item.agent">{{
-              item.agent === 'codex' ? 'Codex' : 'Claude'
-            }}</span>
+            <span class="agent-badge" :class="item.agent">{{ agentLabel(item.agent) }}</span>
             <span><span
               v-for="(seg, i) in titleSegs(item.title)"
               :key="i"

@@ -46,8 +46,10 @@ import IconHashRaw from '~icons/lucide/hash'
 import IconPlusRaw from '~icons/lucide/plus'
 import IconHistoryRaw from '~icons/lucide/history'
 import IconGithubRaw from '~icons/lucide/github'
+import IconCornerDownLeftRaw from '~icons/lucide/corner-down-left'
 import IconClaudeRaw from '~icons/material-icon-theme/claude'
 import IconCodexRaw from '~icons/arcticons/openai-chatgpt'
+import IconGeminiRaw from '~icons/material-icon-theme/gemini-ai'
 
 export const IconPinUp = IconPinUpRaw
 export const IconPinDown = IconPinDownRaw
@@ -92,6 +94,7 @@ export const IconHash = IconHashRaw
 export const IconPlus = IconPlusRaw
 export const IconHistory = IconHistoryRaw
 export const IconGithub = IconGithubRaw
+export const IconCornerDownLeft = IconCornerDownLeftRaw
 // 「已 pin」状态的小圆点指示器；6×6 实心圆，自己拼比拉一整个集合便宜。
 import { defineComponent, h, type Component } from 'vue'
 import type { Agent } from '../types'
@@ -117,6 +120,7 @@ export const IconPinFilled = defineComponent({
 // and aggregated into `agentIcons` for dispatch-by-agent.
 export const IconClaude = IconClaudeRaw
 export const IconCodex = IconCodexRaw
+export const IconGemini = IconGeminiRaw
 
 /**
  * Global dictionary of agent → brand-mark icon component. Use as
@@ -127,4 +131,5 @@ export const IconCodex = IconCodexRaw
 export const agentIcons: Record<Agent, Component> = {
   claude: IconClaudeRaw,
   codex: IconCodexRaw,
+  gemini: IconGeminiRaw,
 }

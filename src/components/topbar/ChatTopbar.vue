@@ -8,6 +8,7 @@ import {
   searchScope,
   toolsCollapsed,
   navigate,
+  setSearchFocuser,
 } from '../../chatToolbar'
 import {
   IconSearch,
@@ -19,8 +20,18 @@ import {
   IconCheck,
 } from '../icons'
 import type { SearchScope } from '../../chatToolbar'
+import { useDebouncedSearch } from '../../useDebouncedSearch'
 
 const searchInput = ref<HTMLInputElement>()
+
+// 防抖 + IME 组合保护。长会话里 search 触发的高亮 + 计数遍历较重，延时给到 280ms。
+const {
+  draft: searchDraft,
+  commit: commitSearch,
+  onInput: onSearchInput,
+  onCompositionStart: onSearchCompStart,
+  onCompositionEnd: onSearchCompEnd,
+} = useDebouncedSearch(search, 280)
 
 // ⌘F / Ctrl+F：聊天页打开时（即本组件挂载时）拦截系统 Find，聚焦搜索框并全选。
 // 只检测当前平台对应的修饰键，避免 macOS 上 Ctrl+F（光标右移）被误抢。
@@ -34,8 +45,20 @@ function onFindShortcut(e: KeyboardEvent) {
   searchInput.value?.focus()
   searchInput.value?.select()
 }
-onMounted(() => window.addEventListener('keydown', onFindShortcut))
-onUnmounted(() => window.removeEventListener('keydown', onFindShortcut))
+function focusSearch() {
+  searchInput.value?.focus()
+  searchInput.value?.select()
+}
+onMounted(() => {
+  window.addEventListener('keydown', onFindShortcut)
+  // 暴露 focus 入口给原生菜单的「Find in Session…」用。⌘F window 监听仍保留，
+  // 因为 macOS 菜单 accelerator 触发时 webview keydown 通常被吃掉、两者不会重叠。
+  setSearchFocuser(focusSearch)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onFindShortcut)
+  setSearchFocuser(null)
+})
 
 function onKeydown(e: KeyboardEvent) {
   // Enter / Shift+Enter 在搜索框里跳下一个 / 上一个
@@ -50,7 +73,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 function clearSearch() {
-  search.value = ''
+  commitSearch('')
   searchInput.value?.blur()
 }
 
@@ -58,7 +81,7 @@ function toggleTools() {
   toolsCollapsed.value = !toolsCollapsed.value
 }
 
-const hasQuery = computed(() => search.value.length > 0)
+const hasQuery = computed(() => searchDraft.value.length > 0)
 
 // 自定义 scope 下拉（替代原生 <select>），跟导出菜单使用同一套样式
 const scopeMenuOpen = ref(false)
@@ -125,12 +148,15 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
       <span class="ct-search-ic"><IconSearch /></span>
       <input
         ref="searchInput"
-        v-model="search"
+        :value="searchDraft"
         type="text"
         class="ct-search-input"
         :placeholder="t('chat.tb.search.placeholder')"
         spellcheck="false"
         autocomplete="off"
+        @input="onSearchInput"
+        @compositionstart="onSearchCompStart"
+        @compositionend="onSearchCompEnd"
         @keydown="onKeydown"
       />
       <template v-if="hasQuery">

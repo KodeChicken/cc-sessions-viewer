@@ -22,6 +22,11 @@ export const sessionSort = ref<SessionSort>('recent')
 /** 仅显示带会话 ID 的条目。 */
 export const sessionWithIdOnly = ref(false)
 
+/** 批量选择模式开关（与回收站 trashToolbar 平行）。 */
+export const sessionSelectMode = ref(false)
+/** 已勾选的会话 path 集合（仅 sessionSelectMode 下有意义）。 */
+export const selectedSessions = ref<Set<string>>(new Set())
+
 /** 工具栏是否处于「非默认」状态。App.vue watch 此值决定是否加载全部会话。 */
 export const sessionsFilterActive = computed(
   () =>
@@ -30,20 +35,36 @@ export const sessionsFilterActive = computed(
     sessionWithIdOnly.value,
 )
 
+/** 勾选 / 取消勾选一个会话。整体替换 Set 以触发响应式更新。 */
+export function toggleSessionSelected(path: string) {
+  const next = new Set(selectedSessions.value)
+  if (next.has(path)) next.delete(path)
+  else next.add(path)
+  selectedSessions.value = next
+}
+
+/** 退出批量模式：关掉 sessionSelectMode 并清空选择。 */
+export function exitSessionSelectMode() {
+  sessionSelectMode.value = false
+  selectedSessions.value = new Set()
+}
+
 /** 切换项目时把工具栏状态归零。 */
 export function resetSessionsToolbar() {
   sessionSearch.value = ''
   sessionSort.value = 'recent'
   sessionWithIdOnly.value = false
+  sessionSelectMode.value = false
+  selectedSessions.value = new Set()
 }
 
-/** 应用搜索 + ID 筛选 + 排序。读取模块 refs，故在 computed 里调用即响应式；
+/** 应用 ID 筛选 + 排序。不再做关键词匹配 —— 关键词搜索现在走后端
+ *  `searchSessions(projectKey)`，能命中会话标题 + 用户消息正文，而本地的元数据
+ *  只够匹配 title / id 两列。读取模块 refs，故在 computed 里调用即响应式；
  *  返回新数组，不改动入参。体积 / 消息数排序在并列时回退到「时间最新」以保证稳定。 */
 export function filterSessions(sessions: SessionMeta[]): SessionMeta[] {
-  const q = sessionSearch.value.trim().toLowerCase()
   const out = sessions.filter((s) => {
     if (sessionWithIdOnly.value && !s.id) return false
-    if (q && !`${s.title} ${s.id}`.toLowerCase().includes(q)) return false
     return true
   })
   const byRecent = (a: SessionMeta, b: SessionMeta) => b.modified - a.modified

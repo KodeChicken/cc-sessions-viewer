@@ -1,7 +1,7 @@
 {
   "name": "claude-session-viewer",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,7 +11,8 @@
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
     "tauri": "tauri",
-    "prepare": "husky"
+    "prepare": "husky",
+    "release": "npm run test:run && bumpp package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml --commit \"Release: v%s\" --tag \"v%s\" --push"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
@@ -33,6 +34,7 @@
     "@vitejs/plugin-vue": "^6.0.7",
     "@vitest/coverage-v8": "^4.1.7",
     "@vue/test-utils": "^2.4.10",
+    "bumpp": "^11.1.0",
     "husky": "^9.1.7",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4.3.0",

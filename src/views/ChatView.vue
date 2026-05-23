@@ -138,7 +138,11 @@ function rowHasContent(m: Msg): boolean {
 }
 
 const assistantName = computed(() =>
-  props.agent === 'codex' ? 'Codex' : 'Claude',
+  props.agent === 'codex'
+    ? 'Codex'
+    : props.agent === 'gemini'
+      ? 'Gemini'
+      : 'Claude',
 )
 
 function systemEventLabel(m: Msg): string | null {
@@ -222,6 +226,122 @@ function scrollToBottom() {
   if (el) smoothScrollTo(el.scrollHeight)
 }
 
+// 跳转到某条消息：滚到对应 .msg-row，触发一次 .msg-flash 闪烁动画。
+// 全局搜索点击命中后被 App.vue 通过 defineExpose 调用。idx 与 uuid 双兜底
+// —— uuid 在场用 uuid 找（更稳，能扛重排），否则按 data-msg-idx 找。
+//
+// 长会话的滚动「不准」问题：
+//   1) chatMsgs 被赋值后，巨型 v-for 要一两帧才把 .msg-row 真正挂上 DOM；
+//   2) 挂上之后，里头的代码高亮 / DiffBlock / 图片还会异步把内容塞进去，
+//      命中行的 offsetTop 会继续往下推。
+// 应对：先「等 row 出现」最多 ~500ms；找到之后启动一个 rAF 循环，每帧重读
+// offsetTop 让滚动追上后涨的高度；动画窗口（~360ms）结束后再校准 ~1.2s。
+// 任何 wheel / pointerdown / keydown 都立即让位，绝不和用户抢滚动条。
+const flashIdx = ref<number | null>(null)
+let flashTimer = 0
+let flashStickCleanup: (() => void) | null = null
+function cancelFlashStick() {
+  flashStickCleanup?.()
+}
+function flashMessage(idx: number, uuid?: string) {
+  const inner = innerEl.value
+  const sa = scrollEl.value
+  if (!inner || !sa) return
+  const findRow = () =>
+    (uuid
+      ? inner.querySelector<HTMLElement>(`.msg-row[data-msg-uuid="${CSS.escape(uuid)}"]`)
+      : null) ?? inner.querySelector<HTMLElement>(`.msg-row[data-msg-idx="${idx}"]`)
+
+  // 先取消上一个跳转的尾巴 + 任何在跑的平滑滚动。
+  cancelFlashStick()
+  cancelScroll()
+
+  // Step 1：等 row 挂上 DOM —— readSession 返回后大长 v-for 通常 1-2 帧搞定，
+  // 但留 30 帧（≈500ms）兜底，超过仍找不到就放弃。
+  let waitFrames = 0
+  const start = () => {
+    const first = findRow()
+    if (!first) {
+      if (++waitFrames > 30) return
+      requestAnimationFrame(start)
+      return
+    }
+    run(first)
+  }
+
+  // Step 2：自带 rAF 循环 —— 不复用 smoothScrollTo，因为它把目标缓存为常量，
+  // 长会话里目标会随子组件渲染往下挪，必须每帧重新读 offsetTop。
+  const run = (first: HTMLElement) => {
+    const startScroll = sa.scrollTop
+    const firstTarget = Math.max(0, first.offsetTop - 80)
+    const initDist = firstTarget - startScroll
+    const duration = Math.min(360, 180 + Math.abs(initDist) * 0.05)
+    const ease = (p: number) => 1 - Math.pow(1 - p, 3)
+    const t0 = performance.now()
+    // 总「贴靠」时长：动画 ~360ms + 校准 ~1.2s。校准期是为了等图片 / 代码块
+    // 异步渲染完后还能把命中行拉回正确位置。
+    const STICK_MS = 1600
+
+    let userBailed = false
+    const onUserInput = () => {
+      userBailed = true
+    }
+    sa.addEventListener('wheel', onUserInput, { passive: true })
+    sa.addEventListener('pointerdown', onUserInput, { passive: true })
+    sa.addEventListener('keydown', onUserInput)
+
+    let raf = 0
+    const tick = () => {
+      if (userBailed) return cleanup()
+      const now = performance.now()
+      const elapsed = now - t0
+      if (elapsed > STICK_MS) return cleanup()
+
+      // 每帧重新拿引用：keep-alive 之类的边界场景下 row 节点可能被换掉。
+      const cur = findRow()
+      if (!cur) {
+        raf = requestAnimationFrame(tick)
+        return
+      }
+      const target = Math.max(0, cur.offsetTop - 80)
+
+      if (elapsed < duration) {
+        // 动画阶段：用 ease 平滑滚到 target；target 每帧都重新读，自然追得上后涨高度
+        const p = elapsed / duration
+        sa.scrollTop = startScroll + (target - startScroll) * ease(p)
+      } else {
+        // 校准阶段：层出不穷的 1-2 像素抖动忽略；只在偏差明显时硬对齐
+        if (Math.abs(sa.scrollTop - target) > 1) sa.scrollTop = target
+      }
+      raf = requestAnimationFrame(tick)
+    }
+
+    const cleanup = () => {
+      if (raf) cancelAnimationFrame(raf)
+      sa.removeEventListener('wheel', onUserInput)
+      sa.removeEventListener('pointerdown', onUserInput)
+      sa.removeEventListener('keydown', onUserInput)
+      flashStickCleanup = null
+    }
+    flashStickCleanup = cleanup
+    raf = requestAnimationFrame(tick)
+
+    // 闪烁：先清状态，等下一帧再写，确保 CSS 动画从头跑。
+    const realIdx = Number(first.dataset.msgIdx ?? idx)
+    flashIdx.value = null
+    requestAnimationFrame(() => {
+      flashIdx.value = realIdx
+      window.clearTimeout(flashTimer)
+      flashTimer = window.setTimeout(() => {
+        flashIdx.value = null
+      }, 1400)
+    })
+  }
+
+  start()
+}
+defineExpose({ flashMessage })
+
 // 到顶 / 到底时分别隐藏对应方向的 FAB，留一点 8px 阈值避免抖动
 const atTop = ref(true)
 const atBottom = ref(true)
@@ -248,6 +368,8 @@ onUnmounted(() => {
   scrollEl.value?.removeEventListener('scroll', onScroll)
   if (rafEdge) cancelAnimationFrame(rafEdge)
   cancelScroll()
+  cancelFlashStick()
+  window.clearTimeout(flashTimer)
 })
 
 // ============================ 顶栏功能：折叠工具 / 搜索 ============================
@@ -543,8 +665,13 @@ function onDocClick(e: MouseEvent) {
         :key="m.uuid ?? i"
         v-show="rowHasContent(m)"
         class="msg-row"
-        :class="systemEventLabel(m) ? 'system' : isToolOnly(m) ? 'tool-only' : m.role"
+        :class="[
+          systemEventLabel(m) ? 'system' : isToolOnly(m) ? 'tool-only' : m.role,
+          { 'msg-flash': flashIdx === i },
+        ]"
         :data-search-scope="rowScope(m)"
+        :data-msg-idx="i"
+        :data-msg-uuid="m.uuid ?? ''"
       >
         <!-- System events (e.g. /rename) render as a small centered line,
              not a "Me" bubble — they're meta facts, not user prose. -->

@@ -7,7 +7,7 @@
 
 import type { Msg, Block, SessionMeta, Agent, DiffHunk } from './types'
 import { writeFile } from './api'
-import { save as saveDialog } from '@tauri-apps/plugin-dialog'
+import { save as saveDialog, open as openDialog } from '@tauri-apps/plugin-dialog'
 import { t } from './i18n'
 import { formatTime, isCaveatOnlyMsg, parseSystemEvent } from './format'
 
@@ -801,4 +801,53 @@ export function exportHtml(
 ): Promise<string | null> {
   const html = messagesToHtml(session, messages, agent)
   return pickAndWrite(html, `${sanitizeFilename(session.title)}.html`, 'html')
+}
+
+// ============================ 批量导出 ============================
+// 批量场景：让用户挑一个目标目录，所有会话以 `<title>-<id8>.<ext>` 落进去。
+// 用 `/` 拼接：Rust 端走 `PathBuf::from`，Windows 也能接受正斜杠。
+
+/** 弹原生 Open 目录选择器；取消返回 null。 */
+export async function pickExportDir(): Promise<string | null> {
+  const r = await openDialog({ directory: true, multiple: false })
+  // open() 在「单选 + directory」下返回字符串或 null（与平台/插件版本相关）。
+  return typeof r === 'string' ? r : null
+}
+
+/** 批量导出的子目录名：`export-YYYYMMDD-HHMMSS-<md|html>`。
+ *  本地时间，便于人在 Finder 里直观分辨；多次导出不会撞名。
+ *  `now` 形参只用于测试；生产路径走默认值 `new Date()`。 */
+export function batchExportFolderName(kind: 'md' | 'html', now: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const dt = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  return `export-${dt}-${kind}`
+}
+
+/** 文件名：`<sanitized-title>-<id8>.<ext>`；标题相同的两条会话不会互相覆盖。 */
+function batchFileName(session: SessionMeta, ext: 'md' | 'html'): string {
+  const title = sanitizeFilename(session.title)
+  const tag = (session.id || '').slice(0, 8) || 'session'
+  return `${title}-${tag}.${ext}`
+}
+
+/** 把一条会话以 Markdown 写到目录里，返回最终绝对路径。 */
+export async function exportMarkdownToDir(
+  session: SessionMeta,
+  messages: Msg[],
+  agent: Agent,
+  dir: string,
+): Promise<string> {
+  const md = messagesToMarkdown(session, messages, agent)
+  return writeFile(`${dir}/${batchFileName(session, 'md')}`, md)
+}
+
+/** 把一条会话以 HTML 写到目录里，返回最终绝对路径。 */
+export async function exportHtmlToDir(
+  session: SessionMeta,
+  messages: Msg[],
+  agent: Agent,
+  dir: string,
+): Promise<string> {
+  const html = messagesToHtml(session, messages, agent)
+  return writeFile(`${dir}/${batchFileName(session, 'html')}`, html)
 }

@@ -39,9 +39,11 @@ const factory = (
   })
 
 describe('TrashTopbar', () => {
-  it('binds the search box to the shared search ref', async () => {
+  it('binds the search box to the shared search ref (debounced)', async () => {
     const wrapper = factory()
     await wrapper.find('.ct-search-input').setValue('hello')
+    expect(trashSearch.value).toBe('') // 还没过防抖
+    await new Promise((r) => setTimeout(r, 280))
     expect(trashSearch.value).toBe('hello')
   })
 
