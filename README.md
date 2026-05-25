@@ -4,13 +4,15 @@
 
 **English** · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [CHANGELOG](CHANGELOG.md)
 
-一个专为 **Claude Code**、**Codex** 和 **Gemini CLI** 打造的原生桌面浏览器。在一处读取、搜索并管理三个 CLI 的本地会话记录。
+<p align="center">A native desktop browser for <strong>Claude Code</strong>, <strong>Codex</strong>, and <strong>Gemini CLI</strong> — read, search, and manage local session transcripts from all three in one place.</p>
 
-- **忠实还原**：完整呈现思考链路、工具调用配对、结构化 Diff 与内嵌截图。
-- **高效检索**：跨项目全局秒搜 (**⌘⇧F**) 直达具体消息，支持一键恢复终端会话。
-- **深度统计**：基于本地记录聚合 Token 消耗与成本，多维分析（项目/模型/工具调用）活跃度与开销。
-- **只读安全**：原始 JSONL 全程只读，删除仅移动至共享回收站，绝不物理抹除 (`rm`)。
-- **灵活导出**：单会话或批量导出为离线可读的 Markdown / HTML。
+<p align="center">
+<strong>Faithful replay</strong> — thinking chains, tool-call pairings, structured diffs, inline screenshots.<br/>
+<strong>Fast search</strong> — cross-project global hit (<strong>⌘⇧F</strong>) jumps to the exact message; one-click resume in Terminal.<br/>
+<strong>Deep stats</strong> — aggregate token spend and cost; slice by project, model, or tool.<br/>
+<strong>Read-only safety</strong> — original JSONL is never touched; delete is a move to shared trash, never <code>rm</code>.<br/>
+<strong>Flexible export</strong> — single session or batches to offline-readable Markdown or HTML.
+</p>
 
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=fff)](https://tauri.app)
 [![Vue 3](https://img.shields.io/badge/Vue-3-42b883?logo=vue.js&logoColor=fff)](https://vuejs.org)

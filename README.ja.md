@@ -4,13 +4,15 @@
 
 [English](README.md) · [中文](README.zh-CN.md) · **日本語** · [CHANGELOG](CHANGELOG.md)
 
-**Claude Code**、**Codex**、**Gemini CLI** 専用のネイティブデスクトップブラウザ。3 つの CLI のローカルセッション履歴を一元的に読み取り、検索し、管理します。
+<p align="center"><strong>Claude Code</strong>、<strong>Codex</strong>、<strong>Gemini CLI</strong> 専用のネイティブデスクトップブラウザ。3 つの CLI のローカルセッション履歴を一元的に読み取り、検索し、管理します。</p>
 
-- **忠実な再現**：思考プロセス、ツール呼び出しのペアリング、構造化 Diff、インライン画像を完全に表示。
-- **高効率な検索**：プロジェクトを横断するグローバル検索（**⌘⇧F**）で特定のメッセージへ直行、ワンクリックでターミナルでのセッション再開をサポート。
-- **詳細な統計**：ローカル記録に基づいてトークン消費とコストを集計し、アクティビティと費用を多角的に分析（プロジェクト/モデル/ツール呼び出し単位）。
-- **読み取り専用の安全性**：オリジナルの JSONL は常に読み取り専用。削除は共有ゴミ箱への移動のみで、物理削除（`rm`）は一切行いません。
-- **柔軟なエクスポート**：単一または複数セッションをオフラインで読める Markdown / HTML としてエクスポート。
+<p align="center">
+<strong>忠実な再現</strong> — 思考プロセス、ツール呼び出しのペアリング、構造化 Diff、インライン画像を完全に表示。<br/>
+<strong>高効率な検索</strong> — プロジェクトを横断するグローバル検索（<strong>⌘⇧F</strong>）で特定のメッセージへ直行、ワンクリックでターミナルでのセッション再開をサポート。<br/>
+<strong>詳細な統計</strong> — ローカル記録に基づいてトークン消費とコストを集計し、アクティビティと費用を多角的に分析（プロジェクト/モデル/ツール呼び出し単位）。<br/>
+<strong>読み取り専用の安全性</strong> — オリジナルの JSONL は常に読み取り専用。削除は共有ゴミ箱への移動のみで、物理削除（<code>rm</code>）は一切行いません。<br/>
+<strong>柔軟なエクスポート</strong> — 単一または複数セッションをオフラインで読める Markdown / HTML としてエクスポート。
+</p>
 
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=fff)](https://tauri.app)
 [![Vue 3](https://img.shields.io/badge/Vue-3-42b883?logo=vue.js&logoColor=fff)](https://vuejs.org)

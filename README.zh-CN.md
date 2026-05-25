@@ -4,13 +4,15 @@
 
 [English](README.md) · **中文** · [日本語](README.ja.md) · [CHANGELOG](CHANGELOG.md)
 
-一个专为 **Claude Code**、**Codex** 和 **Gemini CLI** 打造的原生桌面浏览器。在一处读取、搜索并管理三个 CLI 的本地会话记录。
+<p align="center">一个专为 <strong>Claude Code</strong>、<strong>Codex</strong> 和 <strong>Gemini CLI</strong> 打造的原生桌面浏览器。在一处读取、搜索并管理三个 CLI 的本地会话记录。</p>
 
-- **忠实还原**：完整呈现思考链路、工具调用配对、结构化 Diff 与内嵌截图。
-- **高效检索**：跨项目全局秒搜 (**⌘⇧F**) 直达具体消息，支持一键恢复终端会话。
-- **深度统计**：基于本地记录聚合 Token 消耗与成本，多维分析（项目/模型/工具调用）活跃度与开销。
-- **只读安全**：原始 JSONL 全程只读，删除仅移动至共享回收站，绝不物理抹除 (`rm`)。
-- **灵活导出**：单会话或批量导出为离线可读的 Markdown / HTML。
+<p align="center">
+<strong>忠实还原</strong> — 完整呈现思考链路、工具调用配对、结构化 Diff 与内嵌截图。<br/>
+<strong>高效检索</strong> — 跨项目全局秒搜（<strong>⌘⇧F</strong>）直达具体消息，支持一键恢复终端会话。<br/>
+<strong>深度统计</strong> — 基于本地记录聚合 Token 消耗与成本，多维分析（项目/模型/工具调用）活跃度与开销。<br/>
+<strong>只读安全</strong> — 原始 JSONL 全程只读，删除仅移动至共享回收站，绝不物理抹除（<code>rm</code>）。<br/>
+<strong>灵活导出</strong> — 单会话或批量导出为离线可读的 Markdown / HTML。
+</p>
 
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=fff)](https://tauri.app)
 [![Vue 3](https://img.shields.io/badge/Vue-3-42b883?logo=vue.js&logoColor=fff)](https://vuejs.org)
