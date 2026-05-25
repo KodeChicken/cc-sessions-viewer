@@ -163,3 +163,5 @@ PRs welcome. Please use [Conventional Commits](https://www.conventionalcommits.o
 ## License
 
 [MIT](LICENSE) © jerrywu001
+
+> Friend link: [linux.do](https://linux.do/)
