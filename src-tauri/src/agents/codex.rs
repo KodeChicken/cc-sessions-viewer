@@ -14,10 +14,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use super::SessionSource;
-use crate::types::{Block, Msg, ProjectInfo, SessionMeta, SessionPage};
+use crate::stats::{pricing, shell as shell_util, types::{CallRecord, Turn}};
+use crate::types::{Block, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary};
 use crate::util::{
-    append_jsonl_line, clean_title, format_iso8601_utc, home, is_jsonl, mtime_millis, simple_msg,
-    text_block, validate_rename_name,
+    append_jsonl_line, clean_title, format_iso8601_utc, home, is_jsonl, mtime_millis,
+    parse_iso8601_ms, simple_msg, text_block, validate_rename_name,
 };
 
 pub struct CodexSource;
@@ -623,7 +624,7 @@ impl SessionSource for CodexSource {
         first_user_text(path)
     }
 
-    fn resume_cli(&self, session_id: &str) -> String {
+    fn resume_cli(&self, session_id: &str, _path: &str) -> String {
         format!("codex resume {session_id}")
     }
 
@@ -633,5 +634,439 @@ impl SessionSource for CodexSource {
 
     fn image_src(&self, block: &Value) -> Option<String> {
         image_src(block)
+    }
+
+    fn usage_summary(&self, path: &str) -> Result<UsageSummary, String> {
+        usage_summary(Path::new(path))
+    }
+
+    fn read_turns(&self, path: &str) -> Result<Vec<Turn>, String> {
+        Ok(read_turns(Path::new(path)))
+    }
+}
+
+// ---- read_turns（统计聚合用）---------------------------------------------
+//
+// Codex 的 JSONL 单遍：
+//   - 起 turn：`event_msg.user_message` —— message 是干净文本
+//   - 起 call：assistant 这边没有"单一消息"概念，每个 `response_item.function_call`
+//     / `custom_tool_call` / `web_search_call` 都算一次工具调用；`event_msg.agent_message`
+//     的纯文本回复也单独算一次 call（model 取最近 turn_context.payload.model）。
+//   - model：来源是 `turn_context` 事件的 `payload.model`（mid-session 可能切换，譬如
+//     gpt-5.5 / gpt-5.3-codex，每次出现就更新 `model_hint`）。
+//     旧 `session_meta` 里**没有** model 字段（`originator` 是 "codex-tui" 这种字符串），
+//     所以历史代码全部走 fallback 拿到空串，导致 pricing 算出 $0 —— 这里必须读 turn_context。
+//   - usage：codex 把整段对话的 token 累积总数写在 `event_msg.token_count.info.total_token_usage`，
+//     每次更新都是累积值。读到最后一行后整段 usage 归到该 session 最后一个 call
+//     （所以以 session 结束时刻的 model_hint 计价 —— 这是单模型简化）。
+//
+// 这样 By Model / By Tool / Shell / MCP / Activity 都能拿到合理数据；
+// 单 session 内只显示一个模型（没法分摊到多个）。
+fn read_turns(fp: &Path) -> Vec<Turn> {
+    let file = match fs::File::open(fp) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut turns: Vec<Turn> = Vec::new();
+    let mut cur: Option<Turn> = None;
+    let mut project_path: String = String::new();
+    let mut session_id: String = String::new();
+    let mut model_hint: String = String::new();
+    let mut last_usage = UsageSummary::default();
+
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        let payload = match v.get("payload") {
+            Some(p) => p,
+            None => continue,
+        };
+        let pt = payload.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        let ts_ms = v
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .and_then(parse_iso8601_ms)
+            .unwrap_or(0);
+
+        match (t, pt) {
+            ("session_meta", _) => {
+                if session_id.is_empty() {
+                    if let Some(id) = payload.get("id").and_then(|x| x.as_str()) {
+                        session_id = id.to_string();
+                    }
+                }
+                if project_path.is_empty() {
+                    if let Some(c) = payload.get("cwd").and_then(|x| x.as_str()) {
+                        project_path = c.to_string();
+                    }
+                }
+                // 兜底：极少数老格式直接在 session_meta 里写 model 字段。
+                // 现在的 codex 走 turn_context.model，下面有专门分支处理。
+                if model_hint.is_empty() {
+                    if let Some(m) = payload.get("model").and_then(|x| x.as_str()) {
+                        model_hint = m.to_string();
+                    }
+                }
+            }
+            ("turn_context", _) => {
+                // 每个 turn 之前 codex 会写一个 turn_context，model 就在 payload.model。
+                // mid-session 切模型时也以最后一条为准。
+                if let Some(m) = payload.get("model").and_then(|x| x.as_str()) {
+                    if !m.is_empty() {
+                        model_hint = m.to_string();
+                    }
+                }
+            }
+            ("event_msg", "user_message") => {
+                if let Some(prev) = cur.take() {
+                    turns.push(prev);
+                }
+                let text = payload.get("message").and_then(|x| x.as_str()).unwrap_or("");
+                cur = Some(Turn {
+                    user_message: text.to_string(),
+                    project_path: project_path.clone(),
+                    session_id: session_id.clone(),
+                    calls: Vec::new(),
+                    timestamp_ms: ts_ms,
+                });
+            }
+            ("event_msg", "agent_message") => {
+                push_call(
+                    &mut cur,
+                    &project_path,
+                    &session_id,
+                    ts_ms,
+                    CallRecord {
+                        model: model_hint.clone(),
+                        message_id: None,
+                        usage: UsageSummary::default(),
+                        cost_usd: 0.0,
+                        tools: Vec::new(),
+                        bash_commands: Vec::new(),
+                        mcp_servers: Vec::new(),
+                        has_plan_mode: false,
+                        has_agent_spawn: false,
+                    },
+                );
+            }
+            ("response_item", "function_call") | ("response_item", "custom_tool_call") => {
+                let name = payload
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                let raw_args = payload
+                    .get("arguments")
+                    .or_else(|| payload.get("input"))
+                    .map(|v| match v {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    })
+                    .unwrap_or_default();
+                let mut bash_commands: Vec<String> = Vec::new();
+                let mut mcp_servers: Vec<String> = Vec::new();
+                if name == "shell" || name == "Bash" || name == "BashTool" {
+                    if let Some(cmd) = shell_util::extract_first_command(&raw_args) {
+                        bash_commands.push(cmd);
+                    }
+                }
+                if let Some(server) = shell_util::extract_mcp_server(&name) {
+                    mcp_servers.push(server);
+                }
+                let spawn = matches!(name.as_str(), "Task" | "Agent" | "task_spawn");
+                push_call(
+                    &mut cur,
+                    &project_path,
+                    &session_id,
+                    ts_ms,
+                    CallRecord {
+                        model: model_hint.clone(),
+                        message_id: None,
+                        usage: UsageSummary::default(),
+                        cost_usd: 0.0,
+                        tools: vec![name],
+                        bash_commands,
+                        mcp_servers,
+                        has_plan_mode: false,
+                        has_agent_spawn: spawn,
+                    },
+                );
+            }
+            ("response_item", "web_search_call") => {
+                push_call(
+                    &mut cur,
+                    &project_path,
+                    &session_id,
+                    ts_ms,
+                    CallRecord {
+                        model: model_hint.clone(),
+                        message_id: None,
+                        usage: UsageSummary::default(),
+                        cost_usd: 0.0,
+                        tools: vec!["WebSearch".to_string()],
+                        bash_commands: Vec::new(),
+                        mcp_servers: Vec::new(),
+                        has_plan_mode: false,
+                        has_agent_spawn: false,
+                    },
+                );
+            }
+            ("event_msg", "token_count") => {
+                let Some(info) = payload.get("info") else { continue };
+                if info.is_null() {
+                    continue;
+                }
+                let Some(tt) = info.get("total_token_usage") else { continue };
+                last_usage = read_codex_total_usage(tt);
+            }
+            _ => {}
+        }
+    }
+    if let Some(t) = cur {
+        turns.push(t);
+    }
+    // 把累积 usage 灌到最后一个 call。如果完全没有 call，就丢弃 usage（前端不显示）。
+    if last_usage.total > 0 {
+        if let Some(last_turn) = turns.last_mut() {
+            if let Some(last_call) = last_turn.calls.last_mut() {
+                last_call.usage = last_usage;
+                last_call.cost_usd = pricing::cost_usd(&last_call.model, &last_call.usage);
+            }
+        }
+    }
+    turns
+}
+
+/// 起 / 追加一个 call —— 没有进行中的 user-turn 时起一个空 user_message 的占位。
+fn push_call(
+    cur: &mut Option<Turn>,
+    project_path: &str,
+    session_id: &str,
+    ts_ms: i64,
+    call: CallRecord,
+) {
+    if let Some(turn) = cur.as_mut() {
+        turn.calls.push(call);
+    } else {
+        *cur = Some(Turn {
+            user_message: String::new(),
+            project_path: project_path.to_string(),
+            session_id: session_id.to_string(),
+            calls: vec![call],
+            timestamp_ms: ts_ms,
+        });
+    }
+}
+
+/// Codex 把 token 用量写在 event_msg.token_count 事件里，且每次更新都是**累积值**
+/// （`total_token_usage`）—— 所以只需要扫到最后一行非空的就行。
+///
+/// 形状：
+///   {"type":"event_msg","payload":{"type":"token_count","info":{
+///       "total_token_usage":{"input_tokens":N,"cached_input_tokens":N,
+///         "output_tokens":N,"reasoning_output_tokens":N,"total_tokens":N},
+///       ...}}}
+///
+/// 早期写入时 `info` 可能为 null（订阅尚未拿到 usage），跳过；后续的覆盖前面的。
+fn usage_summary(fp: &Path) -> Result<UsageSummary, String> {
+    let file = match fs::File::open(fp) {
+        Ok(f) => f,
+        Err(_) => return Ok(UsageSummary::default()),
+    };
+    let mut last = UsageSummary::default();
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if v.get("type").and_then(Value::as_str) != Some("event_msg") {
+            continue;
+        }
+        let payload = match v.get("payload") {
+            Some(p) => p,
+            None => continue,
+        };
+        if payload.get("type").and_then(Value::as_str) != Some("token_count") {
+            continue;
+        }
+        let Some(info) = payload.get("info") else {
+            continue;
+        };
+        if info.is_null() {
+            continue;
+        }
+        let Some(t) = info.get("total_token_usage") else {
+            continue;
+        };
+        last = read_codex_total_usage(t);
+    }
+    Ok(last)
+}
+
+/// Codex 的 `total_token_usage.input_tokens` **包含** cached_input_tokens
+/// （上游 API 报的就是含 cache 的总输入），所以前端展示 "in / cached" 两栏时
+/// 必须减出来 —— 否则汇总里的 in 就把 cache 多算了一遍，cache hit 高（90%+）
+/// 时被夸大到 8~10×（codeburn 同样按减法处理）。
+fn read_codex_total_usage(t: &Value) -> UsageSummary {
+    let total_input = t.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let cached = t.get("cached_input_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let output = t.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let reasoning = t.get("reasoning_output_tokens").and_then(Value::as_u64).unwrap_or(0);
+    UsageSummary {
+        // saturating_sub 防御性：极少数情况下 cached > total_input（API 抖动），
+        // 此时把 new-input 当 0 处理，cached 仍然保留。
+        input_tokens: total_input.saturating_sub(cached),
+        output_tokens: output,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: cached,
+        reasoning_output_tokens: reasoning,
+        total: 0,
+    }
+    .finalize()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_temp(name: &str, lines: &[&str]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("csv-codex-usage-tests");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join(name);
+        let mut f = std::fs::File::create(&p).unwrap();
+        for l in lines {
+            writeln!(f, "{l}").unwrap();
+        }
+        p
+    }
+
+    #[test]
+    fn usage_takes_the_last_non_null_token_count_event() {
+        // 早期 info:null 的事件被跳过；后面的累积值（total_token_usage）覆盖。
+        // input_tokens 字段 codex 报的是"含 cached"的总输入，本函数会减出来。
+        let p = write_temp("codex-last.jsonl", &[
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":null}}"#,
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":40,"reasoning_output_tokens":20,"total_tokens":190}}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":60,"output_tokens":80,"reasoning_output_tokens":35,"total_tokens":375}}}}"#,
+        ]);
+        let u = usage_summary(&p).unwrap();
+        // 最后一条 total: input=200 含 60 cached → new input = 140
+        assert_eq!(u.input_tokens, 140);
+        assert_eq!(u.cache_read_input_tokens, 60);
+        assert_eq!(u.output_tokens, 80);
+        assert_eq!(u.reasoning_output_tokens, 35);
+        // total = (200-60) + 80 + 60 (cache_read) + 0 (cache_creation) + 35 (reasoning) = 315
+        assert_eq!(u.total, 315);
+    }
+
+    #[test]
+    fn usage_handles_cached_greater_than_input_defensively() {
+        // 防御性：API 抖动时 cached > input —— new input 应该按 0 处理而不是 panic。
+        let p = write_temp("codex-defensive.jsonl", &[
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":50,"cached_input_tokens":100,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":160}}}}"#,
+        ]);
+        let u = usage_summary(&p).unwrap();
+        assert_eq!(u.input_tokens, 0);
+        assert_eq!(u.cache_read_input_tokens, 100);
+    }
+
+    #[test]
+    fn usage_ignores_unrelated_events() {
+        let p = write_temp("codex-noise.jsonl", &[
+            r#"{"type":"response_item","payload":{"type":"message"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message"}}"#,
+        ]);
+        assert_eq!(usage_summary(&p).unwrap(), UsageSummary::default());
+    }
+
+    #[test]
+    fn usage_returns_default_when_file_missing() {
+        let p = std::path::PathBuf::from("/tmp/csv-codex-usage-tests/nope.jsonl");
+        assert_eq!(usage_summary(&p).unwrap(), UsageSummary::default());
+    }
+
+    #[test]
+    fn read_turns_picks_up_model_from_turn_context_so_cost_is_nonzero() {
+        // 回归：早期实现只看 session_meta.originator.model / .model；真实 codex JSONL 的
+        // session_meta.originator 是字符串（"codex-tui"），model 字段不存在 → 全 session $0。
+        // 现在 turn_context.payload.model 是真正的 model 源。
+        let p = write_temp("codex-turn-context-model.jsonl", &[
+            r#"{"type":"session_meta","payload":{"id":"abc","cwd":"/tmp","originator":"codex-tui"}}"#,
+            r#"{"type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hi"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"hey"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":500,"reasoning_output_tokens":0,"total_tokens":1500}}}}"#,
+        ]);
+        let turns = read_turns(&p);
+        let last_call = turns
+            .last()
+            .and_then(|t| t.calls.last())
+            .expect("expected at least one call");
+        assert_eq!(last_call.model, "gpt-5");
+        assert!(last_call.cost_usd > 0.0, "expected non-zero cost, got {}", last_call.cost_usd);
+    }
+
+    #[test]
+    fn read_turns_uses_latest_turn_context_when_model_changes_mid_session() {
+        // mid-session 切模型（gpt-5.3-codex → gpt-5.5），最后一条 turn_context 胜出。
+        let p = write_temp("codex-model-switch.jsonl", &[
+            r#"{"type":"session_meta","payload":{"id":"abc","cwd":"/tmp","originator":"codex-tui"}}"#,
+            r#"{"type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5.3-codex"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"a"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"b"}}"#,
+            r#"{"type":"turn_context","payload":{"turn_id":"t2","model":"gpt-5.5"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"c"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"d"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":500,"reasoning_output_tokens":0,"total_tokens":1500}}}}"#,
+        ]);
+        let turns = read_turns(&p);
+        let last_call = turns
+            .last()
+            .and_then(|t| t.calls.last())
+            .expect("call");
+        assert_eq!(last_call.model, "gpt-5.5");
+    }
+
+    #[test]
+    #[ignore = "manual full-scan; reads every Codex rollout on disk"]
+    fn dedup_full_codex_scan() {
+        let src = CodexSource;
+        let projects = src.list_projects().unwrap();
+        let mut agg = crate::stats::aggregate::Aggregator::new();
+        for p in &projects {
+            let sessions = src.discover_stats_sessions(&p.dir_name).unwrap_or_default();
+            for s in sessions {
+                let turns = read_turns(std::path::Path::new(&s.path));
+                agg.feed_session(&crate::stats::aggregate::SessionFeed {
+                    agent: "codex",
+                    project_dir_name: &p.dir_name,
+                    project_display: &p.display_path,
+                    session_id: &s.id,
+                    path: &s.path,
+                    title: &s.title,
+                    last_modified: s.modified,
+                    message_count: s.message_count,
+                    turns: &turns,
+                });
+            }
+        }
+        let s = agg.snapshot("codex");
+        eprintln!("\n=== FULL CODEX SCAN ===");
+        eprintln!("sessions: {}", s.session_count);
+        eprintln!("calls: {}", s.call_count);
+        eprintln!("cost: ${:.2}", s.cost_usd);
+        eprintln!("input: {} ({:.1}M)", s.usage.input_tokens, s.usage.input_tokens as f64 / 1e6);
+        eprintln!("output: {} ({:.1}M)", s.usage.output_tokens, s.usage.output_tokens as f64 / 1e6);
+        eprintln!("cache_read: {} ({:.1}M)", s.usage.cache_read_input_tokens, s.usage.cache_read_input_tokens as f64 / 1e6);
     }
 }

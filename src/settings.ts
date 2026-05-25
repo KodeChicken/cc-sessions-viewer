@@ -1,4 +1,5 @@
-import { ref, watchEffect } from 'vue'
+import { ref, watch, watchEffect } from 'vue'
+import type { StatsRange, StatsScope } from './types'
 
 export type Lang = 'en' | 'zh' | 'zh-TW' | 'ja'
 export type Theme = 'light' | 'dark' | 'system'
@@ -6,6 +7,8 @@ export type Theme = 'light' | 'dark' | 'system'
 const LANG_KEY = 'lang'
 const THEME_KEY = 'theme'
 const PREFS_KEY = 'projPrefs:v1'
+const STATS_SCOPE_KEY = 'statsScope:v1'
+const STATS_RANGE_KEY = 'statsRange:v1'
 
 /**
  * 根据浏览器/系统语言探测默认语言。
@@ -69,3 +72,21 @@ window
 export function clearAppCache() {
   localStorage.removeItem(PREFS_KEY)
 }
+
+// ---------- Statistics 页的 scope / range 持久化 ----------
+// 默认 all agents + all time；用户改完写回 localStorage，下次进入沿用上次选择。
+
+function readStatsScope(): StatsScope {
+  const v = localStorage.getItem(STATS_SCOPE_KEY)
+  return v === 'claude' || v === 'codex' || v === 'gemini' || v === 'all' ? v : 'all'
+}
+function readStatsRange(): StatsRange {
+  const v = localStorage.getItem(STATS_RANGE_KEY)
+  return v === 'today' || v === 'days7' || v === 'days30' || v === 'all' ? v : 'all'
+}
+
+export const statsScope = ref<StatsScope>(readStatsScope())
+export const statsRange = ref<StatsRange>(readStatsRange())
+
+watch(statsScope, (v) => localStorage.setItem(STATS_SCOPE_KEY, v))
+watch(statsRange, (v) => localStorage.setItem(STATS_RANGE_KEY, v))

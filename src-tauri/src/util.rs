@@ -109,6 +109,55 @@ pub fn format_iso8601_utc(secs: i64, ms: u32) -> String {
     )
 }
 
+/// 毫秒时间戳 → `YYYY-MM-DD`（UTC）。给统计 dashboard 的活跃度热图按日分桶用。
+/// 与 `format_iso8601_utc` 共享同一套手写历法（不引 chrono）—— 这里只截前 10 位日期部分。
+pub fn yyyymmdd_utc(ms: u64) -> String {
+    let s = format_iso8601_utc((ms / 1000) as i64, (ms % 1000) as u32);
+    s.chars().take(10).collect()
+}
+
+/// ISO-8601 → unix 毫秒。只解析 `YYYY-MM-DDTHH:MM:SS[.fff]Z` 这一形态；
+/// 其他形态退到 None（聚合器会用文件 mtime 兜底）。手写以免引 chrono。
+/// 给统计聚合器从 JSONL 时间戳串还原 unix ms 用。
+pub fn parse_iso8601_ms(s: &str) -> Option<i64> {
+    let bytes = s.as_bytes();
+    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
+        return None;
+    }
+    let year: i64 = std::str::from_utf8(&bytes[0..4]).ok()?.parse().ok()?;
+    let mon: u32 = std::str::from_utf8(&bytes[5..7]).ok()?.parse().ok()?;
+    let day: u32 = std::str::from_utf8(&bytes[8..10]).ok()?.parse().ok()?;
+    let h: u32 = std::str::from_utf8(&bytes[11..13]).ok()?.parse().ok()?;
+    let m: u32 = std::str::from_utf8(&bytes[14..16]).ok()?.parse().ok()?;
+    let sec: u32 = std::str::from_utf8(&bytes[17..19]).ok()?.parse().ok()?;
+    let mut ms: u32 = 0;
+    if bytes.len() > 19 && bytes[19] == b'.' {
+        let end = (20 + 3).min(bytes.len());
+        let frac = std::str::from_utf8(&bytes[20..end]).ok()?;
+        if let Ok(n) = frac.parse::<u32>() {
+            ms = n * 10u32.pow(3 - frac.len() as u32);
+        }
+    }
+    // 转 unix epoch 秒：简易历法
+    let mut days: i64 = 0;
+    for y in 1970..year {
+        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        days += if leap { 366 } else { 365 };
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let mdays: [i64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    for &md in mdays.iter().take((mon - 1) as usize) {
+        days += md;
+    }
+    days += (day - 1) as i64;
+    let secs = days * 86400 + (h as i64) * 3600 + (m as i64) * 60 + sec as i64;
+    Some(secs * 1000 + ms as i64)
+}
+
 /// 校验 rename 名称：去空白后非空且不过长。返回 trimmed 切片。
 pub fn validate_rename_name(name: &str) -> Result<&str, String> {
     let trimmed = name.trim();
@@ -150,4 +199,26 @@ pub fn append_jsonl_line(path: &Path, line: &str) -> Result<(), String> {
         .map_err(|e| format!("写入 rename 行失败: {e}"))?;
     f.write_all(b"\n").map_err(|e| format!("写入换行失败: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yyyymmdd_at_unix_epoch_is_1970_01_01() {
+        assert_eq!(yyyymmdd_utc(0), "1970-01-01");
+    }
+
+    #[test]
+    fn yyyymmdd_handles_leap_day() {
+        // 2024-02-29T00:00:00Z = 1709164800 s
+        assert_eq!(yyyymmdd_utc(1_709_164_800_000), "2024-02-29");
+    }
+
+    #[test]
+    fn yyyymmdd_strips_to_date_only() {
+        // 2026-05-23T12:34:56Z = 1779539696 s
+        assert_eq!(yyyymmdd_utc(1_779_539_696_000), "2026-05-23");
+    }
 }

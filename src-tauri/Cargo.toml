@@ -1,6 +1,6 @@
 [package]
-name = "claude-session-viewer"
-version = "0.1.1"
+name = "cc-sessions-viewer"
+version = "0.1.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -28,6 +28,12 @@ dirs = "5"
 rusqlite = { version = "0.32", features = ["bundled"] }
 # 全局搜索时跨 session 并行扫描；rayon 是纯 CPU work-stealing 线程池，零运行时配置。
 rayon = "1"
+# 统计活动分类（codeburn 风格的关键词正则）+ Bash 命令首词提取用。
+regex = "1"
+once_cell = "1"
+# 实时 tail：监听打开会话所在 JSONL 文件的写入事件。
+# default-features=false 关掉 cross-beam 依赖，统一走平台原生（FSEvents/inotify/ReadDirectoryChangesW）。
+notify = { version = "6", default-features = false, features = ["macos_fsevent"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

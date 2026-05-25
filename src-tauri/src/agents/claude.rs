@@ -11,9 +11,13 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::SessionSource;
-use crate::types::{Block, DiffHunk, DiffLine, Msg, ProjectInfo, SessionMeta, SessionPage};
+use crate::stats::{pricing, shell as shell_util, types::{CallRecord, Turn}};
+use crate::types::{
+    Block, DiffHunk, DiffLine, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary,
+};
 use crate::util::{
-    append_jsonl_line, clean_title, home, is_jsonl, mtime_millis, text_block, validate_rename_name,
+    append_jsonl_line, clean_title, home, is_jsonl, mtime_millis, parse_iso8601_ms, text_block,
+    validate_rename_name,
 };
 
 pub struct ClaudeSource;
@@ -103,6 +107,34 @@ impl SessionSource for ClaudeSource {
         read(path)
     }
 
+    fn discover_stats_sessions(&self, project_key: &str) -> Result<Vec<SessionMeta>, String> {
+        let pdir = projects_dir().join(project_key);
+        let mut out: Vec<SessionMeta> = Vec::new();
+        let entries = fs::read_dir(&pdir).map_err(|e| format!("读取会话目录失败: {e}"))?;
+        for f in entries.flatten() {
+            let path = f.path();
+            if is_jsonl(&path) {
+                out.push(scan(&path));
+                continue;
+            }
+            // <sessionId>/subagents/*.jsonl —— 子代理产生的独立 JSONL，
+            // 是真实的 API 调用且独立计费。codeburn 用同名 collectJsonlFiles 逻辑。
+            // 不进 list_sessions（避免污染聊天列表），只进统计扫描。
+            if path.is_dir() {
+                let sub = path.join("subagents");
+                if let Ok(sub_entries) = fs::read_dir(&sub) {
+                    for sf in sub_entries.flatten() {
+                        let sp = sf.path();
+                        if is_jsonl(&sp) {
+                            out.push(scan(&sp));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     fn rename_session(&self, path: &Path, name: &str) -> Result<(), String> {
         let trimmed = validate_rename_name(name)?;
         let id = path
@@ -136,7 +168,7 @@ impl SessionSource for ClaudeSource {
         scan(path).title
     }
 
-    fn resume_cli(&self, session_id: &str) -> String {
+    fn resume_cli(&self, session_id: &str, _path: &str) -> String {
         format!("claude --resume {session_id}")
     }
 
@@ -147,9 +179,53 @@ impl SessionSource for ClaudeSource {
     fn image_src(&self, block: &Value) -> Option<String> {
         image_src(block)
     }
+
+    fn usage_summary(&self, path: &str) -> Result<UsageSummary, String> {
+        usage_summary(Path::new(path))
+    }
+
+    fn read_turns(&self, path: &str) -> Result<Vec<Turn>, String> {
+        Ok(read_turns(Path::new(path)))
+    }
 }
 
 // ----- 内部解析 --------------------------------------------------------------
+
+/// 一次性把整份 JSONL 走一遍，累加每条 assistant 消息里的 `message.usage` 字段。
+/// Claude 的形状：
+///   {"type":"assistant","message":{"usage":{"input_tokens":N, "output_tokens":N,
+///       "cache_creation_input_tokens":N, "cache_read_input_tokens":N, ...}}}
+/// user 消息没有 usage；不存在的字段当 0 处理。文件不可读 → 返回 default 而非
+/// 错误，避免会话列表里因为一个坏文件整个挂掉 —— 用户看到「0 tokens」也比看到
+/// 全列表挂掉好。
+fn usage_summary(fp: &Path) -> Result<UsageSummary, String> {
+    let file = match fs::File::open(fp) {
+        Ok(f) => f,
+        Err(_) => return Ok(UsageSummary::default()),
+    };
+    let mut acc = UsageSummary::default();
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let usage = v
+            .get("message")
+            .and_then(|m| m.get("usage"))
+            .or_else(|| v.get("usage"));
+        let Some(u) = usage else { continue };
+        acc.input_tokens += u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+        acc.output_tokens += u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+        acc.cache_creation_input_tokens += u
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        acc.cache_read_input_tokens += u
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+    }
+    Ok(acc.finalize())
+}
 
 fn first_cwd(fp: &Path) -> Option<String> {
     let file = fs::File::open(fp).ok()?;
@@ -653,6 +729,176 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
     Ok(msgs)
 }
 
+// ---- read_turns（统计聚合用）---------------------------------------------
+//
+// 单遍走 JSONL 把每条消息抽成结构化的 Turn / CallRecord。和 `read()` 的区别：
+//   - 不返回 UI 用的 Block 结构（thinking / text / image / tool_result 全跳）
+//   - 在每个 assistant message 上把 usage / model 顺便挖出来
+//   - tool_use 块只关心 name 和 input —— name 直接进 tools，Bash 的 input 抽
+//     第一个命令词进 bash_commands；mcp__server__tool 前缀抽 server 进 mcp_servers
+//
+// 一条 user 消息开启一个 Turn；之后的 assistant 消息持续 push 进该 Turn 的 calls。
+// 没有 user 消息打头的孤儿 assistant（很少见但合法）合并到上一个 Turn 末尾。
+fn read_turns(fp: &Path) -> Vec<Turn> {
+    let session_id = fp
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.trim_end_matches(".jsonl").to_string())
+        .unwrap_or_default();
+    let file = match fs::File::open(fp) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut turns: Vec<Turn> = Vec::new();
+    let mut cur: Option<Turn> = None;
+    let mut project_path: String = String::new();
+
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if project_path.is_empty() {
+            if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
+                project_path = c.to_string();
+            }
+        }
+        let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        if t != "user" && t != "assistant" {
+            continue;
+        }
+        let ts_ms = v
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .and_then(parse_iso8601_ms)
+            .unwrap_or(0);
+
+        if t == "user" {
+            // 把上一轮（含 calls 的）写出
+            if let Some(prev) = cur.take() {
+                turns.push(prev);
+            }
+            let user_text = user_text(&v).unwrap_or_default();
+            cur = Some(Turn {
+                user_message: user_text,
+                project_path: project_path.clone(),
+                session_id: session_id.clone(),
+                calls: Vec::new(),
+                timestamp_ms: ts_ms,
+            });
+            continue;
+        }
+
+        // assistant
+        let message = match v.get("message") {
+            Some(m) => m,
+            None => continue,
+        };
+        let model = message
+            .get("model")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        // Claude `message.id`（"msg_xxx"）—— 用于跨文件去重。fork / continue / sub-agent
+        // JSONL 之间常见同一条 assistant 消息被多个文件抄录，按这个 id 跳过避免翻倍。
+        let message_id = message
+            .get("id")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        // usage：claude 是 message.usage.{input_tokens, output_tokens, cache_*}
+        let mut usage = UsageSummary::default();
+        if let Some(u) = message.get("usage") {
+            usage.input_tokens = u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+            usage.output_tokens = u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+            usage.cache_creation_input_tokens = u
+                .get("cache_creation_input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            usage.cache_read_input_tokens = u
+                .get("cache_read_input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            usage = usage.finalize();
+        }
+        // 工具集合
+        let mut tools: Vec<String> = Vec::new();
+        let mut bash_commands: Vec<String> = Vec::new();
+        let mut mcp_servers: Vec<String> = Vec::new();
+        let mut has_agent_spawn = false;
+        if let Some(content) = message.get("content").and_then(|x| x.as_array()) {
+            for el in content {
+                if el.get("type").and_then(|x| x.as_str()) != Some("tool_use") {
+                    continue;
+                }
+                let name = el.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                if matches!(name.as_str(), "Task" | "Agent" | "task_spawn") {
+                    has_agent_spawn = true;
+                }
+                if name == "Bash" || name == "BashTool" {
+                    if let Some(input) = el.get("input") {
+                        // input 可能是 object 或 string；shell_util 接受字符串
+                        let raw = match input {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        if let Some(cmd) = shell_util::extract_first_command(&raw) {
+                            bash_commands.push(cmd);
+                        }
+                    }
+                }
+                if let Some(server) = shell_util::extract_mcp_server(&name) {
+                    mcp_servers.push(server);
+                }
+                tools.push(name);
+            }
+        }
+        let cost = if usage.total == 0 { 0.0 } else { pricing::cost_usd(&model, &usage) };
+        let call = CallRecord {
+            model,
+            message_id,
+            usage,
+            cost_usd: cost,
+            tools,
+            bash_commands,
+            mcp_servers,
+            has_plan_mode: false, // Claude 不显式记 plan mode；用 ExitPlanMode 工具名兜底判断
+            has_agent_spawn,
+        };
+        if let Some(turn) = cur.as_mut() {
+            // 把 ExitPlanMode 工具识别为 plan-mode 标记
+            if call.tools.iter().any(|t| t == "ExitPlanMode") {
+                turn.calls.push(CallRecord {
+                    has_plan_mode: true,
+                    ..call
+                });
+            } else {
+                turn.calls.push(call);
+            }
+        } else {
+            // 孤儿 assistant（合法但少见）：起一个空 user_message 的占位 turn
+            cur = Some(Turn {
+                user_message: String::new(),
+                project_path: project_path.clone(),
+                session_id: session_id.clone(),
+                calls: vec![call],
+                timestamp_ms: ts_ms,
+            });
+        }
+    }
+    if let Some(t) = cur {
+        turns.push(t);
+    }
+    turns
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,5 +954,133 @@ mod tests {
             "attachment": { "type": "queued_command", "prompt": "   " },
         });
         assert!(queued_command_blocks(&v).is_none());
+    }
+
+    // ---- usage_summary --------------------------------------------------
+
+    use std::io::Write;
+
+    fn write_temp(name: &str, lines: &[&str]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("csv-claude-usage-tests");
+        let _ = fs::create_dir_all(&dir);
+        let p = dir.join(name);
+        let mut f = fs::File::create(&p).unwrap();
+        for l in lines {
+            writeln!(f, "{l}").unwrap();
+        }
+        p
+    }
+
+    #[test]
+    fn usage_sums_input_output_cache_across_assistant_messages() {
+        let p = write_temp("sum.jsonl", &[
+            r#"{"type":"user","message":{"content":"hi"}}"#,
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}}"#,
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":100}}}"#,
+        ]);
+        let u = usage_summary(&p).unwrap();
+        assert_eq!(u.input_tokens, 13);
+        assert_eq!(u.output_tokens, 12);
+        assert_eq!(u.cache_creation_input_tokens, 100);
+        assert_eq!(u.cache_read_input_tokens, 100);
+        assert_eq!(u.reasoning_output_tokens, 0);
+        assert_eq!(u.total, 225);
+    }
+
+    #[test]
+    fn usage_ignores_lines_without_usage() {
+        let p = write_temp("no-usage.jsonl", &[
+            r#"{"type":"user","message":{"content":"hi"}}"#,
+            r#"{"type":"system","content":"x"}"#,
+        ]);
+        assert_eq!(usage_summary(&p).unwrap(), UsageSummary::default());
+    }
+
+    #[test]
+    fn usage_handles_missing_subfields_as_zero() {
+        let p = write_temp("partial.jsonl", &[
+            // 只有 output_tokens，其他字段缺失 —— 不应该挂
+            r#"{"type":"assistant","message":{"usage":{"output_tokens":42}}}"#,
+        ]);
+        let u = usage_summary(&p).unwrap();
+        assert_eq!(u.output_tokens, 42);
+        assert_eq!(u.total, 42);
+    }
+
+    #[test]
+    fn usage_returns_default_when_file_missing() {
+        let p = std::path::PathBuf::from("/tmp/csv-claude-usage-tests/nonexistent.jsonl");
+        assert_eq!(usage_summary(&p).unwrap(), UsageSummary::default());
+    }
+
+    #[test]
+    #[ignore = "manual full-scan; reads every Claude JSONL on disk"]
+    fn dedup_full_claude_scan() {
+        let src = ClaudeSource;
+        let projects = src.list_projects().unwrap();
+        let mut agg = crate::stats::aggregate::Aggregator::new();
+        for p in &projects {
+            let sessions = src.discover_stats_sessions(&p.dir_name).unwrap_or_default();
+            for s in sessions {
+                let turns = read_turns(std::path::Path::new(&s.path));
+                agg.feed_session(&crate::stats::aggregate::SessionFeed {
+                    agent: "claude",
+                    project_dir_name: &p.dir_name,
+                    project_display: &p.display_path,
+                    session_id: &s.id,
+                    path: &s.path,
+                    title: &s.title,
+                    last_modified: s.modified,
+                    message_count: s.message_count,
+                    turns: &turns,
+                });
+            }
+        }
+        let snap = agg.snapshot("claude");
+        eprintln!("\n=== FULL CLAUDE SCAN (with dedup + subagents) ===");
+        eprintln!("sessions: {}", snap.session_count);
+        eprintln!("calls: {}", snap.call_count);
+        eprintln!("cost: ${:.2}", snap.cost_usd);
+        eprintln!("input: {} ({:.1}M)", snap.usage.input_tokens, snap.usage.input_tokens as f64 / 1e6);
+        eprintln!("output: {} ({:.1}M)", snap.usage.output_tokens, snap.usage.output_tokens as f64 / 1e6);
+        eprintln!("cache_read: {} ({:.1}M)", snap.usage.cache_read_input_tokens, snap.usage.cache_read_input_tokens as f64 / 1e6);
+        eprintln!("cache_write: {} ({:.1}M)", snap.usage.cache_creation_input_tokens, snap.usage.cache_creation_input_tokens as f64 / 1e6);
+        eprintln!("\ndaily activity (top 15 by cost):");
+        let mut daily = snap.daily_activity.clone();
+        daily.sort_by(|a, b| b.cost_usd.partial_cmp(&a.cost_usd).unwrap_or(std::cmp::Ordering::Equal));
+        for d in daily.iter().take(15) {
+            eprintln!("  {}  ${:>7.2}  calls={}", d.date, d.cost_usd, d.call_count);
+        }
+    }
+
+    #[test]
+    #[ignore = "manual; set CLAUDE_DEDUP_FIXTURE=<path>.jsonl to run"]
+    fn dedup_verify_real_file() {
+        let Ok(path) = std::env::var("CLAUDE_DEDUP_FIXTURE") else { return };
+        let turns = read_turns(std::path::Path::new(&path));
+        let total: usize = turns.iter().map(|t| t.calls.len()).sum();
+        let uniq: std::collections::HashSet<&String> = turns
+            .iter()
+            .flat_map(|t| &t.calls)
+            .filter_map(|c| c.message_id.as_ref())
+            .collect();
+        eprintln!("\nfile: {path}");
+        eprintln!("  turns: {} calls(pre-dedup): {} unique msg-ids: {}", turns.len(), total, uniq.len());
+        let mut agg = crate::stats::aggregate::Aggregator::new();
+        agg.feed_session(&crate::stats::aggregate::SessionFeed {
+            agent: "claude",
+            project_dir_name: "p",
+            project_display: "/p",
+            session_id: "s",
+            path: &path,
+            title: "t",
+            last_modified: 1,
+            message_count: 0,
+            turns: &turns,
+        });
+        let s = agg.snapshot("test");
+        eprintln!("aggregator: call_count={} cost=${:.2} input={} output={} cache_read={}",
+            s.call_count, s.cost_usd,
+            s.usage.input_tokens, s.usage.output_tokens, s.usage.cache_read_input_tokens);
     }
 }

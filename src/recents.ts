@@ -42,3 +42,12 @@ export function removeRecent(agent: Agent, dir: string) {
   recents.value = { ...recents.value, [agent]: next }
   localStorage.setItem(KEY, JSON.stringify(recents.value))
 }
+
+/** 清空某 agent 的最近打开列表 —— Welcome 区段右侧「清除」按钮。 */
+export function clearRecents(agent: Agent) {
+  if (!(recents.value[agent]?.length)) return
+  const next = { ...recents.value }
+  delete next[agent]
+  recents.value = next
+  localStorage.setItem(KEY, JSON.stringify(recents.value))
+}

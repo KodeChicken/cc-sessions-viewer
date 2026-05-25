@@ -13,8 +13,15 @@ import {
   IconDatabase,
   IconInfo,
   IconRefresh,
+  IconExternalLink,
 } from './icons'
 import * as api from '../api'
+import {
+  latestVersion,
+  openReleasePage,
+  syncFromManualCheck,
+  updateAvailable,
+} from '../updateCheck'
 
 const props = defineProps<{ cacheBytes: number }>()
 const emit = defineEmits<{ close: []; clearCache: [] }>()
@@ -32,6 +39,14 @@ onMounted(async () => {
     version.value = await api.appVersion()
   } catch {
     /* ignore */
+  }
+  // 如果后台检查在启动时就已经发现有新版本，开 Settings 时直接把同样的提示
+  // 展示出来 —— 用户不必再点一次「检查更新」就能看到信息和「打开 release」链接。
+  if (updateAvailable.value && latestVersion.value) {
+    updateMsg.value = t('settings.updateAvailable', {
+      v: latestVersion.value,
+      cur: version.value,
+    })
   }
 })
 
@@ -57,6 +72,9 @@ async function doCheck() {
     updateMsg.value = r.hasUpdate
       ? t('settings.updateAvailable', { v: r.latest, cur: r.current })
       : t('settings.upToDate', { v: r.current })
+    // 同步给后台检查模块：手动结果是最新的真值，顺便刷新 24h TTL，
+    // 让侧边栏小红点立即跟手动检查的结论一致。
+    syncFromManualCheck(r)
   } catch (e) {
     updateMsg.value = t('settings.updateFail', { e: String(e) })
   } finally {
@@ -143,10 +161,23 @@ async function doCheck() {
             <span class="set-section-tail mono">v{{ version }}</span>
           </header>
           <p v-if="updateMsg" class="set-section-desc">{{ updateMsg }}</p>
-          <button class="btn" :disabled="checking" @click="doCheck">
-            <IconRefresh v-if="!checking" />
-            {{ checking ? t('settings.checking') : t('settings.checkUpdate') }}
-          </button>
+          <div class="set-update-actions">
+            <button class="btn" :disabled="checking" @click="doCheck">
+              <IconRefresh v-if="!checking" />
+              {{ checking ? t('settings.checking') : t('settings.checkUpdate') }}
+            </button>
+            <!-- 有新版本时多挂一个「打开 release」按钮（优先用 GitHub 返回的
+                 html_url，没拿到就退回 /releases/latest）。primary 视觉权重更高，
+                 让用户清楚下一步该点哪。 -->
+            <button
+              v-if="updateAvailable"
+              class="btn primary"
+              @click="openReleasePage()"
+            >
+              <IconExternalLink />
+              {{ t('settings.viewRelease', { v: latestVersion ?? '' }) }}
+            </button>
+          </div>
         </section>
       </div>
     </div>

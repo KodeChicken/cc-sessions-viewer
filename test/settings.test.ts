@@ -149,3 +149,40 @@ describe('language detection on first load', () => {
     expect(fallback.theme.value).toBe('system')
   })
 })
+
+describe('stats scope / range persistence', () => {
+  async function freshStats(opts: { scope?: string; range?: string }) {
+    localStorage.clear()
+    if (opts.scope) localStorage.setItem('statsScope:v1', opts.scope)
+    if (opts.range) localStorage.setItem('statsRange:v1', opts.range)
+    vi.resetModules()
+    return import('../src/settings')
+  }
+
+  it('defaults to all agents + all time when no preference is stored', async () => {
+    const mod = await freshStats({})
+    expect(mod.statsScope.value).toBe('all')
+    expect(mod.statsRange.value).toBe('all')
+  })
+
+  it('restores a valid persisted scope and range', async () => {
+    const mod = await freshStats({ scope: 'gemini', range: 'days7' })
+    expect(mod.statsScope.value).toBe('gemini')
+    expect(mod.statsRange.value).toBe('days7')
+  })
+
+  it('ignores invalid persisted values and falls back to defaults', async () => {
+    const mod = await freshStats({ scope: 'bogus', range: 'forever' })
+    expect(mod.statsScope.value).toBe('all')
+    expect(mod.statsRange.value).toBe('all')
+  })
+
+  it('writes back to localStorage when the ref changes', async () => {
+    const mod = await freshStats({})
+    mod.statsScope.value = 'codex'
+    mod.statsRange.value = 'days30'
+    await nextTick()
+    expect(localStorage.getItem('statsScope:v1')).toBe('codex')
+    expect(localStorage.getItem('statsRange:v1')).toBe('days30')
+  })
+})

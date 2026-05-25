@@ -18,9 +18,17 @@ import {
   IconFold,
   IconUnfold,
   IconCheck,
+  IconChart,
 } from '../icons'
 import type { SearchScope } from '../../chatToolbar'
 import { useDebouncedSearch } from '../../useDebouncedSearch'
+
+// 「会话统计」按钮把详细 token / 工具 / cost 分析丢到独立页面里去算 ——
+// 之前 ChatTopbar 内联的 chip 会在打开聊天时同步触发后端 session_usage，
+// 会话 JSONL 大时明显拖累首屏渲染。改为按需触发的入口，主聊天页保持轻量。
+const emit = defineEmits<{
+  (e: 'open-session-stats'): void
+}>()
 
 const searchInput = ref<HTMLInputElement>()
 
@@ -194,6 +202,15 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
     </div>
 
     <div class="ct-actions">
+      <!-- 会话统计入口：跳到独立页面（按需流式计算）。
+           原内联 chip 拉 session_usage 会拖慢聊天渲染，已挪到这里。 -->
+      <button
+        class="ct-btn"
+        v-tooltip="t('chat.tb.sessionStats')"
+        @click="emit('open-session-stats')"
+      >
+        <IconChart />
+      </button>
       <button
         class="ct-btn"
         v-tooltip="

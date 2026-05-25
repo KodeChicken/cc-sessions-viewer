@@ -18,7 +18,12 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use crate::types::{Msg, ProjectInfo, SearchHit, SessionMeta, SessionPage};
+use crate::stats::types::Turn;
+use crate::types::{
+    AgentStats, DailyActivity, Msg, ProjectInfo, ProjectStats, SearchHit, SessionMeta,
+    SessionPage, UsageSummary,
+};
+use crate::util::yyyymmdd_utc;
 
 /// 「会话 → 用户消息纯文本」缓存：搜索时跳过 JSONL 重新解析。
 /// key 是文件绝对路径；value 是 (mtime, Vec<(msg_index, msg_uuid, text)>)。
@@ -116,7 +121,7 @@ pub trait SessionSource: Send + Sync {
     fn trash_title(&self, path: &Path) -> String;
 
     /// 终端里 resume 一个会话用的 CLI 命令。`session_id` 已经过 [A-Za-z0-9-]+ 校验。
-    fn resume_cli(&self, session_id: &str) -> String;
+    fn resume_cli(&self, session_id: &str, path: &str) -> String;
 
     /// 终端里开一个全新会话用的 CLI 命令（不带 --resume）。
     fn new_session_cli(&self) -> String;
@@ -125,6 +130,160 @@ pub trait SessionSource: Send + Sync {
     /// 主要供该 agent 自己的 `read_session` 内部使用，放在 trait 上也方便外部预览图片块。
     fn image_src(&self, block: &Value) -> Option<String>;
 
+    /// 单个会话的 token 用量汇总。空数据 / agent 不记 token 时返回
+    /// `UsageSummary::default()` 占位 —— 前端可以照画零值角标，不需要特判 None。
+    /// 调用方应该自己负责缓存（`session_usage` 命令走 `USAGE_CACHE`）。
+    fn usage_summary(&self, path: &str) -> Result<UsageSummary, String>;
+
+    /// 把一个 JSONL 解析成 `Turn` 列表，给统计聚合器（stats）使用。
+    /// 一个 Turn = 一条用户消息 + 紧随其后的 N 个 assistant API call；
+    /// 每个 call 记录该次调用用了哪个模型、产生了多少 token、调用了哪些工具
+    /// （含 Bash 命令首词 / MCP server 名）。
+    ///
+    /// Agent 没记某些字段（如 Gemini 不写 usage、Codex 把 token 算在 session
+    /// 级而非 call 级）时按 0 / 空列表处理，不要返回错误 —— 一个坏文件不要拖垮
+    /// 整个全局统计。失败仅在文件完全无法打开时返回 Err，调用方会跳过这个文件。
+    fn read_turns(&self, path: &str) -> Result<Vec<Turn>, String>;
+
+    /// 统计扫描时使用的会话发现接口 —— 默认实现 = list_sessions(0, usize::MAX)。
+    /// Claude 重写它以同时纳入 `<projects>/<dir>/<sessionId>/subagents/*.jsonl`，
+    /// 否则统计会缺一大块（sub-agent 是实打实的 API 调用且独立计费）。
+    /// list_sessions 仍只返回顶层文件 —— 别把 sub-agent 塞进聊天列表，否则
+    /// 用户的会话清单会被自动生成的小段污染。
+    fn discover_stats_sessions(&self, project_key: &str) -> Result<Vec<SessionMeta>, String> {
+        Ok(self.list_sessions(project_key, 0, usize::MAX)?.sessions)
+    }
+}
+
+// ============================ 用量缓存（按文件 mtime 失效） ============================
+// 跟 USER_TEXT_CACHE 同模式：把每个 JSONL 的解析结果用 (path, mtime) 锁住，
+// 后端命令 `session_usage` 命中直接返回，miss 才让 agent 走一次全文件扫描。
+// 单个 entry ~ 48 B，放心存。
+static USAGE_CACHE: Mutex<Option<HashMap<String, (u64, UsageSummary)>>> = Mutex::new(None);
+
+fn cached_usage(path: &str, mtime: u64) -> Option<UsageSummary> {
+    let g = USAGE_CACHE.lock().ok()?;
+    let m = g.as_ref()?;
+    let (saved, u) = m.get(path)?;
+    if *saved != mtime {
+        return None;
+    }
+    Some(*u)
+}
+
+fn store_usage(path: String, mtime: u64, u: UsageSummary) {
+    if let Ok(mut g) = USAGE_CACHE.lock() {
+        let m = g.get_or_insert_with(HashMap::new);
+        m.insert(path, (mtime, u));
+    }
+}
+
+/// 命令层调用入口：先查缓存、miss 才让 agent 走 `usage_summary`。
+/// 这一层不在 trait 上是为了让具体 agent 不必感知缓存策略 —— 各 agent 只关心
+/// 「读一个文件、算出 UsageSummary」即可。
+pub fn session_usage(
+    src: &(dyn SessionSource + Sync),
+    path: &str,
+) -> Result<UsageSummary, String> {
+    let mt = mtime_of(path);
+    if let Some(u) = cached_usage(path, mt) {
+        return Ok(u);
+    }
+    let u = src.usage_summary(path)?;
+    store_usage(path.to_string(), mt, u);
+    Ok(u)
+}
+
+// ============================ 统计 dashboard ============================
+// 一次性把当前 agent 下的所有项目 + 会话扫一遍，得出聚合数字 / 项目排行 /
+// 日活轴。本身不缓存 —— 上游 `session_usage` 已经有 (path, mtime) 缓存，
+// 二次调用走的是 cache 命中路径，整体开销是常数级。
+//
+// 实现：
+//   1) `list_projects` 拿所有项目
+//   2) 对每个项目 `list_sessions(.., 0, usize::MAX)` 拉全量 SessionMeta
+//   3) 把所有 (project_idx, SessionMeta) 拍平，再 par_iter 拉 usage
+//   4) 单线程聚合：按 project_idx 累加 / 按 yyyymmdd_utc 分桶
+//   5) projects 按 usage.total 降序、daily 按日期升序输出
+pub fn agent_stats(
+    src: &(dyn SessionSource + Sync),
+    agent_name: &str,
+) -> Result<AgentStats, String> {
+    let projects = src.list_projects()?;
+
+    // Pull every session per project. List_sessions is cheap (just mtime + deep-parse window).
+    // 用 usize::MAX 让 agent 把所有都返回（pagination 在这层不需要）。
+    let mut items: Vec<(usize, SessionMeta)> = Vec::new();
+    for (i, p) in projects.iter().enumerate() {
+        match src.list_sessions(&p.dir_name, 0, usize::MAX) {
+            Ok(page) => {
+                for s in page.sessions {
+                    items.push((i, s));
+                }
+            }
+            // 单个项目坏了不让整盘挂；统计页上当作 0 处理。
+            Err(_) => continue,
+        }
+    }
+
+    // 并行拉 usage。session_usage 内部走 (path, mtime) 缓存，重复调用基本零成本。
+    let usages: Vec<UsageSummary> = items
+        .par_iter()
+        .map(|(_, s)| session_usage(src, &s.path).unwrap_or_default())
+        .collect();
+
+    // 项目级聚合槽
+    let mut project_stats: Vec<ProjectStats> = projects
+        .iter()
+        .map(|p| ProjectStats {
+            dir_name: p.dir_name.clone(),
+            display_path: p.display_path.clone(),
+            ..Default::default()
+        })
+        .collect();
+
+    // 日活分桶
+    let mut daily: HashMap<String, DailyActivity> = HashMap::new();
+    // 顶层标量
+    let mut total = AgentStats {
+        scope: agent_name.to_string(),
+        ..Default::default()
+    };
+
+    for ((proj_idx, s), u) in items.iter().zip(usages.iter()) {
+        // 项目槽
+        let p = &mut project_stats[*proj_idx];
+        p.session_count += 1;
+        p.message_count += s.message_count;
+        p.usage.add_assign(u);
+        p.last_modified = p.last_modified.max(s.modified);
+
+        // 日活槽
+        let date = yyyymmdd_utc(s.modified);
+        let d = daily.entry(date.clone()).or_default();
+        if d.date.is_empty() {
+            d.date = date;
+        }
+        d.session_count += 1;
+        d.message_count += s.message_count;
+        d.tokens += u.total;
+
+        // 顶层标量
+        total.session_count += 1;
+        total.message_count += s.message_count;
+        total.usage.add_assign(u);
+    }
+
+    // 项目按 token 总量降序；零 token 的项目沉底
+    project_stats.sort_by_key(|p| std::cmp::Reverse(p.usage.total));
+    // 日活按日期升序，便于前端直接绘图
+    let mut daily_vec: Vec<DailyActivity> = daily.into_values().collect();
+    daily_vec.sort_by(|a, b| a.date.cmp(&b.date));
+
+    total.days_active = daily_vec.len();
+    total.projects = project_stats;
+    total.daily_activity = daily_vec;
+    Ok(total)
 }
 
 /// 全局搜索的具体实现 —— 拎到 trait 外的自由函数里，参数收 `&dyn SessionSource`，

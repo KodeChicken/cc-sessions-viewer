@@ -3,7 +3,8 @@ import { computed } from 'vue'
 import type { Agent, ProjectInfo } from '../types'
 import { shortName } from '../format'
 import { t } from '../i18n'
-import { IconSettings, agentIcons } from './icons'
+import { IconExternalLink, IconSettings, agentIcons } from './icons'
+import { latestVersion, openReleasePage, updateAvailable } from '../updateCheck'
 
 type ProjState = 'pinned' | 'sunk'
 
@@ -101,8 +102,32 @@ function pinColor(p: ProjectInfo): string {
     </div>
 
     <div class="sidebar-footer">
-      <button class="trash-tab" @click="emit('open-settings')">
+      <button
+        class="trash-tab"
+        :class="{ 'has-update': updateAvailable }"
+        v-tooltip="updateAvailable
+          ? t('sidebar.updateAvailable', { v: latestVersion ?? '' })
+          : t('sidebar.settings')"
+        @click="emit('open-settings')"
+      >
         <IconSettings /> {{ t('sidebar.settings') }}
+        <!-- 有新版本时，行尾多挂一个"打开 release 页"按钮（点它直接去 GitHub）+
+             指示红点。@click.stop 防止冒泡到外层 button，否则会顺手把 Settings
+             也打开 —— 用户其实只想去 release 页。 -->
+        <span
+          v-if="updateAvailable"
+          class="sidebar-release-btn"
+          role="button"
+          tabindex="0"
+          v-tooltip="t('sidebar.openRelease', { v: latestVersion ?? '' })"
+          :aria-label="t('sidebar.openRelease', { v: latestVersion ?? '' })"
+          @click.stop="openReleasePage()"
+          @keydown.enter.stop.prevent="openReleasePage()"
+          @keydown.space.stop.prevent="openReleasePage()"
+        >
+          <IconExternalLink />
+        </span>
+        <span v-if="updateAvailable" class="update-dot" aria-hidden="true" />
       </button>
     </div>
   </aside>

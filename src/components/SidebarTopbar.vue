@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { t } from '../i18n'
-import { IconSidebar, IconRefresh, IconTrashOpen } from './icons'
+import { IconSidebar, IconRefresh, IconTrashOpen, IconChart } from './icons'
 
 defineProps<{
   refreshing: boolean
   showTrash: boolean
+  showStats?: boolean
   hasTrash: boolean
 }>()
 
@@ -12,6 +13,7 @@ const emit = defineEmits<{
   (e: 'toggle-sidebar'): void
   (e: 'refresh'): void
   (e: 'open-trash'): void
+  (e: 'open-stats'): void
 }>()
 </script>
 
@@ -35,14 +37,24 @@ const emit = defineEmits<{
         <IconRefresh />
       </button>
     </div>
-    <button
-      class="top-btn topbar-trash-btn"
-      :class="{ active: showTrash }"
-      v-tooltip="t('sidebar.trash')"
-      @click="emit('open-trash')"
-    >
-      <IconTrashOpen />
-      <span v-if="hasTrash" class="trash-dot" aria-hidden="true" />
-    </button>
+    <div class="topbar-icons">
+      <button
+        class="top-btn"
+        :class="{ active: showStats }"
+        v-tooltip="t('sidebar.stats')"
+        @click="emit('open-stats')"
+      >
+        <IconChart />
+      </button>
+      <button
+        class="top-btn topbar-trash-btn"
+        :class="{ active: showTrash }"
+        v-tooltip="t('sidebar.trash')"
+        @click="emit('open-trash')"
+      >
+        <IconTrashOpen />
+        <span v-if="hasTrash" class="trash-dot" aria-hidden="true" />
+      </button>
+    </div>
   </div>
 </template>

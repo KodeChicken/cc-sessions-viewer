@@ -3,9 +3,8 @@ import { computed } from 'vue'
 import type { Agent, ProjectInfo } from '../types'
 import { shortName } from '../format'
 import { t } from '../i18n'
-import { getRecents, removeRecent } from '../recents'
+import { clearRecents, getRecents, removeRecent } from '../recents'
 import {
-  IconEmptyBox,
   IconHistory,
   IconChevronRight,
   IconClose,
@@ -13,6 +12,7 @@ import {
   IconSearch,
   agentIcons,
 } from '../components/icons'
+import appIcon from '../assets/app-icon.png'
 import { openGlobalSearch } from '../globalSearch'
 
 const props = defineProps<{
@@ -55,7 +55,7 @@ const modKey = isMac ? '⌘' : 'Ctrl'
       <IconGithub />
     </button>
     <div class="welcome-inner">
-      <div class="welcome-logo"><IconEmptyBox /></div>
+      <div class="welcome-logo"><img :src="appIcon" alt="" /></div>
       <h1 class="welcome-title">Claude Session Viewer</h1>
 
       <!-- 当前 agent 切换 -->
@@ -92,6 +92,14 @@ const modKey = isMac ? '⌘' : 'Ctrl'
         <div class="welcome-section">
           <IconHistory />
           <span>{{ t('welcome.recent') }}</span>
+          <button
+            class="welcome-section-clear"
+            v-tooltip="t('welcome.clearRecent')"
+            :aria-label="t('welcome.clearRecent')"
+            @click="clearRecents(agent)"
+          >
+            {{ t('welcome.clearRecent') }}
+          </button>
         </div>
         <div
           v-for="p in recentProjects"

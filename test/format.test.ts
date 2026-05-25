@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   formatSize,
   formatTime,
+  formatTokens,
   highlightSegments,
   isCaveatOnlyMsg,
   parseSystemEvent,
@@ -66,6 +67,22 @@ describe('renderText', () => {
   it('emits <command-args> as a code chip and escapes its content', () => {
     const html = renderText('<command-args><x></command-args>')
     expect(html).toContain('<code class="cmd-tag">&lt;x&gt;</code>')
+  })
+
+  it('drops empty <command-args> so /clear etc. do not render a trailing empty chip', () => {
+    const html = renderText(
+      '<command-name>/clear</command-name><command-args></command-args>',
+    )
+    expect(html).toContain('<code class="cmd-tag">/clear</code>')
+    // No empty chip after the /clear pill
+    expect(html).not.toMatch(/<code class="cmd-tag"><\/code>/)
+  })
+
+  it('drops whitespace-only <command-args>', () => {
+    const html = renderText(
+      '<command-name>/init</command-name><command-args>   </command-args>',
+    )
+    expect(html).not.toMatch(/<code class="cmd-tag">\s*<\/code>/)
   })
 
   it('returns an empty string for empty input', () => {
@@ -289,5 +306,41 @@ describe('highlightSegments', () => {
 
   it('ignores a whitespace-only query', () => {
     expect(highlightSegments('hello', '   ')).toEqual([{ text: 'hello', hit: false }])
+  })
+})
+
+describe('formatTokens', () => {
+  it('renders sub-1k as plain integer', () => {
+    expect(formatTokens(0)).toBe('0')
+    expect(formatTokens(1)).toBe('1')
+    expect(formatTokens(999)).toBe('999')
+  })
+
+  it('renders thousands with one decimal place', () => {
+    expect(formatTokens(1000)).toBe('1K')
+    expect(formatTokens(1234)).toBe('1.2K')
+    expect(formatTokens(12_345)).toBe('12.3K')
+  })
+
+  it('renders 100K+ as integer K (no decimals)', () => {
+    expect(formatTokens(100_000)).toBe('100K')
+    expect(formatTokens(345_678)).toBe('346K')
+  })
+
+  it('switches to M at one million', () => {
+    expect(formatTokens(1_000_000)).toBe('1M')
+    expect(formatTokens(1_234_567)).toBe('1.2M')
+    expect(formatTokens(123_456_789)).toBe('123M')
+  })
+
+  it('returns "0" for non-finite / negative input', () => {
+    expect(formatTokens(NaN)).toBe('0')
+    expect(formatTokens(-5)).toBe('0')
+    expect(formatTokens(Infinity)).toBe('0')
+  })
+
+  it('rounds sub-1k values to the nearest integer', () => {
+    expect(formatTokens(999.4)).toBe('999')
+    expect(formatTokens(500.6)).toBe('501')
   })
 })

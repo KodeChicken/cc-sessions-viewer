@@ -200,6 +200,12 @@ describe('messagesToMarkdown', () => {
     expect(md).toContain('## Codex')
     expect(md).toContain('- Agent: `codex`')
   })
+
+  it('uses the gemini assistant label when agent is gemini', () => {
+    const md = messagesToMarkdown(session(), [msg('assistant', [text('hi')])], 'gemini')
+    expect(md).toContain('## Gemini')
+    expect(md).toContain('- Agent: `gemini`')
+  })
 })
 
 describe('messagesToHtml', () => {
@@ -345,6 +351,22 @@ describe('messagesToHtml', () => {
     expect(messagesToHtml(session(), [], 'claude')).toContain('data-theme="light"')
     document.documentElement.classList.add('theme-dark')
     expect(messagesToHtml(session(), [], 'claude')).toContain('data-theme="dark"')
+  })
+
+  it('uses the gemini avatar + label for assistant rows on gemini sessions', () => {
+    const html = messagesToHtml(
+      session(),
+      [msg('assistant', [text('hi')])],
+      'gemini',
+    )
+    // 资产标记是 #448aff（material-icon-theme gemini-ai），claude 的 #ff7043
+    // 不应出现在 gemini 导出里。
+    expect(html).toContain('#448aff')
+    expect(html).not.toContain('#ff7043')
+    // 顶部 meta 把 agent 名展示成 `gemini`；assistant role 标签是 'Gemini'
+    expect(html).toContain('>gemini<')
+    expect(html).toContain('Gemini')
+    expect(html).not.toContain('Claude')
   })
 })
 

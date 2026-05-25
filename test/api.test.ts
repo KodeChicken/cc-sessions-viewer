@@ -36,6 +36,39 @@ describe('api wrappers', () => {
     })
   })
 
+  it('sessionUsage → session_usage', () => {
+    api.sessionUsage('codex', '/p/s.jsonl')
+    expect(invoke).toHaveBeenCalledWith('session_usage', {
+      agent: 'codex',
+      path: '/p/s.jsonl',
+    })
+  })
+
+  it('agentStats → agent_stats', () => {
+    api.agentStats('claude')
+    expect(invoke).toHaveBeenCalledWith('agent_stats', { agent: 'claude' })
+  })
+
+  it('startAgentStats → start_agent_stats with scope/range/requestId', () => {
+    api.startAgentStats('all', 'days7', 42)
+    expect(invoke).toHaveBeenCalledWith('start_agent_stats', {
+      scope: 'all',
+      range: 'days7',
+      requestId: 42,
+    })
+  })
+
+  it('cancelStats → cancel_stats', () => {
+    api.cancelStats()
+    expect(invoke).toHaveBeenCalledWith('cancel_stats')
+  })
+
+  it('nextStatsRequestId is monotonically increasing', () => {
+    const a = api.nextStatsRequestId()
+    const b = api.nextStatsRequestId()
+    expect(b).toBeGreaterThan(a)
+  })
+
   it('renameSession → rename_session', () => {
     api.renameSession('claude', '/p/s.jsonl', 'New name')
     expect(invoke).toHaveBeenCalledWith('rename_session', {
@@ -92,12 +125,26 @@ describe('api wrappers', () => {
   })
 
   it('resumeSession → resume_session', () => {
-    api.resumeSession('claude', 'abc-123', '/work/dir')
+    api.resumeSession('claude', 'abc-123', '/work/dir', '/p/s.jsonl')
     expect(invoke).toHaveBeenCalledWith('resume_session', {
       agent: 'claude',
       sessionId: 'abc-123',
       cwd: '/work/dir',
+      path: '/p/s.jsonl',
     })
+  })
+
+  it('watchSession → watch_session', () => {
+    api.watchSession('claude', '/p/s.jsonl')
+    expect(invoke).toHaveBeenCalledWith('watch_session', {
+      agent: 'claude',
+      path: '/p/s.jsonl',
+    })
+  })
+
+  it('unwatchSession → unwatch_session with no args', () => {
+    api.unwatchSession()
+    expect(invoke).toHaveBeenCalledWith('unwatch_session')
   })
 
   it('appVersion → app_version', () => {
@@ -105,13 +152,68 @@ describe('api wrappers', () => {
     expect(invoke).toHaveBeenCalledWith('app_version')
   })
 
-  it('checkUpdate → check_update', () => {
-    api.checkUpdate()
-    expect(invoke).toHaveBeenCalledWith('check_update')
-  })
-
   it('passes the invoke result back to the caller', async () => {
     invoke.mockResolvedValue('1.2.3')
     await expect(api.appVersion()).resolves.toBe('1.2.3')
+  })
+})
+
+describe('checkUpdate', () => {
+  // checkUpdate is the one wrapper that doesn't just forward to invoke —
+  // it calls app_version through invoke, then fetches GitHub's
+  // /releases/latest endpoint and compares tag_name with the local version.
+  beforeEach(() => {
+    invoke.mockReset()
+  })
+
+  function mockFetch(impl: typeof globalThis.fetch) {
+    vi.stubGlobal('fetch', vi.fn(impl))
+  }
+
+  function jsonResponse(body: unknown, init: { status?: number } = {}) {
+    return {
+      ok: (init.status ?? 200) < 400,
+      status: init.status ?? 200,
+      json: async () => body,
+    } as Response
+  }
+
+  it('reports hasUpdate=true when remote tag is newer', async () => {
+    invoke.mockResolvedValueOnce('0.1.1')
+    mockFetch(async () =>
+      jsonResponse({ tag_name: 'v0.2.0', html_url: 'https://x/release' }),
+    )
+    const r = await api.checkUpdate()
+    expect(r).toEqual({
+      current: '0.1.1',
+      latest: '0.2.0',
+      hasUpdate: true,
+      htmlUrl: 'https://x/release',
+    })
+  })
+
+  it('reports hasUpdate=false when versions match', async () => {
+    invoke.mockResolvedValueOnce('0.1.1')
+    mockFetch(async () => jsonResponse({ tag_name: 'v0.1.1' }))
+    const r = await api.checkUpdate()
+    expect(r.hasUpdate).toBe(false)
+    expect(r.latest).toBe('0.1.1')
+  })
+
+  it('treats 404 from /releases/latest as up-to-date (no releases yet)', async () => {
+    invoke.mockResolvedValueOnce('0.1.0')
+    mockFetch(async () => jsonResponse({ message: 'Not Found' }, { status: 404 }))
+    const r = await api.checkUpdate()
+    expect(r).toEqual({
+      current: '0.1.0',
+      latest: '0.1.0',
+      hasUpdate: false,
+    })
+  })
+
+  it('throws on other HTTP errors so the caller can surface the failure', async () => {
+    invoke.mockResolvedValueOnce('0.1.0')
+    mockFetch(async () => jsonResponse({ message: 'rate limited' }, { status: 503 }))
+    await expect(api.checkUpdate()).rejects.toThrow(/503/)
   })
 })

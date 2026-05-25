@@ -33,7 +33,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::SessionSource;
-use crate::types::{Block, Msg, ProjectInfo, SessionMeta, SessionPage};
+use crate::stats::types::Turn;
+use crate::types::{Block, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary};
 use crate::util::{
     append_jsonl_line, clean_title, format_iso8601_utc, home, is_jsonl, mtime_millis, now_millis,
     text_block, validate_rename_name,
@@ -542,8 +543,36 @@ impl SessionSource for GeminiSource {
         first_user_text(path)
     }
 
-    fn resume_cli(&self, _session_id: &str) -> String {
-        // Gemini CLI 不支持按 UUID resume，统一回最新；这是 Gemini 自身的限制。
+    fn resume_cli(&self, session_id: &str, path: &str) -> String {
+        // Gemini CLI 的 --resume 高度依赖当前目录（CWD）。
+        // 我们强制回到该会话所属的 .project_root（由 App.vue 传入的 cwd 保证）。
+        //
+        // 恢复策略优先级：
+        // 1. 如果是标准的 36 位 UUID，优先用 ID 恢复（最稳）。
+        // 2. 否则，计算该文件在项目所有会话中的 1-based 索引（按 mtime 升序）。
+        //    Gemini CLI 的 --list-sessions 索引就是按时间从旧到新排列的。
+        if session_id.len() == 36 && session_id.contains('-') {
+            return format!("gemini --resume {session_id}");
+        }
+
+        let p = Path::new(path);
+        if let Some(parent) = p.parent() {
+            let mut files = Vec::new();
+            if let Ok(rd) = fs::read_dir(parent) {
+                for e in rd.flatten() {
+                    let fp = e.path();
+                    if is_jsonl(&fp) {
+                        let mt = mtime_millis(&fp);
+                        files.push((fp, mt));
+                    }
+                }
+            }
+            // 按修改时间升序（从旧到新），匹配 gemini --list-sessions 的序号
+            files.sort_by_key(|x| x.1);
+            if let Some(pos) = files.iter().position(|x| x.0 == p) {
+                return format!("gemini --resume {}", pos + 1);
+            }
+        }
         "gemini --resume latest".to_string()
     }
 
@@ -554,6 +583,211 @@ impl SessionSource for GeminiSource {
     fn image_src(&self, block: &Value) -> Option<String> {
         image_src(block)
     }
+
+    /// Gemini CLI 目前在 JSONL 里没有稳定的 token 字段（`tokens?` 这一项实际上很少
+    /// 写入，写也只是 prompt+completion 笼统计数），先占位返回零值。
+    /// 等 Gemini CLI 把这块写规整了再切到真实解析。
+    fn usage_summary(&self, _path: &str) -> Result<UsageSummary, String> {
+        Ok(UsageSummary::default())
+    }
+
+    /// 单遍 JSONL → Vec<Turn>。同 id 的 gemini 行最新一份生效（read() 同款去重）。
+    fn read_turns(&self, path: &str) -> Result<Vec<Turn>, String> {
+        Ok(read_turns(Path::new(path)))
+    }
+}
+
+// ---- read_turns（统计聚合用）---------------------------------------------
+//
+// Gemini JSONL 的 gemini-type 行携带：
+//   - model: "gemini-3-flash-preview" / "gemini-2.5-flash" / ...
+//   - tokens: {input, output, cached, thoughts, tool, total}
+//   - toolCalls?: [{name, status, request, ...}]
+//
+// 注意：同 id 的 gemini 记录会**重复写入**（先 toolCalls，再追加 thoughts），
+// 必须按 id 去重，否则同一次调用会被计两遍。`read()` 已经用 HashMap<id, idx> 做
+// 这事；read_turns 复刻同样的去重策略。
+//
+// project_path：从 .project_root 拿，slug 推不出 cwd 时退到 slug 本身。
+fn read_turns(fp: &Path) -> Vec<Turn> {
+    let session_id = fp
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.trim_end_matches(".jsonl").to_string())
+        .unwrap_or_default();
+    let file = match fs::File::open(fp) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+
+    // slug = chats/ 的父目录名；用 slug 反查 .project_root
+    let project_path = fp
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .and_then(cwd_for_slug)
+        .unwrap_or_default();
+
+    // 第一遍：按 id 去重（保留首次位置、内容用最新版）
+    let mut entries: Vec<Value> = Vec::new();
+    let mut id_to_idx: HashMap<String, usize> = HashMap::new();
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let v: Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("sessionId").is_some() && v.get("startTime").is_some() {
+            continue;
+        }
+        if v.get("$set").is_some() {
+            continue;
+        }
+        let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        if t != "user" && t != "gemini" {
+            continue;
+        }
+        match v.get("id").and_then(|x| x.as_str()) {
+            Some(id) if !id.is_empty() => {
+                let key = id.to_string();
+                if let Some(&idx) = id_to_idx.get(&key) {
+                    entries[idx] = v;
+                } else {
+                    id_to_idx.insert(key, entries.len());
+                    entries.push(v);
+                }
+            }
+            _ => entries.push(v),
+        }
+    }
+
+    // 第二遍：line-by-line 折叠成 Turn —— 一条 user 启新 Turn，后续 gemini call 都附在它上。
+    let mut turns: Vec<Turn> = Vec::new();
+    let mut cur: Option<Turn> = None;
+
+    for v in entries {
+        let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        let ts_ms = v
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .and_then(crate::util::parse_iso8601_ms)
+            .unwrap_or(0);
+
+        if t == "user" {
+            if let Some(prev) = cur.take() {
+                turns.push(prev);
+            }
+            let user_text = v
+                .get("content")
+                .map(user_text_from_content)
+                .unwrap_or_default();
+            cur = Some(Turn {
+                user_message: user_text,
+                project_path: project_path.clone(),
+                session_id: session_id.clone(),
+                calls: Vec::new(),
+                timestamp_ms: ts_ms,
+            });
+            continue;
+        }
+
+        // gemini
+        let model = v
+            .get("model")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // tokens.{input,output,cached,thoughts} 直接映射；tool 字段加进 output 末尾
+        // —— UsageSummary 没有专门的 "tool tokens" 字段，少量并入 output 不会严重失真，
+        // pricing 看的是 input/output 两条主线。
+        let mut usage = UsageSummary::default();
+        if let Some(tk) = v.get("tokens") {
+            usage.input_tokens = tk.get("input").and_then(Value::as_u64).unwrap_or(0);
+            usage.output_tokens = tk.get("output").and_then(Value::as_u64).unwrap_or(0);
+            usage.cache_read_input_tokens = tk.get("cached").and_then(Value::as_u64).unwrap_or(0);
+            usage.reasoning_output_tokens =
+                tk.get("thoughts").and_then(Value::as_u64).unwrap_or(0);
+            // tool tokens：折入 output（少量、avoid 凭空丢失）
+            usage.output_tokens += tk.get("tool").and_then(Value::as_u64).unwrap_or(0);
+            usage = usage.finalize();
+        }
+
+        // toolCalls：每个 {name, ...} 是一次调用名。
+        // Gemini CLI 工具命名见 https://github.com/google-gemini/gemini-cli —— 主要工具有：
+        //   read_file / list_directory / glob / replace / write_file / run_shell_command /
+        //   save_memory / search_file_content / update_topic / web_fetch / web_search ...
+        // 对 by_tool 统计，整张名字直接进。bash_commands 用 run_shell_command 抽。
+        let mut tools: Vec<String> = Vec::new();
+        let mut bash_commands: Vec<String> = Vec::new();
+        let mut mcp_servers: Vec<String> = Vec::new();
+        if let Some(tcs) = v.get("toolCalls").and_then(|x| x.as_array()) {
+            for tc in tcs {
+                let name = tc
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                if name == "run_shell_command" {
+                    // request 里通常带 {command: "..."}；用统一的 shell_util 抽首词。
+                    if let Some(req) = tc.get("request") {
+                        let raw = match req {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        if let Some(cmd) = crate::stats::shell::extract_first_command(&raw) {
+                            bash_commands.push(cmd);
+                        }
+                    }
+                }
+                if let Some(server) = crate::stats::shell::extract_mcp_server(&name) {
+                    mcp_servers.push(server);
+                }
+                tools.push(name);
+            }
+        }
+
+        let cost = if usage.total == 0 {
+            0.0
+        } else {
+            crate::stats::pricing::cost_usd(&model, &usage)
+        };
+        let call = crate::stats::types::CallRecord {
+            model,
+            message_id: None,
+            usage,
+            cost_usd: cost,
+            tools,
+            bash_commands,
+            mcp_servers,
+            has_plan_mode: false,
+            has_agent_spawn: false,
+        };
+
+        if let Some(turn) = cur.as_mut() {
+            turn.calls.push(call);
+        } else {
+            // 没有 user 打头的 gemini 行：合成一个空 user 的 Turn 兜底。
+            cur = Some(Turn {
+                user_message: String::new(),
+                project_path: project_path.clone(),
+                session_id: session_id.clone(),
+                calls: vec![call],
+                timestamp_ms: ts_ms,
+            });
+        }
+    }
+    if let Some(last) = cur.take() {
+        turns.push(last);
+    }
+    turns
 }
 
 #[cfg(test)]
@@ -614,6 +848,39 @@ mod tests {
         let tc = json!({"id":"t","name":"x","status":"error","result":[]});
         let blocks = tool_call_blocks(&tc);
         assert!(blocks[1].is_error);
+    }
+
+    #[test]
+    fn read_turns_extracts_tokens_model_and_tools() {
+        // 一条 user + 一条 gemini（带 tokens / model / toolCalls）—— 验证 read_turns 能
+        // 把它折成 1 个 Turn / 1 个 CallRecord 并填好关键字段。
+        let tmp = std::env::temp_dir().join(format!("csv-gem-turns-{}.jsonl", now_millis()));
+        let lines = [
+            r#"{"sessionId":"abc","startTime":"2026-05-15T09:18:37.148Z","lastUpdated":"...","kind":"main"}"#,
+            r#"{"id":"u1","timestamp":"2026-05-15T09:19:00.000Z","type":"user","content":[{"text":"do it"}]}"#,
+            r#"{"id":"g1","timestamp":"2026-05-15T09:19:01.000Z","type":"gemini","content":"ok","model":"gemini-2.5-flash","tokens":{"input":1000,"output":50,"cached":200,"thoughts":30,"tool":5,"total":1285},"toolCalls":[{"name":"read_file"},{"name":"run_shell_command","request":{"command":"git status"}}]}"#,
+        ];
+        std::fs::write(&tmp, lines.join("\n")).unwrap();
+        let turns = read_turns(&tmp);
+        std::fs::remove_file(&tmp).ok();
+
+        assert_eq!(turns.len(), 1);
+        let turn = &turns[0];
+        assert_eq!(turn.user_message, "do it");
+        assert_eq!(turn.calls.len(), 1);
+        let call = &turn.calls[0];
+        assert_eq!(call.model, "gemini-2.5-flash");
+        assert_eq!(call.usage.input_tokens, 1000);
+        // output 应该是 50 + tool(5) = 55
+        assert_eq!(call.usage.output_tokens, 55);
+        assert_eq!(call.usage.cache_read_input_tokens, 200);
+        assert_eq!(call.usage.reasoning_output_tokens, 30);
+        assert!(call.usage.total > 0);
+        assert!(call.cost_usd > 0.0, "expected non-zero cost for gemini-2.5-flash");
+        // 工具
+        assert!(call.tools.iter().any(|t| t == "read_file"));
+        assert!(call.tools.iter().any(|t| t == "run_shell_command"));
+        assert_eq!(call.bash_commands, vec!["git".to_string()]);
     }
 
     #[test]

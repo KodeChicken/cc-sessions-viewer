@@ -33,6 +33,24 @@ if (!globalThis.ResizeObserver) {
   } as unknown as typeof ResizeObserver
 }
 
+// --- IntersectionObserver -------------------------------------------------
+// jsdom omits this too; SessionsView uses it to lazy-load per-card token
+// usage. Tests don't exercise visibility, so a no-op is enough.
+if (!globalThis.IntersectionObserver) {
+  globalThis.IntersectionObserver = class {
+    constructor() {}
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return []
+    }
+    root = null
+    rootMargin = ''
+    thresholds: number[] = []
+  } as unknown as typeof IntersectionObserver
+}
+
 // --- Element.prototype.animate -------------------------------------------
 // Minimal Web Animations API stub: every test that exercises animation only
 // needs `.finished` (a resolved promise) and `.cancel()`.

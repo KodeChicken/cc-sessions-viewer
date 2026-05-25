@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { Agent, ProjectInfo, SessionMeta } from '../types'
-import { formatSize, formatTime, highlightSegments, shortName } from '../format'
+import type { Agent, ProjectInfo, SessionMeta, UsageSummary } from '../types'
+import { formatSize, formatTime, formatTokens, highlightSegments, shortName } from '../format'
 import { t } from '../i18n'
 import {
   filterSessions,
@@ -11,7 +11,7 @@ import {
   selectedSessions,
   toggleSessionSelected,
 } from '../sessionsToolbar'
-import { searchSessions, cancelSearch, nextSearchRequestId } from '../api'
+import { searchSessions, cancelSearch, nextSearchRequestId, sessionUsage } from '../api'
 import {
   IconTrash,
   IconPlay,
@@ -140,6 +140,70 @@ const visibleSessions = computed(() => {
     sessionSearch.value.trim().length >= SEARCH_MIN_LEN ? searchHits.value : props.sessions
   return filterSessions(base)
 })
+
+// ============================ 每卡 token 用量懒加载 ============================
+// 1000+ 会话的列表里同步 fetch 每条 usage 会把 IPC 撑爆。IntersectionObserver
+// 监听卡片进入视口，看到的才请求；已请求 / 已缓存的直接命中。
+// 切项目（dirName 变）整张表清。
+const usageMap = ref<Map<string, UsageSummary>>(new Map())
+const usageInFlight = new Set<string>() // 防重复请求
+let usageIO: IntersectionObserver | null = null
+
+function fetchUsage(path: string) {
+  if (usageMap.value.has(path) || usageInFlight.has(path)) return
+  usageInFlight.add(path)
+  sessionUsage(props.agent, path)
+    .then((u) => {
+      // 期间用户可能切了项目，校验下当前 props.project.dirName 不会有太大意义
+      // —— 用户回到原项目时，cache 仍然命中，惨痛代价是闪一下 stale 值。
+      // 这里直接写就行。
+      const next = new Map(usageMap.value)
+      next.set(path, u)
+      usageMap.value = next
+    })
+    .catch(() => {})
+    .finally(() => {
+      usageInFlight.delete(path)
+    })
+}
+
+// Vue ref callback：每张卡片 mounted 时把 element 注册到 observer；unmount 时取消。
+function observeUsageCard(path: string, el: Element | null) {
+  if (!usageIO || !el) return
+  // 同一个 path 可能反复 mount / unmount（v-for key 重组），简单 observe 两次也无害。
+  ;(el as HTMLElement).dataset.usagePath = path
+  usageIO.observe(el)
+}
+
+onMounted(() => {
+  usageIO = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue
+        const p = (e.target as HTMLElement).dataset.usagePath
+        if (!p) continue
+        fetchUsage(p)
+        // 已经发了请求，停止观察这个节点，避免反复滚回滚去重复触发
+        usageIO?.unobserve(e.target)
+      }
+    },
+    { rootMargin: '120px 0px' }, // 提前一屏开始预取
+  )
+})
+
+onUnmounted(() => {
+  usageIO?.disconnect()
+  usageIO = null
+})
+
+// 切项目 → 清缓存 + 在飞请求标记（前一项目的结果回来也不会写到新表里，因为表是新的）
+watch(
+  () => props.project.dirName,
+  () => {
+    usageMap.value = new Map()
+    usageInFlight.clear()
+  },
+)
 
 // 每张卡片自己的导出菜单状态：只允许一个打开，按 session path 标识。
 const openExportFor = ref<string | null>(null)
@@ -374,6 +438,20 @@ defineExpose({ scrollEl })
           <span>{{ t('list.messages', { n: s.messageCount }) }}</span>
           <span>{{ formatSize(s.size) }}</span>
           <span>{{ t('list.updated', { time: formatTime(s.modified) }) }}</span>
+          <!-- Token 角标：IntersectionObserver 看到这条 chip 才发请求 (`observeUsageCard`)。
+               cache 命中时显示 total；空数据（Gemini）显示 "—"；loading 显示空占位。 -->
+          <span
+            class="session-tok"
+            :ref="(el) => observeUsageCard(s.path, el as Element | null)"
+            v-tooltip="t('chat.tb.usage.tooltip')"
+          >
+            <template v-if="usageMap.has(s.path)">
+              <template v-if="usageMap.get(s.path)!.total > 0">
+                {{ formatTokens(usageMap.get(s.path)!.total) }} {{ t('chat.tb.usage.label') }}
+              </template>
+              <template v-else>—</template>
+            </template>
+          </span>
           <span v-if="s.id" class="session-id" v-tooltip="s.id">
             <span class="session-id-label">{{ t('session.id') }}</span>
             <span class="session-id-text"><span

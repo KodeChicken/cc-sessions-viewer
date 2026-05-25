@@ -9,16 +9,23 @@
 // 跟前端共享的序列化类型在 `types.rs`。
 // 接入新 agent 的步骤详见 `agents/mod.rs` 顶部注释。
 
-mod agents;
+// agents / stats are `pub` so the `examples/test_dedup.rs` binary (compiled as
+// an external consumer of the lib crate) can call into the dedup pipeline
+// directly. Everything else stays crate-private.
+pub mod agents;
 mod menu;
+pub mod stats;
 mod trash;
 mod types;
 mod util;
+mod watch;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::types::{Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, UpdateInfo};
+use crate::types::{
+    AgentStats, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, UsageSummary,
+};
 use crate::util::is_jsonl;
 
 /// 全局搜索的取消代际 —— 每次新搜索把自己的 `request_id` 写进来，正在跑的搜索循环
@@ -45,6 +52,59 @@ fn list_sessions(
 #[tauri::command]
 fn read_session(agent: String, path: String) -> Result<Vec<Msg>, String> {
     agents::source(&agent)?.read_session(&path)
+}
+
+/// 实时 tail：开始监听 path 文件的写入事件。
+/// 同一时刻只允许一个 watch；再次调用会替换上一个 watcher。
+/// 文件不存在返回 Err，前端可以静默降级（仅一次性读取）。
+#[tauri::command]
+fn watch_session(app: tauri::AppHandle, agent: String, path: String) -> Result<(), String> {
+    watch::watch_session(app, agent, path)
+}
+
+/// 停止当前 tail；空操作可重入。前端 unmount / 切会话时调用。
+#[tauri::command]
+fn unwatch_session() -> Result<(), String> {
+    watch::unwatch_session()
+}
+
+/// 单个会话的 token 用量汇总（按 path + mtime 缓存）。
+/// 前端 ChatTopbar / SessionsView 卡片懒加载这条；Gemini 暂占位返零。
+#[tauri::command]
+fn session_usage(agent: String, path: String) -> Result<UsageSummary, String> {
+    let src = agents::source(&agent)?;
+    agents::session_usage(&*src, &path)
+}
+
+/// 当前 agent 的统计概览：顶层标量 + 项目排行（按 token 降序）+ 日活时间轴。
+/// **保留作兼容入口** —— 旧版同步路径仍然可用，但内容比 start_agent_stats 简化（没有
+/// cost / by_model / by_tool 等）。前端默认走流式接口，这里只作兜底。
+#[tauri::command]
+fn agent_stats(agent: String) -> Result<AgentStats, String> {
+    let src = agents::source(&agent)?;
+    agents::agent_stats(&*src, &agent)
+}
+
+/// 流式启动一次统计扫描。函数立刻返回；后台 worker 通过 `stats://progress` /
+/// `stats://done` / `stats://error` 三个事件把结果推回前端。新请求会让旧请求让位
+/// （`STATS_GEN` 代际计数器）。前端用 `requestId` 比对，丢掉旧数据。
+///
+/// `scope`：`all` / `claude` / `codex` / `gemini` / `session:<agent>:<absolute path>`。
+/// `range`：`today` / `days7` / `days30` / `all`（session-scope 下忽略）。
+#[tauri::command]
+fn start_agent_stats(
+    app: tauri::AppHandle,
+    scope: String,
+    range: String,
+    request_id: u64,
+) {
+    stats::stream::start(app, scope, range, request_id);
+}
+
+/// 立刻取消任何正在跑的统计 worker。本质上是把全局代际 +1，跑中的 worker 自己 bail。
+#[tauri::command]
+fn cancel_stats() {
+    stats::stream::cancel();
 }
 
 /// 全局搜索：跨当前 agent 的所有项目 / 会话查关键词。
@@ -125,10 +185,16 @@ fn empty_trash() -> Result<(), String> {
 
 /// 在终端中用对应 CLI 恢复（resume）一个会话。
 #[tauri::command]
-fn resume_session(agent: String, session_id: String, cwd: String) -> Result<(), String> {
+fn resume_session(
+    agent: String,
+    session_id: String,
+    cwd: String,
+    path: String,
+) -> Result<(), String> {
     if !Path::new(&cwd).is_dir() {
         return Err("项目目录已不存在，无法恢复".to_string());
     }
+    // id 校验：Claude/Codex 为 UUID，Gemini 为 session-<startTime>-<id8>
     if session_id.is_empty()
         || !session_id
             .chars()
@@ -136,7 +202,7 @@ fn resume_session(agent: String, session_id: String, cwd: String) -> Result<(), 
     {
         return Err("会话 ID 非法".to_string());
     }
-    let cli = agents::source(&agent)?.resume_cli(&session_id);
+    let cli = agents::source(&agent)?.resume_cli(&session_id, &path);
     spawn_terminal(&cli, &cwd)
 }
 
@@ -218,18 +284,6 @@ fn spawn_terminal(cli: &str, cwd: &str) -> Result<(), String> {
 #[tauri::command]
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
-}
-
-/// 检查更新（占位实现：当前没有发布渠道，直接返回"已是最新"）。
-#[tauri::command]
-fn check_update() -> Result<UpdateInfo, String> {
-    let current = env!("CARGO_PKG_VERSION").to_string();
-    // TODO: 接入实际的远端版本源（如 GitHub Releases）
-    Ok(UpdateInfo {
-        current: current.clone(),
-        latest: current,
-        has_update: false,
-    })
 }
 
 /// 把字符串内容写到用户指定的绝对路径。
@@ -358,6 +412,12 @@ pub fn run() {
             list_projects,
             list_sessions,
             read_session,
+            watch_session,
+            unwatch_session,
+            session_usage,
+            agent_stats,
+            start_agent_stats,
+            cancel_stats,
             search_sessions,
             cancel_search,
             rename_session,
@@ -372,7 +432,6 @@ pub fn run() {
             open_url,
             write_file,
             app_version,
-            check_update,
         ])
         .setup(|app| {
             // 原生应用菜单 —— 主要价值在 macOS 顶部菜单栏。

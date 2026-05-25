@@ -4,13 +4,21 @@
 
 **English** · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [CHANGELOG](CHANGELOG.md)
 
-A native desktop app for browsing **Claude Code**, **Codex**, and **Gemini CLI** local session transcripts — read, search, resume, and soft-delete past conversations from all three CLIs in one place.
+一个专为 **Claude Code**、**Codex** 和 **Gemini CLI** 打造的原生桌面浏览器。在一处读取、搜索并管理三个 CLI 的本地会话记录。
 
-Transcripts replay faithfully (text, thinking blocks, tool calls paired with their results, structured diffs, inline screenshots). ⌘⇧F jumps from any keyword to the exact user message that mentioned it — across every project, in every agent. Export a single session or a multi-select batch to Markdown / HTML. The original JSONL files stay strictly read-only — every deletion is a soft move into a shared trash you can preview, restore from, or empty.
+- **忠实还原**：完整呈现思考链路、工具调用配对、结构化 Diff 与内嵌截图。
+- **高效检索**：跨项目全局秒搜 (**⌘⇧F**) 直达具体消息，支持一键恢复终端会话。
+- **深度统计**：基于本地记录聚合 Token 消耗与成本，多维分析（项目/模型/工具调用）活跃度与开销。
+- **只读安全**：原始 JSONL 全程只读，删除仅移动至共享回收站，绝不物理抹除 (`rm`)。
+- **灵活导出**：单会话或批量导出为离线可读的 Markdown / HTML。
 
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=fff)](https://tauri.app)
 [![Vue 3](https://img.shields.io/badge/Vue-3-42b883?logo=vue.js&logoColor=fff)](https://vuejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+<br />
+
+<img src="docs/screenshots/cover.png" alt="Claude Session Viewer — unified browser for Claude Code, Codex and Gemini CLI sessions" width="820" />
 
 </div>
 
@@ -39,6 +47,7 @@ The app is **read-only** against the originals — deletion is a soft move into 
 - 📤 **Export session** — save a single session to Markdown or HTML (native Save-As, offline-renderable HTML with inlined avatars / styles)
 - 🧰 **Multi-select & batch ops** — pick sessions in bulk to move them to the trash or export them into a single `export-YYYYMMDD-HHMMSS-{md,html}/` folder
 - 🔄 **Resume or start fresh** — open Terminal in a project to resume an existing session (`claude --resume <id>` / `codex resume <id>`) or start a brand-new one
+- 📡 **Live tail** — opened session auto-refreshes as the CLI appends new messages; an "● Live" indicator shows the watcher is active, and a "N new ↓" pill surfaces additions when you've scrolled up
 - 🗑 **Shared trash** — soft-delete, preview a deleted session's transcript, restore one or many (multi-select); survives across both agents
 - 🏠 **Welcome screen** — recently opened projects per agent with one-click reopen + per-entry removal
 - 📌 **Pin / sink projects** — color-coded pins on the sidebar; sunk projects go to the bottom
@@ -52,25 +61,41 @@ The app is **read-only** against the originals — deletion is a soft move into 
 
 ### Pre-built
 
-Grab the latest installer from [Releases](https://github.com/wuchao/claude-session-viewer/releases):
+Grab the latest installer from [Releases](https://github.com/jerrywu001/cc-sessions-viewer/releases):
 
 | Platform | File |
 | --- | --- |
-| macOS (Apple Silicon + Intel) | `claude-session-viewer_<ver>_universal.dmg` |
-| Windows x64 | `claude-session-viewer_<ver>_x64-setup.exe` |
+| macOS (Apple Silicon + Intel) | `cc-sessions-viewer_<ver>_universal.dmg` |
+| Windows x64 | `cc-sessions-viewer_<ver>_x64-setup.exe` |
+| Linux x86_64 (Debian/Ubuntu) | `cc-sessions-viewer_<ver>_amd64.deb` |
+| Linux x86_64 (portable) | `cc-sessions-viewer_<ver>_amd64.AppImage` |
 
-On macOS first launch the unsigned `.app` may prompt — right-click → **Open** to bypass.
+On macOS the `.app` is **ad-hoc signed but not notarized**, so first launch may show *"Apple cannot verify…"*. Two ways past it:
+
+- Right-click the app in Finder → **Open** → confirm in the dialog (one-time).
+- Or strip the quarantine attribute in Terminal:
+  ```bash
+  sudo xattr -dr com.apple.quarantine /Applications/cc-sessions-viewer.app
+  ```
+
+On Linux the `.AppImage` is portable — `chmod +x` and run. The `.deb` installs with:
+```bash
+sudo apt install ./cc-sessions-viewer_<ver>_amd64.deb
+```
 
 ### Build from source
 
-Prereqs: **Node 20+**, **Rust stable**, **Xcode CLT** (macOS) or **MSVC + WebView2** (Windows).
+Prereqs: **Node 20+**, **Rust stable**, plus the platform-specific toolchain:
+- **macOS** — Xcode CLT.
+- **Windows** — MSVC + WebView2.
+- **Linux** — `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `libxdo-dev`, `patchelf` (on Debian/Ubuntu: `sudo apt install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev patchelf`).
 
 ```bash
-git clone https://github.com/wuchao/claude-session-viewer.git
-cd claude-session-viewer
+git clone https://github.com/jerrywu001/cc-sessions-viewer.git
+cd cc-sessions-viewer
 npm install
 npm run tauri dev          # dev shell
-npm run tauri build        # bundle .app / .dmg / .msi
+npm run tauri build        # bundle .app / .dmg / .msi / .deb / .AppImage
 ```
 
 `npm run build` is the typecheck step (`vue-tsc --noEmit` + Vite build). Unit tests live under `test/` on Vitest — `npm test` for watch mode, `npm run test:run` for a single CI run, `npm run test:coverage` for a v8 coverage report.
@@ -81,7 +106,43 @@ npm run tauri build        # bundle .app / .dmg / .msi
 2. **Pick a project** — sidebar lists every working directory; right-click for pin / sink / rename
 3. **Open a session** — center column renders messages + tool calls grouped by call → result
 4. **Resume** — toolbar ▶ button opens Terminal with the right CLI
-5. **Delete / restore** — toolbar 🗑 soft-deletes; trash icon in the topbar restores
+5. **Export** — chat toolbar ⬇ saves a single session as Markdown / HTML; multi-select sessions in the list, then the topbar ⬇ exports them all to an `export-YYYYMMDD-HHMMSS-{md,html}/` folder
+6. **Delete / restore** — toolbar 🗑 soft-deletes; trash icon in the topbar restores
+
+## Partial screenshots
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/cover.png" alt="Main 3-pane view with sidebar, sessions, and chat" />
+      <p align="center"><em>Main view — sidebar, sessions, chat with one-click export</em></p>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/chat.png" alt="Faithful chat replay with thinking, tools, and structured diffs" />
+      <p align="center"><em>Faithful chat replay — thinking, tool calls, structured diffs, live tail</em></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/search.png" alt="Global search overlay" />
+      <p align="center"><em>Global search (⌘⇧F) jumps straight to the message</em></p>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/stats.png" alt="Token & cost analytics dashboard" />
+      <p align="center"><em>Token &amp; cost analytics by project, model, tool</em></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/export.png" alt="Exported HTML preview opened in browser" />
+      <p align="center"><em>Exported HTML — fully offline, opens in any browser</em></p>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/trash.png" alt="Shared trash with restore" />
+      <p align="center"><em>Shared trash — soft-delete with one-click restore</em></p>
+    </td>
+  </tr>
+</table>
 
 ## Tech stack
 
@@ -93,19 +154,10 @@ npm run tauri build        # bundle .app / .dmg / .msi
 
 See [`CLAUDE.md`](CLAUDE.md) for architecture notes aimed at contributors and [`docs/release-ci.md`](docs/release-ci.md) for the release pipeline.
 
-## Roadmap
-
-- [ ] Token usage & cost analytics — per-message / per-session / per-project
-- [ ] Stats overview dashboard — activity, model & token breakdown
-- [ ] Session favorites & tags
-- [ ] Live tail — auto-refresh an in-progress session
-- [ ] Linux build target (+ Homebrew / AppImage)
-- [ ] Tauri auto-updater — _manual "Check for updates" shipped; silent auto-update pending_
-
 ## Contributing
 
 PRs welcome. Please use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, ...) — `release-please` consumes them to auto-bump versions and update [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE) © wuchao
+[MIT](LICENSE) © jerrywu001

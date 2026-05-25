@@ -78,6 +78,10 @@ function extractCommandTags(raw: string): { text: string; codes: string[] } {
   const codes: string[] = []
   const stripped = raw.replace(COMMAND_MESSAGE_RE, '')
   const text = stripped.replace(COMMAND_TAG_RE, (_m, _tag, inner) => {
+    // 无参 slash 命令（`/clear` / `/init` 等）会带一个空的 <command-args></…>。
+    // 留着就会渲染出一个只有 padding+背景的空 chip —— 像个小色块挂在命令后面。
+    // inner 是空 / 全空白时直接吞掉整个标签。
+    if (!inner.trim()) return ''
     const idx = codes.push(inner) - 1
     return `CMD${idx}`
   })
@@ -113,6 +117,18 @@ export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+/** 紧凑 token 数：≤ 999 直接写，1000-999_999 显示 `12.3K`，≥ 1M 显示 `1.2M`。
+ *  小数位会去掉尾随零（`10.0K` → `10K`，`1.2M` 不变）。 */
+export function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0'
+  if (n < 1000) return `${Math.round(n)}`
+  const unit = n < 1_000_000 ? 'K' : 'M'
+  const scaled = n / (n < 1_000_000 ? 1000 : 1_000_000)
+  // 大于 100 的整 K / M 用整数；否则保留 1 位小数
+  const fixed = scaled >= 100 ? scaled.toFixed(0) : scaled.toFixed(1)
+  return `${fixed.replace(/\.0$/, '')}${unit}`
 }
 
 function pad(n: number): string {

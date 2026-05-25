@@ -96,6 +96,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     // ---------- View ----------
     let toggle_sidebar = MenuItem::with_id(app, "toggle-sidebar", "Toggle Sidebar", true, Some("CmdOrCtrl+B"))?;
+    let open_stats = MenuItem::with_id(app, "open-stats", "Statistics", true, Some("CmdOrCtrl+Shift+S"))?;
     // Theme 子菜单 —— 三选一，CheckMenuItem。默认先全不勾，setup_menu_bridge 等
     // 前端启动后会发一次 menu:sync 把当前值勾上。
     let theme_light = CheckMenuItem::with_id(app, "theme:light", "Light", true, false, None::<&str>)?;
@@ -119,6 +120,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .build()?;
     let view_menu = SubmenuBuilder::new(app, "View")
         .item(&toggle_sidebar)
+        .item(&open_stats)
         .separator()
         .item(&theme_menu)
         .item(&lang_menu)

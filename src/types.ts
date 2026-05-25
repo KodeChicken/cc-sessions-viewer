@@ -77,6 +77,128 @@ export interface SearchHit {
   matchMsgUuid?: string
 }
 
+/** 单个会话的 token 用量；与 Rust 端 UsageSummary 同形。 */
+export interface UsageSummary {
+  inputTokens: number
+  outputTokens: number
+  cacheCreationInputTokens: number
+  cacheReadInputTokens: number
+  reasoningOutputTokens: number
+  total: number
+}
+
+/** 统计 dashboard：单个项目的聚合（与 Rust ProjectStats 同形）。 */
+export interface ProjectStats {
+  dirName: string
+  displayPath: string
+  sessionCount: number
+  messageCount: number
+  callCount: number
+  usage: UsageSummary
+  costUsd: number
+  lastModified: number
+}
+
+/** 统计 dashboard：某一天（UTC）的活动量。 */
+export interface DailyActivity {
+  date: string // YYYY-MM-DD
+  sessionCount: number
+  messageCount: number
+  callCount: number
+  tokens: number
+  costUsd: number
+}
+
+/** Top Sessions 排行里的一条。 */
+export interface SessionStat {
+  agent: Agent
+  sessionId: string
+  path: string
+  projectDisplay: string
+  title: string
+  lastModified: number
+  callCount: number
+  usage: UsageSummary
+  costUsd: number
+}
+
+/** By Model 排行里的一条。 */
+export interface ModelStat {
+  model: string
+  label: string
+  callCount: number
+  usage: UsageSummary
+  costUsd: number
+  /** 0..=1。cache_read / (input + cache_read + cache_creation)。 */
+  cacheHitRate: number
+}
+
+/** By Tool / By Shell / By MCP 共用 name+count 对。 */
+export interface NamedCount {
+  name: string
+  count: number
+}
+
+/** By Activity 一行：分类 key + 调用 / 成本。`key` 对应 stats.activity.* 翻译。 */
+export interface ActivityStat {
+  key: string
+  turnCount: number
+  callCount: number
+  costUsd: number
+}
+
+/** 统计范围筛选 —— 前端 dropdown 切换。 */
+export type StatsScope = 'all' | Agent
+
+/** 时间范围筛选。 */
+export type StatsRange = 'today' | 'days7' | 'days30' | 'all'
+
+/** 流式统计的完整结果（与 Rust AgentStats 同形）。`scope` 标识维度。 */
+export interface AgentStats {
+  scope: 'all' | Agent | string
+  sessionCount: number
+  messageCount: number
+  callCount: number
+  daysActive: number
+  usage: UsageSummary
+  costUsd: number
+  cacheHitRate: number
+  /** 按 cost_usd 降序的项目列表。 */
+  projects: ProjectStats[]
+  /** 按日期升序的日活时间轴（稀疏，没活动的天不出现）。 */
+  dailyActivity: DailyActivity[]
+  /** 按 cost_usd 降序的 Top 10 会话。 */
+  topSessions: SessionStat[]
+  /** 按 cost_usd 降序的模型排行。 */
+  byModel: ModelStat[]
+  /** 按调用次数降序的工具排行。 */
+  byTool: NamedCount[]
+  /** 按调用次数降序的 shell 主命令排行。 */
+  byShell: NamedCount[]
+  /** 按调用次数降序的 MCP server 排行。 */
+  byMcp: NamedCount[]
+  /** 按 cost_usd 降序的活动分类排行。 */
+  byActivity: ActivityStat[]
+}
+
+/** 流式推送的进度负载。`partial` 是到目前为止的累计快照，前端直接替换。 */
+export interface StatsProgress {
+  requestId: number
+  processed: number
+  total: number
+  partial: AgentStats
+}
+
+export interface StatsDone {
+  requestId: number
+  stats: AgentStats
+}
+
+export interface StatsError {
+  requestId: number
+  error: string
+}
+
 export interface TrashItem {
   trashFile: string
   agent: Agent

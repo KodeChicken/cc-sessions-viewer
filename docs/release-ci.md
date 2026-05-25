@@ -84,8 +84,8 @@ publish job (ubuntu-latest)
     generate_release_notes: true        # ← 关键
     body: |                              # ← 可在自动内容之前拼一段静态说明
       ## 下载
-      - macOS: `claude-session-viewer_${{ github.ref_name }}_universal.dmg`
-      - Windows: `claude-session-viewer_${{ github.ref_name }}_x64-setup.exe`
+      - macOS: `cc-sessions-viewer_${{ github.ref_name }}_universal.dmg`
+      - Windows: `cc-sessions-viewer_${{ github.ref_name }}_x64-setup.exe`
     files: dist/**/*
 ```
 
@@ -329,7 +329,7 @@ jobs:
   "include-v-in-tag": true,
   "packages": {
     ".": {
-      "package-name": "claude-session-viewer",
+      "package-name": "cc-sessions-viewer",
       "extra-files": [
         "src-tauri/Cargo.toml",
         "src-tauri/tauri.conf.json"
@@ -354,7 +354,7 @@ jobs:
 ```
 feat: add japanese locale          # → 0.1.0 → 0.2.0
 fix: tooltip clipped on edge       # → 0.1.0 → 0.1.1
-feat!: drop legacy claude v1 path  # → 0.1.0 → 1.0.0  （注意 !）
+feat!: drop legacy claude v1 path  # → 0.1.0 → 0.1.2
 docs: clarify build prereqs        # → CHANGELOG 里出现，版本不变
 chore: bump deps                   # → CHANGELOG 隐藏，版本不变
 ```

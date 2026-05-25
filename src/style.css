@@ -401,8 +401,36 @@ button {
 .ct-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 8px;
   flex-shrink: 0;
+}
+/* Token 用量小角标：贴在工具栏右侧动作按钮前；hover 看细分 tooltip */
+.ct-usage {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: default;
+  /* tooltip 是手写的、字符串 \n 要靠浏览器 white-space 渲染换行 */
+  white-space: nowrap;
+}
+.ct-usage.empty {
+  opacity: 0.6;
+}
+.ct-usage-num {
+  color: var(--text);
+  font-weight: 500;
+}
+.ct-usage-unit {
+  font-size: 11px;
+  text-transform: lowercase;
+  opacity: 0.7;
 }
 .ct-btn {
   display: inline-flex;
@@ -724,6 +752,53 @@ button {
   color: var(--text);
   font-weight: 500;
 }
+/* Settings 行带「有新版本」红点时给一点位置准备 */
+.trash-tab.has-update {
+  position: relative;
+}
+/* 红点 —— 与回收站红点（.trash-dot）同款，落在 Settings 行右侧居中。
+   有 .sidebar-release-btn 一起出现时把红点再往左挪一点，给链接图标让位。 */
+.update-dot {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  border: 1.5px solid var(--surface);
+  pointer-events: none;
+}
+.trash-tab.has-update .update-dot {
+  right: 34px;
+}
+/* 「打开 release 页」内嵌按钮 —— 行尾的小图标，hover 才显眼，避免抢主行视觉 */
+.sidebar-release-btn {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  color: var(--text-mute);
+  cursor: pointer;
+  opacity: 0.75;
+  transition: background 0.12s, color 0.12s, opacity 0.12s;
+}
+.sidebar-release-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+  opacity: 1;
+}
+.sidebar-release-btn svg {
+  width: 13px;
+  height: 13px;
+}
 .trash-tab svg {
   width: 14px;
   height: 14px;
@@ -932,6 +1007,11 @@ button {
   margin-left: 12px;
   opacity: 0.6;
 }
+/* token 角标：占位时也保留最小宽度，避免数据回来时挤跳。 */
+.session-tok {
+  min-width: 3.5em;
+  display: inline-block;
+}
 .list-footer {
   text-align: center;
   padding: 18px 0 8px;
@@ -1110,12 +1190,20 @@ button {
 }
 .welcome-logo {
   color: var(--text-mute);
-  opacity: 0.55;
 }
 .welcome-logo svg {
   width: 42px;
   height: 42px;
   stroke-width: 1.3;
+}
+.welcome-logo img {
+  width: 108px;
+  height: 108px;
+  object-fit: contain;
+  display: block;
+  /* 图标本身已含 ~20% 透明留白（macOS 网格规范），这里加 -10px 负 margin
+     抵消视觉空隙，避免 logo 与下方标题间距过大。 */
+  margin: -10px 0;
 }
 .welcome-title {
   margin: 13px 0 18px;
@@ -1222,6 +1310,32 @@ button {
 .welcome-section svg {
   width: 12px;
   height: 12px;
+}
+.welcome-section-clear {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.welcome-section-clear:hover {
+  opacity: 1;
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.welcome-section-clear:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .welcome-recent {
   width: 100%;
@@ -1755,6 +1869,66 @@ details[open] > .block-summary > .chev {
   transform: scale(0.92);
 }
 
+/* "N new ↓" pill —— Live tail 模式下，用户不在底部时聚集未读，点一下回到底。
+   宽度自适应，与下面圆形 fab 保持相同视觉重量；用 brand 色让它一眼就抓眼球。 */
+.new-pill {
+  padding: 0 12px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #fff;
+  border: 1px solid color-mix(in srgb, var(--brand) 60%, transparent);
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: filter 0.12s, transform 0.08s;
+}
+.new-pill:hover {
+  filter: brightness(1.05);
+}
+.new-pill:active {
+  transform: scale(0.96);
+}
+
+/* "● Live" 徽章 —— chat-head 里跟会话 ID 同行的轻量指示。
+   绿色脉冲点 + 文字，告诉用户"这条会话正在被监听" */
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #10b981 12%, transparent);
+  color: #059669;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  border: 1px solid color-mix(in srgb, #10b981 30%, transparent);
+}
+:root.theme-dark .live-badge {
+  background: color-mix(in srgb, #10b981 18%, transparent);
+  color: #34d399;
+  border-color: color-mix(in srgb, #10b981 40%, transparent);
+}
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 0 currentColor;
+  animation: live-pulse 1.8s ease-out infinite;
+}
+@keyframes live-pulse {
+  0%   { box-shadow: 0 0 0 0   color-mix(in srgb, currentColor 70%, transparent); }
+  70%  { box-shadow: 0 0 0 6px color-mix(in srgb, currentColor  0%, transparent); }
+  100% { box-shadow: 0 0 0 0   color-mix(in srgb, currentColor  0%, transparent); }
+}
+
 /* ---------- Diff ---------- */
 .diff-stat {
   margin-left: auto;
@@ -2210,6 +2384,13 @@ details[open] > .block-summary > .chev {
   width: 13px;
   height: 13px;
 }
+/* About 段：「检查更新」按钮 + （有更新时）「打开 release」按钮，并排显示 */
+.set-update-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
 
 /* 主题三选一卡片网格 */
 .theme-grid {
@@ -2615,4 +2796,768 @@ details[open] > .block-summary > .chev {
   background: var(--danger);
   border: 1.5px solid var(--surface);
   pointer-events: none;
+}
+
+/* ---------- Stats dashboard ----------
+   Single agent-scoped overview rendered in the main slot. Visually a
+   "card grid + heatmap + bar lists" — neutral surfaces, brand color only
+   used on small accents (heatmap & bar fill). */
+.stats-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.stats-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.stats-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.01em;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+/* 单会话统计页的返回按钮：紧贴标题左侧。形状继承 icon-btn，颜色保持中性，
+   tooltip 在自带的 v-tooltip 指令上挂。 */
+.stats-back-btn {
+  margin-right: 2px;
+  flex-shrink: 0;
+}
+/* 单会话统计页头：在主标题后跟一段会话短标题，超长省略号 */
+.stats-title-sub {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 360px;
+}
+.stats-actions {
+  display: flex;
+  gap: 4px;
+}
+.stats-loading,
+.stats-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-mute);
+  font-size: 13px;
+  padding: 24px;
+}
+.stats-empty .big {
+  color: var(--text-mute);
+  opacity: 0.5;
+}
+.stats-empty .big svg {
+  width: 56px;
+  height: 56px;
+  stroke-width: 1.2;
+}
+/* Animated loading icon doesn't need the static-icon dimming. */
+.stats-empty .big:has(.stats-loading-icon) {
+  opacity: 1;
+}
+
+/* Animated bar-chart placeholder for the "Discovering sessions…" state.
+   Four bars + baseline. Each bar pulses on its own delay so the group
+   looks like a live bar chart filling in. */
+.stats-loading-icon {
+  position: relative;
+  width: 64px;
+  height: 56px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 6px;
+  padding-bottom: 4px;
+}
+.stats-loading-icon .bar {
+  width: 8px;
+  background: var(--text-mute);
+  border-radius: 2px 2px 0 0;
+  transform-origin: bottom center;
+  opacity: 0.7;
+  animation: stats-loading-bar 1.2s ease-in-out infinite;
+}
+.stats-loading-icon .bar-1 { height: 60%; animation-delay: 0s; }
+.stats-loading-icon .bar-2 { height: 90%; animation-delay: 0.15s; }
+.stats-loading-icon .bar-3 { height: 50%; animation-delay: 0.3s; }
+.stats-loading-icon .bar-4 { height: 75%; animation-delay: 0.45s; }
+.stats-loading-icon .baseline {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 2px;
+  height: 2px;
+  background: var(--text-mute);
+  opacity: 0.4;
+  border-radius: 1px;
+}
+@keyframes stats-loading-bar {
+  0%, 100% {
+    transform: scaleY(0.35);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 0.9;
+  }
+}
+
+/* Animated trailing dots after the "Discovering sessions" label. */
+.stats-loading-dots::after {
+  content: '';
+  display: inline-block;
+  width: 1.4em;
+  text-align: left;
+  animation: stats-loading-dots 1.4s steps(4, end) infinite;
+}
+@keyframes stats-loading-dots {
+  0%   { content: ''; }
+  25%  { content: '.'; }
+  50%  { content: '..'; }
+  75%  { content: '...'; }
+  100% { content: ''; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stats-loading-icon .bar,
+  .stats-loading-dots::after {
+    animation: none;
+  }
+  .stats-loading-icon .bar { transform: scaleY(1); opacity: 0.7; }
+}
+.stats-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 20px 24px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: var(--surface-2);
+}
+:root.theme-dark .stats-body { background: var(--surface-2); }
+
+/* 4-card top row */
+.stats-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.stats-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stats-card-num {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+.stats-card-label {
+  font-size: 11.5px;
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+@media (max-width: 760px) {
+  .stats-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 仪表盘风格的 section card：
+   - 浅色模式：白卡 + 极薄边框 + 轻阴影（elevation 1）
+   - 暗色模式：纯边框、无阴影（避免黑底阴影泛灰）
+   - title 旁边一条短色块当强调标，跟 Vercel / Linear 那套相似 */
+.stats-block {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: box-shadow 0.15s ease;
+}
+:root.theme-dark .stats-block {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+.stats-block-title {
+  position: relative;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  letter-spacing: 0.01em;
+}
+/* 标题左侧 4px 色块（accent），跟 KPI 卡片上的 icon-tile 同色 */
+.stats-block-title::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, hsl(217 91% 60%), hsl(243 75% 65%));
+}
+:root.theme-dark .stats-block-title::before {
+  background: linear-gradient(180deg, hsl(217 91% 65%), hsl(243 80% 72%));
+}
+.stats-block-sub {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-mute);
+  letter-spacing: 0.01em;
+  margin-left: auto;
+}
+.stats-block-empty {
+  font-size: 12.5px;
+  color: var(--text-mute);
+  padding: 6px 0 2px;
+}
+
+/* Heatmap: 52 weekly columns × 7 day rows.
+   Use CSS grid for both the month-label row and the cell grid so the
+   label columns stay aligned with the cells beneath them. */
+.heatmap-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-x: auto;
+}
+.heatmap-months {
+  display: grid;
+  grid-template-columns: repeat(52, 12px);
+  gap: 3px;
+  font-size: 10.5px;
+  color: var(--text-mute);
+  letter-spacing: 0.03em;
+  min-width: max-content;
+}
+.heatmap-months span {
+  white-space: nowrap;
+}
+.heatmap-grid {
+  display: grid;
+  grid-template-columns: repeat(52, 12px);
+  gap: 3px;
+  min-width: max-content;
+}
+.heatmap-col {
+  display: grid;
+  grid-template-rows: repeat(7, 12px);
+  gap: 3px;
+}
+.heatmap-cell {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--surface-hover);
+  display: inline-block;
+}
+.heatmap-cell.lv-0 { background: var(--surface-hover); }
+.heatmap-cell.lv-1 { background: color-mix(in srgb, var(--brand) 22%, var(--surface-hover)); }
+.heatmap-cell.lv-2 { background: color-mix(in srgb, var(--brand) 42%, var(--surface-hover)); }
+.heatmap-cell.lv-3 { background: color-mix(in srgb, var(--brand) 68%, var(--surface-hover)); }
+.heatmap-cell.lv-4 { background: var(--brand); }
+.heatmap-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-mute);
+  align-self: flex-end;
+}
+.heatmap-legend-label {
+  margin: 0 4px;
+}
+
+/* Top projects + breakdown stacked on narrow widths, side-by-side wide */
+.stats-cols {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 900px) {
+  .stats-cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+.topproj-list,
+.breakdown-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.topproj-row {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+  outline: none;
+}
+.topproj-row:hover,
+.topproj-row:focus-visible {
+  background: var(--surface-hover);
+}
+.topproj-name {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topproj-bar {
+  height: 8px;
+  background: var(--surface-hover);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.topproj-bar-fill {
+  height: 100%;
+  background: var(--brand);
+  border-radius: 4px;
+  min-width: 2px;
+  transition: width 0.3s ease-out;
+}
+.topproj-num {
+  font-size: 12px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+  min-width: 48px;
+  text-align: right;
+}
+
+.breakdown-row {
+  display: grid;
+  grid-template-columns: 110px 1fr auto;
+  align-items: center;
+  gap: 12px;
+}
+.breakdown-label {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.breakdown-bar {
+  height: 8px;
+  background: var(--surface-hover);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.breakdown-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  min-width: 2px;
+  transition: width 0.3s ease-out;
+}
+.breakdown-num {
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  min-width: 80px;
+  text-align: right;
+}
+.breakdown-pct {
+  color: var(--text-mute);
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+.stats-foot {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-mute);
+  padding-top: 4px;
+}
+
+/* ---------- StatsView v2 ---------- */
+.stats-head {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.stats-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: center;
+}
+.stats-pill-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+.stats-pill-label {
+  letter-spacing: 0.02em;
+}
+.stats-pills {
+  display: inline-flex;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px;
+}
+.stats-pill {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  font-weight: 500;
+}
+.stats-pill:hover { color: var(--text); }
+.stats-pill.active {
+  background: var(--accent);
+  color: var(--surface);
+}
+
+/* Hero strip */
+.stats-hero {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 24px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.stats-hero-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.stats-hero-scope {
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+.stats-hero-status {
+  margin-left: auto;
+  color: var(--text-mute);
+  font-style: italic;
+}
+
+/* KPI 卡片栅格：4 列、自适应；窄屏 2 列、超窄 1 列 */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 880px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 480px) { .kpi-grid { grid-template-columns: 1fr; } }
+
+.kpi-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.kpi-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.06);
+}
+:root.theme-dark .kpi-card {
+  box-shadow: none;
+}
+:root.theme-dark .kpi-card:hover {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+.kpi-card-icon {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: hsl(217 91% 60% / 0.10);
+  color: hsl(217 91% 50%);
+}
+.kpi-card-icon svg { width: 18px; height: 18px; }
+:root.theme-dark .kpi-card-icon {
+  background: hsl(217 91% 65% / 0.15);
+  color: hsl(217 91% 70%);
+}
+.kpi-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.kpi-card-label {
+  font-size: 11px;
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.kpi-card-num {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+/* brand 卡片：cost 用 brand 主色 + 微微的色块强调 */
+.kpi-card--brand .kpi-card-icon {
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+.kpi-card--brand .kpi-card-num { color: var(--brand); }
+
+.stats-hero-tokens {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+.stats-hero-tokens strong {
+  color: var(--text);
+  font-weight: 600;
+  margin-right: 4px;
+}
+.kpi-sep {
+  display: inline-block;
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+}
+
+/* Body grid */
+.stats-row {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.stats-row-cols {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 980px) {
+  .stats-row-cols { grid-template-columns: 1fr; }
+}
+
+.stats-block-chart {
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+}
+.stats-chart {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 200px;
+}
+.stats-chart-tall {
+  min-height: 280px;
+}
+.g2-chart {
+  width: 100%;
+  height: 100%;
+  min-height: inherit;
+}
+
+/* Single-day fallback for StatsDailyChart — sessions that span one day
+   would otherwise render as a lonely dot inside the G2 canvas. */
+.single-day-summary {
+  width: 100%;
+  height: 100%;
+  min-height: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 16px;
+}
+.single-day-date {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--text-mute);
+  text-transform: uppercase;
+}
+.single-day-metrics {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+.single-day-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 96px;
+}
+.single-day-num {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.single-day-label {
+  font-size: 11px;
+  color: var(--text-mute);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.single-day-sep {
+  width: 1px;
+  height: 32px;
+  background: var(--border);
+}
+
+/* Bar list (replaces topproj / breakdown patterns for the new view) */
+.bar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) 1.4fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+  font-size: 12.5px;
+  color: var(--text);
+  outline: none;
+}
+.bar-row:hover,
+.bar-row:focus-visible {
+  background: var(--surface-hover);
+}
+.bar-row.no-click {
+  cursor: default;
+}
+.bar-row.no-click:hover {
+  background: transparent;
+}
+.bar-list-sessions .bar-row {
+  grid-template-columns: 88px minmax(100px, 1.1fr) minmax(120px, 2fr) 1fr auto auto;
+}
+.bar-date {
+  font-size: 11.5px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bar-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+.bar-title {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bar-track {
+  height: 8px;
+  background: var(--surface-hover);
+  border-radius: 4px;
+  overflow: hidden;
+}
+/* bar-fill: 横向条形「进度条」用蓝→靛紫的渐变，跟 chartPalette 里 blue-500 / indigo-500
+   呼应；颜色刻意避开 brand（橙红），否则跟图表 brand 折线撞色又显得整页都是同一种红。 */
+.bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, hsl(217 91% 60%) 0%, hsl(243 75% 65%) 100%);
+  border-radius: 4px;
+  min-width: 2px;
+  transition: width 0.3s ease-out;
+}
+:root.theme-dark .bar-fill {
+  background: linear-gradient(90deg, hsl(217 91% 65%) 0%, hsl(243 80% 72%) 100%);
+}
+.bar-val {
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  min-width: 64px;
+  text-align: right;
+}
+.bar-meta {
+  font-size: 11.5px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+  min-width: 40px;
+  text-align: right;
+}
+
+.stats-empty.error {
+  color: var(--danger, #c0392b);
+}
+
+.icon-btn.spinning svg {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }

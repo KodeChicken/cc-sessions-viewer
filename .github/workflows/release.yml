@@ -16,7 +16,10 @@ name: Release
 #
 # Tauri cross-compile from macOS to a Windows installer isn't practical
 # locally because NSIS/WiX bundling needs a Windows toolchain, so the
-# Windows artifacts are produced on a `windows-latest` runner here.
+# Windows artifacts are produced on a `windows-latest` runner here. Linux
+# bundles (.deb / .AppImage) come from an `ubuntu-22.04` runner; we pin
+# 22.04 instead of `ubuntu-latest` so the resulting binary links against
+# an older glibc and runs on a wider range of distros.
 on:
   workflow_dispatch:
   push:
@@ -41,6 +44,8 @@ jobs:
             args: ''
           - platform: macos-latest
             args: '--target universal-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -58,6 +63,20 @@ jobs:
           # macOS universal build needs both targets; harmless to list on Windows
           # because the action only installs targets it recognizes for the host.
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install Linux dependencies
+        # Tauri 2 on Linux needs webkit2gtk-4.1 + glib/gtk dev headers; the rest
+        # (patchelf, libxdo, librsvg) are used by the .deb / .AppImage bundlers.
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf \
+            file
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
@@ -77,13 +96,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bundle-${{ matrix.platform }}
-          # macOS universal builds land under `target/universal-apple-darwin/release/bundle/`,
-          # plain Windows builds under `target/release/bundle/`. Glob covers both.
+          # macOS universal builds land under `target/universal-apple-darwin/release/bundle/`;
+          # Windows + Linux builds land under `target/release/bundle/`. Glob covers all.
+          # Linux: .deb (Debian/Ubuntu) + .AppImage (portable). We don't ship .rpm —
+          # rpmbuild isn't preinstalled on ubuntu-22.04 and adding it slows the job
+          # without serving a clear audience; AppImage covers RPM-based distros too.
           path: |
             src-tauri/target/**/release/bundle/**/*.dmg
             src-tauri/target/**/release/bundle/**/*.app.tar.gz
             src-tauri/target/**/release/bundle/**/*.msi
             src-tauri/target/**/release/bundle/**/*-setup.exe
+            src-tauri/target/**/release/bundle/**/*.deb
+            src-tauri/target/**/release/bundle/**/*.AppImage
           if-no-files-found: error
 
   publish:
@@ -116,10 +140,12 @@ jobs:
           body: |
             ## Downloads
 
-            - **macOS (Apple Silicon + Intel)** — `claude-session-viewer_*_universal.dmg`
-            - **Windows x64** — `claude-session-viewer_*_x64-setup.exe` / `*_x64_en-US.msi`
+            - **macOS (Apple Silicon + Intel)** — `cc-sessions-viewer_*_universal.dmg`
+            - **Windows x64** — `cc-sessions-viewer_*_x64-setup.exe` / `*_x64_en-US.msi`
+            - **Linux x86_64** — `cc-sessions-viewer_*_amd64.deb` (Debian/Ubuntu) / `cc-sessions-viewer_*_amd64.AppImage` (portable)
 
             On macOS first launch the unsigned `.app` may prompt — right-click → **Open** to bypass Gatekeeper.
+            On Linux the `.AppImage` needs `chmod +x` before running; the `.deb` installs with `sudo apt install ./cc-sessions-viewer_*_amd64.deb`.
 
             Full version history → [`CHANGELOG.md`](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
         env:

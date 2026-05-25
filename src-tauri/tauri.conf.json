@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "claude-session-viewer",
-  "version": "0.1.1",
-  "identifier": "com.wuchao.claude-session-viewer",
+  "productName": "cc-sessions-viewer",
+  "version": "0.1.2",
+  "identifier": "com.wuchao.cc-sessions-viewer",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -34,6 +34,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }

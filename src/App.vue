@@ -7,7 +7,7 @@ import { t } from './i18n'
 import { clearAppCache, lang, setLang, setTheme, theme } from './settings'
 import { focusSearchBox, navigate as chatNavigate, resetChatToolbar } from './chatToolbar'
 import { emitMenuSync, installMenuRouter } from './menu'
-import type { UnlistenFn } from '@tauri-apps/api/event'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { resetTrashToolbar, exitSelectMode, selectedTrash } from './trashToolbar'
 import {
   resetSessionsToolbar,
@@ -26,6 +26,7 @@ import {
 import { fly } from './fly'
 import { recordRecent } from './recents'
 import { globalSearchOpen, openGlobalSearch } from './globalSearch'
+import { runBackgroundCheck } from './updateCheck'
 import type { SearchHit } from './types'
 import ChatView from './views/ChatView.vue'
 import SettingsModal from './components/SettingsModal.vue'
@@ -35,6 +36,7 @@ import SessionsTopbar from './components/topbar/SessionsTopbar.vue'
 import TrashView from './views/TrashView.vue'
 import SessionsView from './views/SessionsView.vue'
 import WelcomeView from './views/WelcomeView.vue'
+import StatsView from './views/StatsView.vue'
 import Sidebar from './components/Sidebar.vue'
 import SidebarTopbar from './components/SidebarTopbar.vue'
 import ConfirmModal from './modals/ConfirmModal.vue'
@@ -47,6 +49,7 @@ const agent = ref<Agent>('claude')
 const projects = ref<ProjectInfo[]>([])
 const activeDir = ref<string | null>(null)
 const showTrash = ref(false)
+const showStats = ref(false)
 const showSettings = ref(false)
 const sidebarOpen = ref(true)
 const refreshing = ref(false)
@@ -123,6 +126,37 @@ const openSession = ref<SessionMeta | null>(null)
 const openTrashItem = ref<TrashItem | null>(null)
 const chatMsgs = ref<Msg[]>([])
 const loadingChat = ref(false)
+// "● Live" 徽章：仅当会话**确实正在被写入**时为 true。
+//   - 打开时 mtime 距今 < FRESH_MS → 视作"刚才还在跑"，先亮起来
+//   - 收到 session:append 事件 → 文件真的有新增 → 亮起 / 续命
+//   - 安静 STALE_MS 后自动熄灭 —— CLI 进程通常已结束
+// 这与"是否在后端追这个文件"分离：watcher 对所有非回收站会话都开，
+// 否则用户从终端 resume 一个老会话时我们就漏掉了。
+const liveTailing = ref(false)
+// "Live"判定阈值，单位 ms
+const LIVE_FRESH_MS = 3 * 60 * 1000 // 打开时：3 分钟内动过 → 算 live
+const LIVE_STALE_MS = 2 * 60 * 1000 // append 后：2 分钟内没新动静 → 熄灭
+let liveFadeTimer = 0
+function markLive() {
+  liveTailing.value = true
+  window.clearTimeout(liveFadeTimer)
+  liveFadeTimer = window.setTimeout(() => {
+    liveTailing.value = false
+  }, LIVE_STALE_MS)
+}
+function clearLive() {
+  liveTailing.value = false
+  window.clearTimeout(liveFadeTimer)
+  liveFadeTimer = 0
+}
+
+// 单会话统计目标。非空 → StatsView 切换到 session 模式，scope 锁定到这条 JSONL。
+// 与 showStats=true 联用：全局统计时此值为 null，会话统计时填上 {agent, path, title}。
+const sessionStatsTarget = ref<{ agent: Agent; path: string; title?: string } | null>(null)
+// 单会话统计是从哪进入的：决定「返回」按钮往哪走。
+//   'chat'   ← ChatTopbar 的统计按钮（关闭 → 回到原聊天）
+//   'global' ← 全局 StatsView Top Sessions 行点击（关闭 → 回到全局 StatsView）
+const sessionStatsFrom = ref<'chat' | 'global' | null>(null)
 
 const sessionsViewRef = ref<InstanceType<typeof SessionsView> | null>(null)
 const chatViewRef = ref<InstanceType<typeof ChatView> | null>(null)
@@ -137,6 +171,12 @@ watch(openSession, (val, old) => {
   if (val?.path !== old?.path) resetChatToolbar()
   // 关闭会话即退出回收站模式 —— openTrashItem 永远不残留到下一次打开。
   if (!val) openTrashItem.value = null
+  // 切到别的会话 / 关闭会话 → 立刻让后端停掉旧 watcher。
+  // openChat 里会再起新的；openTrashSession / null 都不需要 watcher。
+  if (val?.path !== old?.path) {
+    clearLive()
+    api.unwatchSession().catch(() => {})
+  }
   if (!val && old) {
     nextTick(() => {
       if (listScrollEl.value) listScrollEl.value.scrollTop = savedListScroll
@@ -392,20 +432,28 @@ function switchAgent(a: Agent) {
   sessions.value = []
   openSession.value = null
   showTrash.value = false
+  // showStats 不重置 —— 统计是 agent-scoped，切 agent 后 StatsView 自己 refetch。
   loadProjects()
 }
 
 async function selectProject(dir: string) {
-  // 再次点击当前已选中的项目 → 收起，回到「请选择项目」空状态
-  if (activeDir.value === dir && !showTrash.value) {
+  // 再次点击当前已选中的项目：
+  //   - 若右侧是会话详情 → 关闭详情，回到会话列表（不收起项目）
+  //   - 若右侧已是会话列表 → 收起项目，回到「请选择项目」空状态
+  if (activeDir.value === dir && !showTrash.value && !showStats.value) {
+    if (openSession.value) {
+      openSession.value = null
+      return
+    }
     activeDir.value = null
-    openSession.value = null
     sessions.value = []
     sessionTotal.value = 0
     resetSessionsToolbar()
     return
   }
   showTrash.value = false
+  showStats.value = false
+  sessionStatsTarget.value = null
   activeDir.value = dir
   recordRecent(agent.value, dir)
   openSession.value = null
@@ -496,8 +544,28 @@ async function refreshSessions() {
   }
 }
 
+// 打开统计概览：和回收站 / 会话视图互斥；再点一次同一按钮收起。
+// 数据加载自身在 StatsView 里完成，App 这一层只切顶层状态。
+function openStats() {
+  if (showStats.value) {
+    showStats.value = false
+    sessionStatsTarget.value = null
+    return
+  }
+  showStats.value = true
+  // 全局统计模式：清掉单会话目标，避免上次留下来。
+  sessionStatsTarget.value = null
+  showTrash.value = false
+  activeDir.value = null
+  openSession.value = null
+  sessions.value = []
+  sessionTotal.value = 0
+}
+
 async function loadTrash() {
   showTrash.value = true
+  showStats.value = false
+  sessionStatsTarget.value = null
   activeDir.value = null
   openSession.value = null
   resetTrashToolbar()
@@ -517,14 +585,74 @@ async function openChat(s: SessionMeta) {
   openTrashItem.value = null
   openSession.value = s
   chatMsgs.value = []
+  clearLive()
   try {
     chatMsgs.value = await api.readSession(agent.value, s.path)
+    // 整文件读完再开 watcher。watch_session 内部会把当前 Msg 数记为 baseline，
+    // 后续只 emit 新增；read 之前开则可能把整段当 append 推回来。
+    // watcher 始终启用 —— 即使会话当前看似"完成"，用户也可能从终端 resume，
+    // 那一刻文件会重新被写，append 事件会把 Live 徽章亮起来。
+    try {
+      await api.watchSession(agent.value, s.path)
+      // mtime 是毫秒。session.modified 由 agent 模块写入，单位与 now_millis 一致。
+      const ageMs = Date.now() - (s.modified ?? 0)
+      if (ageMs >= 0 && ageMs < LIVE_FRESH_MS) {
+        markLive()
+      }
+    } catch {
+      // watcher 起不来：不显示 Live（也不抛错 —— 只是失去自动刷新而已）
+    }
   } catch (e) {
     notify(t('toast.readFail', { e: String(e) }), true)
     openSession.value = null
   } finally {
     loadingChat.value = false
   }
+  // ⚠️ 这里曾经会顺手拉一次 api.sessionUsage 给顶栏角标用。后端 session_usage
+  // 会全文件再扫一次 JSONL，长会话下明显拖累聊天首屏 —— 已经移到独立的会话
+  // 统计页面，由用户点 ChatTopbar 的「统计」按钮按需触发（流式推送）。
+}
+
+// 会话统计入口：从 ChatTopbar 的统计按钮触发，跳到独立统计页面。
+// 走和全局统计一样的 SSE 推送通道，主聊天页面保持轻量 —— 后端 scope 拼成
+// `session:<agent>:<path>`，由 stats::stream::run_session_scope 单独处理。
+function openSessionStats() {
+  if (!openSession.value) return
+  const sess = openSession.value
+  sessionStatsTarget.value = {
+    agent: chatAgent.value,
+    path: sess.path,
+    title: sess.title,
+  }
+  sessionStatsFrom.value = 'chat'
+  showStats.value = true
+  showTrash.value = false
+  // 注意：不清空 openSession / activeDir —— 用户关闭统计页时回到原会话上下文。
+}
+
+// 从全局 StatsView 的 Top Sessions 列表跳进单会话统计。和上面的区别只在 "from"，
+// 决定返回时回到全局统计而不是某个聊天。
+function openSessionStatsFromGlobal(a: Agent, path: string, title?: string) {
+  sessionStatsTarget.value = { agent: a, path, title }
+  sessionStatsFrom.value = 'global'
+  // showStats 保持 true —— 我们仍然在 StatsView 里，只是 props.session 变了，
+  // StatsView 内部的 watch(props.session?.path) 会重启流。
+}
+
+function closeStats() {
+  // 单会话模式下点「返回」：根据进入路径决定回到哪
+  if (sessionStatsTarget.value) {
+    if (sessionStatsFrom.value === 'global') {
+      // 仍留在 StatsView，但切回全局视图
+      sessionStatsTarget.value = null
+      sessionStatsFrom.value = null
+      return
+    }
+    // 'chat' / null：完整关闭，openSession 还在 → 自动回落到 ChatView
+  }
+  showStats.value = false
+  sessionStatsTarget.value = null
+  sessionStatsFrom.value = null
 }
 
 // 在回收站里打开一个已删除会话的只读详情。回收站 JSONL 仍是完整文件，
@@ -836,11 +964,10 @@ async function copyText(text: string) {
 
 async function resume(s: SessionMeta) {
   try {
-    await api.resumeSession(
-      agent.value,
-      s.id,
-      s.cwd ?? activeProject.value?.displayPath ?? '',
-    )
+    // Gemini 必须在对应的项目根目录下 resume 才能找对索引/ID。
+    // 优先用 s.cwd（从 .project_root 反查出的绝对路径）。
+    const cwd = s.cwd || activeProject.value?.displayPath || ''
+    await api.resumeSession(agent.value, s.id, cwd, s.path)
     notify(t('toast.resumed'))
   } catch (e) {
     notify(`${e}`, true)
@@ -891,6 +1018,9 @@ onMounted(() => {
   loadProjects()
   // 启动时拉一次回收站，让顶栏红点从一开始就准确（不必先打开回收站视图）
   api.listTrash().then((items) => { trash.value = items }).catch(() => {})
+  // 后台检查 GitHub release —— 缓存 24h，失败完全静默；结果驱动侧边栏 Settings
+  // 按钮上的"有新版本"小红点。
+  runBackgroundCheck()
   window.addEventListener('focus', onFocus)
   window.addEventListener('blur', onBlur)
   // 右键菜单的全局关闭：任意点击 / 滚轮 / ESC
@@ -945,6 +1075,7 @@ onMounted(() => {
       exportSession('md')
     },
     'open-trash': () => loadTrash(),
+    'open-stats': openStats,
     'check-update': () => {
       showSettings.value = true
     },
@@ -972,9 +1103,61 @@ watch(theme, (v) => emitMenuSync('theme', v))
 watch(lang, (v) => emitMenuSync('lang', v))
 
 let menuUnlisten: UnlistenFn | null = null
+
+// Live tail：监听 watch.rs emit 的 3 个事件。安装一次，整个应用生命周期共用。
+//   session:append → 后端把新增的尾段 Msg 推过来；前端 push 进 chatMsgs，
+//                    再调 ChatView.onLiveAppend(n) 让它做 smart-scroll。
+//   session:reset  → 文件被截断 / 替换 → 整段重拉。
+//   session:gone   → 文件不在了 → 关闭当前会话，toast 一下。
+// path 兜底校验：用户在 emit 飞过来的极短窗口里切换了会话 / 关掉了详情页，
+// 我们只接当前 openSession.path 一致的事件，避免把 A 会话的尾段塞到 B 里。
+let liveUnlisteners: UnlistenFn[] = []
+
+async function installLiveTailListeners() {
+  const appendUnlisten = await listen<{ path: string; messages: Msg[] }>(
+    'session:append',
+    (e) => {
+      const cur = openSession.value
+      if (!cur || cur.path !== e.payload.path) return
+      const added = e.payload.messages
+      if (!added.length) return
+      chatMsgs.value = chatMsgs.value.concat(added)
+      // 真的有新增 → 标"Live"，并续命 fade 定时器。
+      markLive()
+      // 等 v-for 把新行挂上 DOM，再交给 ChatView 决定是否自动滚到底。
+      nextTick(() => chatViewRef.value?.onLiveAppend?.(added.length))
+    },
+  )
+  const resetUnlisten = await listen<{ path: string }>('session:reset', async (e) => {
+    const cur = openSession.value
+    if (!cur || cur.path !== e.payload.path) return
+    // 整段重读 —— 不动 openSession 自身，避免 watch 重置 chat-toolbar 状态。
+    try {
+      chatMsgs.value = await api.readSession(chatAgent.value, cur.path)
+    } catch {
+      // 读不出来通常是文件刚被换掉；下一次 emit 会再来一次。
+    }
+  })
+  const goneUnlisten = await listen<{ path: string }>('session:gone', (e) => {
+    const cur = openSession.value
+    if (!cur || cur.path !== e.payload.path) return
+    notify(t('toast.sessionGone'))
+    openSession.value = null
+  })
+  liveUnlisteners.push(appendUnlisten, resetUnlisten, goneUnlisten)
+}
+
+onMounted(() => {
+  installLiveTailListeners()
+})
+
 onUnmounted(() => {
   menuUnlisten?.()
   menuUnlisten = null
+  liveUnlisteners.forEach((u) => u())
+  liveUnlisteners = []
+  clearLive()
+  api.unwatchSession().catch(() => {})
 })
 
 // 全局搜索命中：跳到对应项目并打开会话；正文命中再滚到目标消息并触发闪烁动画。
@@ -1015,15 +1198,21 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       <SidebarTopbar
         :refreshing="refreshing"
         :show-trash="showTrash"
+        :show-stats="showStats"
         :has-trash="trash.length > 0"
         @toggle-sidebar="toggleSidebar"
         @refresh="refreshAll"
         @open-trash="loadTrash"
+        @open-stats="openStats"
       />
       <!-- 顶栏右侧分发：每个页面把自己的工具栏组件挂这里。
            本身仍是 macOS 拖动区域，组件内部的可交互元素由 CSS 单独标 no-drag。 -->
       <div class="topbar-drag">
-        <ChatTopbar v-if="openSession" />
+        <!-- StatsView 自带顶部控制条，这里就让出空间（保持拖动区域）。
+             showStats 优先级要高于 openSession，否则进入会话统计模式时
+             还会渲染 ChatTopbar 的「会话统计」按钮，造成视觉重复。 -->
+        <div v-if="showStats" />
+        <ChatTopbar v-else-if="openSession" @open-session-stats="openSessionStats" />
         <TrashTopbar
           v-else-if="showTrash"
           :items="trash"
@@ -1056,7 +1245,19 @@ async function onGlobalSearchOpen(hit: SearchHit) {
 
     <!-- 主区 -->
     <main class="main">
-      <template v-if="openSession">
+      <!-- 统计页面优先级最高：全局统计 *或* 单会话统计都走这一块。
+           单会话模式时 openSession 仍保留，关闭统计页就能回到原聊天上下文。
+           注意：不传 agent —— StatsView 的 scope 是组件内部独立状态（默认 all），
+           不受侧栏当前 agent 影响。 -->
+      <StatsView
+        v-if="showStats"
+        :session="sessionStatsTarget"
+        @close="closeStats"
+        @open-project="(dir) => selectProject(dir)"
+        @open-session="openSessionStatsFromGlobal"
+      />
+
+      <template v-else-if="openSession">
         <div v-if="loadingChat" class="loading">{{ t('common.loading') }}</div>
         <ChatView
           v-else
@@ -1065,6 +1266,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
           :session="openSession"
           :messages="chatMsgs"
           :trashed="!!openTrashItem"
+          :live="liveTailing"
           @back="openSession = null"
           @refresh="openChat(openSession)"
           @delete="deleteSession(openSession)"

@@ -6,7 +6,47 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
-## [v0.1.0]
+## [v0.1.2] — 2026-05-25
+
+### Added
+
+- **Linux build target** — release pipeline now also runs on `ubuntu-22.04` and uploads `*.deb` (Debian/Ubuntu) and `*.AppImage` (portable) alongside the existing macOS `.dmg` / `.app.tar.gz` and Windows `.msi` / `*-setup.exe`. The runner installs `libwebkit2gtk-4.1-dev` + the standard Tauri 2 toolchain. Release notes body and asset-glob updated accordingly. Pinned to `ubuntu-22.04` (not `ubuntu-latest`) so binaries link against an older glibc and run on a wider range of distros. `.rpm` skipped on purpose — `rpmbuild` isn't preinstalled on the runner and AppImage covers RPM-based distros.
+- **Animated "scanning" placeholder on the Stats page** — replaced the static bar-chart icon with a four-bar SVG that pulses on staggered delays, plus a trailing dots animation (`.` → `..` → `...`) on the "Discovering sessions" label. Honors `prefers-reduced-motion`.
+- **Single-day fallback for the Daily activity chart** — sessions that only span one day used to render as a lonely dot in a vast empty plot. Now they fall through to a centered summary card (date · cost · calls) inside the same block; multi-day data still renders the dual-axis line+bar chart.
+- **"Clear" button for the Welcome screen's Recent projects** — small muted action in the section header, removes the current agent's entire recents list (other agents untouched). i18n: English / 简体中文 / 繁體中文 / 日本語.
+- **Stats overview dashboard** (`/stats`) — full-app Token usage & cost analytics page reachable from the sidebar topbar and per-session from the ChatTopbar's "Stats" button. Scope (All agents / Claude / Codex / Gemini) and Range (Today / 7d / 30d / All time) pill filters. Streaming partial snapshots: as the Rust worker chews through JSONLs it emits incremental aggregates so the UI fills in card-by-card instead of waiting for the whole scan.
+- **Hero KPI cards** — Cost / Calls / Sessions / Cache hit rate as 4 standalone cards with icons (`Wallet` / `Activity` / `MessageCircle` / `Zap`), `font-variant-numeric: tabular-nums`, light-mode elevation + dark-mode borders, hover lift micro-interaction. Tokens-in / out / cached / written rendered below with hairline dividers.
+- **Daily activity chart** — dual-axis: soft-grey columns for calls (right axis), brand smooth line + gradient area fill + emphasized points for cost (left axis). Renders via AntV G2 with theme-reactive colors.
+- **By Model / By Activity** — horizontal bar charts with a curated 8-color categorical palette (`blue → violet → emerald → amber → pink → teal → indigo → orange`), light/dark variants. Tooltips show `$X.XX (Y.Y%)`.
+- **By Project / Top Sessions / By Tool / By Shell / By MCP** — bar-list rows with rank, name, gradient progress bar, value, and meta count. Click a project or session row to jump straight into it.
+- **Per-session stats** — entering Stats from the chat topbar locks scope to `session:<agent>:<path>`; daily, top-sessions, by-project panels are hidden in this mode (no meaning for a single file). "Back" button on the stats topbar returns to the original chat.
+- **Codex cost & model breakdown** — recognizes the model from `turn_context.payload.model` (the JSONL location updated by recent Codex versions); pricing table covers `gpt-5` / `gpt-5.1` / `gpt-5.3-codex` / `gpt-5.5` / `o3` / `o4-mini` / `gpt-4o` / `gpt-4.1` families.
+- **AntV G2 v5** replaces `chart.js` + `vue-chartjs` for all charts; smaller surface, theme-reactive, no canvas re-bind on data changes.
+- **Shared `chartPalette.ts`** — single source of truth for chart brand / text-mute / grid / soft-bar / stroke colors and the categorical palette; used by every G2 chart so theme switches re-render all charts consistently.
+- **Dashboard-style section cards** — white-on-tray layout (`stats-body` uses `--surface-2`, `stats-block` uses `--surface` with soft shadow in light mode, border-only in dark), card titles get a 3×14 blue→indigo accent stripe and a hairline divider, padding bumped 14→18/20 px for breathing room.
+- **Live tail for in-progress sessions** — opening a session now starts a backend `notify` watcher (`watch_session` / `unwatch_session`) on its JSONL. New lines written by the CLI emit `session:append` events; the frontend appends them to the open chat and either auto-scrolls (if you're within 100 px of the bottom) or surfaces a `N new ↓` pill so you can jump down on demand. File truncation / replacement emits `session:reset` (full re-read) and deletion emits `session:gone` (closes the view). Single-subscription model + 200 ms debounce keeps overhead trivial. Read-only sessions in the Trash do not start a watcher. A pulsing `● Live` indicator next to the session ID confirms the watcher is active.
+
+### Changed
+
+- **"Check for updates" wired up to GitHub Releases** — previously a stub that always said "up to date". `api.checkUpdate()` now `fetch`es `/repos/jerrywu001/cc-sessions-viewer/releases/latest`, strips the leading `v` from `tag_name`, and compares against `app_version` with a small `compareVer` helper. 404 (no releases yet) is treated as up-to-date silently; other HTTP errors throw so the Settings modal surfaces "Update check failed". `UpdateInfo` gains an optional `htmlUrl` for a future "View release" link. The Rust `check_update` stub and unused `UpdateInfo` struct were removed.
+- **Sidebar project toggle is now context-aware** — re-clicking the active project while a chat is open closes the chat and returns to the session list (instead of collapsing the project to the welcome screen). A second click — now on the list view — collapses as before. Two-step toggle matches user mental model: "back, then close".
+- **`lib::agents` / `lib::stats` are now `pub`** so the `examples/test_dedup.rs` verification binary (which links against the lib crate externally) can drive the dedup pipeline directly. CI's `clippy --all-targets -- -D warnings` exercises this on every PR.
+- **Daily activity bucketing fixed** — was bucketing all of a session's cost / calls / tokens into the day of `last_modified` (file mtime), so a Mon→Fri session dumped 5 days of cost on Friday. Now bucketed per-turn by `turn.timestamp_ms`, matching codeburn exactly (verified within 1% on real data).
+- **Claude message-id dedup across files** — Claude JSONL records every assistant message across multiple lines (one per content block: thinking / text / tool_use), and resumed / forked / sub-agent sessions re-copy the same `message.id`. Aggregator now keeps a `seen_message_ids: HashSet<String>` and skips repeats; a session whose every call is a duplicate is dropped entirely (mirrors codeburn's `if (session.apiCalls > 0)`). Result: input tokens / cost roughly halved for users with heavy fork / sub-agent usage.
+- **Claude sub-agent JSONLs counted in stats** — new `SessionSource::discover_stats_sessions` trait method enumerates `<projects>/<dir>/<sessionId>/subagents/*.jsonl` for Claude (Codex / Gemini keep the default impl). Chat session list is unchanged so sub-agents don't clutter the UI.
+- **Codex `cached_input_tokens` semantics** — Codex's `total_token_usage.input_tokens` already includes cached tokens (unlike Claude where `input_tokens` is the new portion only). Aggregating naively double-counted cache reads, inflating `input` by ~8× for cache-heavy usage. Reader now subtracts `cached_input_tokens` so `in` / `cached` columns are disjoint and totals match codeburn.
+- **`bar-fill` color** — switched from solid brand (orange-red) to a `blue → indigo` linear gradient (matching the chart palette's primary colors) so the activity / project / top-session / tool / shell / MCP bars stop looking like one giant red wall.
+
+### Fixed
+
+- **Single-session stats stuck on return** — `watch(props.session?.path)` was gated on `if (isSession.value)`, so when leaving session mode the gate flipped to `false` before the callback ran and the backend stream stayed on `session:<…>` scope, leaving the Stats page showing a single session's data even after "Back". Watcher now always calls `refresh()` and picks the global scope when `session` clears.
+- **"By model" donut invisible** — legend at `position: 'right'` inside a narrow column starved the donut of width and truncated labels to `GP…`. Replaced with the categorical horizontal-bar chart.
+
+## [v0.1.1] — 2026-05-23
+
+### Changed
+
+- **Release pipeline split into `build` + `publish`** — `tauri-action` no longer creates GitHub releases; a separate `softprops/action-gh-release` job downloads artifacts from the build matrix and publishes one release with `generate_release_notes: true` (auto-fills "What's Changed" + "New Contributors" from PRs / commits since the previous tag). Bundles upload unconditionally with `if-no-files-found: error` so missing artifacts fail fast. Added a `concurrency` group keyed by ref to prevent double tag-push fights.
 
 ### Added
 

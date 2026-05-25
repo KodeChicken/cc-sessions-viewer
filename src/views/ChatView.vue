@@ -38,6 +38,8 @@ const props = defineProps<{
   messages: Msg[]
   /** 会话来自回收站 —— 只读查看，隐藏 重命名/恢复终端/删除/导出 等操作。 */
   trashed?: boolean
+  /** Live tail 状态：后端正在追这条 JSONL；为 true 时显示 "● Live" 徽章。 */
+  live?: boolean
 }>()
 
 defineEmits<{
@@ -340,7 +342,51 @@ function flashMessage(idx: number, uuid?: string) {
 
   start()
 }
-defineExpose({ flashMessage })
+// ============================ Live tail: 自动跟随 + "N 条新" pill ============================
+//
+// 设计：当后端 emit session:append 后，App.vue 把新 Msg 推进 messages，
+// 然后调 onLiveAppend(n) 让本组件决定怎么回应：
+//   - 用户当前接近底部（100px 以内）→ 自动平滑滚到底，pill 不出现；
+//   - 否则 → 在 pill 上累加 N，用户点 pill 才滚到底。
+//
+// 切换会话 / 关闭后重新打开同一会话时，watch(session.path) 把 newCount 归零，
+// 避免把上一条会话的"未读"带到下一条。
+const newCount = ref(0)
+// 100px 阈值：比 atBottom 用的 8px 宽松得多，鼓励"贴着底"的常态自动跟随。
+const FOLLOW_THRESHOLD = 100
+function isNearBottom(): boolean {
+  const el = scrollEl.value
+  if (!el) return true
+  return el.scrollTop + el.clientHeight >= el.scrollHeight - FOLLOW_THRESHOLD
+}
+
+function onLiveAppend(addedCount: number) {
+  if (addedCount <= 0) return
+  if (isNearBottom()) {
+    // 等新行布局完成再滚 —— 否则 scrollHeight 还是旧值。
+    requestAnimationFrame(() => {
+      scrollToBottom()
+      newCount.value = 0
+    })
+  } else {
+    newCount.value += addedCount
+  }
+}
+
+function jumpToNewest() {
+  newCount.value = 0
+  scrollToBottom()
+}
+
+// 切换到不同会话 → 清掉"未读"计数。
+watch(
+  () => props.session?.path,
+  () => {
+    newCount.value = 0
+  },
+)
+
+defineExpose({ flashMessage, onLiveAppend })
 
 // 到顶 / 到底时分别隐藏对应方向的 FAB，留一点 8px 阈值避免抖动
 const atTop = ref(true)
@@ -575,6 +621,14 @@ function onDocClick(e: MouseEvent) {
             time: formatTime(session.created),
           })
         }}</span>
+        <span
+          v-if="live && !trashed"
+          class="live-badge"
+          v-tooltip="t('chat.live.tooltip')"
+        >
+          <span class="live-dot" />
+          <span class="live-label">{{ t('chat.live') }}</span>
+        </span>
         <span v-if="session.id" class="session-id" v-tooltip="session.id">
           <span class="session-id-label">{{ t('session.id') }}</span>
           <span class="session-id-text">{{ shortId(session.id) }}</span>
@@ -768,6 +822,13 @@ function onDocClick(e: MouseEvent) {
   </div>
 
   <div v-if="messages.length" class="scroll-fab">
+    <button
+      v-if="newCount > 0"
+      class="new-pill"
+      @click="jumpToNewest"
+    >
+      {{ t('chat.newMessages', { n: newCount }) }}
+    </button>
     <button
       v-if="!atTop"
       class="fab"

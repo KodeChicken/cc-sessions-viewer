@@ -5,15 +5,26 @@ import { setLang } from '../../src/settings'
 
 // 关键词搜索走后端：mock 掉，让规格用例驱动返回值。
 // cancelSearch 在每次新输入时调一次，桩成 no-op 即可。
-const { searchMock, cancelMock } = vi.hoisted(() => ({
+const { searchMock, cancelMock, usageMock } = vi.hoisted(() => ({
   searchMock: vi.fn(),
   cancelMock: vi.fn().mockResolvedValue(undefined),
+  // SessionsView wires sessionUsage to an IntersectionObserver — our jsdom stub
+  // never reports visibility, so the mock is mostly unused but must exist.
+  usageMock: vi.fn().mockResolvedValue({
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    reasoningOutputTokens: 0,
+    total: 0,
+  }),
 }))
 let _id = 0
 vi.mock('../../src/api', () => ({
   searchSessions: searchMock,
   cancelSearch: cancelMock,
   nextSearchRequestId: () => ++_id,
+  sessionUsage: usageMock,
 }))
 
 import SessionsView from '../../src/views/SessionsView.vue'
