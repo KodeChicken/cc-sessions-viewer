@@ -14,6 +14,7 @@
 // directly. Everything else stays crate-private.
 pub mod agents;
 mod menu;
+mod pty;
 pub mod stats;
 mod trash;
 mod types;
@@ -181,6 +182,64 @@ fn permanent_delete_trash(trash_file: String) -> Result<(), String> {
 #[tauri::command]
 fn empty_trash() -> Result<(), String> {
     trash::empty()
+}
+
+/// 内嵌 TUI：在窗口内部的 xterm.js 里跑 `<shell> -l -c "cd <cwd> && <resume CLI>"`。
+/// 返回新 PTY 的内部 id；前端拿 id 调 `pty_write` / `pty_resize` / `pty_kill`。
+/// 与 `resume_session`（开 Terminal.app）并存 —— 调用方各自决定走哪一条。
+#[tauri::command]
+fn pty_spawn(
+    app: tauri::AppHandle,
+    agent: String,
+    session_id: String,
+    cwd: String,
+    path: String,
+    cols: u16,
+    rows: u16,
+) -> Result<u64, String> {
+    if !Path::new(&cwd).is_dir() {
+        return Err("项目目录已不存在，无法恢复".to_string());
+    }
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("会话 ID 非法".to_string());
+    }
+    let cli = agents::source(&agent)?.resume_cli(&session_id, &path);
+    pty::spawn(app, cwd, cli, cols, rows)
+}
+
+/// 启动一个 “new session” PTY（不带 --resume）。session_id 不需要 —— 由 CLI 自己生成新 id。
+#[tauri::command]
+fn pty_spawn_new(
+    app: tauri::AppHandle,
+    agent: String,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+) -> Result<u64, String> {
+    if !Path::new(&cwd).is_dir() {
+        return Err("项目目录已不存在，无法创建会话".to_string());
+    }
+    let cli = agents::source(&agent)?.new_session_cli();
+    pty::spawn(app, cwd, cli, cols, rows)
+}
+
+#[tauri::command]
+fn pty_write(id: u64, data: String) -> Result<(), String> {
+    pty::write(id, &data)
+}
+
+#[tauri::command]
+fn pty_resize(id: u64, cols: u16, rows: u16) -> Result<(), String> {
+    pty::resize(id, cols, rows)
+}
+
+#[tauri::command]
+fn pty_kill(id: u64) -> Result<(), String> {
+    pty::kill(id)
 }
 
 /// 在终端中用对应 CLI 恢复（resume）一个会话。
@@ -428,6 +487,11 @@ pub fn run() {
             empty_trash,
             resume_session,
             new_session,
+            pty_spawn,
+            pty_spawn_new,
+            pty_write,
+            pty_resize,
+            pty_kill,
             reveal_in_finder,
             open_url,
             write_file,

@@ -40,13 +40,16 @@ const props = defineProps<{
   trashed?: boolean
   /** Live tail 状态：后端正在追这条 JSONL；为 true 时显示 "● Live" 徽章。 */
   live?: boolean
+  /** Resume CLI 时使用的 cwd。空字符串时禁用「在窗口内对话」按钮。 */
+  cwd?: string
 }>()
 
 defineEmits<{
   back: []
   refresh: []
   delete: []
-  resume: []
+  /** 点 Resume —— 让父组件 openOrFocusTui，开（或聚焦已有）一个 TUI tab。 */
+  resumeHere: []
   rename: []
   reveal: []
   copyId: []
@@ -54,6 +57,11 @@ defineEmits<{
   exportHtml: []
   restore: []
 }>()
+
+// Resume 按钮是否可用：回收站、缺 session id、缺 cwd 时禁用。
+const canResumeHere = computed(
+  () => !props.trashed && !!props.session.id && !!props.cwd,
+)
 
 function shortId(id: string): string {
   if (!id) return ''
@@ -645,8 +653,10 @@ function onDocClick(e: MouseEvent) {
     <button
       v-if="!trashed"
       class="icon-btn"
-      v-tooltip="t('chat.action.resume')"
-      @click="$emit('resume')"
+      :class="{ disabled: !canResumeHere }"
+      v-tooltip="canResumeHere ? t('chat.action.resumeHere') : t('chat.action.resumeUnavailable')"
+      :disabled="!canResumeHere"
+      @click="canResumeHere && $emit('resumeHere')"
     >
       <IconPlay />
     </button>

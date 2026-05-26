@@ -39,10 +39,18 @@ import WelcomeView from './views/WelcomeView.vue'
 import StatsView from './views/StatsView.vue'
 import Sidebar from './components/Sidebar.vue'
 import SidebarTopbar from './components/SidebarTopbar.vue'
+import TerminalStrip from './components/TerminalStrip.vue'
+import TerminalPaneSlot from './components/TerminalPaneSlot.vue'
 import ConfirmModal from './modals/ConfirmModal.vue'
 import RenameModal from './modals/RenameModal.vue'
 import GlobalSearchModal from './modals/GlobalSearchModal.vue'
 import ProjectContextMenu from './modals/ProjectContextMenu.vue'
+import {
+  activeUiId,
+  openOrFocusTui,
+  setActive as setActiveTui,
+  activeTab as currentActiveTab,
+} from './terminals'
 
 // ---------- 状态 ----------
 const agent = ref<Agent>('claude')
@@ -189,6 +197,14 @@ const activeProject = computed(() =>
 )
 // 详情页用的 agent：回收站会话用条目自己的 agent（可能与当前侧栏 agent 不同）。
 const chatAgent = computed<Agent>(() => openTrashItem.value?.agent ?? agent.value)
+
+// ChatView 用来 spawn 内嵌 TUI 的 cwd。优先用会话自带的 cwd（Codex / Gemini 可靠），
+// 退到当前激活项目的 displayPath（Claude 的项目就是路径）。回收站模式不需要 —— TerminalPane
+// 仅在 !trashed 且 cwd 非空时挂载。
+const chatCwd = computed<string>(() => {
+  if (openTrashItem.value) return ''
+  return openSession.value?.cwd || activeProject.value?.displayPath || ''
+})
 
 // ---------- 项目置顶 / 沉底偏好（持久化到 localStorage）----------
 type ProjState = 'pinned' | 'sunk'
@@ -432,11 +448,16 @@ function switchAgent(a: Agent) {
   sessions.value = []
   openSession.value = null
   showTrash.value = false
+  // 任何主区视图切换 → 把 TUI 层收起，让用户看到刚切到的视图。TUI tab 不关，
+  // 用户在 TerminalStrip 里随时能切回。
+  setActiveTui(null)
   // showStats 不重置 —— 统计是 agent-scoped，切 agent 后 StatsView 自己 refetch。
   loadProjects()
 }
 
 async function selectProject(dir: string) {
+  // 任何点项目 / 切项目的动作都先把 TUI 层收起，否则用户点了项目却看不到列表。
+  setActiveTui(null)
   // 再次点击当前已选中的项目：
   //   - 若右侧是会话详情 → 关闭详情，回到会话列表（不收起项目）
   //   - 若右侧已是会话列表 → 收起项目，回到「请选择项目」空状态
@@ -547,6 +568,7 @@ async function refreshSessions() {
 // 打开统计概览：和回收站 / 会话视图互斥；再点一次同一按钮收起。
 // 数据加载自身在 StatsView 里完成，App 这一层只切顶层状态。
 function openStats() {
+  setActiveTui(null)
   if (showStats.value) {
     showStats.value = false
     sessionStatsTarget.value = null
@@ -563,6 +585,7 @@ function openStats() {
 }
 
 async function loadTrash() {
+  setActiveTui(null)
   showTrash.value = true
   showStats.value = false
   sessionStatsTarget.value = null
@@ -581,6 +604,7 @@ async function loadTrash() {
 }
 
 async function openChat(s: SessionMeta) {
+  setActiveTui(null)
   loadingChat.value = true
   openTrashItem.value = null
   openSession.value = s
@@ -658,6 +682,7 @@ function closeStats() {
 // 在回收站里打开一个已删除会话的只读详情。回收站 JSONL 仍是完整文件，
 // 直接按 trashPath 解析即可；详情页通过 openTrashItem 进入「回收站模式」。
 async function openTrashSession(item: TrashItem) {
+  setActiveTui(null)
   loadingChat.value = true
   openTrashItem.value = item
   openSession.value = {
@@ -962,24 +987,58 @@ async function copyText(text: string) {
   }
 }
 
-async function resume(s: SessionMeta) {
+// （之前还有一个 `resume()` 走外部 Terminal.app 的版本；现在 ChatView / SessionsView
+// 的 Resume 全部统一到窗口内 TUI tab，对应的 api.resumeSession + lib.rs::resume_session
+// 后端命令仍保留，便于以后真要给"在外部 Terminal 打开"加按钮时直接复用。）
+
+// ---------- TerminalStrip 的 List / View 切换 ----------
+// List → 关闭当前会话 + 退出 TUI（落回 SessionsView）
+// View → 保留当前会话，仅退出 TUI（落回 ChatView）
+function onTuiListClick() {
+  openSession.value = null
+  setActiveTui(null)
+}
+function onTuiViewClick() {
+  setActiveTui(null)
+}
+
+/** 在窗口内的 TUI tab 里 resume —— 同会话已开则 focus，否则 new tab。 */
+async function resumeHere(s: SessionMeta) {
+  const cwd = s.cwd || activeProject.value?.displayPath || ''
+  if (!cwd) {
+    notify(t('toast.resumeNoCwd'), true)
+    return
+  }
   try {
-    // Gemini 必须在对应的项目根目录下 resume 才能找对索引/ID。
-    // 优先用 s.cwd（从 .project_root 反查出的绝对路径）。
-    const cwd = s.cwd || activeProject.value?.displayPath || ''
-    await api.resumeSession(agent.value, s.id, cwd, s.path)
-    notify(t('toast.resumed'))
+    await openOrFocusTui({
+      agent: chatAgent.value,
+      // tab 跟侧栏当前项目绑定 —— 切到别的项目 strip 自动隐藏这个 tab。
+      projectKey: activeProject.value?.dirName ?? activeDir.value ?? '',
+      sessionId: s.id,
+      sessionPath: s.path,
+      title: s.title,
+      cwd,
+    })
   } catch (e) {
     notify(`${e}`, true)
   }
 }
 
-// 在终端里为当前项目开一个全新会话（不带 --resume）。
+// 在窗口内的 TUI tab 里开一个全新会话（不带 --resume）。每次点 + 都开一个新 tab，
+// CLI 自己会生成新的 session id。tab 的 sessionId / sessionPath 为空 —— 不挂 file watcher，
+// 用户事后想在列表里跟踪这条 session，从侧栏点开即可。
 async function newSession() {
-  if (!activeProject.value) return
+  const cwd = activeProject.value?.displayPath || ''
+  if (!cwd) return
   try {
-    await api.newSession(agent.value, activeProject.value.displayPath)
-    notify(t('toast.newSession'))
+    await openOrFocusTui({
+      agent: agent.value,
+      projectKey: activeProject.value?.dirName ?? activeDir.value ?? '',
+      sessionId: '',
+      sessionPath: '',
+      title: t('chat.tui.newSessionTitle'),
+      cwd,
+    })
   } catch (e) {
     notify(`${e}`, true)
   }
@@ -1102,6 +1161,18 @@ onMounted(() => {
 watch(theme, (v) => emitMenuSync('theme', v))
 watch(lang, (v) => emitMenuSync('lang', v))
 
+// (agent, activeDir) 切换后，如果当前 active 的 TUI tab 不在新范围里 → 自动让位回 view。
+// 现存的导航函数（switchAgent / selectProject 等）已经显式 setActiveTui(null)，但有些
+// 路径（直接改 activeDir / 关闭项目）走不到那里，这条 watch 兜底。tabs 本身不动 ——
+// PTY 仍活着，切回原项目时 strip 会再次显示。
+watch([agent, activeDir], () => {
+  const cur = currentActiveTab()
+  if (!cur) return
+  if (cur.agent !== agent.value || cur.projectKey !== (activeDir.value ?? '')) {
+    setActiveTui(null)
+  }
+})
+
 let menuUnlisten: UnlistenFn | null = null
 
 // Live tail：监听 watch.rs emit 的 3 个事件。安装一次，整个应用生命周期共用。
@@ -1164,6 +1235,7 @@ onUnmounted(() => {
 // 如果命中所在项目不在已加载列表里（极少见 —— list_projects 通常涵盖全部），
 // 先刷一次项目列表再跳。
 async function onGlobalSearchOpen(hit: SearchHit) {
+  setActiveTui(null)
   if (activeDir.value !== hit.projectKey) {
     if (!projects.value.some((p) => p.dirName === hit.projectKey)) {
       await loadProjects()
@@ -1245,84 +1317,105 @@ async function onGlobalSearchOpen(hit: SearchHit) {
 
     <!-- 主区 -->
     <main class="main">
-      <!-- 统计页面优先级最高：全局统计 *或* 单会话统计都走这一块。
-           单会话模式时 openSession 仍保留，关闭统计页就能回到原聊天上下文。
-           注意：不传 agent —— StatsView 的 scope 是组件内部独立状态（默认 all），
-           不受侧栏当前 agent 影响。 -->
-      <StatsView
-        v-if="showStats"
-        :session="sessionStatsTarget"
-        @close="closeStats"
-        @open-project="(dir) => selectProject(dir)"
-        @open-session="openSessionStatsFromGlobal"
+      <!-- TUI tab 条：左边 List/View meta tab + 当前项目的 PTY tab。
+           inProjectBrowse 决定 List/View 是否显示；hasOpenSession 决定 View 是否显示。 -->
+      <TerminalStrip
+        :agent="agent"
+        :project-key="activeDir"
+        :in-project-browse="!!activeDir && !showTrash && !showStats"
+        :has-open-session="!!openSession"
+        @list-click="onTuiListClick"
+        @view-click="onTuiViewClick"
       />
 
-      <template v-else-if="openSession">
-        <div v-if="loadingChat" class="loading">{{ t('common.loading') }}</div>
-        <ChatView
-          v-else
-          ref="chatViewRef"
-          :agent="chatAgent"
-          :session="openSession"
-          :messages="chatMsgs"
-          :trashed="!!openTrashItem"
-          :live="liveTailing"
-          @back="openSession = null"
-          @refresh="openChat(openSession)"
-          @delete="deleteSession(openSession)"
-          @resume="resume(openSession)"
-          @rename="openRename(openSession)"
-          @reveal="reveal(openSession.path)"
-          @copy-id="copyText(openSession.id)"
-          @export-md="exportSession('md')"
-          @export-html="exportSession('html')"
-          @restore="openTrashItem && restore(openTrashItem)"
+      <!-- view 层 / TUI 层 同时存在；activeUiId === null 时只显示 view，
+           否则 view 隐去、TerminalPaneSlot 顶到面前。两层都是 main-body 的子，
+           position 由 CSS 控制。 -->
+      <div class="main-body">
+        <!-- 标准视图（聊天 / 列表 / 统计 / 回收站 / 欢迎页） -->
+        <div class="view-layer" v-show="activeUiId === null">
+          <StatsView
+            v-if="showStats"
+            :session="sessionStatsTarget"
+            @close="closeStats"
+            @open-project="(dir) => selectProject(dir)"
+            @open-session="openSessionStatsFromGlobal"
+          />
+
+          <template v-else-if="openSession">
+            <div v-if="loadingChat" class="loading">{{ t('common.loading') }}</div>
+            <ChatView
+              v-else
+              ref="chatViewRef"
+              :agent="chatAgent"
+              :session="openSession"
+              :messages="chatMsgs"
+              :trashed="!!openTrashItem"
+              :live="liveTailing"
+              :cwd="chatCwd"
+              @back="openSession = null"
+              @refresh="openChat(openSession)"
+              @delete="deleteSession(openSession)"
+              @resume-here="resumeHere(openSession)"
+              @rename="openRename(openSession)"
+              @reveal="reveal(openSession.path)"
+              @copy-id="copyText(openSession.id)"
+              @export-md="exportSession('md')"
+              @export-html="exportSession('html')"
+              @restore="openTrashItem && restore(openTrashItem)"
+            />
+          </template>
+
+          <TrashView
+            v-else-if="showTrash"
+            :trash="trash"
+            :loading="loadingList"
+            @clear="clearTrash"
+            @open="openTrashSession"
+            @restore="restore"
+            @permanent-delete="permanentDelete"
+          />
+
+          <SessionsView
+            v-else-if="activeProject"
+            ref="sessionsViewRef"
+            :agent="agent"
+            :project="activeProject"
+            :sessions="sessions"
+            :session-total="sessionTotal"
+            :loading="loadingList"
+            :loading-more="loadingMore"
+            @open="openChat"
+            @rename="openRename"
+            @resume="resumeHere"
+            @reveal="reveal"
+            @delete="deleteSession"
+            @copy="copyText"
+            @export="exportFromList"
+            @refresh="refreshSessions"
+            @new-session="newSession"
+            @delete-project="deleteActiveProject"
+            @load-more="loadMore"
+            @scroll="onListScroll"
+          />
+
+          <WelcomeView
+            v-else
+            :agent="agent"
+            :projects="projects"
+            @select-project="selectProject"
+            @switch-agent="switchAgent"
+            @open-repo="openRepo"
+          />
+        </div>
+
+        <!-- TUI 层 —— TerminalPaneSlot 自己用 v-show 控制 attach；这里 wrap 一层
+             tui-layer 给 CSS 用于绝对定位填满 main-body。 -->
+        <TerminalPaneSlot
+          v-show="activeUiId !== null"
+          class="tui-layer"
         />
-      </template>
-
-      <!-- 回收站视图 -->
-      <TrashView
-        v-else-if="showTrash"
-        :trash="trash"
-        :loading="loadingList"
-        @clear="clearTrash"
-        @open="openTrashSession"
-        @restore="restore"
-        @permanent-delete="permanentDelete"
-      />
-
-      <!-- 会话列表视图 -->
-      <SessionsView
-        v-else-if="activeProject"
-        ref="sessionsViewRef"
-        :agent="agent"
-        :project="activeProject"
-        :sessions="sessions"
-        :session-total="sessionTotal"
-        :loading="loadingList"
-        :loading-more="loadingMore"
-        @open="openChat"
-        @rename="openRename"
-        @resume="resume"
-        @reveal="reveal"
-        @delete="deleteSession"
-        @copy="copyText"
-        @export="exportFromList"
-        @refresh="refreshSessions"
-        @new-session="newSession"
-        @delete-project="deleteActiveProject"
-        @load-more="loadMore"
-        @scroll="onListScroll"
-      />
-
-      <WelcomeView
-        v-else
-        :agent="agent"
-        :projects="projects"
-        @select-project="selectProject"
-        @switch-agent="switchAgent"
-        @open-repo="openRepo"
-      />
+      </div>
     </main>
     </div>
 

@@ -216,6 +216,7 @@ describe('SessionsView', () => {
     it('hides new-session and refresh when the project directory is missing', () => {
       const wrapper = mount(SessionsView, {
         props: {
+          agent: 'claude',
           project: { ...project, exists: false },
           sessions: [],
           sessionTotal: 0,
@@ -247,6 +248,7 @@ describe('SessionsView', () => {
     it('shows the tag when the project directory no longer exists', () => {
       const wrapper = mount(SessionsView, {
         props: {
+          agent: 'claude',
           project: { ...project, exists: false },
           sessions: [],
           sessionTotal: 0,
@@ -267,6 +269,7 @@ describe('SessionsView', () => {
     it('hides resume and refresh on session cards when the directory is missing', () => {
       const wrapper = mount(SessionsView, {
         props: {
+          agent: 'claude',
           project: { ...project, exists: false },
           sessions: [session()],
           sessionTotal: 1,

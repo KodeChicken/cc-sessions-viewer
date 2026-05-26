@@ -48,6 +48,7 @@ import IconHistoryRaw from '~icons/lucide/history'
 import IconGithubRaw from '~icons/lucide/github'
 import IconCornerDownLeftRaw from '~icons/lucide/corner-down-left'
 import IconChartRaw from '~icons/lucide/bar-chart-3'
+import IconListRaw from '~icons/lucide/list'
 import IconWalletRaw from '~icons/lucide/wallet'
 import IconActivityRaw from '~icons/lucide/activity'
 import IconLayersRaw from '~icons/lucide/layers'
@@ -102,6 +103,7 @@ export const IconHistory = IconHistoryRaw
 export const IconGithub = IconGithubRaw
 export const IconCornerDownLeft = IconCornerDownLeftRaw
 export const IconChart = IconChartRaw
+export const IconList = IconListRaw
 export const IconWallet = IconWalletRaw
 export const IconActivity = IconActivityRaw
 export const IconLayers = IconLayersRaw

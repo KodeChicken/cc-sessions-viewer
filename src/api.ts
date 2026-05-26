@@ -125,6 +125,34 @@ export const resumeSession = (
 export const newSession = (agent: Agent, cwd: string) =>
   invoke<void>('new_session', { agent, cwd })
 
+// ---------- 内嵌 TUI（在窗口里直接跑 resume CLI，配合 xterm.js）----------
+
+/** 拉起一个 PTY 跑 `<shell> -l -c "cd <cwd> && <agent resume CLI>"`，返回 PTY id。
+ *  后续通过 `pty://data` 事件接收输出，`ptyWrite` 喂键盘输入，`ptyResize` 跟窗口大小。 */
+export const ptySpawn = (
+  agent: Agent,
+  sessionId: string,
+  cwd: string,
+  path: string,
+  cols: number,
+  rows: number,
+) => invoke<number>('pty_spawn', { agent, sessionId, cwd, path, cols, rows })
+
+/** 启动一个新会话的 PTY（不带 --resume）。 */
+export const ptySpawnNew = (agent: Agent, cwd: string, cols: number, rows: number) =>
+  invoke<number>('pty_spawn_new', { agent, cwd, cols, rows })
+
+/** 把用户的按键 base64 后写进 PTY stdin。 */
+export const ptyWrite = (id: number, base64: string) =>
+  invoke<void>('pty_write', { id, data: base64 })
+
+/** 容器尺寸变了同步给 PTY，子进程会收到 SIGWINCH 重新布局。 */
+export const ptyResize = (id: number, cols: number, rows: number) =>
+  invoke<void>('pty_resize', { id, cols, rows })
+
+/** 强杀子进程并清理 PTY；幂等，已死的 id 也安全。 */
+export const ptyKill = (id: number) => invoke<void>('pty_kill', { id })
+
 export interface UpdateInfo {
   current: string
   latest: string
