@@ -29,6 +29,7 @@ import {
   IconDownload,
   IconMarkdown,
   IconHtml,
+  IconJson,
   agentIcons,
 } from '../components/icons'
 
@@ -55,6 +56,7 @@ defineEmits<{
   copyId: []
   exportMd: []
   exportHtml: []
+  exportJson: []
   restore: []
 }>()
 
@@ -701,6 +703,14 @@ function onDocClick(e: MouseEvent) {
         >
           <IconHtml />
           <span>{{ t('chat.tb.export.html') }}</span>
+        </button>
+        <button
+          class="export-menu-item"
+          role="menuitem"
+          @click="exportMenuOpen = false; $emit('exportJson')"
+        >
+          <IconJson />
+          <span>{{ t('chat.tb.export.json') }}</span>
         </button>
       </div>
     </div>

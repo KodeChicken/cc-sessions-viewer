@@ -12,7 +12,9 @@ vi.mock('../src/api', () => ({ writeFile: writeFileMock }))
 
 import {
   batchExportFolderName,
+  buildExportEnvelope,
   exportHtml,
+  exportJson,
   exportMarkdown,
   messagesToHtml,
   messagesToMarkdown,
@@ -392,6 +394,32 @@ describe('exportMarkdown / exportHtml', () => {
     const result = await exportHtml(session(), [], 'claude')
     expect(result).toBe('/Users/me/out.html')
     expect(writeFileMock).toHaveBeenCalledWith('/Users/me/out.html', expect.stringContaining('<!doctype html>'))
+  })
+
+  it('writes a lossless JSON envelope that round-trips agent + session + messages', async () => {
+    saveMock.mockResolvedValue('/Users/me/out.json')
+    writeFileMock.mockResolvedValue('/Users/me/out.json')
+    const msgs = [msg('user', [text('hi')]), msg('assistant', [text('yo')])]
+    const result = await exportJson(session(), msgs, 'codex')
+    expect(result).toBe('/Users/me/out.json')
+    const written = writeFileMock.mock.calls[0][1]
+    const parsed = JSON.parse(written)
+    expect(parsed.__type).toBe('cc-session-viewer-export')
+    expect(parsed.version).toBe(1)
+    expect(parsed.agent).toBe('codex')
+    expect(parsed.session.id).toBe('sess-1')
+    expect(parsed.messages).toHaveLength(2)
+    expect(parsed.messages[0].blocks[0].text).toBe('hi')
+  })
+})
+
+describe('buildExportEnvelope', () => {
+  it('tags the format and embeds the full payload', () => {
+    const env = JSON.parse(buildExportEnvelope(session(), [msg('user', [text('hi')])], 'gemini'))
+    expect(env.__type).toBe('cc-session-viewer-export')
+    expect(env.agent).toBe('gemini')
+    expect(env.session.title).toBe('My Session')
+    expect(env.messages[0].role).toBe('user')
   })
 
   it('sanitizes illegal characters out of the default filename', async () => {

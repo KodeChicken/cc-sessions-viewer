@@ -16,6 +16,12 @@ export default {
   'sidebar.toggle': '收合 / 展開側邊欄',
   'sidebar.refresh': '重新整理',
   'sidebar.stats': '統計總覽',
+  'sidebar.history': '匯出歷史',
+  'history.title': '匯出歷史',
+  'history.subtitle': '你匯出過的會話 —— 點擊任意一條即可重新開啟原始記錄。',
+  'history.clearAll': '清空',
+  'history.empty': '還沒有匯出記錄。日後匯出的會話會列在這裡，方便一鍵重新開啟。',
+  'history.remove': '從清單移除',
 
   'list.sessions': '{n} 個會話',
 
@@ -173,6 +179,7 @@ export default {
   'chat.tb.tools.expand': '展開所有工具呼叫',
   'chat.tb.export.md': '匯出為 Markdown',
   'chat.tb.export.html': '匯出為 HTML',
+  'chat.tb.export.json': '匯出為 JSON',
 
   'chat.tb.usage.label': 'tokens',
   'chat.tb.usage.tooltip': 'Token 用量 — 滑鼠停留查看明細',

@@ -16,6 +16,8 @@ pub mod agents;
 mod menu;
 mod pty;
 pub mod stats;
+#[cfg(target_os = "macos")]
+mod tray;
 mod trash;
 mod types;
 mod util;
@@ -465,8 +467,21 @@ fn pin_traffic_lights(window: &tauri::WebviewWindow) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+
+    // 开发期注入 MCP Bridge —— 让 AI 助手经 WebSocket 直接看/控这个 app（截图 /
+    // DOM 快照 / 执行 JS / 监控 IPC）。仅 debug：release 构建里这段被 cfg 去掉。
+    // 绑 127.0.0.1（默认是 0.0.0.0），避免把调试端口 9223 暴露到局域网。
+    #[cfg(debug_assertions)]
+    {
+        builder = builder.plugin(
+            tauri_plugin_mcp_bridge::Builder::new()
+                .bind_address("127.0.0.1")
+                .build(),
+        );
+    }
+
+    builder
         .invoke_handler(tauri::generate_handler![
             list_projects,
             list_sessions,
@@ -506,6 +521,9 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 use tauri::Manager;
+                // 菜单栏托盘图标 + 菜单（Show / Settings / Quit）。
+                tray::build(app.handle())?;
+
                 if let Some(win) = app.get_webview_window("main") {
                     pin_traffic_lights(&win);
                     // AppKit relays out standard window buttons on resize,
@@ -515,15 +533,32 @@ pub fn run() {
                     // can race the click→drag transition and break titlebar
                     // dragging when focusing the window from a click.
                     let win_clone = win.clone();
-                    win.on_window_event(move |e| {
-                        if matches!(e, tauri::WindowEvent::Resized(_)) {
-                            pin_traffic_lights(&win_clone);
+                    win.on_window_event(move |e| match e {
+                        tauri::WindowEvent::Resized(_) => pin_traffic_lights(&win_clone),
+                        // Close-to-tray：红灯 / ⌘W 不退出，藏到菜单栏，仍可从托盘
+                        // "Show" 唤回；真正退出走托盘 "Quit" 或 ⌘Q。
+                        tauri::WindowEvent::CloseRequested { api, .. } => {
+                            api.prevent_close();
+                            let _ = win_clone.hide();
                         }
+                        _ => {}
                     });
                 }
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            // Dock 图标点击（macOS Reopen）：close-to-tray 把窗口藏起来后，点 Dock
+            // 图标应能唤回它，否则只能从托盘菜单 "Show"。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                use tauri::Manager;
+                if let Some(win) = _app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
+        });
 }

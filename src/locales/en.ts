@@ -16,6 +16,12 @@ export default {
   'sidebar.toggle': 'Toggle sidebar',
   'sidebar.refresh': 'Refresh',
   'sidebar.stats': 'Statistics',
+  'sidebar.history': 'Export history',
+  'history.title': 'Export history',
+  'history.subtitle': 'Sessions you exported — click one to reopen the original transcript.',
+  'history.clearAll': 'Clear all',
+  'history.empty': 'No exports yet. Sessions you export will be listed here for quick reopening.',
+  'history.remove': 'Remove from list',
 
   'list.sessions': '{n} sessions',
 
@@ -174,6 +180,7 @@ export default {
   'chat.tb.tools.expand': 'Expand all tool calls',
   'chat.tb.export.md': 'Export as Markdown',
   'chat.tb.export.html': 'Export as HTML',
+  'chat.tb.export.json': 'Export as JSON',
 
   'chat.tb.usage.label': 'tokens',
   'chat.tb.usage.tooltip': 'Token usage — hover for breakdown',

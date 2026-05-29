@@ -22,6 +22,7 @@ import {
   IconDownload,
   IconMarkdown,
   IconHtml,
+  IconJson,
   IconRefresh,
   IconCheck,
   IconSearch,
@@ -44,7 +45,7 @@ const emit = defineEmits<{
   (e: 'reveal', path: string): void
   (e: 'delete', s: SessionMeta): void
   (e: 'copy', text: string): void
-  (e: 'export', s: SessionMeta, kind: 'md' | 'html'): void
+  (e: 'export', s: SessionMeta, kind: 'md' | 'html' | 'json'): void
   (e: 'refresh'): void
   (e: 'new-session'): void
   (e: 'delete-project'): void
@@ -215,7 +216,7 @@ function toggleExport(path: string, e: Event) {
   e.stopPropagation()
   openExportFor.value = openExportFor.value === path ? null : path
 }
-function pickExport(s: SessionMeta, kind: 'md' | 'html', e: Event) {
+function pickExport(s: SessionMeta, kind: 'md' | 'html' | 'json', e: Event) {
   e.stopPropagation()
   openExportFor.value = null
   emit('export', s, kind)
@@ -530,6 +531,14 @@ defineExpose({ scrollEl })
             >
               <IconHtml />
               <span>{{ t('chat.tb.export.html') }}</span>
+            </button>
+            <button
+              class="export-menu-item"
+              role="menuitem"
+              @click.stop="pickExport(s, 'json', $event)"
+            >
+              <IconJson />
+              <span>{{ t('chat.tb.export.json') }}</span>
             </button>
           </div>
         </div>

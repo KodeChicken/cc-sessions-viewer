@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { t } from '../i18n'
-import { IconSidebar, IconRefresh, IconTrashOpen, IconChart } from './icons'
+import { IconSidebar, IconRefresh, IconTrashOpen, IconChart, IconExportHistory } from './icons'
 
 defineProps<{
   refreshing: boolean
   showTrash: boolean
   showStats?: boolean
+  showHistory?: boolean
   hasTrash: boolean
 }>()
 
@@ -14,6 +15,7 @@ const emit = defineEmits<{
   (e: 'refresh'): void
   (e: 'open-trash'): void
   (e: 'open-stats'): void
+  (e: 'open-history'): void
 }>()
 </script>
 
@@ -38,6 +40,14 @@ const emit = defineEmits<{
       </button>
     </div>
     <div class="topbar-icons">
+      <button
+        class="top-btn"
+        :class="{ active: showHistory }"
+        v-tooltip="t('sidebar.history')"
+        @click="emit('open-history')"
+      >
+        <IconExportHistory />
+      </button>
       <button
         class="top-btn"
         :class="{ active: showStats }"

@@ -8,10 +8,10 @@
 
 <p align="center">
 <strong>Faithful replay</strong> — thinking chains, tool-call pairings, structured diffs, inline screenshots.<br/>
-<strong>Fast search</strong> — cross-project global hit (<strong>⌘⇧F</strong>) jumps to the exact message; one-click resume in Terminal.<br/>
-<strong>Deep stats</strong> — aggregate token spend and cost; slice by project, model, or tool.<br/>
+<strong>Fast search</strong> — cross-project global hit (<strong>⌘⇧F</strong>) jumps to the exact message; one-click resume in an embedded terminal.<br/>
+<strong>Deep stats</strong> — aggregate token spend and cost with up-to-date model pricing; slice by project, model, or tool.<br/>
 <strong>Read-only safety</strong> — original JSONL is never touched; delete is a move to shared trash, never <code>rm</code>.<br/>
-<strong>Flexible export</strong> — single session or batches to offline-readable Markdown or HTML.
+<strong>Flexible export</strong> — single session or batches to offline-readable Markdown, HTML, or lossless JSON.
 </p>
 
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=fff)](https://tauri.app)

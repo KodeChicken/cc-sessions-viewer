@@ -18,13 +18,17 @@ import {
 import {
   exportMarkdown,
   exportHtml,
+  exportJson,
   exportMarkdownToDir,
   exportHtmlToDir,
+  exportJsonToDir,
   pickExportDir,
   batchExportFolderName,
+  type ExportKind,
 } from './export'
 import { fly } from './fly'
 import { recordRecent } from './recents'
+import { recordExport, type ExportRecord } from './exportHistory'
 import { globalSearchOpen, openGlobalSearch } from './globalSearch'
 import { runBackgroundCheck } from './updateCheck'
 import type { SearchHit } from './types'
@@ -44,6 +48,7 @@ import TerminalPaneSlot from './components/TerminalPaneSlot.vue'
 import ConfirmModal from './modals/ConfirmModal.vue'
 import RenameModal from './modals/RenameModal.vue'
 import GlobalSearchModal from './modals/GlobalSearchModal.vue'
+import ExportHistoryView from './views/ExportHistoryView.vue'
 import ProjectContextMenu from './modals/ProjectContextMenu.vue'
 import {
   activeUiId,
@@ -58,6 +63,7 @@ const projects = ref<ProjectInfo[]>([])
 const activeDir = ref<string | null>(null)
 const showTrash = ref(false)
 const showStats = ref(false)
+const showExportHistory = ref(false)
 const showSettings = ref(false)
 const sidebarOpen = ref(true)
 const refreshing = ref(false)
@@ -195,8 +201,14 @@ watch(openSession, (val, old) => {
 const activeProject = computed(() =>
   projects.value.find((p) => p.dirName === activeDir.value),
 )
-// 详情页用的 agent：回收站会话用条目自己的 agent（可能与当前侧栏 agent 不同）。
-const chatAgent = computed<Agent>(() => openTrashItem.value?.agent ?? agent.value)
+// 从「导出历史」列表打开会话时所属的 agent —— 可能与侧栏当前 agent 不同，
+// 且不该切换整个侧栏。打开普通 / 回收站会话时清空。
+const importedAgent = ref<Agent | null>(null)
+// 详情页用的 agent：回收站会话用条目自己的 agent；导出历史会话用记录自带的 agent；
+// 否则跟随侧栏当前 agent。三者可能彼此不同，优先级：回收站 > 导出历史 > 侧栏。
+const chatAgent = computed<Agent>(
+  () => openTrashItem.value?.agent ?? importedAgent.value ?? agent.value,
+)
 
 // ChatView 用来 spawn 内嵌 TUI 的 cwd。优先用会话自带的 cwd（Codex / Gemini 可靠），
 // 退到当前激活项目的 displayPath（Claude 的项目就是路径）。回收站模式不需要 —— TerminalPane
@@ -448,6 +460,7 @@ function switchAgent(a: Agent) {
   sessions.value = []
   openSession.value = null
   showTrash.value = false
+  showExportHistory.value = false
   // 任何主区视图切换 → 把 TUI 层收起，让用户看到刚切到的视图。TUI tab 不关，
   // 用户在 TerminalStrip 里随时能切回。
   setActiveTui(null)
@@ -474,6 +487,7 @@ async function selectProject(dir: string) {
   }
   showTrash.value = false
   showStats.value = false
+  showExportHistory.value = false
   sessionStatsTarget.value = null
   activeDir.value = dir
   recordRecent(agent.value, dir)
@@ -578,6 +592,7 @@ function openStats() {
   // 全局统计模式：清掉单会话目标，避免上次留下来。
   sessionStatsTarget.value = null
   showTrash.value = false
+  showExportHistory.value = false
   activeDir.value = null
   openSession.value = null
   sessions.value = []
@@ -588,6 +603,7 @@ async function loadTrash() {
   setActiveTui(null)
   showTrash.value = true
   showStats.value = false
+  showExportHistory.value = false
   sessionStatsTarget.value = null
   activeDir.value = null
   openSession.value = null
@@ -607,6 +623,7 @@ async function openChat(s: SessionMeta) {
   setActiveTui(null)
   loadingChat.value = true
   openTrashItem.value = null
+  importedAgent.value = null
   openSession.value = s
   chatMsgs.value = []
   clearLive()
@@ -635,6 +652,56 @@ async function openChat(s: SessionMeta) {
   // ⚠️ 这里曾经会顺手拉一次 api.sessionUsage 给顶栏角标用。后端 session_usage
   // 会全文件再扫一次 JSONL，长会话下明显拖累聊天首屏 —— 已经移到独立的会话
   // 统计页面，由用户点 ChatTopbar 的「统计」按钮按需触发（流式推送）。
+}
+
+// 导出历史视图入口（侧栏按钮）—— 和回收站 / 统计互斥；再点一次同一按钮收起。
+function openExportHistory() {
+  setActiveTui(null)
+  if (showExportHistory.value) {
+    showExportHistory.value = false
+    return
+  }
+  showExportHistory.value = true
+  showTrash.value = false
+  showStats.value = false
+  sessionStatsTarget.value = null
+  activeDir.value = null
+  openSession.value = null
+  sessions.value = []
+  sessionTotal.value = 0
+}
+
+// 点开导出历史里的一条 —— 用平时查看会话的同一套逻辑（read_session）打开**原始**
+// transcript，和落盘的导出文件无关。沿用回收站的跨 agent 打开机制：用 importedAgent
+// 记录这条记录的 agent，不切换整个侧栏。原始文件已被移动 / 删除时后端抛错 —— 仅提示，
+// 不自动删历史（可能只是临时不可达，让用户在列表里手动移除）。showExportHistory 保持
+// true，关闭会话详情时自动回到历史列表（与回收站一致）。
+async function openHistorySession(rec: ExportRecord) {
+  setActiveTui(null)
+  loadingChat.value = true
+  openTrashItem.value = null
+  importedAgent.value = rec.agent
+  openSession.value = {
+    id: rec.sessionId,
+    fileName: shortName(rec.path),
+    path: rec.path,
+    title: rec.title,
+    cwd: rec.cwd,
+    modified: 0,
+    size: 0,
+    messageCount: 0,
+  }
+  chatMsgs.value = []
+  clearLive()
+  try {
+    chatMsgs.value = await api.readSession(rec.agent, rec.path)
+  } catch (e) {
+    notify(t('toast.readFail', { e: String(e) }), true)
+    openSession.value = null
+    importedAgent.value = null
+  } finally {
+    loadingChat.value = false
+  }
 }
 
 // 会话统计入口：从 ChatTopbar 的统计按钮触发，跳到独立统计页面。
@@ -684,6 +751,7 @@ function closeStats() {
 async function openTrashSession(item: TrashItem) {
   setActiveTui(null)
   loadingChat.value = true
+  importedAgent.value = null
   openTrashItem.value = item
   openSession.value = {
     id: '',
@@ -751,12 +819,14 @@ function deleteSession(s: SessionMeta) {
     onOk: async () => {
       // 在移除该行之前抓取起点，触发飞向回收站的弧线动画
       const srcRect = deleteSourceRect(s)
+      // 从聊天页删除时，会话可能来自「导出历史」（跨 agent，且 activeProject 为空）——
+      // 此时用会话自身的 agent / cwd，而不是侧栏当前 agent / 项目，否则回收站条目
+      // 的归属项目会变成空（显示「—」）甚至 agent 标错。
+      const fromChat = openSession.value?.path === s.path
+      const a = fromChat ? chatAgent.value : agent.value
+      const label = activeProject.value?.displayPath ?? s.cwd ?? ''
       try {
-        await api.softDeleteSession(
-          agent.value,
-          s.path,
-          activeProject.value?.displayPath ?? '',
-        )
+        await api.softDeleteSession(a, s.path, label)
         fly({
           from: srcRect,
           to: document.querySelector<HTMLElement>('.topbar-trash-btn'),
@@ -885,7 +955,7 @@ function batchDeleteSessions() {
 // 批量导出：让用户挑一个目标目录，把勾选的会话一次性写成 MD / HTML 文件。
 // 失败项跳过，结尾给一个汇总 toast。逐个 readSession 是简单可控的做法
 // （会话数量本就不会很大），可以接受。
-async function batchExportSessions(kind: 'md' | 'html') {
+async function batchExportSessions(kind: ExportKind) {
   const keys = new Set(selectedSessions.value)
   const items = sessions.value.filter((s) => keys.has(s.path))
   if (!items.length) return
@@ -906,8 +976,14 @@ async function batchExportSessions(kind: 'md' | 'html') {
   for (const s of items) {
     try {
       const msgs = await api.readSession(agent.value, s.path)
-      const fn = kind === 'md' ? exportMarkdownToDir : exportHtmlToDir
+      const fn =
+        kind === 'md'
+          ? exportMarkdownToDir
+          : kind === 'json'
+            ? exportJsonToDir
+            : exportHtmlToDir
       lastPath = await fn(s, msgs, agent.value, dir)
+      recordExport({ path: s.path, title: s.title, agent: agent.value, sessionId: s.id, cwd: s.cwd, exportedAt: Date.now() })
       ok++
     } catch {
       /* 跳过失败项，继续导出其余 */
@@ -950,13 +1026,19 @@ async function reveal(path: string) {
   }
 }
 
-async function exportSession(kind: 'md' | 'html') {
+function exportFn(kind: ExportKind) {
+  return kind === 'md' ? exportMarkdown : kind === 'json' ? exportJson : exportHtml
+}
+
+async function exportSession(kind: ExportKind) {
   if (!openSession.value) return
+  const s = openSession.value
+  const a = chatAgent.value
   try {
-    const fn = kind === 'md' ? exportMarkdown : exportHtml
-    const path = await fn(openSession.value, chatMsgs.value, agent.value)
+    const path = await exportFn(kind)(s, chatMsgs.value, a)
     // 用户在 Save As 对话框点了取消时返回 null —— 静默放弃
     if (!path) return
+    recordExport({ path: s.path, title: s.title, agent: a, sessionId: s.id, cwd: s.cwd, exportedAt: Date.now() })
     notify(t('toast.exported', { path }))
     api.revealInFinder(path).catch(() => {})
   } catch (e) {
@@ -965,12 +1047,12 @@ async function exportSession(kind: 'md' | 'html') {
 }
 
 // 列表里直接导出某个会话：不打开会话，临时把消息读出来即可。
-async function exportFromList(s: SessionMeta, kind: 'md' | 'html') {
+async function exportFromList(s: SessionMeta, kind: ExportKind) {
   try {
     const msgs = await api.readSession(agent.value, s.path)
-    const fn = kind === 'md' ? exportMarkdown : exportHtml
-    const path = await fn(s, msgs, agent.value)
+    const path = await exportFn(kind)(s, msgs, agent.value)
     if (!path) return
+    recordExport({ path: s.path, title: s.title, agent: agent.value, sessionId: s.id, cwd: s.cwd, exportedAt: Date.now() })
     notify(t('toast.exported', { path }))
     api.revealInFinder(path).catch(() => {})
   } catch (e) {
@@ -1271,11 +1353,13 @@ async function onGlobalSearchOpen(hit: SearchHit) {
         :refreshing="refreshing"
         :show-trash="showTrash"
         :show-stats="showStats"
+        :show-history="showExportHistory"
         :has-trash="trash.length > 0"
         @toggle-sidebar="toggleSidebar"
         @refresh="refreshAll"
         @open-trash="loadTrash"
         @open-stats="openStats"
+        @open-history="openExportHistory"
       />
       <!-- 顶栏右侧分发：每个页面把自己的工具栏组件挂这里。
            本身仍是 macOS 拖动区域，组件内部的可交互元素由 CSS 单独标 no-drag。 -->
@@ -1362,6 +1446,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
               @copy-id="copyText(openSession.id)"
               @export-md="exportSession('md')"
               @export-html="exportSession('html')"
+              @export-json="exportSession('json')"
               @restore="openTrashItem && restore(openTrashItem)"
             />
           </template>
@@ -1374,6 +1459,11 @@ async function onGlobalSearchOpen(hit: SearchHit) {
             @open="openTrashSession"
             @restore="restore"
             @permanent-delete="permanentDelete"
+          />
+
+          <ExportHistoryView
+            v-else-if="showExportHistory"
+            @open="openHistorySession"
           />
 
           <SessionsView

@@ -24,12 +24,13 @@ import {
   IconDownload,
   IconMarkdown,
   IconHtml,
+  IconJson,
 } from '../icons'
 
 const props = defineProps<{ sessions: SessionMeta[] }>()
 const emit = defineEmits<{
   (e: 'batch-delete'): void
-  (e: 'batch-export', kind: 'md' | 'html'): void
+  (e: 'batch-export', kind: 'md' | 'html' | 'json'): void
 }>()
 
 // 搜索框防抖：打字时 `draft` 立即跟着光标走，静止 220ms 后才同步到共享
@@ -115,7 +116,7 @@ function toggleExportMenu(e: Event) {
   e.stopPropagation()
   exportMenuOpen.value = !exportMenuOpen.value
 }
-function pickExport(kind: 'md' | 'html', e: Event) {
+function pickExport(kind: 'md' | 'html' | 'json', e: Event) {
   e.stopPropagation()
   exportMenuOpen.value = false
   emit('batch-export', kind)
@@ -237,6 +238,14 @@ onUnmounted(() => {
             >
               <IconHtml />
               <span>{{ t('chat.tb.export.html') }}</span>
+            </button>
+            <button
+              class="export-menu-item"
+              role="menuitem"
+              @click.stop="pickExport('json', $event)"
+            >
+              <IconJson />
+              <span>{{ t('chat.tb.export.json') }}</span>
             </button>
           </div>
         </div>

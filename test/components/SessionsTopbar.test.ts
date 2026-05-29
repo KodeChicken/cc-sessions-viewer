@@ -135,9 +135,12 @@ describe('SessionsTopbar', () => {
       // Click the export menu trigger (3rd action button: select-all, export, delete).
       await wrapper.find('.export-menu-wrap .ct-btn').trigger('click')
       const items = wrapper.findAll('.export-menu-item')
-      expect(items).toHaveLength(2)
+      expect(items).toHaveLength(3) // md / html / json
       await items[1].trigger('click') // HTML
       expect(wrapper.emitted('batch-export')).toEqual([['html']])
+      await wrapper.find('.export-menu-wrap .ct-btn').trigger('click')
+      await wrapper.findAll('.export-menu-item')[2].trigger('click') // JSON
+      expect(wrapper.emitted('batch-export')).toEqual([['html'], ['json']])
     })
   })
 })

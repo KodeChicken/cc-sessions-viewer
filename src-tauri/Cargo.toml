@@ -18,8 +18,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
+# 仅开发期用：把 MCP Bridge 注入 app，让 AI 经 WebSocket 看/控窗口（在 lib.rs 里
+# 用 #[cfg(debug_assertions)] 注册，release 不会启用）。
+tauri-plugin-mcp-bridge = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"

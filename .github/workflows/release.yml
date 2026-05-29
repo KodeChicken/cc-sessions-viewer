@@ -5,8 +5,10 @@ name: Release
 #      workflow artifacts. tauri-action runs with no `tagName`, so it does NOT
 #      try to create / update a GitHub release itself.
 #   2) publish job downloads all artifacts and creates a single, published
-#      (not draft) release via softprops/action-gh-release, with auto-generated
-#      release notes (PRs since the previous tag) + a fixed "Downloads" intro.
+#      (not draft) release via softprops/action-gh-release. The body is a fixed
+#      "Downloads" intro followed by a commit changelog generated with
+#      `changelogithub` (zero-config: it groups the repo's lowercase conventional
+#      commits — feat / fix / perf — into the release notes).
 #
 # Use `npm run release` locally to bump the version in package.json /
 # tauri.conf.json / Cargo.toml, commit, tag, and push in one go; the pushed
@@ -116,12 +118,74 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
+      # Full history (fetch-depth: 0) so changelogithub can diff against the
+      # previous v* tag and list every commit in between.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+
       - name: Download all bundles
         uses: actions/download-artifact@v5
         with:
           pattern: bundle-*
           path: dist
           merge-multiple: true
+
+      # Generate the commit changelog grouped by conventional type. Zero-config:
+      # changelogithub's defaults group lowercase `feat:` / `fix:` / `perf:`
+      # commits (enforced by commitlint). `--output` writes the markdown to a
+      # file instead of creating the release itself, so action-gh-release stays
+      # the single source of the release (body + assets) and we control ordering.
+      - name: Generate commit changelog
+        run: npx -y changelogithub --output CHANGELOG_NOTES.md --to "${{ github.ref_name }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Downloads section on top (preserves the previous layout), then the
+      # generated commit changelog below it.
+      - name: Assemble release notes
+        run: |
+          cat > RELEASE_BODY.md <<'EOF'
+          ## Downloads
+
+          - **macOS (Apple Silicon + Intel)** — `cc-sessions-viewer_*_universal.dmg`
+          - **Windows x64** — `cc-sessions-viewer_*_x64-setup.exe` / `*_x64_en-US.msi`
+          - **Linux x86_64** — `cc-sessions-viewer_*_amd64.deb` (Debian/Ubuntu) / `cc-sessions-viewer_*_amd64.AppImage` (portable)
+
+          On macOS first launch the unsigned `.app` may prompt — right-click → **Open** to bypass Gatekeeper.
+          On Linux the `.AppImage` needs `chmod +x` before running; the `.deb` installs with `sudo apt install ./cc-sessions-viewer_*_amd64.deb`.
+
+          Full version history → [`CHANGELOG.md`](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
+          EOF
+          printf '\n---\n\n' >> RELEASE_BODY.md
+          cat CHANGELOG_NOTES.md >> RELEASE_BODY.md
+
+      # Aggregated "Contributors" footer. changelogithub already credits each
+      # author inline (`by @login`); this adds a deduped @mention list for the
+      # whole release range via the GitHub compare API (author.login resolves to
+      # a clickable handle when the commit email maps to a GitHub account, else
+      # the plain git name). Base = previous v* tag, or the root commit for the
+      # very first release. Skipped silently if the list comes back empty.
+      - name: Append contributors
+        run: |
+          TAG="${{ github.ref_name }}"
+          PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          if [ -z "$PREV" ]; then PREV="$(git rev-list --max-parents=0 HEAD | tail -1)"; fi
+          CONTRIBUTORS="$(curl -fsS \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/compare/${PREV}...${TAG}?per_page=250" \
+            | jq -r '[.commits[] | (if .author.login then "@" + .author.login else .commit.author.name end)] | unique | join(", ")')"
+          if [ -n "$CONTRIBUTORS" ] && [ "$CONTRIBUTORS" != "null" ]; then
+            printf '\n### ❤️ Contributors\n\nThanks to %s\n' "$CONTRIBUTORS" >> RELEASE_BODY.md
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -132,21 +196,10 @@ jobs:
           # GitHub before users see it.
           draft: false
           prerelease: false
-          # GitHub auto-generates "What's Changed" + "New Contributors" from
-          # PRs (or direct commits) since the previous v* tag. Appended after
-          # the `body` block below.
-          generate_release_notes: true
+          # Body is fully supplied via body_path (Downloads + commit changelog),
+          # so don't let GitHub append its PR-based "What's Changed" section too.
+          generate_release_notes: false
+          body_path: RELEASE_BODY.md
           files: dist/**/*
-          body: |
-            ## Downloads
-
-            - **macOS (Apple Silicon + Intel)** — `cc-sessions-viewer_*_universal.dmg`
-            - **Windows x64** — `cc-sessions-viewer_*_x64-setup.exe` / `*_x64_en-US.msi`
-            - **Linux x86_64** — `cc-sessions-viewer_*_amd64.deb` (Debian/Ubuntu) / `cc-sessions-viewer_*_amd64.AppImage` (portable)
-
-            On macOS first launch the unsigned `.app` may prompt — right-click → **Open** to bypass Gatekeeper.
-            On Linux the `.AppImage` needs `chmod +x` before running; the `.deb` installs with `sudo apt install ./cc-sessions-viewer_*_amd64.deb`.
-
-            Full version history → [`CHANGELOG.md`](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

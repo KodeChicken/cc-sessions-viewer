@@ -16,6 +16,12 @@ export default {
   'sidebar.toggle': 'サイドバーを開閉',
   'sidebar.refresh': '更新',
   'sidebar.stats': '統計',
+  'sidebar.history': 'エクスポート履歴',
+  'history.title': 'エクスポート履歴',
+  'history.subtitle': 'エクスポートした会話 —— クリックすると元の記録を再表示します。',
+  'history.clearAll': 'クリア',
+  'history.empty': 'まだエクスポートがありません。エクスポートした会話はここに表示され、ワンクリックで再表示できます。',
+  'history.remove': 'リストから削除',
 
   'list.sessions': 'セッション {n} 件',
 
@@ -174,6 +180,7 @@ export default {
   'chat.tb.tools.expand': 'すべてのツール呼び出しを展開',
   'chat.tb.export.md': 'Markdown で書き出し',
   'chat.tb.export.html': 'HTML で書き出し',
+  'chat.tb.export.json': 'JSON で書き出し',
 
   'chat.tb.usage.label': 'tokens',
   'chat.tb.usage.tooltip': 'トークン使用量 — ホバーで内訳表示',

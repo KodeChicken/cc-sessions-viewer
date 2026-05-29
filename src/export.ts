@@ -777,18 +777,39 @@ ${body}
 // 弹原生 Save As 让用户选位置，再写盘。返回最终路径以便提示/打开访达。
 // 用户取消对话框时返回 null（调用方据此跳过 toast 与 reveal）。
 
+export type ExportKind = 'md' | 'html' | 'json'
+
+const EXPORT_FILTERS: Record<ExportKind, { name: string; extensions: string[] }> = {
+  md: { name: 'Markdown', extensions: ['md'] },
+  html: { name: 'HTML', extensions: ['html'] },
+  json: { name: 'JSON', extensions: ['json'] },
+}
+
 async function pickAndWrite(
   content: string,
   defaultName: string,
-  kind: 'md' | 'html',
+  kind: ExportKind,
 ): Promise<string | null> {
-  const filters =
-    kind === 'md'
-      ? [{ name: 'Markdown', extensions: ['md'] }]
-      : [{ name: 'HTML', extensions: ['html'] }]
-  const chosen = await saveDialog({ defaultPath: defaultName, filters })
+  const chosen = await saveDialog({
+    defaultPath: defaultName,
+    filters: [EXPORT_FILTERS[kind]],
+  })
   if (!chosen) return null
   return writeFile(chosen, content)
+}
+
+/** 无损 JSON 导出的信封：自包含（带 messages），可在任意机器上重新导入还原。
+ *  `__type` 是导入端识别本格式的标记；`version` 留给以后格式演进。 */
+export function buildExportEnvelope(
+  session: SessionMeta,
+  messages: Msg[],
+  agent: Agent,
+): string {
+  return JSON.stringify(
+    { __type: 'cc-session-viewer-export', version: 1, agent, session, messages },
+    null,
+    2,
+  )
 }
 
 export function exportMarkdown(
@@ -809,6 +830,15 @@ export function exportHtml(
   return pickAndWrite(html, `${sanitizeFilename(session.title)}.html`, 'html')
 }
 
+export function exportJson(
+  session: SessionMeta,
+  messages: Msg[],
+  agent: Agent,
+): Promise<string | null> {
+  const json = buildExportEnvelope(session, messages, agent)
+  return pickAndWrite(json, `${sanitizeFilename(session.title)}.json`, 'json')
+}
+
 // ============================ 批量导出 ============================
 // 批量场景：让用户挑一个目标目录，所有会话以 `<title>-<id8>.<ext>` 落进去。
 // 用 `/` 拼接：Rust 端走 `PathBuf::from`，Windows 也能接受正斜杠。
@@ -823,14 +853,14 @@ export async function pickExportDir(): Promise<string | null> {
 /** 批量导出的子目录名：`export-YYYYMMDD-HHMMSS-<md|html>`。
  *  本地时间，便于人在 Finder 里直观分辨；多次导出不会撞名。
  *  `now` 形参只用于测试；生产路径走默认值 `new Date()`。 */
-export function batchExportFolderName(kind: 'md' | 'html', now: Date = new Date()): string {
+export function batchExportFolderName(kind: ExportKind, now: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   const dt = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
   return `export-${dt}-${kind}`
 }
 
 /** 文件名：`<sanitized-title>-<id8>.<ext>`；标题相同的两条会话不会互相覆盖。 */
-function batchFileName(session: SessionMeta, ext: 'md' | 'html'): string {
+function batchFileName(session: SessionMeta, ext: ExportKind): string {
   const title = sanitizeFilename(session.title)
   const tag = (session.id || '').slice(0, 8) || 'session'
   return `${title}-${tag}.${ext}`
@@ -856,4 +886,15 @@ export async function exportHtmlToDir(
 ): Promise<string> {
   const html = messagesToHtml(session, messages, agent)
   return writeFile(`${dir}/${batchFileName(session, 'html')}`, html)
+}
+
+/** 把一条会话以无损 JSON 写到目录里，返回最终绝对路径。 */
+export async function exportJsonToDir(
+  session: SessionMeta,
+  messages: Msg[],
+  agent: Agent,
+  dir: string,
+): Promise<string> {
+  const json = buildExportEnvelope(session, messages, agent)
+  return writeFile(`${dir}/${batchFileName(session, 'json')}`, json)
 }

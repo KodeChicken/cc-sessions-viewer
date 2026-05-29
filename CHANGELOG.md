@@ -6,6 +6,31 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Embedded terminal — "Open in window"** — resuming or starting a session now runs the agent CLI **inside the app window** in an `xterm.js` terminal, not only by shelling out to Terminal.app. A `portable-pty` PTY launches `<shell> -l -c "cd <cwd> && <resume-CLI>"` and streams raw output to the frontend as base64-chunked Tauri events. The chat header gains **List / View / per-session terminal tabs** (each closable); the session-list and chat actions previously labeled "Resume in terminal" / "New session in terminal" become **"Open in window"** as the primary action (the Terminal.app path still exists). Backend commands: `pty_spawn` / `pty_spawn_new` / `pty_write` / `pty_resize` / `pty_kill`.
+- **macOS menu-bar tray + close-to-tray** — a monochrome template tray icon with a **Show / Statistics / Settings / Quit** menu. Closing the window (red traffic light or ⌘W) now **hides to the tray** instead of quitting; clicking the Dock icon or the tray's "Show" brings it back; ⌘Q or the tray's "Quit" actually exits. Tray items reuse the existing `menu://action` bridge.
+- **Lossless JSON export** — export a session to a self-contained envelope (`{ __type: "cc-session-viewer-export", version, agent, session, messages }`) that can be re-imported / restored on another machine. Available as a single-file "Export as JSON" action and in batch export (`export-<timestamp>-json/`).
+- **Export history** — a sidebar **"Export history"** view lists sessions you've exported (kept in `localStorage`, capped at 50, deduped by original path). Each entry points at the **original transcript** (not the exported file), so clicking one reopens the real session via the normal read path; entries can be removed individually or cleared. Stale entries (original file moved / deleted) surface an error and can be removed.
+- **Model pricing — models that previously cost $0 are now priced** — added `gpt-5.2-codex`, `gpt-5.1-codex-max`, `codex-mini-latest` (Codex) and `gemini-3.5-flash`, `gemini-3.1-flash-lite` (Gemini).
+- **Model pricing — automatic display-name derivation** — `claude-<family>-<major>[-<minor>]`, `gpt-<ver>[-suffix…]`, and `gemini-…` IDs are parsed into display names ("Opus 4.9", "GPT-5.6 Codex", "Gemini 3 Pro") generically, so a brand-new model version renders with the right name and **no table edit**. A small override table remains only for irregular names (legacy Claude 3.x, the `o`-series, Codex Mini).
+- **Model pricing — newest-sibling fallback** — an unknown model version (e.g. a future `claude-opus-4-9`) inherits the price of the newest known sibling in its line (`claude-opus-4-8`) instead of collapsing to the original, pricier base; an explicit row is still only needed when a vendor actually changes a price.
+
+### Changed
+
+- **Release notes generated from conventional commits** — the publish job builds the release body with `changelogithub` (grouping `feat` / `fix` / `perf` commits) below the fixed "Downloads" intro, plus a deduped **❤️ Contributors** footer from the GitHub compare API; replaced GitHub's PR-based `generate_release_notes`. Checkout / setup-node / artifact actions bumped to v5.
+- **Conventional commit types are now lowercase** — commitlint switched from Start-Case (`Feat` / `Fix` …) to lowercase (`feat` / `fix` / `perf` …) so `changelogithub`'s zero-config grouping works.
+- **Dev-only MCP Bridge** — debug builds inject `tauri-plugin-mcp-bridge` (bound to `127.0.0.1`) so an AI assistant can screenshot, snapshot the DOM, run JS, and watch IPC against the running app; compiled out of release builds via `cfg(debug_assertions)`. `withGlobalTauri` enabled.
+- **CI** — frontend / Rust jobs skip on `Release:` commits; pull-request trigger scoped to `main`.
+
+### Fixed
+
+- **Opus 4.8 mislabeled "Opus 4" and overcharged 3×** — `claude-opus-4-8` had no pricing-table entry, so it fell through to the base `claude-opus-4` ($15/$75 per MTok) for both the "By model" label and the cost math, instead of the actual $5/$25 Opus-4.x tier. (The original bug report.)
+- **OpenAI / Codex rates re-verified against the official rate card** — fixed wrong/placeholder rows: `gpt-5.1-codex-mini` input was double ($0.50 → $0.25/MTok), and the `gpt-5.2` / `gpt-5.4` / `gpt-5.5` bases plus every `*-pro` variant were stuck on a single `$1.25/$10` placeholder (now $1.75/$14, $2.50/$15, $5/$30, and $15–$30 in / $120–$180 out respectively).
+- **Gemini rates re-verified against `ai.google.dev`** — `gemini-3.1-pro-preview` / `gemini-3-pro-preview` ($1.25/$10 → $2/$12), `gemini-3-flash-preview` ($0.30/$2.50 → $0.50/$3), and `gemini-2.5-flash-lite` cache read ($0.025 → $0.01/MTok). Tiered (>200k-token) pricing for the Pro models is taken at the low tier — noted inline.
+
 ## [v0.1.2] — 2026-05-25
 
 ### Added
