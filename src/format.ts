@@ -8,8 +8,11 @@ function escapeHtml(s: string): string {
     .replace(/>/g, '&gt;')
 }
 
+const URL_RE = /https?:\/\/[^\s<>&)}\]]+/g
+
 function inline(text: string): string {
   let s = escapeHtml(text)
+  s = s.replace(URL_RE, (url) => `<a href="${url}" target="_blank" rel="noopener">${url}</a>`)
   s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>')
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
   s = s.replace(/^###\s+(.+)$/gm, '<h4>$1</h4>')
