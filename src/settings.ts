@@ -9,6 +9,7 @@ const THEME_KEY = 'theme'
 const PREFS_KEY = 'projPrefs:v1'
 const STATS_SCOPE_KEY = 'statsScope:v1'
 const STATS_RANGE_KEY = 'statsRange:v1'
+const EXTERNAL_TERMINAL_KEY = 'useExternalTerminal:v1'
 const CODEX_SHOW_INTERNAL_KEY = 'codexShowInternalSessions:v1'
 const CODEX_SHOW_ARCHIVED_KEY = 'codexShowArchivedSessions:v1'
 
@@ -46,8 +47,9 @@ function readTheme(): Theme {
     : 'system'
 }
 export const theme = ref<Theme>(readTheme())
+export const useExternalTerminal = ref(localStorage.getItem(EXTERNAL_TERMINAL_KEY) === '1')
 export const codexShowInternalSessions = ref(localStorage.getItem(CODEX_SHOW_INTERNAL_KEY) === '1')
-export const codexShowArchivedSessions = ref(localStorage.getItem(CODEX_SHOW_ARCHIVED_KEY) === '1')
+export const codexShowArchivedSessions = ref(localStorage.getItem(CODEX_SHOW_ARCHIVED_KEY) !== '0')
 
 export function setLang(l: Lang) {
   lang.value = l
@@ -57,6 +59,11 @@ export function setLang(l: Lang) {
 export function setTheme(t: Theme) {
   theme.value = t
   localStorage.setItem(THEME_KEY, t)
+}
+
+export function setUseExternalTerminal(v: boolean) {
+  useExternalTerminal.value = v
+  localStorage.setItem(EXTERNAL_TERMINAL_KEY, v ? '1' : '0')
 }
 
 export function setCodexShowInternalSessions(v: boolean) {
@@ -94,7 +101,9 @@ export function clearAppCache() {
 }
 
 // ---------- Statistics 页的 scope / range 持久化 ----------
-// 默认 all agents + all time；用户改完写回 localStorage，下次进入沿用上次选择。
+// 默认 all agents + 过去 6 个月；用户改完写回 localStorage，下次进入沿用上次选择。
+// （之前默认是 "all"=全部时间，全盘扫成本巨大且基本没人关心 1 年前的；改成
+// months6 后默认体验快得多，需要看更老的数据再手动切。）
 
 function readStatsScope(): StatsScope {
   const v = localStorage.getItem(STATS_SCOPE_KEY)
@@ -102,7 +111,11 @@ function readStatsScope(): StatsScope {
 }
 function readStatsRange(): StatsRange {
   const v = localStorage.getItem(STATS_RANGE_KEY)
-  return v === 'today' || v === 'days7' || v === 'days30' || v === 'all' ? v : 'all'
+  // 老用户 localStorage 里可能还存着 'all'（已废弃）—— 这里静默回退到 months6，
+  // 后端 parse_range 也已经不认 'all'。
+  return v === 'today' || v === 'days7' || v === 'days30' || v === 'month' || v === 'months6'
+    ? v
+    : 'months6'
 }
 
 export const statsScope = ref<StatsScope>(readStatsScope())

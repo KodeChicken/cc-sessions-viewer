@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { t } from '../i18n'
 import {
   codexShowArchivedSessions,
@@ -9,7 +9,9 @@ import {
   setCodexShowInternalSessions,
   setLang,
   setTheme,
+  setUseExternalTerminal,
   theme,
+  useExternalTerminal,
   type Lang,
   type Theme,
 } from '../settings'
@@ -18,12 +20,13 @@ import {
   IconClose,
   IconLanguages,
   IconPalette,
+  IconTerminal,
   IconDatabase,
   IconInfo,
   IconRefresh,
   IconExternalLink,
-  IconArchive,
-  IconShieldCheck,
+  IconCheck,
+  IconChevronDown,
 } from './icons'
 import * as api from '../api'
 import {
@@ -33,8 +36,12 @@ import {
   updateAvailable,
 } from '../updateCheck'
 
+type SettingsTab = 'general' | 'advanced'
+
 const props = defineProps<{ cacheBytes: number }>()
 const emit = defineEmits<{ close: []; clearCache: [] }>()
+
+const activeTab = ref<SettingsTab>('general')
 
 const cacheLabel = computed(() =>
   props.cacheBytes > 0 ? formatSize(props.cacheBytes) : '0 B',
@@ -44,14 +51,35 @@ const version = ref('—')
 const updateMsg = ref('')
 const checking = ref(false)
 
+// custom dropdown state
+const langMenuOpen = ref(false)
+const themeMenuOpen = ref(false)
+const langWrapEl = ref<HTMLElement>()
+const themeWrapEl = ref<HTMLElement>()
+
+function pickLang(v: Lang) {
+  setLang(v)
+  langMenuOpen.value = false
+}
+function pickTheme(v: Theme) {
+  setTheme(v)
+  themeMenuOpen.value = false
+}
+function onDocClick(e: MouseEvent) {
+  if (langMenuOpen.value && langWrapEl.value && !langWrapEl.value.contains(e.target as Node))
+    langMenuOpen.value = false
+  if (themeMenuOpen.value && themeWrapEl.value && !themeWrapEl.value.contains(e.target as Node))
+    themeMenuOpen.value = false
+}
+onMounted(() => document.addEventListener('click', onDocClick, true))
+onUnmounted(() => document.removeEventListener('click', onDocClick, true))
+
 onMounted(async () => {
   try {
     version.value = await api.appVersion()
   } catch {
     /* ignore */
   }
-  // 如果后台检查在启动时就已经发现有新版本，开 Settings 时直接把同样的提示
-  // 展示出来 —— 用户不必再点一次「检查更新」就能看到信息和「打开 release」链接。
   if (updateAvailable.value && latestVersion.value) {
     updateMsg.value = t('settings.updateAvailable', {
       v: latestVersion.value,
@@ -75,6 +103,15 @@ const themeOptions: ThemeOpt[] = [
   { v: 'dracula', key: 'settings.theme.dracula' },
 ]
 
+const currentLangLabel = computed(() => {
+  const o = langOptions.find(o => o.v === lang.value)
+  return o ? t(o.key) : lang.value
+})
+const currentThemeLabel = computed(() => {
+  const o = themeOptions.find(o => o.v === theme.value)
+  return o ? t(o.key) : theme.value
+})
+
 async function doCheck() {
   if (checking.value) return
   checking.value = true
@@ -84,8 +121,6 @@ async function doCheck() {
     updateMsg.value = r.hasUpdate
       ? t('settings.updateAvailable', { v: r.latest, cur: r.current })
       : t('settings.upToDate', { v: r.current })
-    // 同步给后台检查模块：手动结果是最新的真值，顺便刷新 24h TTL，
-    // 让侧边栏小红点立即跟手动检查的结论一致。
     syncFromManualCheck(r)
   } catch (e) {
     updateMsg.value = t('settings.updateFail', { e: String(e) })
@@ -109,115 +144,165 @@ async function doCheck() {
         </button>
       </div>
 
+      <div class="set-tabs segmented">
+        <button
+          :class="{ active: activeTab === 'general' }"
+          @click="activeTab = 'general'"
+        >
+          {{ t('settings.tab.general') }}
+        </button>
+        <button
+          :class="{ active: activeTab === 'advanced' }"
+          @click="activeTab = 'advanced'"
+        >
+          {{ t('settings.tab.advanced') }}
+        </button>
+      </div>
+
       <div class="set-body">
-        <!-- 语言 -->
-        <section class="set-section">
-          <header class="set-section-head">
-            <IconLanguages />
-            <span class="set-section-title">{{ t('settings.section.lang') }}</span>
-          </header>
-          <div class="segmented seg-wide">
-            <button
-              v-for="o in langOptions"
-              :key="o.v"
-              :class="{ active: lang === o.v }"
-              @click="setLang(o.v)"
-            >
-              {{ t(o.key) }}
-            </button>
-          </div>
-        </section>
+        <template v-if="activeTab === 'general'">
+          <!-- 语言 -->
+          <section class="set-section">
+            <header class="set-section-head">
+              <IconLanguages />
+              <span class="set-section-title">{{ t('settings.section.lang') }}</span>
+              <div ref="langWrapEl" class="set-dropdown-wrap">
+                <button
+                  class="set-dropdown-btn"
+                  :class="{ active: langMenuOpen }"
+                  @click.stop="langMenuOpen = !langMenuOpen; themeMenuOpen = false"
+                >
+                  <span>{{ currentLangLabel }}</span>
+                  <IconChevronDown class="set-dropdown-chev" />
+                </button>
+                <div v-if="langMenuOpen" class="set-dropdown-menu" role="menu">
+                  <button
+                    v-for="o in langOptions"
+                    :key="o.v"
+                    class="set-dropdown-item"
+                    :class="{ active: lang === o.v }"
+                    role="menuitem"
+                    @click.stop="pickLang(o.v)"
+                  >
+                    <span class="set-dropdown-check"><IconCheck v-if="lang === o.v" /></span>
+                    <span>{{ t(o.key) }}</span>
+                  </button>
+                </div>
+              </div>
+            </header>
+          </section>
 
-        <!-- 主题 -->
-        <section class="set-section">
-          <header class="set-section-head">
-            <IconPalette />
-            <span class="set-section-title">{{ t('settings.section.theme') }}</span>
-          </header>
-          <div class="theme-select-wrap">
-            <span class="theme-swatch" :class="`theme-swatch-${theme}`">Aa</span>
-            <select
-              class="theme-select"
-              :value="theme"
-              @change="setTheme(($event.target as HTMLSelectElement).value as Theme)"
-            >
-              <option v-for="o in themeOptions" :key="o.v" :value="o.v">
-                {{ t(o.key) }}
-              </option>
-            </select>
-          </div>
-        </section>
+          <!-- 主题 -->
+          <section class="set-section">
+            <header class="set-section-head">
+              <IconPalette />
+              <span class="set-section-title">{{ t('settings.section.theme') }}</span>
+              <div ref="themeWrapEl" class="set-dropdown-wrap">
+                <button
+                  class="set-dropdown-btn"
+                  :class="{ active: themeMenuOpen }"
+                  @click.stop="themeMenuOpen = !themeMenuOpen; langMenuOpen = false"
+                >
+                  <span class="theme-swatch theme-swatch-sm" :class="`theme-swatch-${theme}`">Aa</span>
+                  <span>{{ currentThemeLabel }}</span>
+                  <IconChevronDown class="set-dropdown-chev" />
+                </button>
+                <div v-if="themeMenuOpen" class="set-dropdown-menu" role="menu">
+                  <button
+                    v-for="o in themeOptions"
+                    :key="o.v"
+                    class="set-dropdown-item"
+                    :class="{ active: theme === o.v }"
+                    role="menuitem"
+                    @click.stop="pickTheme(o.v)"
+                  >
+                    <span class="set-dropdown-check"><IconCheck v-if="theme === o.v" /></span>
+                    <span class="theme-swatch theme-swatch-sm" :class="`theme-swatch-${o.v}`">Aa</span>
+                    <span>{{ t(o.key) }}</span>
+                  </button>
+                </div>
+              </div>
+            </header>
+          </section>
 
-        <!-- Codex -->
-        <section class="set-section">
-          <header class="set-section-head">
-            <IconShieldCheck />
-            <span class="set-section-title">{{ t('settings.section.codex') }}</span>
-          </header>
-          <p class="set-section-desc">{{ t('settings.codexVisibilityDesc') }}</p>
-          <div class="codex-toggle-grid">
+          <!-- 数据 -->
+          <section class="set-section">
+            <header class="set-section-head">
+              <IconDatabase />
+              <span class="set-section-title">{{ t('settings.section.data') }}</span>
+              <span class="set-section-tail">{{ cacheLabel }}</span>
+            </header>
+            <p class="set-section-desc">{{ t('settings.clearCacheDesc') }}</p>
             <button
-              class="codex-toggle-card"
-              :class="{ active: codexShowInternalSessions }"
-              @click="setCodexShowInternalSessions(!codexShowInternalSessions)"
+              class="btn danger"
+              :disabled="cacheBytes === 0"
+              @click="emit('clearCache')"
             >
-              <IconShieldCheck class="theme-card-ic" />
-              <span class="theme-card-label">{{ t('settings.codex.showInternal') }}</span>
+              {{ t('settings.clearCache') }}
             </button>
-            <button
-              class="codex-toggle-card"
-              :class="{ active: codexShowArchivedSessions }"
-              @click="setCodexShowArchivedSessions(!codexShowArchivedSessions)"
-            >
-              <IconArchive class="theme-card-ic" />
-              <span class="theme-card-label">{{ t('settings.codex.showArchived') }}</span>
-            </button>
-          </div>
-        </section>
+          </section>
 
-        <!-- 数据 -->
-        <section class="set-section">
-          <header class="set-section-head">
-            <IconDatabase />
-            <span class="set-section-title">{{ t('settings.section.data') }}</span>
-            <span class="set-section-tail">{{ cacheLabel }}</span>
-          </header>
-          <p class="set-section-desc">{{ t('settings.clearCacheDesc') }}</p>
-          <button
-            class="btn danger"
-            :disabled="cacheBytes === 0"
-            @click="emit('clearCache')"
-          >
-            {{ t('settings.clearCache') }}
-          </button>
-        </section>
+          <!-- 关于 -->
+          <section class="set-section">
+            <header class="set-section-head">
+              <IconInfo />
+              <span class="set-section-title">{{ t('settings.section.about') }}</span>
+              <span class="set-section-tail mono">v{{ version }}</span>
+            </header>
+            <p v-if="updateMsg" class="set-section-desc">{{ updateMsg }}</p>
+            <div class="set-update-actions">
+              <button class="btn" :disabled="checking" @click="doCheck">
+                <IconRefresh v-if="!checking" />
+                {{ checking ? t('settings.checking') : t('settings.checkUpdate') }}
+              </button>
+              <button
+                v-if="updateAvailable"
+                class="btn primary"
+                @click="openReleasePage()"
+              >
+                <IconExternalLink />
+                {{ t('settings.viewRelease', { v: latestVersion ?? '' }) }}
+              </button>
+            </div>
+          </section>
+        </template>
 
-        <!-- 关于 -->
-        <section class="set-section">
-          <header class="set-section-head">
-            <IconInfo />
-            <span class="set-section-title">{{ t('settings.section.about') }}</span>
-            <span class="set-section-tail mono">v{{ version }}</span>
-          </header>
-          <p v-if="updateMsg" class="set-section-desc">{{ updateMsg }}</p>
-          <div class="set-update-actions">
-            <button class="btn" :disabled="checking" @click="doCheck">
-              <IconRefresh v-if="!checking" />
-              {{ checking ? t('settings.checking') : t('settings.checkUpdate') }}
-            </button>
-            <!-- 有新版本时多挂一个「打开 release」按钮（优先用 GitHub 返回的
-                 html_url，没拿到就退回 /releases/latest）。primary 视觉权重更高，
-                 让用户清楚下一步该点哪。 -->
-            <button
-              v-if="updateAvailable"
-              class="btn primary"
-              @click="openReleasePage()"
-            >
-              <IconExternalLink />
-              {{ t('settings.viewRelease', { v: latestVersion ?? '' }) }}
-            </button>
-          </div>
-        </section>
+        <template v-else>
+          <!-- 终端 -->
+          <section class="set-section">
+            <header class="set-section-head">
+              <IconTerminal />
+              <span class="set-section-title">{{ t('settings.section.terminal') }}</span>
+            </header>
+            <label class="set-toggle-row" @click.prevent="setUseExternalTerminal(!useExternalTerminal)">
+              <span class="set-toggle-label">{{ t('settings.useExternalTerminal') }}</span>
+              <span class="set-toggle-track" :class="{ on: useExternalTerminal }">
+                <span class="set-toggle-thumb" />
+              </span>
+            </label>
+            <p class="set-section-desc set-toggle-hint">{{ t('settings.terminalDesc') }}</p>
+          </section>
+
+          <!-- Codex -->
+          <section class="set-section">
+            <header class="set-section-head">
+              <span class="set-section-title">Codex</span>
+            </header>
+            <label class="set-toggle-row" @click.prevent="setCodexShowInternalSessions(!codexShowInternalSessions)">
+              <span class="set-toggle-label">{{ t('settings.codex.showInternal') }}</span>
+              <span class="set-toggle-track" :class="{ on: codexShowInternalSessions }">
+                <span class="set-toggle-thumb" />
+              </span>
+            </label>
+            <label class="set-toggle-row" @click.prevent="setCodexShowArchivedSessions(!codexShowArchivedSessions)">
+              <span class="set-toggle-label">{{ t('settings.codex.showArchived') }}</span>
+              <span class="set-toggle-track" :class="{ on: codexShowArchivedSessions }">
+                <span class="set-toggle-thumb" />
+              </span>
+            </label>
+            <p class="set-section-desc set-toggle-hint">{{ t('settings.codexVisibilityDesc') }}</p>
+          </section>
+        </template>
       </div>
     </div>
   </div>

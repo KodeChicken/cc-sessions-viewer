@@ -8,10 +8,10 @@
 
 <p align="center">
 <strong>Faithful replay</strong> — thinking chains, tool-call pairings, structured diffs, inline screenshots.<br/>
-<strong>Fast search</strong> — cross-project global hit (<strong>⌘⇧F</strong>) jumps to the exact message; one-click resume in Terminal.<br/>
-<strong>Deep stats</strong> — aggregate token spend and cost; slice by project, model, or tool.<br/>
+<strong>Fast search</strong> — cross-project global hit (<strong>⌘⇧F</strong>) jumps to the exact message; one-click resume in an embedded terminal.<br/>
+<strong>Deep stats</strong> — aggregate token spend and cost with up-to-date model pricing; slice by project, model, or tool.<br/>
 <strong>Read-only safety</strong> — original JSONL is never touched; delete is a move to shared trash, never <code>rm</code>.<br/>
-<strong>Flexible export</strong> — single session or batches to offline-readable Markdown or HTML.
+<strong>Flexible export</strong> — single session or batches to offline-readable Markdown, HTML, or lossless JSON.
 </p>
 
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=fff)](https://tauri.app)
@@ -40,22 +40,29 @@ The app is **read-only** against the originals — deletion is a soft move into 
 
 ## Features
 
-- 🗂 **Unified project view** — group sessions by working directory across both CLIs
-- 💬 **Faithful chat replay** — text, thinking blocks, tool calls, structured diffs, inline images
+- 🗂 **Unified project view** — group sessions by working directory across all three CLIs
+- 💬 **Faithful chat replay** — text, thinking blocks, tool calls, structured diffs, inline images, GFM tables, and Mermaid diagrams
+- 🖥 **Embedded terminal** — resume or start a session inside the app window via `xterm.js` + `portable-pty`, instead of shelling out to Terminal.app
 - 🔎 **In-session search with scope** — search across the whole conversation or scope to user messages, agent replies (incl. edits), or tool noise; prev / next jump + match counter
 - 🌐 **Global search (⌘⇧F / Ctrl+Shift+F)** — Algolia-style overlay over the current agent, scoped to session titles and your own messages; click a hit to jump straight to that message with a flash highlight; recent queries with single-item removal
 - 🔃 **Session list search & sort** — keyword search runs on the Rust side, matching session titles and your message text (cancellable mid-typing); sort by recency / size / message count, or show only ones with an ID
 - 🪗 **Collapse / expand all tool calls** — one click to hide tool-call clutter and focus on the conversation
-- 📤 **Export session** — save a single session to Markdown or HTML (native Save-As, offline-renderable HTML with inlined avatars / styles)
-- 🧰 **Multi-select & batch ops** — pick sessions in bulk to move them to the trash or export them into a single `export-YYYYMMDD-HHMMSS-{md,html}/` folder
+- 📤 **Export session** — save a single session to Markdown, HTML, or lossless JSON (native Save-As, offline-renderable HTML with inlined avatars / styles / Mermaid SVGs)
+- 📜 **Export history** — sidebar view lists past exports (capped at 50, dedup by original path) that reopen the original transcript
+- 🧰 **Multi-select & batch ops** — pick sessions in bulk to move them to the trash or export them into a single `export-YYYYMMDD-HHMMSS-{md,html,json}/` folder
 - 🔄 **Resume or start fresh** — open Terminal in a project to resume an existing session (`claude --resume <id>` / `codex resume <id>`) or start a brand-new one
 - 📡 **Live tail** — opened session auto-refreshes as the CLI appends new messages; an "● Live" indicator shows the watcher is active, and a "N new ↓" pill surfaces additions when you've scrolled up
-- 🗑 **Shared trash** — soft-delete, preview a deleted session's transcript, restore one or many (multi-select); survives across both agents
+- 📊 **Deep stats** — aggregate token spend & cost with live model pricing from LiteLLM; slice by project, model, tool, or single session; daily activity chart, KPI cards, categorical bars
+- 💰 **Live model pricing** — browseable pricing table for Claude / Codex / Gemini pulled from LiteLLM upstream (24h cache), searchable, sorted by version
+- 🎨 **Syntax highlighting** — JSON args & results colorized (key / string / number / bool / null); unified-diff text (`git diff` output) gets row-level coloring (hunks, adds, deletes, metadata)
+- 🗑 **Shared trash** — soft-delete, preview a deleted session's transcript, restore one or many (multi-select); survives across all agents
 - 🏠 **Welcome screen** — recently opened projects per agent with one-click reopen + per-entry removal
 - 📌 **Pin / sink projects** — color-coded pins on the sidebar; sunk projects go to the bottom
 - ✏️ **Rename sessions** — your new title syncs back to the CLI, so `claude` / `codex` resume pickers show it too
-- 🌗 **Light / dark / system theme** — Codex-inspired neutral palette with brand-color accents
+- 🔔 **macOS tray + close-to-tray** — closing the window hides to a tray icon (Show / Statistics / Settings / Quit); ⌘Q still exits
+- 🌗 **4 themes** — Light / Dark / Codex (blue-toned light) / Dracula (classic dark), plus system auto-detect; dropdown picker with color swatch preview
 - 🌐 **i18n with auto-detect** — English / 简体中文 / 繁體中文 / 日本語; first launch matches the OS language, falls back to English
+- 🔍 **Codex session filtering** — identify internal / archived Codex sessions via SQLite + JSON-RPC metadata; toggle visibility in settings, with rank and status badges in the session list
 - ⚡️ **Custom tooltip & agent brand icons** — no out-of-place native chrome
 - 🖼 **Image lightbox** for screenshots embedded in transcripts
 
@@ -104,12 +111,13 @@ npm run tauri build        # bundle .app / .dmg / .msi / .deb / .AppImage
 
 ## Usage
 
-1. **Switch agent** — segmented control at the top of the sidebar (Claude 🟠 / Codex 🟢)
+1. **Switch agent** — segmented control at the top of the sidebar (Claude 🟠 / Codex 🟢 / Gemini 🔵)
 2. **Pick a project** — sidebar lists every working directory; right-click for pin / sink / rename
 3. **Open a session** — center column renders messages + tool calls grouped by call → result
-4. **Resume** — toolbar ▶ button opens Terminal with the right CLI
-5. **Export** — chat toolbar ⬇ saves a single session as Markdown / HTML; multi-select sessions in the list, then the topbar ⬇ exports them all to an `export-YYYYMMDD-HHMMSS-{md,html}/` folder
-6. **Delete / restore** — toolbar 🗑 soft-deletes; trash icon in the topbar restores
+4. **Resume** — toolbar ▶ button opens an embedded terminal or Terminal.app with the right CLI
+5. **Export** — chat toolbar ⬇ saves a single session as Markdown / HTML / JSON; multi-select sessions in the list for batch export to an `export-YYYYMMDD-HHMMSS-{md,html,json}/` folder
+6. **Stats** — sidebar chart icon opens global token & cost analytics; per-session stats accessible from the chat toolbar
+7. **Delete / restore** — toolbar 🗑 soft-deletes; trash icon in the sidebar menu restores
 
 ## Partial screenshots
 
@@ -142,6 +150,15 @@ npm run tauri build        # bundle .app / .dmg / .msi / .deb / .AppImage
     <td width="50%">
       <img src="docs/screenshots/trash.png" alt="Shared trash with restore" />
       <p align="center"><em>Shared trash — soft-delete with one-click restore</em></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/model-price.png" alt="Live model pricing table" />
+      <p align="center"><em>Live model pricing</em></p>
+    </td>
+    <td width="50%">
+      <p align="center"><em>&nbsp;</em></p>
     </td>
   </tr>
 </table>

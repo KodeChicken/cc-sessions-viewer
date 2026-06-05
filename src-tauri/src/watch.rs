@@ -29,21 +29,18 @@ use tauri::{AppHandle, Emitter};
 use crate::agents;
 use crate::types::Msg;
 
-/// 内部状态：当前 watcher + 上次已 emit 的 Msg 数量 + 文件路径 / agent。
+/// 当前活跃 watcher 的内部状态。Drop 后 notify 回调会自然停。
 struct WatchState {
-    /// 让 watcher 活着 —— drop 后回调停。Option 方便 swap 时先取走。
+    /// 让 watcher 活着 —— drop 后回调停。
     _watcher: RecommendedWatcher,
-    /// 监听中的 JSONL 绝对路径。供 #[cfg(test)] current_path() 用。
+    /// 仅在 #[cfg(test)] 的 current_path() 里读出来 —— 测试核对当前 watch 的是哪条 path。
     #[allow(dead_code)]
     path: PathBuf,
-    /// 对应 agent 名。回调里有自己的 clone；这里留作调试/排错时一眼能看到。
     #[allow(dead_code)]
     agent: String,
 }
 
-/// 全局单订阅槽。Mutex 保护：watch / unwatch 串行；notify 回调线程也走这把锁
-/// 取上下文。锁的临界区只做"读 last_count → 解析整文件 → 写 last_count → emit"，
-/// 远比文件解析快，竞争忽略不计。
+/// 单 watcher 槽：同一时刻只追一个文件，新订阅会替换旧 watcher。
 static STATE: OnceLock<Mutex<Option<WatchState>>> = OnceLock::new();
 
 /// 每个文件路径独立维护"上次 emit 的 Msg 数量"。即使 watch 被换了又换回来，
@@ -77,20 +74,15 @@ struct PathPayload {
     path: String,
 }
 
-/// 启动监听。如果已有别的 watcher，先停掉再起新的。
+/// 订阅一条会话的 file watch。再次调用会替换上一个 watcher（旧 watcher 自动 drop）。
 /// 不存在的路径返回错误；前端可以选择降级到不 tail。
 pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
     if !p.exists() {
         return Err(format!("文件不存在: {path}"));
     }
-    // 先释放旧 watcher（drop = stop）。
-    {
-        let mut guard = state().lock().map_err(|e| e.to_string())?;
-        *guard = None;
-    }
 
-    // 初始化 last_count：把当前文件的 Msg 数量记下来，后续只 emit 增量。
+    // 先把 baseline 写好，避免 watcher 起来后回调先到 process_change 时拿不到 count。
     let src = agents::source(&agent)?;
     let initial = src.read_session(&path).unwrap_or_default();
     {
@@ -110,7 +102,6 @@ pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), 
             ) {
                 return;
             }
-            // 删除事件：立刻 emit gone，不再 process append。
             if matches!(ev.kind, EventKind::Remove(_)) {
                 let _ = app_handle.emit(
                     "session:gone",
@@ -125,14 +116,14 @@ pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), 
     )
     .map_err(|e| format!("notify init 失败: {e}"))?;
 
-    // 仅监听这个具体文件 —— notify 内部会按平台 fallback 监听父目录后再过滤。
     watcher
         .watch(&p, RecursiveMode::NonRecursive)
         .map_err(|e| format!("watch 失败: {e}"))?;
 
+    // 替换上一个 watcher（如果有）—— 旧 RecommendedWatcher 随 WatchState drop。
     {
-        let mut guard = state().lock().map_err(|e| e.to_string())?;
-        *guard = Some(WatchState {
+        let mut slot = state().lock().map_err(|e| e.to_string())?;
+        *slot = Some(WatchState {
             _watcher: watcher,
             path: p,
             agent,
@@ -141,10 +132,10 @@ pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), 
     Ok(())
 }
 
-/// 停止监听。空操作可重入 —— 前端 unmount 调用很安全。
+/// 停止当前 watcher；没有活跃 watcher 时为空操作。前端 unmount / 切会话时调用。
 pub fn unwatch_session() -> Result<(), String> {
-    let mut guard = state().lock().map_err(|e| e.to_string())?;
-    *guard = None;
+    let mut slot = state().lock().map_err(|e| e.to_string())?;
+    *slot = None;
     Ok(())
 }
 
@@ -199,33 +190,28 @@ fn process_change(app: &AppHandle, agent: &str, path: &str) {
         return;
     }
 
-    if msgs.len() == prev_count {
-        return;
+    if msgs.len() > prev_count {
+        // 真有新增 —— 切尾 emit。
+        let tail = msgs[prev_count..].to_vec();
+        let _ = app.emit(
+            "session:append",
+            AppendPayload {
+                path: path.to_string(),
+                messages: tail,
+            },
+        );
+        let mut m = match last_count_map().lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        m.insert(path.to_string(), (msgs.len(), Instant::now()));
     }
-
-    // 真有新增 —— 切尾 emit。
-    let tail = msgs[prev_count..].to_vec();
-    let _ = app.emit(
-        "session:append",
-        AppendPayload {
-            path: path.to_string(),
-            messages: tail,
-        },
-    );
-    let mut m = match last_count_map().lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    m.insert(path.to_string(), (msgs.len(), Instant::now()));
 }
 
 /// 测试用：当前是否有活跃 watch。
 #[cfg(test)]
 pub fn is_watching() -> bool {
-    state()
-        .lock()
-        .map(|g| g.is_some())
-        .unwrap_or(false)
+    state().lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
 /// 测试用：当前 watch 的路径（如果有）。
