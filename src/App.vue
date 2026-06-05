@@ -49,6 +49,7 @@ import ConfirmModal from './modals/ConfirmModal.vue'
 import RenameModal from './modals/RenameModal.vue'
 import GlobalSearchModal from './modals/GlobalSearchModal.vue'
 import ExportHistoryView from './views/ExportHistoryView.vue'
+import PricingView from './views/PricingView.vue'
 import ProjectContextMenu from './modals/ProjectContextMenu.vue'
 import {
   activeUiId,
@@ -64,6 +65,7 @@ const activeDir = ref<string | null>(null)
 const showTrash = ref(false)
 const showStats = ref(false)
 const showExportHistory = ref(false)
+const showPricing = ref(false)
 const showSettings = ref(false)
 const sidebarOpen = ref(true)
 const refreshing = ref(false)
@@ -461,6 +463,7 @@ function switchAgent(a: Agent) {
   openSession.value = null
   showTrash.value = false
   showExportHistory.value = false
+  showPricing.value = false
   // 任何主区视图切换 → 把 TUI 层收起，让用户看到刚切到的视图。TUI tab 不关，
   // 用户在 TerminalStrip 里随时能切回。
   setActiveTui(null)
@@ -488,6 +491,7 @@ async function selectProject(dir: string) {
   showTrash.value = false
   showStats.value = false
   showExportHistory.value = false
+  showPricing.value = false
   sessionStatsTarget.value = null
   activeDir.value = dir
   recordRecent(agent.value, dir)
@@ -593,6 +597,7 @@ function openStats() {
   sessionStatsTarget.value = null
   showTrash.value = false
   showExportHistory.value = false
+  showPricing.value = false
   activeDir.value = null
   openSession.value = null
   sessions.value = []
@@ -604,6 +609,7 @@ async function loadTrash() {
   showTrash.value = true
   showStats.value = false
   showExportHistory.value = false
+  showPricing.value = false
   sessionStatsTarget.value = null
   activeDir.value = null
   openSession.value = null
@@ -654,7 +660,7 @@ async function openChat(s: SessionMeta) {
   // 统计页面，由用户点 ChatTopbar 的「统计」按钮按需触发（流式推送）。
 }
 
-// 导出历史视图入口（侧栏按钮）—— 和回收站 / 统计互斥；再点一次同一按钮收起。
+// 导出历史视图入口（侧栏按钮）—— 和回收站 / 统计 / 价格互斥；再点一次同一按钮收起。
 function openExportHistory() {
   setActiveTui(null)
   if (showExportHistory.value) {
@@ -664,6 +670,25 @@ function openExportHistory() {
   showExportHistory.value = true
   showTrash.value = false
   showStats.value = false
+  showPricing.value = false
+  sessionStatsTarget.value = null
+  activeDir.value = null
+  openSession.value = null
+  sessions.value = []
+  sessionTotal.value = 0
+}
+
+// 价格视图入口（顶栏 More 菜单）—— 和回收站 / 统计 / 历史互斥；再点一次收起。
+function openPricing() {
+  setActiveTui(null)
+  if (showPricing.value) {
+    showPricing.value = false
+    return
+  }
+  showPricing.value = true
+  showTrash.value = false
+  showStats.value = false
+  showExportHistory.value = false
   sessionStatsTarget.value = null
   activeDir.value = null
   openSession.value = null
@@ -1350,16 +1375,16 @@ async function onGlobalSearchOpen(hit: SearchHit) {
          不需要手动 no-drag。同时保留 -webkit-app-region: drag 做 OS 层兜底。 -->
     <div class="app-topbar" data-tauri-drag-region="deep">
       <SidebarTopbar
-        :refreshing="refreshing"
         :show-trash="showTrash"
         :show-stats="showStats"
         :show-history="showExportHistory"
+        :show-pricing="showPricing"
         :has-trash="trash.length > 0"
         @toggle-sidebar="toggleSidebar"
-        @refresh="refreshAll"
         @open-trash="loadTrash"
         @open-stats="openStats"
         @open-history="openExportHistory"
+        @open-pricing="openPricing"
       />
       <!-- 顶栏右侧分发：每个页面把自己的工具栏组件挂这里。
            本身仍是 macOS 拖动区域，组件内部的可交互元素由 CSS 单独标 no-drag。 -->
@@ -1368,17 +1393,14 @@ async function onGlobalSearchOpen(hit: SearchHit) {
              showStats 优先级要高于 openSession，否则进入会话统计模式时
              还会渲染 ChatTopbar 的「会话统计」按钮，造成视觉重复。 -->
         <div v-if="showStats" />
-        <ChatTopbar v-else-if="openSession" @open-session-stats="openSessionStats" />
+        <ChatTopbar v-else-if="openSession" />
         <TrashTopbar
           v-else-if="showTrash"
           :items="trash"
-          @batch-restore="batchRestore"
         />
         <SessionsTopbar
           v-else-if="activeProject"
           :sessions="sessions"
-          @batch-delete="batchDeleteSessions"
-          @batch-export="batchExportSessions"
         />
         <div v-else />
       </div>
@@ -1393,10 +1415,12 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       :active-dir="activeDir"
       :show-trash="showTrash"
       :proj-prefs="projPrefs"
+      :refreshing="refreshing"
       @switch-agent="switchAgent"
       @select-project="selectProject"
       @context-menu="openCtxMenu"
       @open-settings="showSettings = true"
+      @refresh="refreshAll"
     />
 
     <!-- 主区 -->
@@ -1448,6 +1472,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
               @export-html="exportSession('html')"
               @export-json="exportSession('json')"
               @restore="openTrashItem && restore(openTrashItem)"
+              @open-session-stats="openSessionStats"
             />
           </template>
 
@@ -1459,12 +1484,15 @@ async function onGlobalSearchOpen(hit: SearchHit) {
             @open="openTrashSession"
             @restore="restore"
             @permanent-delete="permanentDelete"
+            @batch-restore="batchRestore"
           />
 
           <ExportHistoryView
             v-else-if="showExportHistory"
             @open="openHistorySession"
           />
+
+          <PricingView v-else-if="showPricing" />
 
           <SessionsView
             v-else-if="activeProject"
@@ -1487,6 +1515,8 @@ async function onGlobalSearchOpen(hit: SearchHit) {
             @delete-project="deleteActiveProject"
             @load-more="loadMore"
             @scroll="onListScroll"
+            @batch-delete="batchDeleteSessions"
+            @batch-export="batchExportSessions"
           />
 
           <WelcomeView

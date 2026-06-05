@@ -428,6 +428,37 @@ fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 手动从 LiteLLM 上游拉一次模型价格表，覆盖本地 24h 缓存。前端 Settings
+/// 「立即刷新模型价格」按钮调用。返回入表条数；失败返回错误字符串（前端弹 toast）。
+///
+/// **必须是 async**：内部 `refresh_blocking` 走 `ureq::get(...).call()`，是真同步阻塞
+/// 调用，timeout 高达 20s。如果当 sync Tauri 命令直接跑，会霸占 webview 主线程，
+/// UI 一切动画 / 滚动 / 鼠标光标全冻 —— 用户反馈"点了刷新像卡死了"就是这个。
+/// 改成 async + `spawn_blocking` 后阻塞活路扔进 Tauri 的后台线程池，UI 线程立刻
+/// 返回继续跑 CSS 动画，等结果时 webview 仍然响应。
+#[tauri::command]
+async fn refresh_pricing() -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(stats::pricing::refresh_blocking)
+        .await
+        .map_err(|e| format!("join: {e}"))?
+}
+
+/// 价格表当前状态。前端按 `loaded` / `fetching` / `lastError` 决定渲染：
+///   - loaded=false && fetching=true → 显示加载占位
+///   - loaded=false && lastError=Some → 显示 error placeholder
+///   - loaded=true → 正常渲染（即使过期 cache 也先用着）
+#[tauri::command]
+fn pricing_status() -> stats::pricing::PricingStatus {
+    stats::pricing::status()
+}
+
+/// 返回当前价格表里 Claude / Codex / Gemini 三家的全部模型 —— 给 PricingView 弹窗渲染。
+/// 已按 family 分组、组内按 input 单价升序，前端可直接 group_by(family) 渲染。
+#[tauri::command]
+fn list_pricing() -> Vec<stats::pricing::PricingEntry> {
+    stats::pricing::list_for_ui()
+}
+
 /// Attach an empty `NSToolbar` with `unifiedCompact` style so AppKit grows the
 /// titlebar to ~40px and auto-centers the traffic lights vertically inside it
 /// — matching our 40px CSS topbar. This is the SUPPORTED AppKit way to extend
@@ -511,8 +542,16 @@ pub fn run() {
             open_url,
             write_file,
             app_version,
+            refresh_pricing,
+            pricing_status,
+            list_pricing,
         ])
         .setup(|app| {
+            // 启动期后台拉一次 LiteLLM 模型价格表，新模型上架不必发版。
+            // 不阻塞 setup —— init() 自己 spawn 后台线程，离线 / 失败时 lookup 自动落回
+            // hardcoded 兜底表。
+            stats::pricing::init();
+
             // 原生应用菜单 —— 主要价值在 macOS 顶部菜单栏。
             // Windows / Linux 也会挂菜单，但视觉上不那么重要。
             menu::build(app.handle())?;

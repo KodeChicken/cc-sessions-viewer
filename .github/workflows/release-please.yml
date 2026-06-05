@@ -1,0 +1,62 @@
+name: Release Please
+
+# Watches `main` for conventional commits (feat: / fix: / perf: ...) and keeps
+# an open "release PR" up to date with:
+#   - bumped versions in package.json + src-tauri/Cargo.toml + src-tauri/tauri.conf.json
+#   - a fresh CHANGELOG.md section above the prior release
+#
+# When that PR merges, release-please pushes the matching `vX.Y.Z` tag on the
+# same commit (CHANGELOG.md update + tag live together). We then call
+# `release.yml` directly via `workflow_call`, passing the tag — this sidesteps
+# GitHub's "GITHUB_TOKEN-created tags don't trigger downstream workflows"
+# limit, so no PAT is needed.
+#
+# Configuration:
+#   - release-please-config.json   — per-package bumps + changelog grouping
+#   - .release-please-manifest.json — current version snapshot (release-please
+#     rewrites this on every merge; don't hand-edit unless you know why)
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write  # needed so release-please can call release.yml (workflow_call)
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      # release-please-action emits these once the merge of a release PR lands
+      # on `main`. On every other push (non-release commits) `release_created`
+      # is just empty and the downstream job is skipped.
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          # Default GITHUB_TOKEN is sufficient because release.yml is chained
+          # via workflow_call below — we never rely on the created tag pushing
+          # release.yml's tag-trigger (it wouldn't, under GITHUB_TOKEN).
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Chain the actual build + publish pipeline.
+  # workflow_call inherits secrets from the parent run automatically.
+  release:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+    permissions:
+      contents: write

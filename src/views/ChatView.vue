@@ -2,6 +2,9 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Agent, Msg, SessionMeta, Block } from '../types'
 import { renderText, formatTime, isCaveatOnlyMsg, parseSystemEvent } from '../format'
+import { prettifyAndHighlightJson } from '../jsonHighlight'
+import { renderAllMermaid, resetMermaidForTheme } from '../mermaid'
+import { theme } from '../settings'
 import { t } from '../i18n'
 import ToolResult from '../components/ToolResult.vue'
 import CollapsibleBox from '../components/CollapsibleBox.vue'
@@ -30,6 +33,9 @@ import {
   IconMarkdown,
   IconHtml,
   IconJson,
+  IconChart,
+  IconFold,
+  IconUnfold,
   agentIcons,
 } from '../components/icons'
 
@@ -58,7 +64,14 @@ defineEmits<{
   exportHtml: []
   exportJson: []
   restore: []
+  /** 打开会话统计页 —— 原本住在 ChatTopbar 里，现挪进 chat-head 减少
+   *  topbar + chat-head 两排 icon-only 按钮重叠的扫描负担。 */
+  openSessionStats: []
 }>()
+
+function toggleTools() {
+  toolsCollapsed.value = !toolsCollapsed.value
+}
 
 // Resume 按钮是否可用：回收站、缺 session id、缺 cwd 时禁用。
 const canResumeHere = computed(
@@ -569,21 +582,34 @@ watch(searchScope, () => {
   if (search.value) applySearch()
 })
 
-// 消息变化（切换会话 / 刷新）后重新建立标记 + 重新 sweep 折叠态
+// 消息变化（切换会话 / 刷新）后重新建立标记 + 重新 sweep 折叠态 + 渲染 mermaid 占位符
 watch(
   () => props.messages,
   () => {
     nextTick(() => {
       if (toolsCollapsed.value) sweepDetails(false)
       if (search.value) applySearch()
+      // 新挂载的 .md-mermaid 占位符 → 调 mermaid.render() 替换。幂等 ——
+      // 已渲染过的会带 data-rendered 跳过。
+      renderAllMermaid(innerEl.value ?? null)
     })
   },
   { flush: 'post' },
 )
 
+// 主题切换：mermaid 不能运行时换色，要把已渲染节点 reset 再 redraw。
+watch(theme, () => {
+  nextTick(() => {
+    resetMermaidForTheme(innerEl.value ?? null)
+    renderAllMermaid(innerEl.value ?? null)
+  })
+})
+
 onMounted(() => {
   setSearchNavigator(navigateMatches)
   document.addEventListener('click', onDocClick)
+  // 初次挂载也跑一遍 —— 会话已经有 messages 时 watch 不会触发。
+  nextTick(() => renderAllMermaid(innerEl.value ?? null))
 })
 onUnmounted(() => {
   setSearchNavigator(null)
@@ -652,6 +678,28 @@ function onDocClick(e: MouseEvent) {
         </span>
       </div>
     </div>
+    <!-- 会话统计 + 折叠 Tool calls：原本住在 ChatTopbar.ct-actions 里，
+         与 chat-head 的 5 个会话级 icon 隔一行 40px topbar 在同一垂直线上。
+         挪进 chat-head 后顶栏只剩 scope+search 一条横线。toolsCollapsed
+         走 chatToolbar 模块 ref 共享，原 ChatTopbar 的对应按钮已删除。 -->
+    <button
+      class="icon-btn"
+      v-tooltip="t('chat.tb.sessionStats')"
+      @click="$emit('openSessionStats')"
+    >
+      <IconChart />
+    </button>
+    <button
+      class="icon-btn"
+      v-tooltip="
+        toolsCollapsed
+          ? t('chat.tb.tools.expand')
+          : t('chat.tb.tools.collapse')
+      "
+      @click="toggleTools"
+    >
+      <component :is="toolsCollapsed ? IconUnfold : IconFold" />
+    </button>
     <button
       v-if="!trashed"
       class="icon-btn"
@@ -817,7 +865,7 @@ function onDocClick(e: MouseEvent) {
                   <span class="label">{{ toolLabel(b) }}</span>
                 </summary>
                 <div class="block-body">
-                  <pre>{{ b.toolInput }}</pre>
+                  <pre class="lang-json" v-html="prettifyAndHighlightJson(b.toolInput ?? '')" />
                   <ToolResult
                     v-if="inlinedResultFor(b)"
                     :block="inlinedResultFor(b)!"

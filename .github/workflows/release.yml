@@ -1,39 +1,54 @@
 name: Release
 
-# Release pipeline — triggers when a `v*` tag lands on the repo. Two stages:
-#   1) build matrix (macOS + Windows) only builds bundles and uploads them as
-#      workflow artifacts. tauri-action runs with no `tagName`, so it does NOT
-#      try to create / update a GitHub release itself.
-#   2) publish job downloads all artifacts and creates a single, published
-#      (not draft) release via softprops/action-gh-release. The body is a fixed
-#      "Downloads" intro followed by a commit changelog generated with
-#      `changelogithub` (zero-config: it groups the repo's lowercase conventional
-#      commits — feat / fix / perf — into the release notes).
+# Build + publish pipeline. Two ways to fire:
 #
-# Use `npm run release` locally to bump the version in package.json /
-# tauri.conf.json / Cargo.toml, commit, tag, and push in one go; the pushed
-# tag fires this workflow. `workflow_dispatch` is left in for emergency
-# re-runs from the Actions UI — when triggered manually (no tag) only the
-# build job runs; the publish job is skipped via the `if: tag` guard.
+#   1) Automatically, via `release-please.yml` — when a release PR merges,
+#      release-please updates CHANGELOG.md + bumps versions on the merge
+#      commit, then this workflow is called with the new tag (workflow_call).
+#      That path skips the GITHUB_TOKEN tag-push limitation: the tag created
+#      by release-please's GITHUB_TOKEN normally wouldn't trigger downstream
+#      workflows, so we chain via `workflow_call` from release-please.yml
+#      instead of listening for tag pushes.
+#
+#   2) Manually, via the Actions UI ("Run workflow"). Supply the tag name
+#      (e.g. `v0.1.3`) and the workflow builds + publishes against that
+#      tag — useful for re-publishing a release or recovering from a botched run.
+#
+# Stages:
+#   - build matrix (macOS + Windows + Linux) only builds bundles and uploads
+#     them as workflow artifacts. tauri-action runs with no `tagName`, so it
+#     does NOT try to create / update a GitHub release itself.
+#   - publish job downloads all artifacts and creates a single, published
+#     (not draft) release via softprops/action-gh-release. The body is a
+#     fixed "Downloads" intro followed by the matching `## [X.Y.Z]` section
+#     extracted from CHANGELOG.md (which release-please already wrote on the
+#     same commit as the tag) + a deduped contributors footer.
 #
 # Tauri cross-compile from macOS to a Windows installer isn't practical
-# locally because NSIS/WiX bundling needs a Windows toolchain, so the
-# Windows artifacts are produced on a `windows-latest` runner here. Linux
-# bundles (.deb / .AppImage) come from an `ubuntu-22.04` runner; we pin
-# 22.04 instead of `ubuntu-latest` so the resulting binary links against
-# an older glibc and runs on a wider range of distros.
+# locally because NSIS/WiX bundling needs a Windows toolchain, so Windows
+# artifacts are produced on a `windows-latest` runner. Linux bundles
+# (.deb / .AppImage) come from `ubuntu-22.04` (not `ubuntu-latest`) so
+# binaries link against an older glibc and run on a wider range of distros.
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag to build / publish (e.g. v0.1.3)'
+        required: true
+        type: string
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
+    inputs:
+      tag:
+        description: 'Tag to build / publish (e.g. v0.1.3)'
+        required: true
+        type: string
 
 permissions:
   contents: write
 
-# Multiple tag pushes on the same ref shouldn't fight over the release.
+# One publish per tag; concurrent runs on the same tag should not fight.
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -52,6 +67,11 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Checkout the tag release-please just created (or the one the
+          # operator typed into workflow_dispatch). `inputs.tag` is the same
+          # string in both paths.
+          ref: ${{ inputs.tag }}
 
       - name: Setup Node
         uses: actions/setup-node@v5
@@ -114,20 +134,14 @@ jobs:
 
   publish:
     needs: build
-    # Only publish for tag pushes. `workflow_dispatch` runs build-only.
-    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
-      # Full history (fetch-depth: 0) so changelogithub can diff against the
-      # previous v* tag and list every commit in between.
+      # Full history (fetch-depth: 0) so the contributors compare-API call
+      # below has both endpoints of `PREV..TAG` available locally.
       - uses: actions/checkout@v5
         with:
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
-
-      - name: Setup Node
-        uses: actions/setup-node@v5
-        with:
-          node-version: 20
 
       - name: Download all bundles
         uses: actions/download-artifact@v5
@@ -136,18 +150,29 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # Generate the commit changelog grouped by conventional type. Zero-config:
-      # changelogithub's defaults group lowercase `feat:` / `fix:` / `perf:`
-      # commits (enforced by commitlint). `--output` writes the markdown to a
-      # file instead of creating the release itself, so action-gh-release stays
-      # the single source of the release (body + assets) and we control ordering.
-      - name: Generate commit changelog
-        run: npx -y changelogithub --output CHANGELOG_NOTES.md --to "${{ github.ref_name }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Extract the matching `## [X.Y.Z]` section from CHANGELOG.md (release-please
+      # writes that section on the same commit as the tag, so by the time we get
+      # here it's already in the tree). awk captures from the header line down
+      # to — but not including — the next `## [` header.
+      #
+      # The expected heading shape is release-please's default:
+      #   ## [0.1.3](https://.../compare/v0.1.2...v0.1.3) (2026-06-01)
+      # We strip the leading `v` from the tag (v0.1.3 → 0.1.3) to match.
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          TAG="${{ inputs.tag }}"
+          VERSION="${TAG#v}"
+          awk -v v="${VERSION}" '
+            $0 ~ ("^## \\[" v "\\]") { capture=1; print; next }
+            capture && /^## \[/        { exit }
+            capture                    { print }
+          ' CHANGELOG.md > CHANGELOG_NOTES.md
+          if [ ! -s CHANGELOG_NOTES.md ]; then
+            echo "::warning::No CHANGELOG.md section found for ${VERSION}; using empty body."
+          fi
 
       # Downloads section on top (preserves the previous layout), then the
-      # generated commit changelog below it.
+      # changelog section extracted from CHANGELOG.md below it.
       - name: Assemble release notes
         run: |
           cat > RELEASE_BODY.md <<'EOF'
@@ -165,15 +190,14 @@ jobs:
           printf '\n---\n\n' >> RELEASE_BODY.md
           cat CHANGELOG_NOTES.md >> RELEASE_BODY.md
 
-      # Aggregated "Contributors" footer. changelogithub already credits each
-      # author inline (`by @login`); this adds a deduped @mention list for the
-      # whole release range via the GitHub compare API (author.login resolves to
-      # a clickable handle when the commit email maps to a GitHub account, else
-      # the plain git name). Base = previous v* tag, or the root commit for the
-      # very first release. Skipped silently if the list comes back empty.
+      # Aggregated "Contributors" footer. Pulls a deduped @mention list for
+      # the whole release range from the GitHub compare API (author.login
+      # resolves to a clickable handle when the commit email maps to a GitHub
+      # account, else the plain git name). Base = previous v* tag, or the
+      # root commit for the very first release. Skipped silently if empty.
       - name: Append contributors
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ inputs.tag }}"
           PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
           if [ -z "$PREV" ]; then PREV="$(git rev-list --max-parents=0 HEAD | tail -1)"; fi
           CONTRIBUTORS="$(curl -fsS \
@@ -190,13 +214,13 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
           # Published, not draft — set draft: true if you want to review on
           # GitHub before users see it.
           draft: false
           prerelease: false
-          # Body is fully supplied via body_path (Downloads + commit changelog),
+          # Body is fully supplied via body_path (Downloads + CHANGELOG section),
           # so don't let GitHub append its PR-based "What's Changed" section too.
           generate_release_notes: false
           body_path: RELEASE_BODY.md
