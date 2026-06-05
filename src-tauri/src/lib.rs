@@ -38,8 +38,12 @@ static SEARCH_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 // ============================ Tauri 命令：分派层 ============================
 
 #[tauri::command]
-fn list_projects(agent: String) -> Result<Vec<ProjectInfo>, String> {
-    agents::source(&agent)?.list_projects()
+fn list_projects(
+    agent: String,
+    include_codex_internal: bool,
+    include_codex_archived: bool,
+) -> Result<Vec<ProjectInfo>, String> {
+    agents::source(&agent)?.list_projects(include_codex_internal, include_codex_archived)
 }
 
 #[tauri::command]
@@ -48,8 +52,16 @@ fn list_sessions(
     project_key: String,
     offset: usize,
     limit: usize,
+    include_codex_internal: bool,
+    include_codex_archived: bool,
 ) -> Result<SessionPage, String> {
-    agents::source(&agent)?.list_sessions(&project_key, offset, limit)
+    agents::source(&agent)?.list_sessions(
+        &project_key,
+        offset,
+        limit,
+        include_codex_internal,
+        include_codex_archived,
+    )
 }
 
 #[tauri::command]
@@ -95,12 +107,7 @@ fn agent_stats(agent: String) -> Result<AgentStats, String> {
 /// `scope`：`all` / `claude` / `codex` / `gemini` / `session:<agent>:<absolute path>`。
 /// `range`：`today` / `days7` / `days30` / `all`（session-scope 下忽略）。
 #[tauri::command]
-fn start_agent_stats(
-    app: tauri::AppHandle,
-    scope: String,
-    range: String,
-    request_id: u64,
-) {
+fn start_agent_stats(app: tauri::AppHandle, scope: String, range: String, request_id: u64) {
     stats::stream::start(app, scope, range, request_id);
 }
 
@@ -158,11 +165,7 @@ fn rename_session(agent: String, path: String, name: String) -> Result<(), Strin
 }
 
 #[tauri::command]
-fn soft_delete_session(
-    agent: String,
-    path: String,
-    project_label: String,
-) -> Result<(), String> {
+fn soft_delete_session(agent: String, path: String, project_label: String) -> Result<(), String> {
     trash::soft_delete(&agent, &path, &project_label)
 }
 

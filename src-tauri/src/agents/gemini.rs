@@ -226,6 +226,12 @@ fn scan(fp: &Path) -> SessionMeta {
         modified,
         size,
         message_count,
+        codex_app_list_rank: None,
+        codex_app_list_scanned: 0,
+        codex_app_first_page_size: 50,
+        codex_app_first_page_position: 0,
+        codex_internal: false,
+        codex_archived: false,
     }
 }
 
@@ -444,7 +450,11 @@ impl SessionSource for GeminiSource {
         "gemini"
     }
 
-    fn list_projects(&self) -> Result<Vec<ProjectInfo>, String> {
+    fn list_projects(
+        &self,
+        _include_codex_internal: bool,
+        _include_codex_archived: bool,
+    ) -> Result<Vec<ProjectInfo>, String> {
         let mut out = Vec::new();
         let rd = match fs::read_dir(tmp_dir()) {
             Ok(rd) => rd,
@@ -500,6 +510,8 @@ impl SessionSource for GeminiSource {
         project_key: &str,
         offset: usize,
         limit: usize,
+        _include_codex_internal: bool,
+        _include_codex_archived: bool,
     ) -> Result<SessionPage, String> {
         let files = chat_files(project_key);
         let mut paired: Vec<(PathBuf, u64)> = files

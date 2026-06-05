@@ -15,7 +15,11 @@ beforeEach(() => {
 describe('api wrappers', () => {
   it('listProjects → list_projects', () => {
     api.listProjects('claude')
-    expect(invoke).toHaveBeenCalledWith('list_projects', { agent: 'claude' })
+    expect(invoke).toHaveBeenCalledWith('list_projects', {
+      agent: 'claude',
+      includeCodexInternal: false,
+      includeCodexArchived: false,
+    })
   })
 
   it('listSessions → list_sessions with pagination', () => {
@@ -25,6 +29,8 @@ describe('api wrappers', () => {
       projectKey: 'proj-key',
       offset: 10,
       limit: 20,
+      includeCodexInternal: false,
+      includeCodexArchived: false,
     })
   })
 

@@ -12,15 +12,36 @@ import type {
   UsageSummary,
 } from './types'
 
-export const listProjects = (agent: Agent) =>
-  invoke<ProjectInfo[]>('list_projects', { agent })
+export interface CodexVisibilityOptions {
+  includeCodexInternal?: boolean
+  includeCodexArchived?: boolean
+}
+
+export const listProjects = (
+  agent: Agent,
+  options: CodexVisibilityOptions = {},
+) =>
+  invoke<ProjectInfo[]>('list_projects', {
+    agent,
+    includeCodexInternal: options.includeCodexInternal ?? false,
+    includeCodexArchived: options.includeCodexArchived ?? false,
+  })
 
 export const listSessions = (
   agent: Agent,
   projectKey: string,
   offset: number,
   limit: number,
-) => invoke<SessionPage>('list_sessions', { agent, projectKey, offset, limit })
+  options: CodexVisibilityOptions = {},
+) =>
+  invoke<SessionPage>('list_sessions', {
+    agent,
+    projectKey,
+    offset,
+    limit,
+    includeCodexInternal: options.includeCodexInternal ?? false,
+    includeCodexArchived: options.includeCodexArchived ?? false,
+  })
 
 export const readSession = (agent: Agent, path: string) =>
   invoke<Msg[]>('read_session', { agent, path })

@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
-// SettingsModal reads the app version and update info through the Tauri-backed
-// api module — stub it so the component can mount outside a Tauri shell.
 const { appVersionMock, checkUpdateMock } = vi.hoisted(() => ({
   appVersionMock: vi.fn(),
   checkUpdateMock: vi.fn(),
@@ -32,6 +30,7 @@ const factory = (props: Partial<Props> = {}) =>
   mount(SettingsModal, {
     props: { cacheBytes: 0, ...props } as Props,
     global: { directives: { tooltip: vTooltip } },
+    attachTo: document.body,
   })
 
 describe('SettingsModal', () => {
@@ -60,23 +59,24 @@ describe('SettingsModal', () => {
     expect(wrapper.emitted('close')).toHaveLength(2)
   })
 
-  it('renders the four languages and switches on click', async () => {
+  it('switches language via the custom dropdown', async () => {
     const wrapper = factory()
-    const langBtns = wrapper.findAll('.seg-wide button')
-    expect(langBtns).toHaveLength(4)
-    expect(langBtns[0].classes()).toContain('active') // English is current
-
-    await langBtns[1].trigger('click') // 简体中文
+    const dropdowns = wrapper.findAll('.set-dropdown-btn')
+    await dropdowns[0].trigger('click')
+    const items = wrapper.findAll('.set-dropdown-item')
+    expect(items.length).toBeGreaterThanOrEqual(4)
+    await items[1].trigger('click') // 简体中文
     expect(lang.value).toBe('zh')
   })
 
-  it('renders the three themes and switches on click', async () => {
+  it('switches theme via the custom dropdown', async () => {
     const wrapper = factory()
-    const themeCards = wrapper.findAll('.theme-card')
-    expect(themeCards).toHaveLength(3)
-
-    await themeCards[1].trigger('click') // Dark
-    expect(theme.value).toBe('dark')
+    const dropdowns = wrapper.findAll('.set-dropdown-btn')
+    await dropdowns[1].trigger('click')
+    const items = wrapper.findAll('.set-dropdown-item')
+    // find the Dracula option (last one)
+    await items[items.length - 1].trigger('click')
+    expect(theme.value).toBe('dracula')
   })
 
   it('loads the app version on mount', async () => {
@@ -91,7 +91,8 @@ describe('SettingsModal', () => {
     const wrapper = factory()
     await flushPromises()
 
-    await wrapper.findAll('.btn')[1].trigger('click')
+    const checkBtn = wrapper.find('.set-update-actions .btn')
+    await checkBtn.trigger('click')
     await flushPromises()
 
     expect(checkUpdateMock).toHaveBeenCalled()
@@ -103,7 +104,8 @@ describe('SettingsModal', () => {
     const wrapper = factory()
     await flushPromises()
 
-    await wrapper.findAll('.btn')[1].trigger('click')
+    const checkBtn = wrapper.find('.set-update-actions .btn')
+    await checkBtn.trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('latest version')
@@ -114,7 +116,8 @@ describe('SettingsModal', () => {
     const wrapper = factory()
     await flushPromises()
 
-    await wrapper.findAll('.btn')[1].trigger('click')
+    const checkBtn = wrapper.find('.set-update-actions .btn')
+    await checkBtn.trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('Update check failed')

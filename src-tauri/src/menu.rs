@@ -102,10 +102,14 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let theme_light = CheckMenuItem::with_id(app, "theme:light", "Light", true, false, None::<&str>)?;
     let theme_dark = CheckMenuItem::with_id(app, "theme:dark", "Dark", true, false, None::<&str>)?;
     let theme_system = CheckMenuItem::with_id(app, "theme:system", "System", true, false, None::<&str>)?;
+    let theme_codex = CheckMenuItem::with_id(app, "theme:codex", "Codex", true, false, None::<&str>)?;
+    let theme_dracula = CheckMenuItem::with_id(app, "theme:dracula", "Dracula", true, false, None::<&str>)?;
     let theme_menu = SubmenuBuilder::new(app, "Theme")
         .item(&theme_light)
         .item(&theme_dark)
         .item(&theme_system)
+        .item(&theme_codex)
+        .item(&theme_dracula)
         .build()?;
     // Language 子菜单 —— 四选一。
     let lang_en = CheckMenuItem::with_id(app, "lang:en", "English", true, false, None::<&str>)?;
@@ -179,6 +183,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             ("light".into(), theme_light),
             ("dark".into(), theme_dark),
             ("system".into(), theme_system),
+            ("codex".into(), theme_codex),
+            ("dracula".into(), theme_dracula),
         ],
         lang_items: vec![
             ("en".into(), lang_en),

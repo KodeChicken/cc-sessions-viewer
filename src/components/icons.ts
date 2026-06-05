@@ -57,6 +57,9 @@ import IconActivityRaw from '~icons/lucide/activity'
 import IconLayersRaw from '~icons/lucide/layers'
 import IconZapRaw from '~icons/lucide/zap'
 import IconExternalLinkRaw from '~icons/lucide/external-link'
+import IconArchiveRaw from '~icons/lucide/archive'
+import IconShieldCheckRaw from '~icons/lucide/shield-check'
+import IconTerminalRaw from '~icons/lucide/terminal'
 import IconClaudeRaw from '~icons/material-icon-theme/claude'
 import IconGeminiRaw from '~icons/material-icon-theme/gemini-ai'
 
@@ -114,6 +117,9 @@ export const IconActivity = IconActivityRaw
 export const IconLayers = IconLayersRaw
 export const IconZap = IconZapRaw
 export const IconExternalLink = IconExternalLinkRaw
+export const IconArchive = IconArchiveRaw
+export const IconShieldCheck = IconShieldCheckRaw
+export const IconTerminal = IconTerminalRaw
 // 「已 pin」状态的小圆点指示器；6×6 实心圆，自己拼比拉一整个集合便宜。
 import { defineComponent, h, type Component } from 'vue'
 import type { Agent } from '../types'

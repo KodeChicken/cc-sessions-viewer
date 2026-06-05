@@ -267,6 +267,8 @@ export default {
   'toast.emptyFail': 'ゴミ箱を空にできませんでした: {e}',
 
   'settings.title': '設定',
+  'settings.tab.general': '一般',
+  'settings.tab.advanced': '詳細',
   'settings.section.lang': '言語',
   'settings.section.theme': '外観',
   'settings.section.data': 'データ',
@@ -278,6 +280,17 @@ export default {
   'settings.theme.light': 'ライト',
   'settings.theme.dark': 'ダーク',
   'settings.theme.system': 'システム',
+  'settings.theme.codex': 'Codex',
+  'settings.theme.dracula': 'Dracula',
+  'settings.section.terminal': 'ターミナル',
+  'settings.terminalDesc':
+    '「セッション再開」と「新規セッション」を、内蔵ターミナルで開くか外部ターミナルアプリで開くかを選択します。',
+  'settings.useExternalTerminal': '外部ターミナルを使用',
+  'settings.section.codex': 'Codex',
+  'settings.codexVisibilityDesc':
+    'Codex の一覧に、通常は非表示の内部レビューセッションとアーカイブ済みセッションを表示するかを切り替えます。',
+  'settings.codex.showInternal': 'レビューセッションを表示',
+  'settings.codex.showArchived': 'アーカイブ済みを表示',
   'settings.clearCache': 'キャッシュを削除',
   'settings.clearCacheDesc':
     'ピン留め / 沈め設定を削除します。セッションとゴミ箱には影響しません。',
@@ -289,6 +302,8 @@ export default {
   'settings.updateFail': 'アップデート確認に失敗: {e}',
   'settings.viewRelease': 'release v{v} を表示',
   'settings.version': 'バージョン',
+  'list.codex.internal': 'レビューセッション',
+  'list.codex.archived': 'アーカイブ済みセッション',
 
   'toast.sessionStatsComingSoon': 'セッション統計ページは間もなく公開予定',
 

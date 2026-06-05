@@ -268,6 +268,8 @@ export default {
   'toast.sessionStatsComingSoon': 'Session statistics page is on the way — coming in this build',
 
   'settings.title': 'Settings',
+  'settings.tab.general': 'General',
+  'settings.tab.advanced': 'Advanced',
   'settings.section.lang': 'Language',
   'settings.section.theme': 'Appearance',
   'settings.section.data': 'Data',
@@ -279,6 +281,17 @@ export default {
   'settings.theme.light': 'Light',
   'settings.theme.dark': 'Dark',
   'settings.theme.system': 'System',
+  'settings.theme.codex': 'Codex',
+  'settings.theme.dracula': 'Dracula',
+  'settings.section.terminal': 'Terminal',
+  'settings.terminalDesc':
+    'Choose where Resume and New Session open — in the built-in terminal or an external terminal app.',
+  'settings.useExternalTerminal': 'Use external terminal',
+  'settings.section.codex': 'Codex',
+  'settings.codexVisibilityDesc':
+    'Controls whether Codex lists include hidden internal review threads and archived threads.',
+  'settings.codex.showInternal': 'Show review sessions',
+  'settings.codex.showArchived': 'Show archived sessions',
   'settings.clearCache': 'Clear cache',
   'settings.clearCacheDesc':
     'Clears pin / sink preferences. Sessions and Trash are not affected.',
@@ -290,6 +303,8 @@ export default {
   'settings.updateFail': 'Update check failed: {e}',
   'settings.viewRelease': 'View release v{v}',
   'settings.version': 'Version',
+  'list.codex.internal': 'Review session',
+  'list.codex.archived': 'Archived session',
 
   // ---------- Stats dashboard ----------
   'stats.title': 'Statistics',
