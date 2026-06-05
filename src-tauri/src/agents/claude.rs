@@ -1029,7 +1029,7 @@ mod tests {
     #[ignore = "manual full-scan; reads every Claude JSONL on disk"]
     fn dedup_full_claude_scan() {
         let src = ClaudeSource;
-        let projects = src.list_projects().unwrap();
+        let projects = src.list_projects(false, false).unwrap();
         let mut agg = crate::stats::aggregate::Aggregator::new();
         for p in &projects {
             let sessions = src.discover_stats_sessions(&p.dir_name).unwrap_or_default();
