@@ -83,7 +83,7 @@ fn main() {
             Ok(s) => s,
             Err(_) => continue,
         };
-        let projects = match src.list_projects() {
+        let projects = match src.list_projects(false, true) {
             Ok(p) => p,
             Err(_) => continue,
         };

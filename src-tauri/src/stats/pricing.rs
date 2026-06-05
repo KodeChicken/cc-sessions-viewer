@@ -69,10 +69,10 @@ pub fn lookup(model: &str) -> Option<ModelCosts> {
     //    未知的 `claude-opus-4-9` 也能塌到 `claude-opus-4` 的同系列上。
     let mut best: Option<(usize, ModelCosts)> = None;
     for (k, v) in table.iter() {
-        if canon == *k || canon.starts_with(&format!("{k}-")) {
-            if best.map_or(true, |(blen, _)| k.len() > blen) {
-                best = Some((k.len(), *v));
-            }
+        if (canon == *k || canon.starts_with(&format!("{k}-")))
+            && best.is_none_or(|(blen, _)| k.len() > blen)
+        {
+            best = Some((k.len(), *v));
         }
     }
     best.map(|(_, v)| v)
@@ -956,10 +956,10 @@ mod tests {
         let no_cr = table.get("no-cr").expect("no-cr");
         assert!((no_cr.cache_read - 4e-7).abs() < 1e-15, "input×0.1 fallback");
 
-        assert!(table.get("no-prices").is_none(), "无价格 entry 跳过");
-        assert!(table.get("sample_spec").is_none(), "元数据 entry 跳过");
+        assert!(!table.contains_key("no-prices"), "无价格 entry 跳过");
+        assert!(!table.contains_key("sample_spec"), "元数据 entry 跳过");
 
-        assert!(table.get("anthropic/claude-magic-9").is_some());
+        assert!(table.contains_key("anthropic/claude-magic-9"));
         let stripped = table.get("claude-magic-9").expect("stripped form");
         assert!((stripped.input - 7e-6).abs() < 1e-15);
     }
