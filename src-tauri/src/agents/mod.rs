@@ -99,7 +99,11 @@ pub trait SessionSource: Send + Sync {
     fn name(&self) -> &'static str;
 
     /// 列出该 agent 下的所有项目（已折叠到磁盘 / cwd 的逻辑各自负责）。
-    fn list_projects(&self) -> Result<Vec<ProjectInfo>, String>;
+    fn list_projects(
+        &self,
+        include_codex_internal: bool,
+        include_codex_archived: bool,
+    ) -> Result<Vec<ProjectInfo>, String>;
 
     /// 分页返回某项目下的会话元信息。`project_key` 的含义由 agent 自己决定：
     /// Claude 是项目目录名，Codex 是 cwd 路径。
@@ -108,6 +112,8 @@ pub trait SessionSource: Send + Sync {
         project_key: &str,
         offset: usize,
         limit: usize,
+        include_codex_internal: bool,
+        include_codex_archived: bool,
     ) -> Result<SessionPage, String>;
 
     /// 解析一个 JSONL 文件并返回标准 `Msg[]`（前端只认这一个形状）。
@@ -151,7 +157,7 @@ pub trait SessionSource: Send + Sync {
     /// list_sessions 仍只返回顶层文件 —— 别把 sub-agent 塞进聊天列表，否则
     /// 用户的会话清单会被自动生成的小段污染。
     fn discover_stats_sessions(&self, project_key: &str) -> Result<Vec<SessionMeta>, String> {
-        Ok(self.list_sessions(project_key, 0, usize::MAX)?.sessions)
+        Ok(self.list_sessions(project_key, 0, usize::MAX, false, false)?.sessions)
     }
 }
 
@@ -209,13 +215,13 @@ pub fn agent_stats(
     src: &(dyn SessionSource + Sync),
     agent_name: &str,
 ) -> Result<AgentStats, String> {
-    let projects = src.list_projects()?;
+    let projects = src.list_projects(false, false)?;
 
     // Pull every session per project. List_sessions is cheap (just mtime + deep-parse window).
     // 用 usize::MAX 让 agent 把所有都返回（pagination 在这层不需要）。
     let mut items: Vec<(usize, SessionMeta)> = Vec::new();
     for (i, p) in projects.iter().enumerate() {
-        match src.list_sessions(&p.dir_name, 0, usize::MAX) {
+        match src.list_sessions(&p.dir_name, 0, usize::MAX, false, false) {
             Ok(page) => {
                 for s in page.sessions {
                     items.push((i, s));
@@ -311,7 +317,7 @@ pub fn search(
         return Ok(Vec::new());
     }
     // 没指定项目就扫全部；指定时只搜该项目，跳过其它项目的 list_sessions 调用。
-    let projects = src.list_projects()?;
+    let projects = src.list_projects(false, false)?;
     let projects: Vec<ProjectInfo> = match project_filter {
         Some(key) => projects.into_iter().filter(|p| p.dir_name == key).collect(),
         None => projects,
@@ -324,7 +330,7 @@ pub fn search(
         if hits.len() >= SEARCH_MAX_HITS {
             break;
         }
-        let page = match src.list_sessions(&proj.dir_name, 0, usize::MAX) {
+        let page = match src.list_sessions(&proj.dir_name, 0, usize::MAX, false, false) {
             Ok(p) => p,
             Err(_) => continue,
         };

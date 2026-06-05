@@ -19,6 +19,12 @@ export interface SessionMeta {
   modified: number
   size: number
   messageCount: number
+  codexAppListRank?: number | null
+  codexAppListScanned: number
+  codexAppFirstPageSize: number
+  codexAppFirstPagePosition: number
+  codexInternal: boolean
+  codexArchived: boolean
 }
 
 export interface SessionPage {

@@ -31,7 +31,11 @@ impl SessionSource for ClaudeSource {
         "claude"
     }
 
-    fn list_projects(&self) -> Result<Vec<ProjectInfo>, String> {
+    fn list_projects(
+        &self,
+        _include_codex_internal: bool,
+        _include_codex_archived: bool,
+    ) -> Result<Vec<ProjectInfo>, String> {
         let dir = projects_dir();
         let mut out = Vec::new();
         let entries = fs::read_dir(&dir).map_err(|e| format!("读取项目目录失败: {e}"))?;
@@ -81,6 +85,8 @@ impl SessionSource for ClaudeSource {
         project_key: &str,
         offset: usize,
         limit: usize,
+        _include_codex_internal: bool,
+        _include_codex_archived: bool,
     ) -> Result<SessionPage, String> {
         let pdir = projects_dir().join(project_key);
         let mut files: Vec<(PathBuf, u64)> = Vec::new();
@@ -558,6 +564,12 @@ fn scan(fp: &Path) -> SessionMeta {
         modified,
         size,
         message_count,
+        codex_app_list_rank: None,
+        codex_app_list_scanned: 0,
+        codex_app_first_page_size: 50,
+        codex_app_first_page_position: 0,
+        codex_internal: false,
+        codex_archived: false,
     }
 }
 
