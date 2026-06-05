@@ -14,6 +14,21 @@
     "prepare": "husky",
     "release": "bumpp package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml --commit \"release: v%s\" --tag \"v%s\" --push"
   },
+  "changelogithub": {
+    "types": {
+      "feat": { "title": "🚀 Features" },
+      "Feat": { "title": "🚀 Features" },
+      "fix": { "title": "🐞 Bug Fixes" },
+      "Fix": { "title": "🐞 Bug Fixes" },
+      "perf": { "title": "🏎 Performance" },
+      "refactor": { "title": "💅 Refactors" },
+      "doc": { "title": "📖 Documentation" },
+      "Doc": { "title": "📖 Documentation" },
+      "Docs": { "title": "📖 Documentation" },
+      "docs": { "title": "📖 Documentation" }
+    },
+    "contributors": true
+  },
   "dependencies": {
     "@antv/g2": "^5.4.8",
     "@tauri-apps/api": "^2.11.0",

@@ -6,7 +6,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
-## [Unreleased]
+## [v0.1.3]
 
 ### Added
 
