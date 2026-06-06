@@ -219,6 +219,7 @@ fn empty_trash() -> Result<(), String> {
 /// 返回新 PTY 的内部 id；前端拿 id 调 `pty_write` / `pty_resize` / `pty_kill`。
 /// 与 `resume_session`（开 Terminal.app）并存 —— 调用方各自决定走哪一条。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn pty_spawn(
     app: tauri::AppHandle,
     agent: String,
