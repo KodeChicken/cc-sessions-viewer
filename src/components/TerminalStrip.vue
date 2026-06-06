@@ -29,6 +29,8 @@ const emit = defineEmits<{
   listClick: []
   /** View —— 保留当前会话，仅退出 TUI，回到聊天详情 */
   viewClick: []
+  /** Tab 被手动关闭（点 ×）—— App 据此刷新数据 */
+  tabClosed: []
 }>()
 
 const visibleTabs = computed(() =>
@@ -68,6 +70,7 @@ function onViewClick() {
 function onClose(uiId: number, ev: Event) {
   ev.stopPropagation()
   closeTab(uiId)
+  emit('tabClosed')
 }
 </script>
 

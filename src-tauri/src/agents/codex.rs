@@ -840,6 +840,7 @@ impl SessionSource for CodexSource {
                     session_count: count,
                     last_modified: last,
                     exists,
+                    bookmarked: false,
                 }
             })
             .collect();

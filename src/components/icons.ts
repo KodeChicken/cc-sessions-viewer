@@ -8,6 +8,7 @@ import IconPinDownRaw from '~icons/lucide/arrow-down-to-line'
 import IconTrashRaw from '~icons/lucide/trash-2'
 import IconTrashOpenRaw from '~icons/quill/folder-trash'
 import IconRestoreRaw from '~icons/lucide/archive-restore'
+import IconDeleteLineRaw from '~icons/mingcute/delete-line'
 import IconSettingsRaw from '~icons/lucide/settings'
 import IconPlayRaw from '~icons/lucide/play'
 import IconChatRaw from '~icons/lucide/message-circle'
@@ -57,6 +58,7 @@ import IconActivityRaw from '~icons/lucide/activity'
 import IconLayersRaw from '~icons/lucide/layers'
 import IconZapRaw from '~icons/lucide/zap'
 import IconExternalLinkRaw from '~icons/lucide/external-link'
+import IconLocateRaw from '~icons/lucide/locate'
 import IconArchiveRaw from '~icons/lucide/archive'
 import IconShieldCheckRaw from '~icons/lucide/shield-check'
 import IconTerminalRaw from '~icons/lucide/terminal'
@@ -68,6 +70,7 @@ export const IconPinDown = IconPinDownRaw
 export const IconTrash = IconTrashRaw
 export const IconTrashOpen = IconTrashOpenRaw
 export const IconRestore = IconRestoreRaw
+export const IconDeleteLine = IconDeleteLineRaw
 export const IconSettings = IconSettingsRaw
 export const IconPlay = IconPlayRaw
 export const IconChat = IconChatRaw
@@ -117,6 +120,7 @@ export const IconActivity = IconActivityRaw
 export const IconLayers = IconLayersRaw
 export const IconZap = IconZapRaw
 export const IconExternalLink = IconExternalLinkRaw
+export const IconLocate = IconLocateRaw
 export const IconArchive = IconArchiveRaw
 export const IconShieldCheck = IconShieldCheckRaw
 export const IconTerminal = IconTerminalRaw
@@ -181,6 +185,89 @@ const IconCodexRaw = defineComponent({
       )
   },
 })
+
+// Terminal app brand icons for the external terminal picker.
+const IconTerminalAppRaw = defineComponent({
+  name: 'IconTerminalApp',
+  setup() {
+    return () =>
+      h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', class: 'iconify' }, [
+        h('rect', { x: 2, y: 4, width: 20, height: 16, rx: 2 }),
+        h('path', { d: 'M7 9l3 3-3 3' }),
+        h('path', { d: 'M13 15h4' }),
+      ])
+  },
+})
+const IconITerm2Raw = defineComponent({
+  name: 'IconITerm2',
+  setup() {
+    return () =>
+      h('svg', { viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': 'true', class: 'iconify' }, [
+        h('rect', { x: 2, y: 3, width: 20, height: 18, rx: 3, fill: '#1d1d1f' }),
+        h('text', { x: 12, y: 16.5, 'text-anchor': 'middle', 'font-size': '13', 'font-weight': 'bold', 'font-family': 'monospace', fill: '#34c759' }, '$_'),
+      ])
+  },
+})
+const IconGhosttyRaw = defineComponent({
+  name: 'IconGhostty',
+  setup() {
+    return () =>
+      h('svg', { viewBox: '0 0 26.73 32', fill: 'none', 'aria-hidden': 'true', class: 'iconify' }, [
+        h('path', { d: 'M20.4 32c-1.25 0-2.48-.38-3.52-1.07a6.73 6.73 0 01-3.52 1.07 6.73 6.73 0 01-3.52-1.07A6.73 6.73 0 016.37 32h-.04a6.36 6.36 0 01-4.5-1.91A6.37 6.37 0 010 25.61V13.36C0 5.99 5.99 0 13.36 0s13.36 5.99 13.36 13.36v12.25a6.35 6.35 0 01-5.98 6.38 6 6 0 01-.35 0z', fill: '#3551F3' }),
+        h('path', { d: 'M23.91 13.36v12.25c0 1.88-1.45 3.46-3.32 3.57a3.78 3.78 0 01-2.4-.77 2.82 2.82 0 00-2.66.02c-.6.47-1.35.75-2.18.75s-1.58-.28-2.17-.75a2.82 2.82 0 00-2.68 0c-.59.47-1.34.75-2.15.75-1.95.01-3.54-1.63-3.54-3.57V13.36c0-5.83 4.72-10.55 10.55-10.55s10.55 4.72 10.55 10.55z', fill: 'var(--surface, #fff)' }),
+        h('path', { d: 'M11.28 12.44l-3.93-2.27a.82.82 0 00-1.12.39.82.82 0 00.39 1.12l2.33 1.34-2.33 1.34a.82.82 0 00-.39 1.12.82.82 0 001.12.39l3.93-2.27c.71-.41.71-1.44 0-1.85z', fill: 'var(--text, #000)' }),
+        h('path', { d: 'M20.18 12.29h-5.16a.72.72 0 00-.72.72c0 .39.32.72.72.72h5.16c.4 0 .72-.32.72-.72s-.32-.72-.72-.72z', fill: 'var(--text, #000)' }),
+      ])
+  },
+})
+import cmuxIconLight from '../assets/cmux-icon-light.png'
+import cmuxIconDark from '../assets/cmux-icon-dark.png'
+const IconCmuxRaw = defineComponent({
+  name: 'IconCmux',
+  setup() {
+    return () => {
+      const isDark = document.documentElement.classList.contains('theme-dark')
+        || document.documentElement.classList.contains('theme-dracula')
+      return h('img', {
+        src: isDark ? cmuxIconLight : cmuxIconDark,
+        'aria-hidden': 'true',
+        class: 'iconify',
+        style: 'width:1em;height:1em;border-radius:3px',
+      })
+    }
+  },
+})
+const IconWarpRaw = defineComponent({
+  name: 'IconWarp',
+  setup() {
+    return () =>
+      h('svg', { viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': 'true', class: 'iconify' }, [
+        h('defs', null, [
+          h('linearGradient', { id: 'warpGrad', x1: '0', y1: '0', x2: '1', y2: '1' }, [
+            h('stop', { offset: '0', 'stop-color': '#01C1E4' }),
+            h('stop', { offset: '1', 'stop-color': '#7F5AF0' }),
+          ]),
+        ]),
+        h('rect', { x: 2, y: 2, width: 20, height: 20, rx: 5, fill: 'url(#warpGrad)' }),
+        h('path', { d: 'M8 7l5 5-5 5', stroke: '#fff', 'stroke-width': '2.2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', fill: 'none' }),
+        h('path', { d: 'M13 15h4', stroke: '#fff', 'stroke-width': '2.2', 'stroke-linecap': 'round' }),
+      ])
+  },
+})
+export const IconTerminalApp = IconTerminalAppRaw
+export const IconITerm2 = IconITerm2Raw
+export const IconGhostty = IconGhosttyRaw
+export const IconCmux = IconCmuxRaw
+export const IconWarp = IconWarpRaw
+
+import type { TerminalApp } from '../settings'
+export const terminalIcons: Record<TerminalApp, Component> = {
+  terminal: IconTerminalAppRaw,
+  iterm2: IconITerm2Raw,
+  ghostty: IconGhosttyRaw,
+  cmux: IconCmuxRaw,
+  warp: IconWarpRaw,
+}
 
 // Brand marks for the two agents, pulled from iconify at build time so
 // runtime stays offline-friendly. Sources: `material-icon-theme:claude`,

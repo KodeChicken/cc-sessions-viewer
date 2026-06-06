@@ -20,6 +20,9 @@ pub struct ProjectInfo {
     pub last_modified: u64,
     /// 项目目录当前是否仍存在于磁盘上。
     pub exists: bool,
+    /// 是否为用户手动添加的书签目录。
+    #[serde(default)]
+    pub bookmarked: bool,
 }
 
 #[derive(Serialize)]

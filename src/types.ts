@@ -7,6 +7,7 @@ export interface ProjectInfo {
   lastModified: number
   /** 项目目录当前是否仍存在于磁盘上 */
   exists: boolean
+  bookmarked?: boolean
 }
 
 export interface SessionMeta {

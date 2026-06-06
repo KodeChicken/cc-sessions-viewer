@@ -10,10 +10,16 @@ import {
   setLang,
   setTheme,
   setUseExternalTerminal,
+  setTerminalApp,
+  applyTerminalDefault,
+  launchArgs,
+  setLaunchArgs,
   theme,
   useExternalTerminal,
+  terminalApp,
   type Lang,
   type Theme,
+  type TerminalApp,
 } from '../settings'
 import { formatSize } from '../format'
 import {
@@ -27,6 +33,8 @@ import {
   IconExternalLink,
   IconCheck,
   IconChevronDown,
+  agentIcons,
+  terminalIcons,
 } from './icons'
 import * as api from '../api'
 import {
@@ -36,7 +44,25 @@ import {
   updateAvailable,
 } from '../updateCheck'
 
-type SettingsTab = 'general' | 'advanced'
+type SettingsTab = 'general' | 'advanced' | 'shortcuts'
+
+const isMac = /Mac/i.test(navigator.platform)
+const mod = isMac ? '⌘' : 'Ctrl'
+const shift = isMac ? '⇧' : 'Shift'
+const sep = isMac ? '' : '+'
+const k = (parts: string[]) => parts.join(sep)
+const shortcuts = [
+  { key: k([mod, shift, 'F']), label: 'settings.shortcut.globalSearch' },
+  { key: k([mod, 'F']), label: 'settings.shortcut.findInSession' },
+  { key: k([mod, 'G']), label: 'settings.shortcut.findNext' },
+  { key: k([mod, shift, 'G']), label: 'settings.shortcut.findPrev' },
+  { key: k([mod, 'N']), label: 'settings.shortcut.newSession' },
+  { key: k([mod, 'E']), label: 'settings.shortcut.exportSession' },
+  { key: k([mod, 'B']), label: 'settings.shortcut.toggleSidebar' },
+  { key: k([mod, shift, 'S']), label: 'settings.shortcut.stats' },
+  { key: k([mod, ',']), label: 'settings.shortcut.settings' },
+  { key: 'Esc', label: 'settings.shortcut.escape' },
+]
 
 const props = defineProps<{ cacheBytes: number }>()
 const emit = defineEmits<{ close: []; clearCache: [] }>()
@@ -54,8 +80,30 @@ const checking = ref(false)
 // custom dropdown state
 const langMenuOpen = ref(false)
 const themeMenuOpen = ref(false)
+const terminalMenuOpen = ref(false)
 const langWrapEl = ref<HTMLElement>()
 const themeWrapEl = ref<HTMLElement>()
+const terminalWrapEl = ref<HTMLElement>()
+
+const isMacOS = /Mac/i.test(navigator.platform)
+const availableTerminals = ref<string[]>([])
+type TermOpt = { v: TerminalApp; key: string }
+const terminalOptions = computed<TermOpt[]>(() => {
+  const base: TermOpt[] = [{ v: 'terminal', key: 'settings.terminalApp.terminal' }]
+  if (availableTerminals.value.includes('cmux'))
+    base.push({ v: 'cmux', key: 'settings.terminalApp.cmux' })
+  if (availableTerminals.value.includes('iterm2'))
+    base.push({ v: 'iterm2', key: 'settings.terminalApp.iterm2' })
+  if (availableTerminals.value.includes('ghostty'))
+    base.push({ v: 'ghostty', key: 'settings.terminalApp.ghostty' })
+  if (availableTerminals.value.includes('warp'))
+    base.push({ v: 'warp', key: 'settings.terminalApp.warp' })
+  return base
+})
+const currentTerminalLabel = computed(() => {
+  const o = terminalOptions.value.find(o => o.v === terminalApp.value)
+  return o ? t(o.key) : terminalApp.value
+})
 
 function pickLang(v: Lang) {
   setLang(v)
@@ -65,11 +113,17 @@ function pickTheme(v: Theme) {
   setTheme(v)
   themeMenuOpen.value = false
 }
+function pickTerminal(v: TerminalApp) {
+  setTerminalApp(v)
+  terminalMenuOpen.value = false
+}
 function onDocClick(e: MouseEvent) {
   if (langMenuOpen.value && langWrapEl.value && !langWrapEl.value.contains(e.target as Node))
     langMenuOpen.value = false
   if (themeMenuOpen.value && themeWrapEl.value && !themeWrapEl.value.contains(e.target as Node))
     themeMenuOpen.value = false
+  if (terminalMenuOpen.value && terminalWrapEl.value && !terminalWrapEl.value.contains(e.target as Node))
+    terminalMenuOpen.value = false
 }
 onMounted(() => document.addEventListener('click', onDocClick, true))
 onUnmounted(() => document.removeEventListener('click', onDocClick, true))
@@ -79,6 +133,15 @@ onMounted(async () => {
     version.value = await api.appVersion()
   } catch {
     /* ignore */
+  }
+  if (isMacOS) {
+    try {
+      const detected = await api.detectTerminals()
+      availableTerminals.value = detected
+      applyTerminalDefault(detected)
+    } catch {
+      /* ignore */
+    }
   }
   if (updateAvailable.value && latestVersion.value) {
     updateMsg.value = t('settings.updateAvailable', {
@@ -156,6 +219,12 @@ async function doCheck() {
           @click="activeTab = 'advanced'"
         >
           {{ t('settings.tab.advanced') }}
+        </button>
+        <button
+          :class="{ active: activeTab === 'shortcuts' }"
+          @click="activeTab = 'shortcuts'"
+        >
+          {{ t('settings.tab.shortcuts') }}
         </button>
       </div>
 
@@ -235,7 +304,7 @@ async function doCheck() {
             <p class="set-section-desc">{{ t('settings.clearCacheDesc') }}</p>
             <button
               class="btn danger"
-              :disabled="cacheBytes === 0"
+              :disabled="false"
               @click="emit('clearCache')"
             >
               {{ t('settings.clearCache') }}
@@ -267,7 +336,7 @@ async function doCheck() {
           </section>
         </template>
 
-        <template v-else>
+        <template v-else-if="activeTab === 'advanced'">
           <!-- 终端 -->
           <section class="set-section">
             <header class="set-section-head">
@@ -281,6 +350,56 @@ async function doCheck() {
               </span>
             </label>
             <p class="set-section-desc set-toggle-hint">{{ t('settings.terminalDesc') }}</p>
+
+            <div v-if="useExternalTerminal && isMacOS && terminalOptions.length > 1" class="set-terminal-app-row">
+              <span class="set-toggle-label">{{ t('settings.terminalApp.label') }}</span>
+              <div ref="terminalWrapEl" class="set-dropdown-wrap">
+                <button
+                  class="set-dropdown-btn"
+                  :class="{ active: terminalMenuOpen }"
+                  @click.stop="terminalMenuOpen = !terminalMenuOpen; langMenuOpen = false; themeMenuOpen = false"
+                >
+                  <component :is="terminalIcons[terminalApp]" class="set-terminal-icon" />
+                  <span>{{ currentTerminalLabel }}</span>
+                  <IconChevronDown class="set-dropdown-chev" />
+                </button>
+                <div v-if="terminalMenuOpen" class="set-dropdown-menu" role="menu">
+                  <button
+                    v-for="o in terminalOptions"
+                    :key="o.v"
+                    class="set-dropdown-item"
+                    :class="{ active: terminalApp === o.v }"
+                    role="menuitem"
+                    @click.stop="pickTerminal(o.v)"
+                  >
+                    <span class="set-dropdown-check"><IconCheck v-if="terminalApp === o.v" /></span>
+                    <component :is="terminalIcons[o.v]" class="set-terminal-icon" />
+                    <span>{{ t(o.key) }}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="set-launch-args">
+              <label class="set-launch-args-label">{{ t('settings.launchArgs') }}</label>
+              <p class="set-section-desc set-toggle-hint">{{ t('settings.launchArgsDesc') }}</p>
+              <div class="set-launch-args-row" v-for="a in (['claude', 'codex', 'gemini'] as const)" :key="a">
+                <component :is="agentIcons[a]" class="set-launch-args-icon" />
+                <input
+                  class="set-launch-args-input"
+                  :value="launchArgs[a]"
+                  @input="setLaunchArgs(a, ($event.target as HTMLInputElement).value)"
+                  :placeholder="{ claude: '--dangerously-skip-permissions', codex: '--yolo', gemini: '--yolo' }[a]"
+                  spellcheck="false"
+                />
+                <button
+                  v-if="!launchArgs[a]"
+                  class="set-launch-args-fill"
+                  v-tooltip="t('settings.launchArgsFill')"
+                  @click="setLaunchArgs(a, { claude: '--dangerously-skip-permissions', codex: '--yolo', gemini: '--yolo' }[a])"
+                >↵</button>
+              </div>
+            </div>
           </section>
 
           <!-- Codex -->
@@ -302,6 +421,15 @@ async function doCheck() {
             </label>
             <p class="set-section-desc set-toggle-hint">{{ t('settings.codexVisibilityDesc') }}</p>
           </section>
+        </template>
+
+        <template v-else>
+          <div class="set-shortcuts">
+            <div class="set-shortcut-row" v-for="s in shortcuts" :key="s.key">
+              <span class="set-shortcut-label">{{ t(s.label) }}</span>
+              <kbd class="set-shortcut-key">{{ s.key }}</kbd>
+            </div>
+          </div>
         </template>
       </div>
     </div>

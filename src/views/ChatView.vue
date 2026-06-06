@@ -36,6 +36,7 @@ import {
   IconChart,
   IconFold,
   IconUnfold,
+  IconLocate,
   agentIcons,
 } from '../components/icons'
 
@@ -624,11 +625,75 @@ const exportMenuEl = ref<HTMLElement>()
 function toggleExportMenu(e: Event) {
   e.stopPropagation()
   exportMenuOpen.value = !exportMenuOpen.value
+  locateMenuOpen.value = false
 }
-function onDocClick(e: MouseEvent) {
-  if (!exportMenuOpen.value) return
-  if (exportMenuEl.value && exportMenuEl.value.contains(e.target as Node)) return
+
+// ---- 定位下拉：列出所有用户提问，点击跳转到对应消息。
+const locateMenuOpen = ref(false)
+const locateMenuEl = ref<HTMLElement>()
+const locateFilter = ref('')
+const locateInputEl = ref<HTMLInputElement>()
+interface PromptEntry {
+  idx: number
+  seq: number
+  uuid?: string
+  text: string
+  time: string
+}
+const promptEntries = computed<PromptEntry[]>(() => {
+  const entries: PromptEntry[] = []
+  for (let i = 0; i < props.messages.length; i++) {
+    const m = props.messages[i]
+    if (m.role !== 'user' || isToolOnly(m) || isCaveatOnlyMsg(m) || systemEventLabel(m)) continue
+    const textBlock = m.blocks.find((b) => b.kind === 'text' && b.text)
+    const raw = textBlock?.text ?? ''
+    const plain = raw.replace(/<[^>]*>/g, '').trim()
+    const text = plain.length > 80 ? plain.slice(0, 80) + '…' : plain || `#${entries.length + 1}`
+    entries.push({ idx: i, seq: entries.length + 1, uuid: m.uuid, text, time: formatTime(m.timestamp) })
+  }
+  return entries
+})
+const filteredPromptEntries = computed(() => {
+  const q = locateFilter.value.trim().toLowerCase()
+  if (!q) return promptEntries.value
+  return promptEntries.value.filter((e) => e.text.toLowerCase().includes(q))
+})
+function toggleLocateMenu(e: Event) {
+  e.stopPropagation()
+  locateMenuOpen.value = !locateMenuOpen.value
   exportMenuOpen.value = false
+  if (locateMenuOpen.value) {
+    locateFilter.value = ''
+    nextTick(() => locateInputEl.value?.focus())
+  }
+}
+function jumpToPrompt(entry: PromptEntry) {
+  locateMenuOpen.value = false
+  flashMessage(entry.idx, entry.uuid)
+}
+function highlightLocateText(text: string): string {
+  const q = locateFilter.value.trim()
+  if (!q) return escapeHtml(text)
+  const escaped = escapeHtml(text)
+  const qEscaped = escapeHtml(q)
+  const re = new RegExp(`(${qEscaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
+  return escaped.replace(re, '<mark class="locate-hl">$1</mark>')
+}
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+function onDocClick(e: MouseEvent) {
+  if (exportMenuOpen.value) {
+    if (!(exportMenuEl.value && exportMenuEl.value.contains(e.target as Node))) {
+      exportMenuOpen.value = false
+    }
+  }
+  if (locateMenuOpen.value) {
+    if (!(locateMenuEl.value && locateMenuEl.value.contains(e.target as Node))) {
+      locateMenuOpen.value = false
+    }
+  }
 }
 </script>
 
@@ -689,6 +754,43 @@ function onDocClick(e: MouseEvent) {
     >
       <IconChart />
     </button>
+    <div ref="locateMenuEl" class="locate-menu-wrap">
+      <button
+        class="icon-btn"
+        :class="{ active: locateMenuOpen }"
+        v-tooltip="t('chat.tb.locate')"
+        @click="toggleLocateMenu"
+      >
+        <IconLocate />
+      </button>
+      <div v-if="locateMenuOpen" class="locate-menu" role="menu">
+        <div class="locate-menu-search">
+          <input
+            ref="locateInputEl"
+            v-model="locateFilter"
+            class="locate-search-input"
+            :placeholder="t('chat.tb.locate.placeholder')"
+            @keydown.escape.stop="locateMenuOpen = false"
+          />
+        </div>
+        <div class="locate-menu-list">
+          <button
+            v-for="entry in filteredPromptEntries"
+            :key="entry.idx"
+            class="locate-menu-item"
+            role="menuitem"
+            @click="jumpToPrompt(entry)"
+          >
+            <span class="locate-item-idx">#{{ entry.seq }}</span>
+            <span class="locate-item-text" v-html="highlightLocateText(entry.text)"></span>
+            <span class="locate-item-time">{{ entry.time }}</span>
+          </button>
+          <div v-if="!filteredPromptEntries.length" class="locate-menu-empty">
+            {{ t('chat.empty') }}
+          </div>
+        </div>
+      </div>
+    </div>
     <button
       class="icon-btn"
       v-tooltip="

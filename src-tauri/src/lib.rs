@@ -13,6 +13,7 @@
 // an external consumer of the lib crate) can call into the dedup pipeline
 // directly. Everything else stays crate-private.
 pub mod agents;
+mod bookmarks;
 mod menu;
 mod pty;
 pub mod stats;
@@ -43,7 +44,29 @@ fn list_projects(
     include_codex_internal: bool,
     include_codex_archived: bool,
 ) -> Result<Vec<ProjectInfo>, String> {
-    agents::source(&agent)?.list_projects(include_codex_internal, include_codex_archived)
+    let mut out = agents::source(&agent)?.list_projects(include_codex_internal, include_codex_archived)?;
+    let bm = bookmarks::load(&agent);
+    for bp in bm {
+        if out.iter().any(|p| p.display_path == bp) {
+            continue;
+        }
+        let bp_path = Path::new(&bp);
+        let exists = bp_path.is_dir();
+        let (count, last) = if exists {
+            bookmarks::count_sessions(bp_path)
+        } else {
+            (0, 0)
+        };
+        out.push(ProjectInfo {
+            dir_name: format!("bookmark:{bp}"),
+            display_path: bp,
+            session_count: count,
+            last_modified: last,
+            exists,
+            bookmarked: true,
+        });
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -55,6 +78,9 @@ fn list_sessions(
     include_codex_internal: bool,
     include_codex_archived: bool,
 ) -> Result<SessionPage, String> {
+    if let Some(bm_path) = project_key.strip_prefix("bookmark:") {
+        return bookmarks::list_sessions_in_dir(bm_path, offset, limit);
+    }
     agents::source(&agent)?.list_sessions(
         &project_key,
         offset,
@@ -201,6 +227,7 @@ fn pty_spawn(
     path: String,
     cols: u16,
     rows: u16,
+    extra_args: String,
 ) -> Result<u64, String> {
     if !Path::new(&cwd).is_dir() {
         return Err("项目目录已不存在，无法恢复".to_string());
@@ -212,7 +239,8 @@ fn pty_spawn(
     {
         return Err("会话 ID 非法".to_string());
     }
-    let cli = agents::source(&agent)?.resume_cli(&session_id, &path);
+    let mut cli = agents::source(&agent)?.resume_cli(&session_id, &path);
+    append_extra_args(&mut cli, &extra_args);
     pty::spawn(app, cwd, cli, cols, rows)
 }
 
@@ -224,11 +252,13 @@ fn pty_spawn_new(
     cwd: String,
     cols: u16,
     rows: u16,
+    extra_args: String,
 ) -> Result<u64, String> {
     if !Path::new(&cwd).is_dir() {
         return Err("项目目录已不存在，无法创建会话".to_string());
     }
-    let cli = agents::source(&agent)?.new_session_cli();
+    let mut cli = agents::source(&agent)?.new_session_cli();
+    append_extra_args(&mut cli, &extra_args);
     pty::spawn(app, cwd, cli, cols, rows)
 }
 
@@ -254,6 +284,8 @@ fn resume_session(
     session_id: String,
     cwd: String,
     path: String,
+    extra_args: String,
+    terminal_app: String,
 ) -> Result<(), String> {
     if !Path::new(&cwd).is_dir() {
         return Err("项目目录已不存在，无法恢复".to_string());
@@ -266,33 +298,277 @@ fn resume_session(
     {
         return Err("会话 ID 非法".to_string());
     }
-    let cli = agents::source(&agent)?.resume_cli(&session_id, &path);
-    spawn_terminal(&cli, &cwd)
+    let mut cli = agents::source(&agent)?.resume_cli(&session_id, &path);
+    append_extra_args(&mut cli, &extra_args);
+    spawn_terminal(&cli, &cwd, &terminal_app)
 }
 
 /// 在终端里为某个项目目录开一个全新会话（不带 --resume）。
 #[tauri::command]
-fn new_session(agent: String, cwd: String) -> Result<(), String> {
+fn new_session(agent: String, cwd: String, extra_args: String, terminal_app: String) -> Result<(), String> {
     if !Path::new(&cwd).is_dir() {
         return Err("项目目录已不存在，无法创建会话".to_string());
     }
-    let cli = agents::source(&agent)?.new_session_cli();
-    spawn_terminal(&cli, &cwd)
+    let mut cli = agents::source(&agent)?.new_session_cli();
+    append_extra_args(&mut cli, &extra_args);
+    spawn_terminal(&cli, &cwd, &terminal_app)
 }
 
-fn spawn_terminal(cli: &str, cwd: &str) -> Result<(), String> {
+fn append_extra_args(cli: &mut String, extra: &str) {
+    let trimmed = extra.trim();
+    if !trimmed.is_empty() {
+        cli.push(' ');
+        cli.push_str(trimmed);
+    }
+}
+
+fn spawn_terminal(cli: &str, cwd: &str, terminal_app: &str) -> Result<(), String> {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    static LAST_SPAWN: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+    {
+        let mut last = LAST_SPAWN.lock().unwrap();
+        if let Some((ref prev_cwd, t)) = *last {
+            if prev_cwd == cwd && t.elapsed().as_millis() < 2000 {
+                return Ok(());
+            }
+        }
+        *last = Some((cwd.to_string(), Instant::now()));
+    }
+
     #[cfg(target_os = "macos")]
     {
         let cwd_quoted = cwd.replace('\'', "'\\''");
         let shell_cmd = format!("cd '{cwd_quoted}' && {cli}");
-        let as_arg = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
-        let script =
-            format!("tell application \"Terminal\"\nactivate\ndo script \"{as_arg}\"\nend tell");
-        std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
-            .spawn()
-            .map_err(|e| format!("启动终端失败: {e}"))?;
+
+        match terminal_app {
+            "iterm2" => {
+                let as_arg = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
+                let script = format!(
+                    "set wasRunning to false\n\
+                     tell application \"System Events\"\n\
+                       set wasRunning to (exists process \"iTerm2\")\n\
+                     end tell\n\
+                     tell application \"iTerm\"\n\
+                     activate\n\
+                     end tell\n\
+                     if not wasRunning then\n\
+                       delay 0.5\n\
+                       tell application \"iTerm\"\n\
+                         tell current session of current window to write text \"{as_arg}\"\n\
+                       end tell\n\
+                     else\n\
+                       tell application \"iTerm\"\n\
+                         tell current window to create tab with default profile\n\
+                         tell current session of current window to write text \"{as_arg}\"\n\
+                       end tell\n\
+                     end if"
+                );
+                std::process::Command::new("osascript")
+                    .arg("-e")
+                    .arg(&script)
+                    .spawn()
+                    .map_err(|e| format!("启动 iTerm2 失败: {e}"))?;
+            }
+            // TODO: Ghostty macOS 没有窗口管理 API，无法按 cwd 复用已有窗口，
+            // 每次都会开新实例。等 Ghostty 支持 IPC 后再实现窗口复用。
+            "ghostty" => {
+                std::process::Command::new("open")
+                    .args([
+                        "-na",
+                        "Ghostty.app",
+                        "--args",
+                        &format!("--working-directory={cwd}"),
+                        "-e",
+                        "bash",
+                        "-lc",
+                    ])
+                    .arg(cli)
+                    .spawn()
+                    .map_err(|e| format!("启动 Ghostty 失败: {e}"))?;
+            }
+            "cmux" => {
+                let found_ref = std::process::Command::new("cmux")
+                    .args(["workspace", "list", "--json"])
+                    .env("CMUX_QUIET", "1")
+                    .output()
+                    .ok()
+                    .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+                    .and_then(|json| {
+                        json["workspaces"].as_array()?.iter()
+                            .find(|w| w["current_directory"].as_str() == Some(cwd))
+                            .and_then(|w| w["ref"].as_str().map(String::from))
+                    });
+
+                if let Some(ws_ref) = found_ref {
+                    // 从 cli 提取会话 ID（UUID-like token）用于去重
+                    let session_id = cli.split_whitespace().find(|s| {
+                        s.len() > 8 && s.contains('-')
+                            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                    });
+
+                    // 检查 workspace 里是否已有运行这个会话的 surface
+                    let existing_surface = session_id.and_then(|sid| {
+                        let o = std::process::Command::new("cmux")
+                            .args(["rpc", "surface.list", &format!("{{\"workspace_id\":\"{ws_ref}\"}}")])
+                            .output()
+                            .ok()?;
+                        let json: serde_json::Value = serde_json::from_slice(&o.stdout).ok()?;
+                        json["surfaces"].as_array()?.iter().find_map(|s| {
+                            let title = s["title"].as_str().unwrap_or("");
+                            let checkpoint = s["resume_binding"]["checkpoint_id"].as_str().unwrap_or("");
+                            let cmd = s["resume_binding"]["command"].as_str().unwrap_or("");
+                            if title.contains(sid) || checkpoint == sid || cmd.contains(sid) {
+                                Some((
+                                    s["pane_ref"].as_str()?.to_string(),
+                                    s["ref"].as_str()?.to_string(),
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                    });
+
+                    if let Some((_pane_ref, surface_ref)) = existing_surface {
+                        let _ = std::process::Command::new("cmux")
+                            .args(["workspace", "select", &ws_ref])
+                            .output();
+                        let _ = std::process::Command::new("cmux")
+                            .args([
+                                "rpc",
+                                "surface.focus",
+                                &format!("{{\"workspace_id\":\"{ws_ref}\",\"surface_id\":\"{surface_ref}\"}}"),
+                            ])
+                            .output();
+                        let _ = std::process::Command::new("cmux")
+                            .args(["trigger-flash", "--workspace", &ws_ref, "--surface", &surface_ref])
+                            .spawn();
+                    } else {
+                        // 新开 split
+                        let _ = std::process::Command::new("cmux")
+                            .args(["workspace", "select", &ws_ref])
+                            .output();
+
+                        let split_dir = std::process::Command::new("cmux")
+                            .args(["rpc", "pane.list", &format!("{{\"workspace_id\":\"{ws_ref}\"}}")])
+                            .output()
+                            .ok()
+                            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+                            .and_then(|json| {
+                                let pane = json["panes"].as_array()?.iter()
+                                    .find(|p| p["focused"].as_bool() == Some(true))?;
+                                let w = pane["pixel_frame"]["width"].as_f64()?;
+                                let h = pane["pixel_frame"]["height"].as_f64()?;
+                                Some(if w >= h { "right" } else { "down" })
+                            })
+                            .unwrap_or("down");
+
+                        let _ = std::process::Command::new("cmux")
+                            .args(["new-split", split_dir, "--workspace", &ws_ref, "--focus", "true"])
+                            .output();
+                        let _ = std::process::Command::new("cmux")
+                            .args(["send", "--workspace", &ws_ref, cli])
+                            .output();
+                        std::process::Command::new("cmux")
+                            .args(["send-key", "--workspace", &ws_ref, "enter"])
+                            .spawn()
+                            .map_err(|e| format!("启动 cmux 失败: {e}"))?;
+                    }
+                } else {
+                    let ws_name = Path::new(cwd)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let mut args = vec![
+                        "new-workspace",
+                        "--cwd",
+                        cwd,
+                        "--command",
+                        cli,
+                        "--focus",
+                        "true",
+                    ];
+                    if !ws_name.is_empty() {
+                        args.push("--name");
+                        args.push(&ws_name);
+                    }
+                    std::process::Command::new("cmux")
+                        .args(&args)
+                        .spawn()
+                        .map_err(|e| format!("启动 cmux 失败: {e}"))?;
+                }
+            }
+            "warp" => {
+                let tab_name = Path::new(cwd)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let titled_cmd = format!("printf '\\033]0;{tab_name}\\007'; {shell_cmd}");
+                let as_arg = titled_cmd.replace('\\', "\\\\").replace('"', "\\\"");
+                let script = format!(
+                    "set the clipboard to \"{as_arg}\"\n\
+                     tell application \"Warp\"\n\
+                     activate\n\
+                     end tell\n\
+                     delay 0.3\n\
+                     tell application \"System Events\"\n\
+                     tell process \"Warp\"\n\
+                       keystroke \"t\" using command down\n\
+                     end tell\n\
+                     end tell\n\
+                     delay 0.3\n\
+                     tell application \"System Events\"\n\
+                     tell process \"Warp\"\n\
+                       key code 53\n\
+                     end tell\n\
+                     end tell\n\
+                     delay 0.3\n\
+                     tell application \"System Events\"\n\
+                     tell process \"Warp\"\n\
+                       keystroke \"v\" using command down\n\
+                     end tell\n\
+                     end tell\n\
+                     delay 0.5\n\
+                     tell application \"System Events\"\n\
+                     tell process \"Warp\"\n\
+                       key code 36\n\
+                     end tell\n\
+                     end tell"
+                );
+                std::process::Command::new("osascript")
+                    .arg("-e")
+                    .arg(&script)
+                    .spawn()
+                    .map_err(|e| format!("启动 Warp 失败: {e}"))?;
+            }
+            _ => {
+                let as_arg = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
+                let script = format!(
+                    "set wasRunning to false\n\
+                     tell application \"System Events\"\n\
+                       set wasRunning to (exists process \"Terminal\")\n\
+                     end tell\n\
+                     tell application \"Terminal\"\n\
+                     activate\n\
+                     end tell\n\
+                     if not wasRunning then\n\
+                       delay 0.3\n\
+                       tell application \"Terminal\"\n\
+                         do script \"{as_arg}\" in front window\n\
+                       end tell\n\
+                     else\n\
+                       tell application \"Terminal\"\n\
+                         do script \"{as_arg}\"\n\
+                       end tell\n\
+                     end if"
+                );
+                std::process::Command::new("osascript")
+                    .arg("-e")
+                    .arg(&script)
+                    .spawn()
+                    .map_err(|e| format!("启动终端失败: {e}"))?;
+            }
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -343,6 +619,46 @@ fn spawn_terminal(cli: &str, cwd: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// 检测 macOS 上已安装的外部终端应用。返回可用终端 key 列表（不含 terminal —— 那个始终可用）。
+#[tauri::command]
+fn detect_terminals() -> Vec<String> {
+    let mut found = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        if Path::new("/Applications/iTerm.app").exists() {
+            found.push("iterm2".to_string());
+        }
+        if Path::new("/Applications/Ghostty.app").exists() {
+            found.push("ghostty".to_string());
+        }
+        if std::process::Command::new("which")
+            .arg("cmux")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            found.push("cmux".to_string());
+        }
+        if Path::new("/Applications/Warp.app").exists() {
+            found.push("warp".to_string());
+        }
+    }
+    found
+}
+
+#[tauri::command]
+fn add_bookmark(agent: String, path: String) -> Result<(), String> {
+    if !Path::new(&path).is_dir() {
+        return Err("目录不存在".to_string());
+    }
+    bookmarks::add(&agent, &path)
+}
+
+#[tauri::command]
+fn remove_bookmark(agent: String, path: String) -> Result<(), String> {
+    bookmarks::remove(&agent, &path)
 }
 
 #[tauri::command]
@@ -534,6 +850,7 @@ pub fn run() {
             empty_trash,
             resume_session,
             new_session,
+            detect_terminals,
             pty_spawn,
             pty_spawn_new,
             pty_write,
@@ -542,6 +859,8 @@ pub fn run() {
             reveal_in_finder,
             open_url,
             write_file,
+            add_bookmark,
+            remove_bookmark,
             app_version,
             refresh_pricing,
             pricing_status,

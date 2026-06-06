@@ -5,6 +5,7 @@ import { formatSize, formatTime, highlightSegments, shortName } from '../format'
 import { t } from '../i18n'
 import {
   IconTrashOpen,
+  IconDeleteLine,
   IconTrash,
   IconRestore,
   IconInbox,
@@ -35,6 +36,7 @@ const emit = defineEmits<{
   (e: 'permanent-delete', item: TrashItem): void
   /** 批量恢复：原本由 TrashTopbar 触发，现已挪到 list-head 顶栏里。 */
   (e: 'batch-restore'): void
+  (e: 'batch-permanent-delete'): void
 }>()
 
 // 搜索 / 项目筛选 / 时间排序后的可见列表 —— 工具栏状态来自 trashToolbar 模块。
@@ -157,6 +159,14 @@ onUnmounted(() => clearTimeout(scrollIdle))
           @click="emit('batch-restore')"
         >
           <IconRestore />
+        </button>
+        <button
+          class="icon-btn danger"
+          :disabled="headSelectedCount === 0"
+          v-tooltip="t('trash.tb.deleteSelected')"
+          @click="emit('batch-permanent-delete')"
+        >
+          <IconDeleteLine />
         </button>
       </template>
       <template v-else>

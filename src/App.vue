@@ -13,6 +13,9 @@ import {
   setTheme,
   theme,
   useExternalTerminal,
+  launchArgs,
+  terminalApp,
+  applyTerminalDefault,
 } from './settings'
 import { focusSearchBox, navigate as chatNavigate, resetChatToolbar } from './chatToolbar'
 import { emitMenuSync, installMenuRouter } from './menu'
@@ -65,6 +68,10 @@ import {
   openOrFocusTui,
   setActive as setActiveTui,
   activeTab as currentActiveTab,
+  closeTabsByProject,
+  closeTabBySessionPath,
+  reconcileNewTabs,
+  migrateTabsProjectKey,
 } from './terminals'
 
 // ---------- 状态 ----------
@@ -309,6 +316,12 @@ function ctxDeleteProject() {
   if (!p) return
   deleteProject(p)
 }
+function ctxRemoveBookmark() {
+  const p = ctxMenu.value?.project
+  closeCtxMenu()
+  if (!p) return
+  removeBookmark(p)
+}
 
 // 删除当前打开的项目 —— SessionsView 顶部操作区的删除按钮。
 function deleteActiveProject() {
@@ -328,26 +341,46 @@ function deleteProject(p: ProjectInfo) {
       // 在该项目从侧边栏移除前抓取起点，触发飞向回收站的弧线动画
       const srcRect = projectSourceRect(p)
       try {
-        // 把该项目所有会话分页拉出来，再逐个软删；trash 里仍可逐个恢复
+        // 先刷新项目列表：TUI 运行期间 CLI 可能已在 ~/.claude/projects/ 下
+        // 创建了真实项目目录，但此前的 projects.value 还没有它。刷新后
+        // counterpart 才能发现真实项目，确保其会话也被一并删除。
+        await loadProjects()
+        // 书签和真实项目（~/.claude/projects/ 下同 displayPath 的目录）可能同时存在，
+        // 且会话只存在于真实项目目录里。两边都要扫、都要删才能彻底清除。
+        const counterpart = projects.value.find(
+          (rp) => rp.dirName !== p.dirName && rp.displayPath === p.displayPath,
+        )
+        const keysToScan = [p.dirName]
+        if (counterpart) keysToScan.push(counterpart.dirName)
+
+        // 先杀 PTY，再移文件——否则 CLI 进程检测到文件消失会重建空会话。
+        closeTabsByProject(p.dirName)
+        if (counterpart) closeTabsByProject(counterpart.dirName)
+
         const all: SessionMeta[] = []
-        let offset = 0
-        while (true) {
-          const page = await api.listSessions(agent.value, p.dirName, offset, 200, sessionListOptions())
-          all.push(...page.sessions)
-          offset += page.sessions.length
-          if (all.length >= page.total || page.sessions.length === 0) break
+        for (const key of keysToScan) {
+          let offset = 0
+          while (true) {
+            const page = await api.listSessions(agent.value, key, offset, 200, sessionListOptions())
+            all.push(...page.sessions)
+            offset += page.sessions.length
+            if (all.length >= page.total || page.sessions.length === 0) break
+          }
         }
         for (const s of all) {
           try {
             await api.softDeleteSession(agent.value, s.path, p.displayPath)
           } catch {}
         }
+        // 始终尝试移除书签：书签可能已被 loadProjects 合并进真实项目，
+        // counterpart 在当前列表里找不到。removeBookmark 是幂等的，不存在也不会报错。
+        await api.removeBookmark(agent.value, p.displayPath)
         fly({
           from: srcRect,
           to: document.querySelector<HTMLElement>('.topbar-trash-btn'),
           variant: 'trash',
         })
-        if (activeDir.value === p.dirName) {
+        if (activeDir.value === p.dirName || activeDir.value === counterpart?.dirName) {
           activeDir.value = null
           sessions.value = []
           openSession.value = null
@@ -371,6 +404,8 @@ interface ConfirmState {
   okText: string
   danger: boolean
   onOk: () => void
+  altText?: string
+  onAlt?: () => void
 }
 const confirm = ref<ConfirmState>({
   show: false,
@@ -388,12 +423,19 @@ function ask(opts: Partial<ConfirmState> & { onOk: () => void }) {
     okText: opts.okText ?? t('common.ok'),
     danger: opts.danger ?? false,
     onOk: opts.onOk,
+    altText: opts.altText,
+    onAlt: opts.onAlt,
   }
 }
 function runConfirm() {
   const fn = confirm.value.onOk
   confirm.value.show = false
   fn()
+}
+function runAlt() {
+  const fn = confirm.value.onAlt
+  confirm.value.show = false
+  fn?.()
 }
 
 // ---------- 重命名会话 ----------
@@ -470,6 +512,67 @@ async function loadProjects() {
   } catch (e) {
     notify(t('toast.loadProjectsFail', { e: String(e) }), true)
     projects.value = []
+  }
+  // 书签被后端合并进真实项目时（display_path 一致 → 书签条目被跳过），
+  // activeDir 仍指向旧的 "bookmark:..." key，导致 refreshSessions 查错目录。
+  // 这里检测到书签消失后自动重定向到真实项目的 dirName。
+  if (
+    activeDir.value?.startsWith('bookmark:') &&
+    !projects.value.some((p) => p.dirName === activeDir.value)
+  ) {
+    const bmPath = activeDir.value.slice('bookmark:'.length)
+    const real = projects.value.find(
+      (p) => !p.dirName.startsWith('bookmark:') && p.displayPath === bmPath,
+    )
+    if (real) {
+      migrateTabsProjectKey(activeDir.value, real.dirName)
+      activeDir.value = real.dirName
+    }
+  }
+}
+
+async function addBookmarkByPath(path: string) {
+  if (projects.value.some(p => p.displayPath === path)) {
+    notify(t('toast.bookmarkExists'))
+    return
+  }
+  try {
+    await api.addBookmark(agent.value, path)
+    await loadProjects()
+    notify(t('toast.bookmarkAdded'))
+    const added = projects.value.find(p => p.displayPath === path)
+    if (added) {
+      selectProject(added.dirName)
+      nextTick(() => {
+        const el = document.querySelector<HTMLElement>(`.proj-item.active`)
+        if (el) {
+          el.classList.add('flash')
+          el.addEventListener('animationend', () => el.classList.remove('flash'), { once: true })
+        }
+      })
+    }
+  } catch (e) {
+    notify(`${e}`, true)
+  }
+}
+
+async function addBookmark() {
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  const selected = await open({ directory: true, multiple: false })
+  if (!selected) return
+  const path = typeof selected === 'string' ? selected : selected[0]
+  if (!path) return
+  await addBookmarkByPath(path)
+}
+
+
+async function removeBookmark(p: ProjectInfo) {
+  try {
+    await api.removeBookmark(agent.value, p.displayPath)
+    await loadProjects()
+    notify(t('toast.bookmarkRemoved'))
+  } catch (e) {
+    notify(`${e}`, true)
   }
 }
 
@@ -869,10 +972,42 @@ function restoreTarget(item: TrashItem): HTMLElement | null {
 }
 
 function deleteSession(s: SessionMeta) {
+  const afterDelete = async () => {
+    closeTabBySessionPath(s.path)
+    sessions.value = sessions.value.filter((x) => x.path !== s.path)
+    sessionTotal.value = Math.max(0, sessionTotal.value - 1)
+    if (openSession.value?.path === s.path) openSession.value = null
+    if (sessions.value.length === 0 && activeProject.value) {
+      const proj = activeProject.value
+      closeTabsByProject(proj.dirName)
+      if (proj.bookmarked || proj.dirName.startsWith('bookmark:')) {
+        await api.removeBookmark(agent.value, proj.displayPath)
+      }
+      activeDir.value = null
+    }
+    await loadProjects()
+  }
   ask({
     title: t('dialog.delete.title'),
     message: t('dialog.delete.body', { title: s.title }),
     okText: t('dialog.delete.ok'),
+    altText: t('dialog.delete.permOk'),
+    onAlt: async () => {
+      try {
+        const fromChat = openSession.value?.path === s.path
+        const a = fromChat ? chatAgent.value : agent.value
+        const label = activeProject.value?.displayPath ?? s.cwd ?? ''
+        closeTabBySessionPath(s.path)
+        await api.softDeleteSession(a, s.path, label)
+        const trashItems = await api.listTrash()
+        const match = trashItems.find(item => item.originalPath === s.path)
+        if (match) await api.permanentDeleteTrash(match.trashFile)
+        await afterDelete()
+        notify(t('toast.permDeleted'))
+      } catch (e) {
+        notify(t('toast.deleteFail', { e: String(e) }), true)
+      }
+    },
     onOk: async () => {
       // 在移除该行之前抓取起点，触发飞向回收站的弧线动画
       const srcRect = deleteSourceRect(s)
@@ -883,17 +1018,14 @@ function deleteSession(s: SessionMeta) {
       const a = fromChat ? chatAgent.value : agent.value
       const label = activeProject.value?.displayPath ?? s.cwd ?? ''
       try {
+        closeTabBySessionPath(s.path)
         await api.softDeleteSession(a, s.path, label)
         fly({
           from: srcRect,
           to: document.querySelector<HTMLElement>('.topbar-trash-btn'),
           variant: 'trash',
         })
-        sessions.value = sessions.value.filter((x) => x.path !== s.path)
-        sessionTotal.value = Math.max(0, sessionTotal.value - 1)
-        if (openSession.value?.path === s.path) openSession.value = null
-        await loadProjects()
-        // 刷新回收站列表，让顶栏红点立即反映新状态
+        await afterDelete()
         api.listTrash().then((items) => { trash.value = items }).catch(() => {})
         notify(t('toast.moved'))
       } catch (e) {
@@ -911,16 +1043,16 @@ function restore(item: TrashItem) {
     onOk: async () => {
       // 在该行被移除前抓取起点与落点，触发飞回侧边栏项目列表的弧线动画
       const srcRect = restoreSourceRect(item)
-      const target = restoreTarget(item)
       try {
         await api.restoreSession(item.trashFile)
-        fly({ from: srcRect, to: target, variant: 'restore' })
         trash.value = trash.value.filter((x) => x.trashFile !== item.trashFile)
-        // 若正在回收站详情里查看的就是这条，恢复后退回回收站列表。
         if (openTrashItem.value?.trashFile === item.trashFile) {
           openSession.value = null
         }
         await loadProjects()
+        await nextTick()
+        const target = restoreTarget(item)
+        fly({ from: srcRect, to: target, variant: 'restore' })
         notify(t('toast.restored'))
       } catch (e) {
         notify(t('toast.restoreFail', { e: String(e) }), true)
@@ -957,19 +1089,54 @@ function batchRestore() {
     message: t('dialog.batchRestore.body', { n: items.length }),
     okText: t('dialog.batchRestore.ok'),
     onOk: async () => {
+      const srcRect = restoreSourceRect(items[0])
       const restored = new Set<string>()
+      const errors: string[] = []
       for (const it of items) {
         try {
           await api.restoreSession(it.trashFile)
           restored.add(it.trashFile)
-        } catch {
-          /* 跳过失败项，继续恢复其余 */
+        } catch (e) {
+          errors.push(`${it.title}: ${e}`)
         }
       }
       trash.value = trash.value.filter((x) => !restored.has(x.trashFile))
       exitSelectMode()
       await loadProjects()
-      notify(t('toast.batchRestored', { n: restored.size }))
+      if (restored.size) {
+        await nextTick()
+        const target = restoreTarget(items[0])
+        fly({ from: srcRect, to: target, variant: 'restore' })
+      }
+      if (errors.length) {
+        notify(errors.join('; '), true)
+      } else {
+        notify(t('toast.batchRestored', { n: restored.size }))
+      }
+    },
+  })
+}
+
+function batchPermanentDelete() {
+  const keys = new Set(selectedTrash.value)
+  const items = trash.value.filter((x) => keys.has(x.trashFile))
+  if (!items.length) return
+  ask({
+    title: t('dialog.batchPerm.title'),
+    message: t('dialog.batchPerm.body', { n: items.length }),
+    okText: t('dialog.batchPerm.ok'),
+    danger: true,
+    onOk: async () => {
+      let count = 0
+      for (const it of items) {
+        try {
+          await api.permanentDeleteTrash(it.trashFile)
+          count++
+        } catch { /* skip */ }
+      }
+      trash.value = trash.value.filter((x) => !keys.has(x.trashFile))
+      exitSelectMode()
+      notify(t('toast.batchPermDeleted', { n: count }))
     },
   })
 }
@@ -987,6 +1154,8 @@ function batchDeleteSessions() {
     danger: true,
     onOk: async () => {
       const dir = activeProject.value?.displayPath ?? ''
+      const srcRect = deleteSourceRect(items[0])
+      for (const s of items) closeTabBySessionPath(s.path)
       const deleted = new Set<string>()
       for (const s of items) {
         try {
@@ -996,10 +1165,25 @@ function batchDeleteSessions() {
           /* 跳过失败项，继续删除其余 */
         }
       }
+      if (deleted.size) {
+        fly({
+          from: srcRect,
+          to: document.querySelector<HTMLElement>('.topbar-trash-btn'),
+          variant: 'trash',
+        })
+      }
       sessions.value = sessions.value.filter((x) => !deleted.has(x.path))
       sessionTotal.value = Math.max(0, sessionTotal.value - deleted.size)
       if (openSession.value && deleted.has(openSession.value.path)) {
         openSession.value = null
+      }
+      if (sessions.value.length === 0 && activeProject.value) {
+        const p = activeProject.value
+        closeTabsByProject(p.dirName)
+        if (p.bookmarked || p.dirName.startsWith('bookmark:')) {
+          await api.removeBookmark(agent.value, p.displayPath)
+        }
+        activeDir.value = null
       }
       exitSessionSelectMode()
       await loadProjects()
@@ -1133,12 +1317,27 @@ async function copyText(text: string) {
 // ---------- TerminalStrip 的 List / View 切换 ----------
 // List → 关闭当前会话 + 退出 TUI（落回 SessionsView）
 // View → 保留当前会话，仅退出 TUI（落回 ChatView）
-function onTuiListClick() {
+async function onTuiListClick() {
   openSession.value = null
   setActiveTui(null)
+  if (activeDir.value) {
+    await loadProjects()
+    await refreshSessions()
+    reconcileNewTabs(activeDir.value, sessions.value)
+  }
 }
 function onTuiViewClick() {
   setActiveTui(null)
+}
+
+// Tab 被手动关闭（× 按钮）后，如果 TUI 层消失（无更多 tab），刷新数据——
+// 和 onTuiListClick 同等效果，确保 CLI 新建的会话出现在列表里。
+async function onTuiTabClosed() {
+  if (activeUiId.value !== null) return
+  if (!activeDir.value || showTrash.value || showStats.value) return
+  await loadProjects()
+  await refreshSessions()
+  if (activeDir.value) reconcileNewTabs(activeDir.value, sessions.value)
 }
 
 /** Resume 一个会话 —— 根据设置决定走窗口内 TUI 还是外部终端。 */
@@ -1150,7 +1349,7 @@ async function resumeHere(s: SessionMeta) {
   }
   try {
     if (useExternalTerminal.value) {
-      await api.resumeSession(chatAgent.value, s.id, cwd, s.path)
+      await api.resumeSession(chatAgent.value, s.id, cwd, s.path, launchArgs.value[chatAgent.value as keyof typeof launchArgs.value] || '', terminalApp.value)
     } else {
       await openOrFocusTui({
         agent: chatAgent.value,
@@ -1172,7 +1371,7 @@ async function newSession() {
   if (!cwd) return
   try {
     if (useExternalTerminal.value) {
-      await api.newSession(agent.value, cwd)
+      await api.newSession(agent.value, cwd, launchArgs.value[agent.value as keyof typeof launchArgs.value] || '', terminalApp.value)
     } else {
       await openOrFocusTui({
         agent: agent.value,
@@ -1203,6 +1402,7 @@ function onClearCache() {
     onOk: () => {
       clearAppCache()
       projPrefs.value = {}
+      api.detectTerminals().then(applyTerminalDefault).catch(() => {})
       notify(t('toast.cacheCleared'))
     },
   })
@@ -1221,6 +1421,8 @@ onMounted(() => {
   loadProjects()
   // 启动时拉一次回收站，让顶栏红点从一开始就准确（不必先打开回收站视图）
   api.listTrash().then((items) => { trash.value = items }).catch(() => {})
+  // 检测可用终端，首次启动时自动选默认（有 cmux 就默认 cmux）
+  api.detectTerminals().then(applyTerminalDefault).catch(() => {})
   // 后台检查 GitHub release —— 缓存 24h，失败完全静默；结果驱动侧边栏 Settings
   // 按钮上的"有新版本"小红点。
   runBackgroundCheck()
@@ -1468,6 +1670,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       @context-menu="openCtxMenu"
       @open-settings="showSettings = true"
       @refresh="refreshAll"
+      @add-bookmark="addBookmark"
     />
 
     <!-- 主区 -->
@@ -1481,6 +1684,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
         :has-open-session="!!openSession"
         @list-click="onTuiListClick"
         @view-click="onTuiViewClick"
+        @tab-closed="onTuiTabClosed"
       />
 
       <!-- view 层 / TUI 层 同时存在；activeUiId === null 时只显示 view，
@@ -1532,6 +1736,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
             @restore="restore"
             @permanent-delete="permanentDelete"
             @batch-restore="batchRestore"
+            @batch-permanent-delete="batchPermanentDelete"
           />
 
           <ExportHistoryView
@@ -1593,8 +1798,10 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       :message="confirm.message"
       :ok-text="confirm.okText"
       :danger="confirm.danger"
+      :alt-text="confirm.altText"
       @confirm="runConfirm"
       @cancel="confirm.show = false"
+      @alt="runAlt"
     />
 
     <!-- 设置弹窗 -->
@@ -1634,6 +1841,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       @toggle-state="ctxToggleState"
       @refresh="ctxRefresh"
       @delete="ctxDeleteProject"
+      @remove-bookmark="ctxRemoveBookmark"
     />
 
     <!-- toast -->

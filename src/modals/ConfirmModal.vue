@@ -7,11 +7,13 @@ defineProps<{
   message: string
   okText: string
   danger: boolean
+  altText?: string
 }>()
 
 const emit = defineEmits<{
   (e: 'confirm'): void
   (e: 'cancel'): void
+  (e: 'alt'): void
 }>()
 </script>
 
@@ -24,6 +26,13 @@ const emit = defineEmits<{
         <div class="modal-actions">
           <button class="btn" @click="emit('cancel')">
             {{ t('common.cancel') }}
+          </button>
+          <button
+            v-if="altText"
+            class="btn danger"
+            @click="emit('alt')"
+          >
+            {{ altText }}
           </button>
           <button
             class="btn"

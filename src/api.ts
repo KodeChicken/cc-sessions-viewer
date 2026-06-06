@@ -27,6 +27,12 @@ export const listProjects = (
     includeCodexArchived: options.includeCodexArchived ?? false,
   })
 
+export const addBookmark = (agent: Agent, path: string) =>
+  invoke<void>('add_bookmark', { agent, path })
+
+export const removeBookmark = (agent: Agent, path: string) =>
+  invoke<void>('remove_bookmark', { agent, path })
+
 export const listSessions = (
   agent: Agent,
   projectKey: string,
@@ -140,11 +146,16 @@ export const resumeSession = (
   sessionId: string,
   cwd: string,
   path: string,
-) => invoke<void>('resume_session', { agent, sessionId, cwd, path })
+  extraArgs?: string,
+  terminalApp?: string,
+) => invoke<void>('resume_session', { agent, sessionId, cwd, path, extraArgs: extraArgs || '', terminalApp: terminalApp || 'terminal' })
 
 /** 在终端里为某个项目目录开一个全新会话（不带 --resume）。 */
-export const newSession = (agent: Agent, cwd: string) =>
-  invoke<void>('new_session', { agent, cwd })
+export const newSession = (agent: Agent, cwd: string, extraArgs?: string, terminalApp?: string) =>
+  invoke<void>('new_session', { agent, cwd, extraArgs: extraArgs || '', terminalApp: terminalApp || 'terminal' })
+
+/** 检测 macOS 上已安装的外部终端应用（iTerm2 / Ghostty / cmux）。 */
+export const detectTerminals = () => invoke<string[]>('detect_terminals')
 
 // ---------- 内嵌 TUI（在窗口里直接跑 resume CLI，配合 xterm.js）----------
 
@@ -157,11 +168,12 @@ export const ptySpawn = (
   path: string,
   cols: number,
   rows: number,
-) => invoke<number>('pty_spawn', { agent, sessionId, cwd, path, cols, rows })
+  extraArgs?: string,
+) => invoke<number>('pty_spawn', { agent, sessionId, cwd, path, cols, rows, extraArgs: extraArgs || '' })
 
 /** 启动一个新会话的 PTY（不带 --resume）。 */
-export const ptySpawnNew = (agent: Agent, cwd: string, cols: number, rows: number) =>
-  invoke<number>('pty_spawn_new', { agent, cwd, cols, rows })
+export const ptySpawnNew = (agent: Agent, cwd: string, cols: number, rows: number, extraArgs?: string) =>
+  invoke<number>('pty_spawn_new', { agent, cwd, cols, rows, extraArgs: extraArgs || '' })
 
 /** 把用户的按键 base64 后写进 PTY stdin。 */
 export const ptyWrite = (id: number, base64: string) =>

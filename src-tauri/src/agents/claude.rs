@@ -74,6 +74,7 @@ impl SessionSource for ClaudeSource {
                 session_count: count,
                 last_modified: last,
                 exists,
+                bookmarked: false,
             });
         }
         out.sort_by_key(|p| std::cmp::Reverse(p.last_modified));

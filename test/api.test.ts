@@ -137,6 +137,8 @@ describe('api wrappers', () => {
       sessionId: 'abc-123',
       cwd: '/work/dir',
       path: '/p/s.jsonl',
+      extraArgs: '',
+      terminalApp: 'terminal',
     })
   })
 

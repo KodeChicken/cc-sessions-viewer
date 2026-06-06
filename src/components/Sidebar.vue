@@ -23,6 +23,7 @@ const emit = defineEmits<{
   (e: 'context-menu', evt: MouseEvent, p: ProjectInfo): void
   (e: 'open-settings'): void
   (e: 'refresh'): void
+  (e: 'add-bookmark'): void
 }>()
 
 const agents: Agent[] = ['claude', 'codex', 'gemini']
@@ -39,7 +40,7 @@ function projStateOf(p: ProjectInfo): ProjState | undefined {
 
 const sortedProjects = computed(() => {
   const rank = (p: ProjectInfo) =>
-    projStateOf(p) === 'pinned' ? 0 : projStateOf(p) === 'sunk' ? 2 : 1
+    projStateOf(p) === 'pinned' ? 0 : p.bookmarked && !p.sessionCount ? 1 : projStateOf(p) === 'sunk' ? 3 : 2
   return [...props.projects].sort((a, b) => rank(a) - rank(b))
 })
 
@@ -50,10 +51,14 @@ function pinColor(p: ProjectInfo): string {
   const hue = ((h % 360) + 360) % 360
   return `hsl(${hue} 72% 52%)`
 }
+
+
 </script>
 
 <template>
-  <aside class="sidebar">
+  <aside
+    class="sidebar"
+  >
     <div class="sidebar-top">
       <div class="agent-switch">
         <button
@@ -74,6 +79,14 @@ function pinColor(p: ProjectInfo): string {
         <!-- 刷新按钮：只重拉当前 agent 的项目 / 会话 / 当前打开的对话。
              之前挂在顶部 SidebarTopbar 上离 agent switch 较远，挪到这里
              跟 "{agent} · N projects" 同行，"刷新这家 agent" 的语义更直观。 -->
+        <button
+          type="button"
+          class="sidebar-sub-add"
+          v-tooltip="t('sidebar.addFolder')"
+          @click="emit('add-bookmark')"
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2Z"/></svg>
+        </button>
         <button
           type="button"
           class="sidebar-sub-refresh"

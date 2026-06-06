@@ -10,8 +10,10 @@ const PREFS_KEY = 'projPrefs:v1'
 const STATS_SCOPE_KEY = 'statsScope:v1'
 const STATS_RANGE_KEY = 'statsRange:v1'
 const EXTERNAL_TERMINAL_KEY = 'useExternalTerminal:v1'
+const TERMINAL_APP_KEY = 'terminalApp:v1'
 const CODEX_SHOW_INTERNAL_KEY = 'codexShowInternalSessions:v1'
 const CODEX_SHOW_ARCHIVED_KEY = 'codexShowArchivedSessions:v1'
+const LAUNCH_ARGS_KEY = 'launchArgs:v1'
 
 /**
  * 根据浏览器/系统语言探测默认语言。
@@ -47,9 +49,29 @@ function readTheme(): Theme {
     : 'system'
 }
 export const theme = ref<Theme>(readTheme())
+export type TerminalApp = 'terminal' | 'iterm2' | 'ghostty' | 'cmux' | 'warp'
+
 export const useExternalTerminal = ref(localStorage.getItem(EXTERNAL_TERMINAL_KEY) === '1')
+export const terminalApp = ref<TerminalApp>(
+  (localStorage.getItem(TERMINAL_APP_KEY) as TerminalApp | null) ?? 'terminal',
+)
 export const codexShowInternalSessions = ref(localStorage.getItem(CODEX_SHOW_INTERNAL_KEY) === '1')
 export const codexShowArchivedSessions = ref(localStorage.getItem(CODEX_SHOW_ARCHIVED_KEY) !== '0')
+
+export type LaunchArgs = { claude: string; codex: string; gemini: string }
+function readLaunchArgs(): LaunchArgs {
+  try {
+    const v = localStorage.getItem(LAUNCH_ARGS_KEY)
+    if (v) return { claude: '', codex: '', gemini: '', ...JSON.parse(v) }
+  } catch { /* ignore */ }
+  return { claude: '', codex: '', gemini: '' }
+}
+export const launchArgs = ref<LaunchArgs>(readLaunchArgs())
+
+export function setLaunchArgs(agent: keyof LaunchArgs, args: string) {
+  launchArgs.value = { ...launchArgs.value, [agent]: args }
+  localStorage.setItem(LAUNCH_ARGS_KEY, JSON.stringify(launchArgs.value))
+}
 
 export function setLang(l: Lang) {
   lang.value = l
@@ -64,6 +86,24 @@ export function setTheme(t: Theme) {
 export function setUseExternalTerminal(v: boolean) {
   useExternalTerminal.value = v
   localStorage.setItem(EXTERNAL_TERMINAL_KEY, v ? '1' : '0')
+}
+
+export function setTerminalApp(v: TerminalApp) {
+  terminalApp.value = v
+  localStorage.setItem(TERMINAL_APP_KEY, v)
+}
+
+/** 用户是否手动选过终端应用 */
+export function hasTerminalAppPreference(): boolean {
+  return localStorage.getItem(TERMINAL_APP_KEY) !== null
+}
+
+/** 首次启动时根据检测结果设默认值：有 cmux 就默认 cmux，否则 terminal */
+export function applyTerminalDefault(available: string[]) {
+  if (hasTerminalAppPreference()) return
+  if (available.includes('cmux')) {
+    terminalApp.value = 'cmux'
+  }
 }
 
 export function setCodexShowInternalSessions(v: boolean) {
@@ -98,6 +138,12 @@ window
 /** 清除应用级缓存（目前只有项目置顶/沉底偏好；会话 rename 直接写 JSONL，不走 cache） */
 export function clearAppCache() {
   localStorage.removeItem(PREFS_KEY)
+  localStorage.removeItem(TERMINAL_APP_KEY)
+  localStorage.removeItem(EXTERNAL_TERMINAL_KEY)
+  localStorage.removeItem(LAUNCH_ARGS_KEY)
+  terminalApp.value = 'terminal'
+  useExternalTerminal.value = false
+  launchArgs.value = { claude: '', codex: '', gemini: '' }
 }
 
 // ---------- Statistics 页的 scope / range 持久化 ----------

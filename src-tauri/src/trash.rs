@@ -111,9 +111,6 @@ pub fn restore(trash_file: &str) -> Result<(), String> {
         .and_then(|x| x.as_str())
         .ok_or("元数据缺少原始路径")?;
     let dest = PathBuf::from(original_path);
-    if dest.exists() {
-        return Err("原位置已存在同名会话，无法恢复".to_string());
-    }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
     }

@@ -16,16 +16,36 @@
   },
   "changelogithub": {
     "types": {
-      "feat": { "title": "🚀 Features" },
-      "Feat": { "title": "🚀 Features" },
-      "fix": { "title": "🐞 Bug Fixes" },
-      "Fix": { "title": "🐞 Bug Fixes" },
-      "perf": { "title": "🏎 Performance" },
-      "refactor": { "title": "💅 Refactors" },
-      "doc": { "title": "📖 Documentation" },
-      "Doc": { "title": "📖 Documentation" },
-      "Docs": { "title": "📖 Documentation" },
-      "docs": { "title": "📖 Documentation" }
+      "feat": {
+        "title": "🚀 Features"
+      },
+      "Feat": {
+        "title": "🚀 Features"
+      },
+      "fix": {
+        "title": "🐞 Bug Fixes"
+      },
+      "Fix": {
+        "title": "🐞 Bug Fixes"
+      },
+      "perf": {
+        "title": "🏎 Performance"
+      },
+      "refactor": {
+        "title": "💅 Refactors"
+      },
+      "doc": {
+        "title": "📖 Documentation"
+      },
+      "Doc": {
+        "title": "📖 Documentation"
+      },
+      "Docs": {
+        "title": "📖 Documentation"
+      },
+      "docs": {
+        "title": "📖 Documentation"
+      }
     },
     "contributors": true
   },
@@ -46,6 +66,7 @@
     "@iconify-json/arcticons": "^1.2.53",
     "@iconify-json/lucide": "^1.2.109",
     "@iconify-json/material-icon-theme": "^1.2.65",
+    "@iconify-json/mingcute": "^1.2.7",
     "@iconify-json/quill": "^1.2.4",
     "@iconify/utils": "^3.1.3",
     "@tailwindcss/vite": "^4.3.0",

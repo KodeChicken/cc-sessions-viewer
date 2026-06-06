@@ -21,6 +21,7 @@ const emit = defineEmits<{
   (e: 'toggle-state', state: ProjState): void
   (e: 'refresh'): void
   (e: 'delete'): void
+  (e: 'remove-bookmark'): void
 }>()
 </script>
 

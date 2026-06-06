@@ -24,7 +24,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { Agent } from './types'
-import { theme } from './settings'
+import { theme, launchArgs } from './settings'
 import * as api from './api'
 
 export interface TerminalTab {
@@ -148,6 +148,41 @@ const findTab = (uiId: number) => tabs.value.find((t) => t.uiId === uiId)
 const findTabBySession = (path: string) =>
   tabs.value.find((t) => t.sessionPath === path && t.status !== 'exited' && t.status !== 'error')
 
+/**
+ * 新会话 tab 的 sessionPath/sessionId 在创建时都是空的（CLI 自己生成 id），
+ * 等用户从 TUI 回到列表后，刷新出的 sessions 里会包含刚才创建的会话。
+ * 此函数把空路径的 tab 与最新出现的 session 匹配上，后续 closeTabBySessionPath
+ * 才能正确找到 tab 并关闭。
+ */
+export function reconcileNewTabs(
+  projectKey: string,
+  sessions: Array<{ path: string; id: string; modified: number }>,
+) {
+  const unmatched = tabs.value.filter(
+    (t) =>
+      t.sessionPath === '' &&
+      t.projectKey === projectKey &&
+      t.status !== 'exited' &&
+      t.status !== 'error',
+  )
+  if (!unmatched.length) return
+
+  const takenPaths = new Set(
+    tabs.value.filter((t) => t.sessionPath !== '').map((t) => t.sessionPath),
+  )
+  const available = sessions
+    .filter((s) => !takenPaths.has(s.path))
+    .sort((a, b) => (b.modified ?? 0) - (a.modified ?? 0))
+
+  for (const tab of unmatched) {
+    const match = available.shift()
+    if (match) {
+      tab.sessionPath = match.path
+      tab.sessionId = match.id
+    }
+  }
+}
+
 export function activeTab(): TerminalTab | null {
   if (activeUiId.value === null) return null
   return findTab(activeUiId.value) ?? null
@@ -244,8 +279,9 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
 
   let ptyId: number
   try {
+    const extra = launchArgs.value[opts.agent as keyof typeof launchArgs.value] || ''
     ptyId = isNew
-      ? await api.ptySpawnNew(opts.agent, opts.cwd, cols, rows)
+      ? await api.ptySpawnNew(opts.agent, opts.cwd, cols, rows, extra)
       : await api.ptySpawn(
           opts.agent,
           opts.sessionId,
@@ -253,6 +289,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
           opts.sessionPath,
           cols,
           rows,
+          extra,
         )
   } catch (e) {
     tab.status = 'error'
@@ -290,7 +327,26 @@ export function setActive(uiId: number | null) {
   activeUiId.value = uiId
 }
 
+/** 书签合并到真实项目时，把旧 projectKey 的 tab 迁移到新 key，避免 strip 过滤丢失。 */
+export function migrateTabsProjectKey(oldKey: string, newKey: string) {
+  for (const tab of tabs.value) {
+    if (tab.projectKey === oldKey) {
+      tab.projectKey = newKey
+    }
+  }
+}
+
 /** 完全关闭一个 tab：kill PTY、dispose Terminal、移出列表。如果是当前 active 会自动落到邻居。 */
+export function closeTabsByProject(projectKey: string) {
+  const toClose = tabs.value.filter(t => t.projectKey === projectKey).map(t => t.uiId)
+  for (const id of toClose) closeTab(id)
+}
+
+export function closeTabBySessionPath(sessionPath: string) {
+  const tab = tabs.value.find(t => t.sessionPath === sessionPath)
+  if (tab) closeTab(tab.uiId)
+}
+
 export function closeTab(uiId: number) {
   const idx = tabs.value.findIndex((t) => t.uiId === uiId)
   if (idx < 0) return
