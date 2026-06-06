@@ -38,10 +38,10 @@ describe('SettingsModal', () => {
     expect(factory({ cacheBytes: 2048 }).find('.set-section-tail').text()).toBe('2.0 KB')
   })
 
-  it('shows "0 B" and disables the clear button when the cache is empty', () => {
+  it('shows "0 B" and the clear button is always enabled', () => {
     const wrapper = factory({ cacheBytes: 0 })
     expect(wrapper.find('.set-section-tail').text()).toBe('0 B')
-    expect(wrapper.find('.btn.danger').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.btn.danger').attributes('disabled')).toBeUndefined()
   })
 
   it('enables the clear button and emits clearCache when there is cached data', async () => {
