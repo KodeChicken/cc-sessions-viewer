@@ -59,7 +59,22 @@ Type: brief summary of the change
 6. The commit message **must be written in English**.
 7. **Do not add** auto-generated trailers such as "Generated with [Claude Code]" or "Co-Authored-By: Claude".
 
-### Step 4: Commit and push
+### Step 4: Quality gate (must pass before committing)
+
+Run the following checks **in parallel**:
+
+1. **Frontend tests**: `!npm run test:run`
+2. **Rust clippy**: `!cd src-tauri && cargo clippy -- -D warnings`
+
+If **either** check fails, **stop immediately** and notify the user:
+```
+❌ Quality gate failed. Cannot commit.
+
+[show the failing check name and key error lines]
+```
+Do NOT proceed to commit or push — the user must fix the issues first.
+
+### Step 5: Commit and push
 
 1. Stage all changes: `!git add .`
 2. Explicitly unstage `.env.development` (keep the local edits, just do not commit the file):
@@ -67,7 +82,7 @@ Type: brief summary of the change
 3. Create the commit with the generated message (using HEREDOC). If the commit step errors out, stop immediately and notify the user.
 4. Push to remote: `!git push`
 
-### Step 5: Confirmation
+### Step 6: Confirmation
 
 After the push, report:
 - Commit hash and message

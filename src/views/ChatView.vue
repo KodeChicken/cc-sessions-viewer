@@ -37,6 +37,8 @@ import {
   IconFold,
   IconUnfold,
   IconLocate,
+  IconEyeOff,
+  IconEye,
   agentIcons,
 } from '../components/icons'
 
@@ -161,6 +163,87 @@ function rowHasContent(m: Msg): boolean {
   if (isCaveatOnlyMsg(m)) return false
   if (!isToolOnly(m)) return true
   return m.blocks.some((b) => !isInlinedResult(b))
+}
+
+// ---- 消息右键隐藏 ----
+// 按 session path 在 localStorage 中存一组隐藏的消息标识（uuid 或索引）。
+// 隐藏状态纯前端，不修改 JSONL 文件，三个 agent 通用。
+function hiddenStorageKey(): string {
+  return `hidden:${props.session.path}`
+}
+function loadHiddenSet(): Set<string> {
+  try {
+    const raw = localStorage.getItem(hiddenStorageKey())
+    return raw ? new Set(JSON.parse(raw)) : new Set()
+  } catch {
+    return new Set()
+  }
+}
+function saveHiddenSet(set: Set<string>) {
+  if (set.size === 0) {
+    localStorage.removeItem(hiddenStorageKey())
+  } else {
+    localStorage.setItem(hiddenStorageKey(), JSON.stringify([...set]))
+  }
+}
+
+const hiddenIds = ref<Set<string>>(new Set())
+const showHidden = ref(false)
+
+function msgKey(m: Msg, idx: number): string {
+  return m.uuid || `idx:${idx}`
+}
+
+function isHidden(m: Msg, idx: number): boolean {
+  return hiddenIds.value.has(msgKey(m, idx))
+}
+
+const hiddenCount = computed(() => hiddenIds.value.size)
+
+function toggleHideMsg(m: Msg, idx: number) {
+  const key = msgKey(m, idx)
+  const set = new Set(hiddenIds.value)
+  if (set.has(key)) {
+    set.delete(key)
+  } else {
+    set.add(key)
+  }
+  hiddenIds.value = set
+  saveHiddenSet(set)
+}
+
+// 切换会话时重新加载隐藏集合
+watch(
+  () => props.session.path,
+  () => {
+    hiddenIds.value = loadHiddenSet()
+    showHidden.value = false
+  },
+  { immediate: true },
+)
+
+// ---- 消息右键菜单 ----
+interface MsgCtx { x: number; y: number; msg: Msg; idx: number }
+const msgCtx = ref<MsgCtx | null>(null)
+
+function onMsgContextMenu(e: MouseEvent, m: Msg, idx: number) {
+  if (systemEventLabel(m)) return
+  e.preventDefault()
+  const W = 180
+  const H = 44
+  const x = Math.min(e.clientX, window.innerWidth - W - 8)
+  const y = Math.min(e.clientY, window.innerHeight - H - 8)
+  msgCtx.value = { x, y, msg: m, idx }
+}
+
+function closeMsgCtx() {
+  msgCtx.value = null
+}
+
+function ctxToggleHide() {
+  if (!msgCtx.value) return
+  toggleHideMsg(msgCtx.value.msg, msgCtx.value.idx)
+  closeMsgCtx()
 }
 
 const assistantName = computed(() =>
@@ -694,6 +777,10 @@ function onDocClick(e: MouseEvent) {
       locateMenuOpen.value = false
     }
   }
+  if (msgCtx.value) {
+    const target = e.target as HTMLElement | null
+    if (!target || !target.closest('.msg-ctx-menu')) closeMsgCtx()
+  }
 }
 </script>
 
@@ -803,6 +890,17 @@ function onDocClick(e: MouseEvent) {
       <component :is="toolsCollapsed ? IconUnfold : IconFold" />
     </button>
     <button
+      v-if="hiddenCount > 0"
+      class="icon-btn"
+      :class="{ active: showHidden }"
+      v-tooltip="showHidden ? t('chat.action.hideHidden') : t('chat.action.showHidden')"
+      @click="showHidden = !showHidden"
+    >
+      <component :is="showHidden ? IconEye : IconEyeOff" />
+      <span class="hidden-badge">{{ hiddenCount }}</span>
+    </button>
+    <span class="chat-head-sep" />
+    <button
       v-if="!trashed"
       class="icon-btn"
       :class="{ disabled: !canResumeHere }"
@@ -828,6 +926,7 @@ function onDocClick(e: MouseEvent) {
     >
       <IconRefresh />
     </button>
+    <span v-if="!trashed" class="chat-head-sep" />
     <div v-if="!trashed" ref="exportMenuEl" class="export-menu-wrap">
       <button
         class="icon-btn"
@@ -887,15 +986,16 @@ function onDocClick(e: MouseEvent) {
       <div
         v-for="(m, i) in messages"
         :key="m.uuid ?? i"
-        v-show="rowHasContent(m)"
+        v-show="rowHasContent(m) && (!isHidden(m, i) || showHidden)"
         class="msg-row"
         :class="[
           systemEventLabel(m) ? 'system' : isToolOnly(m) ? 'tool-only' : m.role,
-          { 'msg-flash': flashIdx === i },
+          { 'msg-flash': flashIdx === i, 'msg-hidden': isHidden(m, i) && showHidden },
         ]"
         :data-search-scope="rowScope(m)"
         :data-msg-idx="i"
         :data-msg-uuid="m.uuid ?? ''"
+        @contextmenu="onMsgContextMenu($event, m, i)"
       >
         <!-- System events (e.g. /rename) render as a small centered line,
              not a "Me" bubble — they're meta facts, not user prose. -->
@@ -1022,4 +1122,14 @@ function onDocClick(e: MouseEvent) {
     :imgs="lightboxSrc"
     @hide="lightboxVisible = false"
   />
+
+  <!-- 消息右键菜单 -->
+  <Teleport to="body">
+    <div v-if="msgCtx" class="ctx-menu msg-ctx-menu" :style="{ left: msgCtx.x + 'px', top: msgCtx.y + 'px' }">
+      <button class="ctx-item" @click="ctxToggleHide">
+        <component :is="isHidden(msgCtx.msg, msgCtx.idx) ? IconEye : IconEyeOff" />
+        {{ isHidden(msgCtx.msg, msgCtx.idx) ? t('chat.action.unhideMsg') : t('chat.action.hideMsg') }}
+      </button>
+    </div>
+  </Teleport>
 </template>

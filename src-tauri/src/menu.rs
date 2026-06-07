@@ -144,7 +144,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .build()?;
 
     // ---------- Window ----------
-    let trash = MenuItem::with_id(app, "open-trash", "Trash", true, Some("CmdOrCtrl+Ctrl+T"))?;
+    let trash = MenuItem::with_id(app, "open-trash", "Trash", true, Some("CmdOrCtrl+Shift+T"))?;
     let window_menu = SubmenuBuilder::new(app, "Window")
         .item(&PredefinedMenuItem::minimize(app, None)?)
         .item(&PredefinedMenuItem::maximize(app, None)?)

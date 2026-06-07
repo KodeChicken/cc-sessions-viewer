@@ -335,3 +335,29 @@ pub struct StatsError {
     pub request_id: u64,
     pub error: String,
 }
+
+/// 托盘弹窗用的轻量统计：每个 agent 在 today / 7d / month 三个窗口的 token + cost。
+#[derive(Serialize, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayAgentSummary {
+    pub agent: String,
+    pub today_tokens: u64,
+    pub today_cost: f64,
+    pub week_tokens: u64,
+    pub week_cost: f64,
+    pub month_tokens: u64,
+    pub month_cost: f64,
+    pub session_count: usize,
+}
+
+#[derive(Serialize, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayStats {
+    pub agents: Vec<TrayAgentSummary>,
+    pub total_today_tokens: u64,
+    pub total_today_cost: f64,
+    pub total_week_tokens: u64,
+    pub total_week_cost: f64,
+    pub total_month_tokens: u64,
+    pub total_month_cost: f64,
+}

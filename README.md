@@ -30,6 +30,7 @@
 - **Launch arguments** — per-agent CLI flags (e.g. `--dangerously-skip-permissions`) appended on resume / new session
 - **Jump to prompt** — locate button lists all user prompts; click to scroll and flash the target message
 - **Deep stats** — aggregate token spend and cost with live model pricing from LiteLLM; slice by project, model, or tool
+- **Menu bar stats** — macOS tray icon shows at-a-glance Today / 7d / 30d cost and tokens per agent
 - **Live model pricing** — browseable pricing table for Claude / Codex / Gemini, auto-updated from upstream
 - **Flexible export** — single session or batches to offline-readable Markdown, HTML, or lossless JSON
 - **Bookmarks** — pin any folder to the sidebar for quick access, per agent
@@ -65,8 +66,8 @@
       <p align="center"><em>Token & cost analytics by project, model, tool</em></p>
     </td>
     <td width="50%">
-      <img src="docs/screenshots/export.png" alt="Exported HTML preview" />
-      <p align="center"><em>Exported HTML — fully offline, opens in any browser</em></p>
+      <img src="src/assets/sys-stats.png" alt="Menu bar stats — per-agent cost and token overview" />
+      <p align="center"><em>Menu bar stats — per-agent cost & token overview</em></p>
     </td>
   </tr>
   <tr>
@@ -77,6 +78,16 @@
     <td width="50%">
       <img src="docs/screenshots/trash.png" alt="Shared trash with restore" />
       <p align="center"><em>Shared trash — soft-delete with one-click restore</em></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="src/assets/settings.png" alt="Settings — terminal picker and launch arguments" />
+      <p align="center"><em>Settings — terminal picker & launch arguments</em></p>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/export.png" alt="Exported HTML preview" />
+      <p align="center"><em>Exported HTML — fully offline, opens in any browser</em></p>
     </td>
   </tr>
 </table>
@@ -122,7 +133,13 @@ PRs welcome. Please use [Conventional Commits](https://www.conventionalcommits.o
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=jerrywu001/cc-sessions-viewer&type=Date)](https://www.star-history.com/#cc-sessions-viewer&Date)
+<a href="https://www.star-history.com/?type=date&repos=jerrywu001/cc-sessions-viewer">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jerrywu001/cc-sessions-viewer&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jerrywu001/cc-sessions-viewer&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jerrywu001/cc-sessions-viewer&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## License
 

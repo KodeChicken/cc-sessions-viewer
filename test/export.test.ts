@@ -225,7 +225,7 @@ describe('messagesToHtml', () => {
 
   it('wraps a user message body in a collapsible box', async () => {
     const html = await messagesToHtml(session(), [msg('user', [text('hi')])], 'claude')
-    expect(html).toContain('<div class="msg user">')
+    expect(html).toContain('class="msg user"')
     expect(html).toContain('collapsible-box')
   })
 
@@ -319,7 +319,7 @@ describe('messagesToHtml', () => {
       msg('user', [blk({ kind: 'tool_result', toolId: 'w1', filePath: '/a.ts', text: 'done' })]),
     ]
     const html = await messagesToHtml(session(), messages, 'claude')
-    expect(html).toContain('<div class="msg tool">')
+    expect(html).toContain('class="msg tool"')
   })
 
   it('renders an image as an <img> tag', async () => {
@@ -352,7 +352,7 @@ describe('messagesToHtml', () => {
       [msg('user', [text('<system-reminder>The user named this session "X". y</system-reminder>')])],
       'claude',
     )
-    expect(html).toContain('<div class="msg system">')
+    expect(html).toContain('class="msg system"')
   })
 
   it('reflects the active theme in the data-theme attribute', async () => {

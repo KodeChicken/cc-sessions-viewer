@@ -178,50 +178,47 @@ describe('checkUpdate', () => {
     vi.stubGlobal('fetch', vi.fn(impl))
   }
 
-  function jsonResponse(body: unknown, init: { status?: number } = {}) {
+  function svgBadge(version: string) {
+    return `<svg><g><text>release</text><text>v${version}</text></g></svg>`
+  }
+
+  function textResponse(body: string, init: { status?: number } = {}) {
     return {
       ok: (init.status ?? 200) < 400,
       status: init.status ?? 200,
-      json: async () => body,
+      text: async () => body,
     } as Response
   }
 
   it('reports hasUpdate=true when remote tag is newer', async () => {
     invoke.mockResolvedValueOnce('0.1.1')
-    mockFetch(async () =>
-      jsonResponse({ tag_name: 'v0.2.0', html_url: 'https://x/release' }),
-    )
+    mockFetch(async () => textResponse(svgBadge('0.2.0')))
     const r = await api.checkUpdate()
     expect(r).toEqual({
       current: '0.1.1',
       latest: '0.2.0',
       hasUpdate: true,
-      htmlUrl: 'https://x/release',
+      htmlUrl: 'https://github.com/jerrywu001/cc-sessions-viewer/releases/latest',
     })
   })
 
   it('reports hasUpdate=false when versions match', async () => {
     invoke.mockResolvedValueOnce('0.1.1')
-    mockFetch(async () => jsonResponse({ tag_name: 'v0.1.1' }))
+    mockFetch(async () => textResponse(svgBadge('0.1.1')))
     const r = await api.checkUpdate()
     expect(r.hasUpdate).toBe(false)
     expect(r.latest).toBe('0.1.1')
   })
 
-  it('treats 404 from /releases/latest as up-to-date (no releases yet)', async () => {
+  it('treats 404 as an error (shields.io unavailable)', async () => {
     invoke.mockResolvedValueOnce('0.1.0')
-    mockFetch(async () => jsonResponse({ message: 'Not Found' }, { status: 404 }))
-    const r = await api.checkUpdate()
-    expect(r).toEqual({
-      current: '0.1.0',
-      latest: '0.1.0',
-      hasUpdate: false,
-    })
+    mockFetch(async () => textResponse('Not Found', { status: 404 }))
+    await expect(api.checkUpdate()).rejects.toThrow(/404/)
   })
 
   it('throws on other HTTP errors so the caller can surface the failure', async () => {
     invoke.mockResolvedValueOnce('0.1.0')
-    mockFetch(async () => jsonResponse({ message: 'rate limited' }, { status: 503 }))
+    mockFetch(async () => textResponse('rate limited', { status: 503 }))
     await expect(api.checkUpdate()).rejects.toThrow(/503/)
   })
 })

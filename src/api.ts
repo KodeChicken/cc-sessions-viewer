@@ -8,6 +8,7 @@ import type {
   StatsRange,
   StatsScope,
   TrashItem,
+  TrayStats,
   SearchHit,
   UsageSummary,
 } from './types'
@@ -186,6 +187,8 @@ export const ptyResize = (id: number, cols: number, rows: number) =>
 /** 强杀子进程并清理 PTY；幂等，已死的 id 也安全。 */
 export const ptyKill = (id: number) => invoke<void>('pty_kill', { id })
 
+export const trayQuickStats = () => invoke<TrayStats>('tray_quick_stats')
+
 export interface UpdateInfo {
   current: string
   latest: string
@@ -198,17 +201,11 @@ export const appVersion = () => invoke<string>('app_version')
 // 仓库地址直接写死 —— 与 src/App.vue 里 REPO_URL 同源。GitHub /releases/latest 已经
 // 过滤掉 draft / prerelease，所以拿到的就是当前稳定版。Tauri WKWebView 自带 fetch，
 // 没有 CSP 限制（tauri.conf.json csp=null），不需要在 Rust 侧加 HTTP client 依赖。
-const RELEASES_LATEST_URL =
-  'https://api.github.com/repos/jerrywu001/cc-sessions-viewer/releases/latest'
+const SHIELDS_VERSION_URL =
+  'https://img.shields.io/github/v/release/jerrywu001/cc-sessions-viewer.svg'
+const RELEASE_PAGE_URL =
+  'https://github.com/jerrywu001/cc-sessions-viewer/releases/latest'
 
-interface GhReleaseLatest {
-  tag_name?: string
-  name?: string
-  html_url?: string
-}
-
-// 简易 semver 比较：把 "v0.1.1" / "0.1.1" 拆成 [0,1,1] 后逐位比较。
-// 不处理 -alpha.x 之类的预发后缀；当前 release 流程只发数字标签，足够用。
 function compareVer(a: string, b: string): number {
   const pa = a.replace(/^v/i, '').split(/[.-]/).map((x) => parseInt(x, 10) || 0)
   const pb = b.replace(/^v/i, '').split(/[.-]/).map((x) => parseInt(x, 10) || 0)
@@ -223,24 +220,16 @@ function compareVer(a: string, b: string): number {
 
 export async function checkUpdate(): Promise<UpdateInfo> {
   const current = await appVersion()
-  const res = await fetch(RELEASES_LATEST_URL, {
-    headers: { Accept: 'application/vnd.github+json' },
-  })
-  if (!res.ok) {
-    // 404 = 仓库尚未发布过 release —— 当作"已是最新"，不抛错，避免吓人。
-    if (res.status === 404) {
-      return { current, latest: current, hasUpdate: false }
-    }
-    throw new Error(`HTTP ${res.status}`)
-  }
-  const data = (await res.json()) as GhReleaseLatest
-  const tag = (data.tag_name ?? data.name ?? '').trim()
-  if (!tag) return { current, latest: current, hasUpdate: false }
-  const latest = tag.replace(/^v/i, '')
+  const res = await fetch(SHIELDS_VERSION_URL)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const svg = await res.text()
+  const m = svg.match(/>v?([\d.]+)<\/text>\s*<\/g>/)
+  if (!m) return { current, latest: current, hasUpdate: false }
+  const latest = m[1]
   return {
     current,
     latest,
     hasUpdate: compareVer(latest, current) > 0,
-    htmlUrl: data.html_url,
+    htmlUrl: RELEASE_PAGE_URL,
   }
 }

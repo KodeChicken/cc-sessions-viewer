@@ -30,6 +30,7 @@
 - **启动参数** — 为每个 agent 单独配置 CLI 参数（如 `--dangerously-skip-permissions`），恢复/新建会话时自动追加
 - **定位提问** — 聊天标题栏的定位按钮列出所有用户提问，点击即滚动到目标消息并闪烁高亮
 - **深度统计** — 基于 LiteLLM 实时价目聚合 Token 消耗与成本，按项目/模型/工具多维分析
+- **菜单栏统计** — macOS 托盘图标一览各 agent 的 Today / 7d / 30d 花费与 Token 量
 - **实时模型价格** — 可浏览的 Claude / Codex / Gemini 价格表，数据源自动更新
 - **灵活导出** — 单会话或批量导出为离线可读的 Markdown / HTML / 无损 JSON
 - **书签** — 将任意文件夹固定到侧栏快速访问，按 agent 独立管理
@@ -65,8 +66,8 @@
       <p align="center"><em>按项目 · 模型 · 工具维度分析 Token 与成本</em></p>
     </td>
     <td width="50%">
-      <img src="docs/screenshots/export.png" alt="浏览器中预览导出的 HTML" />
-      <p align="center"><em>导出 HTML — 完全离线，浏览器直接打开</em></p>
+      <img src="src/assets/sys-stats.png" alt="菜单栏统计 — 各 agent 花费与 Token 概览" />
+      <p align="center"><em>菜单栏统计 — 各 agent 花费与 Token 概览</em></p>
     </td>
   </tr>
   <tr>
@@ -77,6 +78,16 @@
     <td width="50%">
       <img src="docs/screenshots/trash.png" alt="共享回收站与恢复" />
       <p align="center"><em>共享回收站 — 软删除，一键恢复</em></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="src/assets/settings.png" alt="设置 — 终端选择与启动参数" />
+      <p align="center"><em>设置 — 终端选择与启动参数</em></p>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/export.png" alt="浏览器中预览导出的 HTML" />
+      <p align="center"><em>导出 HTML — 完全离线，浏览器直接打开</em></p>
     </td>
   </tr>
 </table>
@@ -122,7 +133,13 @@ npm run tauri build    # 打包
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=jerrywu001/cc-sessions-viewer&type=Date)](https://www.star-history.com/#cc-sessions-viewer&Date)
+<a href="https://www.star-history.com/?type=date&repos=jerrywu001/cc-sessions-viewer">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jerrywu001/cc-sessions-viewer&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jerrywu001/cc-sessions-viewer&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jerrywu001/cc-sessions-viewer&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## License
 

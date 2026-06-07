@@ -6,6 +6,14 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.1.5]
+
+### Added
+
+- **Menu bar stats (macOS)** — tray icon opens a native NSMenu with per-agent cost and token cards. Each card shows Today / 7 Days / 30 Days spend and token count, styled with brand-colored accent bars (Claude orange, Codex teal, Gemini purple). Auto-refreshes on every menu open with an animated spinner on the Refresh button. Background refresh every 5 minutes.
+- **Hide messages via right-click** — right-click any message in the chat view to toggle its visibility. Hidden messages collapse into a subtle placeholder; a "Show all" action in the chat toolbar restores them. Per-session, persisted to localStorage.
+- **Settings & menu bar stats screenshots** — added to all three READMEs (EN / 中文 / 日本語).
+
 ## [v0.1.4]
 
 ### Added

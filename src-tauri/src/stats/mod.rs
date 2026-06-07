@@ -25,4 +25,5 @@ pub mod classifier;
 pub mod pricing;
 pub mod shell;
 pub mod stream;
+pub mod tray;
 pub mod types;

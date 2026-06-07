@@ -30,6 +30,7 @@
 - **起動引数** — エージェントごとに CLI フラグ（例：`--dangerously-skip-permissions`）を設定、再開・新規作成時に自動追加
 - **プロンプトへジャンプ** — ロケートボタンで全ユーザープロンプトを一覧表示、クリックで対象メッセージへスクロール＆ハイライト
 - **詳細な統計** — LiteLLM のリアルタイム料金でトークン消費とコストを集計、プロジェクト/モデル/ツール別に分析
+- **メニューバー統計** — macOS トレイアイコンで各エージェントの Today / 7d / 30d コストとトークン量を一覧表示
 - **リアルタイム料金表** — Claude / Codex / Gemini の料金テーブルを上流から自動更新
 - **柔軟なエクスポート** — 単一または複数セッションをオフラインで読める Markdown / HTML / 可逆 JSON としてエクスポート
 - **ブックマーク** — 任意のフォルダをサイドバーにピン留め、エージェントごとに管理
@@ -65,8 +66,8 @@
       <p align="center"><em>プロジェクト · モデル · ツール別のトークン・コスト分析</em></p>
     </td>
     <td width="50%">
-      <img src="docs/screenshots/export.png" alt="エクスポート HTML のプレビュー" />
-      <p align="center"><em>エクスポート HTML — 完全オフライン、ブラウザで開ける</em></p>
+      <img src="src/assets/sys-stats.png" alt="メニューバー統計 — 各エージェントのコストとトークン概要" />
+      <p align="center"><em>メニューバー統計 — 各エージェントのコストとトークン概要</em></p>
     </td>
   </tr>
   <tr>
@@ -77,6 +78,16 @@
     <td width="50%">
       <img src="docs/screenshots/trash.png" alt="共有ゴミ箱と復元" />
       <p align="center"><em>共有ゴミ箱 — ソフト削除とワンクリック復元</em></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="src/assets/settings.png" alt="設定 — ターミナル選択と起動引数" />
+      <p align="center"><em>設定 — ターミナル選択と起動引数</em></p>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/export.png" alt="エクスポート HTML のプレビュー" />
+      <p align="center"><em>エクスポート HTML — 完全オフライン、ブラウザで開ける</em></p>
     </td>
   </tr>
 </table>
@@ -122,7 +133,13 @@ PR 歓迎。[Conventional Commits](https://www.conventionalcommits.org/)（`feat
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=jerrywu001/cc-sessions-viewer&type=Date)](https://www.star-history.com/#cc-sessions-viewer&Date)
+<a href="https://www.star-history.com/?type=date&repos=jerrywu001/cc-sessions-viewer">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jerrywu001/cc-sessions-viewer&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jerrywu001/cc-sessions-viewer&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jerrywu001/cc-sessions-viewer&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## ライセンス
 

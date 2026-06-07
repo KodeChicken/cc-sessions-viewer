@@ -51,6 +51,14 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSButton", "NSWindow", "NSToolbar"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std", "NSGeometry", "NSString", "NSDictionary", "NSAttributedString",
+] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std", "NSResponder", "NSView", "NSButton", "NSWindow", "NSToolbar",
+    "NSMenu", "NSMenuItem", "NSFont", "NSColor",
+    "NSStatusBar", "NSStatusBarButton", "NSStatusItem",
+    "NSImage", "NSGraphics", "NSParagraphStyle",
+    "NSTextField", "NSControl", "NSText", "NSStackView", "NSBox",
+] }
 

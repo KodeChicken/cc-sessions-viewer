@@ -2354,6 +2354,12 @@ details[open] > .block-summary > .chev {
   opacity: 0.4;
   pointer-events: none;
 }
+.chat-head-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border-strong, var(--border));
+  flex-shrink: 0;
+}
 
 /* ============================ TUI tab 条 ============================
  * 紧贴 .main 顶部，跨越所有页面（聊天 / 列表 / 统计 / 回收站 / 欢迎页）。
@@ -3602,6 +3608,27 @@ details[open] > .block-summary > .chev {
   margin: 3px 4px;
   background: var(--border);
 }
+
+/* ---------- Message hide / context menu ---------- */
+.msg-hidden {
+  opacity: 0.35;
+}
+.hidden-badge {
+  font-size: 10px;
+  min-width: 15px;
+  height: 15px;
+  line-height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--text-mute);
+  color: var(--surface);
+  font-weight: 600;
+  text-align: center;
+  position: absolute;
+  top: 1px;
+  right: -2px;
+}
+.icon-btn { position: relative; }
 
 /* ---------- Transition ---------- */
 .fade-enter-active,

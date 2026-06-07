@@ -309,10 +309,10 @@ a:hover { text-decoration: underline; }
   margin: 0 -24px 24px; padding: 24px 24px 16px;
 }
 .header {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 16px; margin: 0 0 12px;
+  display: flex; align-items: center;
+  gap: 8px; margin: 0 0 12px;
 }
-h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; flex: 1; min-width: 0; }
 .theme-toggle {
   appearance: none; background: var(--surface); color: var(--text-dim);
   border: 1px solid var(--border); border-radius: 8px;
@@ -562,6 +562,91 @@ img.msg-image:hover { border-color: var(--border-strong); }
 }
 .fab:hover { background: var(--surface-hover); color: var(--text); border-color: var(--border-strong); }
 .fab[data-hidden="1"] { opacity: 0; pointer-events: none; transform: translateY(8px); }
+
+/* ---- Message hide / context menu ---- */
+.msg[data-hidden] { opacity: 0.35; }
+.msg[data-hidden]:not([data-show-hidden]) { display: none !important; }
+.csv-ctx-menu {
+  position: fixed; z-index: 80; min-width: 176px; padding: 4px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  display: none; flex-direction: column; gap: 1px; user-select: none;
+}
+.csv-ctx-menu.open { display: flex; }
+.csv-ctx-item {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 10px; border-radius: 6px;
+  font-size: 12.5px; color: var(--text); text-align: left;
+  background: none; border: 0; cursor: pointer;
+  transition: background 0.1s;
+}
+.csv-ctx-item:hover { background: var(--surface-hover); }
+.csv-ctx-item svg { width: 13px; height: 13px; color: var(--text-mute); flex-shrink: 0; }
+.hide-toggle {
+  appearance: none; background: var(--surface); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
+  display: none; align-items: center; gap: 6px;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.hide-toggle[data-count]:not([data-count="0"]) { display: inline-flex; }
+.hide-toggle:hover { background: var(--surface-hover); color: var(--text); border-color: var(--border-strong); }
+.hide-toggle.active { color: var(--text); border-color: var(--border-strong); }
+
+/* ---- Jump-to-prompt locate menu ---- */
+.locate-wrap { position: relative; display: inline-flex; }
+.locate-btn {
+  appearance: none; background: var(--surface); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.locate-btn:hover { background: var(--surface-hover); color: var(--text); border-color: var(--border-strong); }
+.locate-btn.active { color: var(--text); border-color: var(--border-strong); }
+.locate-btn svg { width: 14px; height: 14px; }
+.locate-panel {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 50;
+  width: 360px; max-height: 420px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+  display: none; flex-direction: column; overflow: hidden;
+}
+.locate-panel.open { display: flex; }
+.locate-panel-search {
+  padding: 8px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.locate-panel-input {
+  width: 100%; appearance: none; border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 13px;
+  color: var(--text); background: var(--surface-2); outline: none;
+}
+.locate-panel-input:focus { border-color: var(--border-strong); }
+.locate-panel-list { overflow-y: auto; padding: 4px; }
+.locate-panel-item {
+  appearance: none; background: transparent; border: 0; color: var(--text);
+  font: inherit; text-align: left; padding: 6px 10px; border-radius: 6px;
+  cursor: pointer; display: flex; align-items: baseline; gap: 8px; width: 100%;
+  transition: background 0.12s;
+}
+.locate-panel-item:hover { background: var(--surface-hover); }
+.locate-panel-idx { flex-shrink: 0; font-size: 11px; font-weight: 600; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+.locate-panel-text { flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.locate-panel-time { flex-shrink: 0; font-size: 11px; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+.locate-panel-empty { padding: 16px; text-align: center; color: var(--text-mute); font-size: 13px; }
+mark.locate-hl { background: rgba(255,213,79,0.55); color: inherit; border-radius: 2px; padding: 0 1px; }
+:root[data-theme="dark"] mark.locate-hl { background: rgba(255,213,79,0.35); }
+
+/* ---- Flash animation for jump-to-prompt ---- */
+.msg.msg-flash > .bubble {
+  animation: msg-flash-glow 1.4s ease;
+  border-radius: 14px;
+}
+@keyframes msg-flash-glow {
+  0% { box-shadow: 0 0 0 0 rgba(255, 178, 71, 0); }
+  18% { box-shadow: 0 0 0 6px rgba(255, 178, 71, 0.32); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 178, 71, 0); }
+}
 `
 
 function buildRuntimeScript(labels: {
@@ -569,9 +654,19 @@ function buildRuntimeScript(labels: {
   less: string
   themeLight: string
   themeDark: string
+  hideLabel: string
+  unhideLabel: string
+  hideMsgLabel: string
+  unhideMsgLabel: string
+  initialHidden: string[]
+  emptyLabel: string
 }): string {
   const L_LIGHT = JSON.stringify(`☀ ${labels.themeLight}`)
   const L_DARK = JSON.stringify(`☾ ${labels.themeDark}`)
+  const L_HIDE = JSON.stringify(labels.hideLabel)
+  const L_UNHIDE = JSON.stringify(labels.unhideLabel)
+  const L_HIDE_MSG = JSON.stringify(labels.hideMsgLabel)
+  const L_UNHIDE_MSG = JSON.stringify(labels.unhideMsgLabel)
   return `
 (function () {
   var KEY = 'csv-export-theme';
@@ -708,6 +803,187 @@ function buildRuntimeScript(labels: {
       if (e.key === 'Escape' && lb.classList.contains('open')) closeLb();
     });
     window.__csvLightbox = openLb;
+
+    // ----- message hide / context menu -----
+    var HIDE_KEY = 'csv-hidden';
+    var L_SHOW_HIDDEN = ${L_HIDE};
+    var L_HIDE_HIDDEN = ${L_UNHIDE};
+    var L_HIDE_MSG = ${L_HIDE_MSG};
+    var L_UNHIDE_MSG = ${L_UNHIDE_MSG};
+    var INITIAL_HIDDEN = ${JSON.stringify(labels.initialHidden)};
+    var hiddenSet = {};
+    try { var raw = localStorage.getItem(HIDE_KEY); if (raw) hiddenSet = JSON.parse(raw); } catch (_) {}
+    for (var hi = 0; hi < INITIAL_HIDDEN.length; hi++) { if (!hiddenSet[INITIAL_HIDDEN[hi]]) hiddenSet[INITIAL_HIDDEN[hi]] = 1; }
+    var showHidden = false;
+    var ctxMenu = document.getElementById('csv-ctx-menu');
+    var ctxLabel = document.getElementById('csv-ctx-label');
+    var ctxToggleBtn = document.getElementById('csv-ctx-toggle');
+    var hideToggle = document.getElementById('hide-toggle');
+    var ctxTarget = null;
+
+    function hiddenCount() {
+      var n = 0; for (var k in hiddenSet) if (hiddenSet[k]) n++; return n;
+    }
+    function saveHidden() {
+      try { localStorage.setItem(HIDE_KEY, JSON.stringify(hiddenSet)); } catch (_) {}
+    }
+    function refreshHiddenUI() {
+      var count = hiddenCount();
+      if (hideToggle) {
+        hideToggle.setAttribute('data-count', String(count));
+        hideToggle.textContent = (showHidden ? '\\u25C9 ' : '\\u25CE ') + count + ' hidden';
+        if (showHidden) hideToggle.classList.add('active');
+        else hideToggle.classList.remove('active');
+      }
+      var msgs = document.querySelectorAll('.msg[data-msg-key]');
+      for (var i = 0; i < msgs.length; i++) {
+        var el = msgs[i];
+        var key = el.getAttribute('data-msg-key');
+        if (hiddenSet[key]) {
+          el.setAttribute('data-hidden', '1');
+          if (showHidden) el.setAttribute('data-show-hidden', '1');
+          else el.removeAttribute('data-show-hidden');
+        } else {
+          el.removeAttribute('data-hidden');
+          el.removeAttribute('data-show-hidden');
+        }
+      }
+    }
+    function closeCtx() { if (ctxMenu) ctxMenu.classList.remove('open'); ctxTarget = null; }
+    if (hideToggle) {
+      hideToggle.addEventListener('click', function () {
+        showHidden = !showHidden;
+        refreshHiddenUI();
+      });
+    }
+    if (ctxToggleBtn) {
+      ctxToggleBtn.addEventListener('click', function () {
+        if (!ctxTarget) return;
+        var key = ctxTarget.getAttribute('data-msg-key');
+        if (hiddenSet[key]) delete hiddenSet[key];
+        else hiddenSet[key] = 1;
+        saveHidden();
+        closeCtx();
+        refreshHiddenUI();
+      });
+    }
+    document.addEventListener('contextmenu', function (e) {
+      var msgEl = e.target.closest('.msg[data-msg-key]');
+      if (!msgEl || msgEl.classList.contains('system')) return;
+      e.preventDefault();
+      ctxTarget = msgEl;
+      var key = msgEl.getAttribute('data-msg-key');
+      var isHidden = !!hiddenSet[key];
+      if (ctxLabel) ctxLabel.textContent = isHidden ? L_UNHIDE_MSG : L_HIDE_MSG;
+      if (ctxMenu) {
+        var W = 180, H = 44;
+        var x = Math.min(e.clientX, window.innerWidth - W - 8);
+        var y = Math.min(e.clientY, window.innerHeight - H - 8);
+        ctxMenu.style.left = x + 'px';
+        ctxMenu.style.top = y + 'px';
+        ctxMenu.classList.add('open');
+      }
+    });
+    document.addEventListener('mousedown', function (e) {
+      if (ctxMenu && ctxMenu.classList.contains('open') && !ctxMenu.contains(e.target)) closeCtx();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeCtx();
+    });
+    document.addEventListener('scroll', closeCtx, { passive: true });
+    refreshHiddenUI();
+
+    // ----- jump-to-prompt locate menu -----
+    var locateBtn = document.getElementById('locate-btn');
+    var locatePanel = document.getElementById('locate-panel');
+    var locateInput = document.getElementById('locate-input');
+    var locateList = document.getElementById('locate-list');
+    var L_EMPTY = ${JSON.stringify(labels.emptyLabel)};
+    var prompts = [];
+    (function buildPrompts() {
+      var userMsgs = document.querySelectorAll('.msg.user[data-msg-key]');
+      var seq = 0;
+      for (var i = 0; i < userMsgs.length; i++) {
+        var el = userMsgs[i];
+        var roleTag = el.querySelector('.role-tag');
+        var timePart = '';
+        if (roleTag) {
+          var parts = roleTag.textContent.split('·');
+          if (parts.length > 1) timePart = parts[parts.length - 1].trim();
+        }
+        var bubble = el.querySelector('.bubble');
+        if (!bubble) continue;
+        var textRun = bubble.querySelector('.text-run, .text');
+        var raw = textRun ? textRun.textContent || '' : '';
+        var plain = raw.replace(/<[^>]*>/g, '').trim();
+        if (!plain) continue;
+        seq++;
+        var text = plain.length > 80 ? plain.slice(0, 80) + '…' : plain;
+        prompts.push({ el: el, seq: seq, text: text, time: timePart });
+      }
+    })();
+    function escHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function renderLocateList(q) {
+      if (!locateList) return;
+      var lower = (q || '').toLowerCase();
+      var items = lower ? prompts.filter(function (p) { return p.text.toLowerCase().indexOf(lower) >= 0; }) : prompts;
+      if (!items.length) {
+        locateList.innerHTML = '<div class="locate-panel-empty">' + escHtml(L_EMPTY) + '</div>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < items.length; i++) {
+        var p = items[i];
+        var label = escHtml(p.text);
+        if (lower) {
+          var esc = lower.replace(/[-\\/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&');
+          var re = new RegExp('(' + esc + ')', 'gi');
+          label = label.replace(re, '<mark class="locate-hl">$1</mark>');
+        }
+        html += '<button class="locate-panel-item" data-locate-idx="' + i + '">' +
+          '<span class="locate-panel-idx">#' + p.seq + '</span>' +
+          '<span class="locate-panel-text">' + label + '</span>' +
+          '<span class="locate-panel-time">' + escHtml(p.time) + '</span>' +
+          '</button>';
+      }
+      locateList.innerHTML = html;
+      // bind click handlers
+      var btns = locateList.querySelectorAll('.locate-panel-item');
+      for (var j = 0; j < btns.length; j++) {
+        (function (idx) {
+          btns[idx].addEventListener('click', function () {
+            closeLocate();
+            items[idx].el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            items[idx].el.classList.add('msg-flash');
+            setTimeout(function () { items[idx].el.classList.remove('msg-flash'); }, 1400);
+          });
+        })(j);
+      }
+    }
+    function closeLocate() {
+      if (locatePanel) locatePanel.classList.remove('open');
+      if (locateBtn) locateBtn.classList.remove('active');
+    }
+    function toggleLocate() {
+      if (!locatePanel) return;
+      var open = locatePanel.classList.contains('open');
+      if (open) { closeLocate(); return; }
+      locatePanel.classList.add('open');
+      if (locateBtn) locateBtn.classList.add('active');
+      if (locateInput) { locateInput.value = ''; locateInput.focus(); }
+      renderLocateList('');
+    }
+    if (locateBtn) locateBtn.addEventListener('click', function (e) { e.stopPropagation(); toggleLocate(); });
+    if (locateInput) locateInput.addEventListener('input', function () { renderLocateList(locateInput.value); });
+    if (locateInput) locateInput.addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.stopPropagation(); closeLocate(); } });
+    document.addEventListener('mousedown', function (e) {
+      if (locatePanel && locatePanel.classList.contains('open')) {
+        var wrap = locateBtn ? locateBtn.parentElement : null;
+        if (wrap && !wrap.contains(e.target)) closeLocate();
+      }
+    });
   });
 })();
 `
@@ -818,14 +1094,16 @@ function blockToHtml(
 
 function msgToHtml(
   m: Msg,
+  idx: number,
   agent: Agent,
   ctx: { resultByToolId: Map<string, Block>; inlinedIds: Set<string> },
 ): string {
+  const key = m.uuid || `idx:${idx}`
   // System event row — centered, no avatar, no bubble.
   const sysText = systemEventText(m)
   if (sysText) {
     const ts = m.timestamp ? ` · ${escapeHtml(formatTime(m.timestamp))}` : ''
-    return `<div class="msg system"><div class="system-event">${escapeHtml(sysText)}${ts}</div></div>`
+    return `<div class="msg system" data-msg-key="${escapeHtml(key)}"><div class="system-event">${escapeHtml(sysText)}${ts}</div></div>`
   }
   const displayRole = isToolOnly(m) ? 'tool' : m.role
   const tag = [
@@ -842,7 +1120,7 @@ function msgToHtml(
     displayRole === 'user'
       ? `<div class="collapsible-box" data-collapsible>${body}</div>`
       : body
-  return `<div class="msg ${displayRole}">
+  return `<div class="msg ${displayRole}" data-msg-key="${escapeHtml(key)}">
   <div class="avatar">${avatarSvg(displayRole, agent)}</div>
   <div class="bubble">
     <div class="role-tag">${tag}</div>
@@ -915,6 +1193,7 @@ export async function messagesToHtml(
   session: SessionMeta,
   messages: Msg[],
   agent: Agent,
+  hiddenKeys?: string[],
 ): Promise<string> {
   const title = escapeHtml(session.title)
   const { u, a } = computeStats(messages)
@@ -937,19 +1216,28 @@ export async function messagesToHtml(
   // 先生成 raw body（含 .md-mermaid 占位符），再一次性烤 SVG 进去。
   // 收尾才烤可以让多个 mermaid 块共用同一个 mermaid runtime 初始化。
   const rawBody = messages
-    .filter((m) => !isCaveatOnlyMsg(m))
-    .map((m) => msgToHtml(m, agent, ctx))
+    .map((m, i) => isCaveatOnlyMsg(m) ? '' : msgToHtml(m, i, agent, ctx))
     .filter(Boolean)
     .join('\n')
   const body = await prerenderMermaidInHtml(rawBody)
   const theme = currentTheme()
   const themeLight = t('export.theme.light')
   const themeDark = t('export.theme.dark')
+  const hideLabel = t('chat.action.showHidden')
+  const unhideLabel = t('chat.action.hideHidden')
+  const hideMsgLabel = t('chat.action.hideMsg')
+  const unhideMsgLabel = t('chat.action.unhideMsg')
   const runtimeScript = buildRuntimeScript({
     more: t('chat.collapse.more'),
     less: t('chat.collapse.less'),
     themeLight,
     themeDark,
+    hideLabel,
+    unhideLabel,
+    hideMsgLabel,
+    unhideMsgLabel,
+    initialHidden: hiddenKeys ?? [],
+    emptyLabel: t('chat.empty'),
   })
   const initialBtnLabel = theme === 'dark' ? `☀ ${escapeHtml(themeLight)}` : `☾ ${escapeHtml(themeDark)}`
   const topLabel = escapeHtml(t('chat.action.top'))
@@ -965,6 +1253,18 @@ export async function messagesToHtml(
 <div class="sticky-head">
   <div class="header">
     <h1>${title}</h1>
+    <div class="locate-wrap">
+      <button id="locate-btn" class="locate-btn" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/></svg>
+      </button>
+      <div id="locate-panel" class="locate-panel">
+        <div class="locate-panel-search">
+          <input id="locate-input" class="locate-panel-input" type="text" placeholder="${escapeHtml(t('chat.tb.locate.placeholder'))}">
+        </div>
+        <div id="locate-list" class="locate-panel-list"></div>
+      </div>
+    </div>
+    <button id="hide-toggle" class="hide-toggle" type="button" data-count="0"></button>
     <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle theme">${initialBtnLabel}</button>
   </div>
   <div class="meta">${meta}</div>
@@ -973,6 +1273,12 @@ ${body}
 <div class="fabs">
   <button id="fab-top" class="fab" type="button" aria-label="${topLabel}" title="${topLabel}" data-hidden="1">${AVATAR_SVG.arrowUp}</button>
   <button id="fab-bottom" class="fab" type="button" aria-label="${bottomLabel}" title="${bottomLabel}">${AVATAR_SVG.arrowDown}</button>
+</div>
+<div id="csv-ctx-menu" class="csv-ctx-menu">
+  <button id="csv-ctx-toggle" class="csv-ctx-item" type="button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>
+    <span id="csv-ctx-label"></span>
+  </button>
 </div>
 <script>${runtimeScript}</script>
 </body>
@@ -1032,8 +1338,9 @@ export async function exportHtml(
   session: SessionMeta,
   messages: Msg[],
   agent: Agent,
+  hiddenKeys?: string[],
 ): Promise<string | null> {
-  const html = await messagesToHtml(session, messages, agent)
+  const html = await messagesToHtml(session, messages, agent, hiddenKeys)
   return pickAndWrite(html, `${sanitizeFilename(session.title)}.html`, 'html')
 }
 

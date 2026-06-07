@@ -220,3 +220,24 @@ export interface TrashItem {
   title: string
   size: number
 }
+
+export interface TrayAgentSummary {
+  agent: string
+  todayTokens: number
+  todayCost: number
+  weekTokens: number
+  weekCost: number
+  monthTokens: number
+  monthCost: number
+  sessionCount: number
+}
+
+export interface TrayStats {
+  agents: TrayAgentSummary[]
+  totalTodayTokens: number
+  totalTodayCost: number
+  totalWeekTokens: number
+  totalWeekCost: number
+  totalMonthTokens: number
+  totalMonthCost: number
+}

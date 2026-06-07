@@ -83,6 +83,7 @@ const showStats = ref(false)
 const showExportHistory = ref(false)
 const showPricing = ref(false)
 const showSettings = ref(false)
+const settingsTab = ref<'general' | 'advanced' | 'shortcuts'>('general')
 const sidebarOpen = ref(true)
 const refreshing = ref(false)
 function toggleSidebar() {
@@ -1271,12 +1272,20 @@ function exportFn(kind: ExportKind) {
   return kind === 'md' ? exportMarkdown : kind === 'json' ? exportJson : exportHtml
 }
 
+function getHiddenKeys(sessionPath: string): string[] {
+  try {
+    const raw = localStorage.getItem(`hidden:${sessionPath}`)
+    return raw ? JSON.parse(raw) : []
+  } catch { return [] }
+}
+
 async function exportSession(kind: ExportKind) {
   if (!openSession.value) return
   const s = openSession.value
   const a = chatAgent.value
   try {
-    const path = await exportFn(kind)(s, chatMsgs.value, a)
+    const hiddenKeys = kind === 'html' ? getHiddenKeys(s.path) : undefined
+    const path = await exportFn(kind)(s, chatMsgs.value, a, hiddenKeys)
     // 用户在 Save As 对话框点了取消时返回 null —— 静默放弃
     if (!path) return
     recordExport({ path: s.path, title: s.title, agent: a, sessionId: s.id, cwd: s.cwd, exportedAt: Date.now() })
@@ -1441,21 +1450,44 @@ onMounted(() => {
   window.addEventListener('blur', closeCtxMenu)
   document.addEventListener('wheel', closeCtxMenu, { passive: true })
 
-  // 全局搜索：⌘⇧F (macOS) / Ctrl⇧F (Win/Linux)；与文本输入框里的 ⌘F 互不冲突。
-  // 在 capture 阶段拦截，确保不会被任何子组件 stopPropagation 掉。
-  // 注：macOS 上若菜单 accelerator 抢先触发会走 menu://action，这条监听吃不到事件；
-  // 二者结果相同（都开浮层），保留这条是给菜单未注册成功时兜底。
+  // JS-side keyboard shortcuts — fallback for when native menu accelerators
+  // don't fire (Windows WebView2 swallows some Ctrl combos, Linux varies).
+  // Capture phase so child stopPropagation can't block us.
+  const _isMac = /Mac/i.test(navigator.platform)
   window.addEventListener(
     'keydown',
     (e) => {
-      if (e.key !== 'f' && e.key !== 'F') return
-      if (!e.shiftKey) return
-      const isMac = /Mac/i.test(navigator.platform)
-      const want = isMac ? e.metaKey : e.ctrlKey
-      const other = isMac ? e.ctrlKey : e.metaKey
-      if (!want || other || e.altKey) return
-      e.preventDefault()
-      openGlobalSearch()
+      const mod = _isMac ? e.metaKey : e.ctrlKey
+      const otherMod = _isMac ? e.ctrlKey : e.metaKey
+      if (!mod || otherMod || e.altKey) return
+
+      const key = e.key.toLowerCase()
+      if (key === 'f' && e.shiftKey) {
+        e.preventDefault(); openGlobalSearch()
+      } else if (key === 'f' && !e.shiftKey) {
+        e.preventDefault(); focusSearchBox()
+      } else if (key === 'g' && !e.shiftKey) {
+        e.preventDefault(); chatNavigate(1)
+      } else if (key === 'g' && e.shiftKey) {
+        e.preventDefault(); chatNavigate(-1)
+      } else if (key === 'n' && !e.shiftKey) {
+        e.preventDefault(); newSession()
+      } else if (key === 'e' && !e.shiftKey) {
+        e.preventDefault()
+        if (openSession.value) exportSession('md')
+      } else if (key === 'b' && !e.shiftKey) {
+        e.preventDefault(); toggleSidebar()
+      } else if (key === 's' && e.shiftKey) {
+        e.preventDefault(); openStats()
+      } else if (key === ',' && !e.shiftKey) {
+        e.preventDefault(); settingsTab.value = 'general'; showSettings.value = true
+      } else if (key === 't' && e.shiftKey) {
+        e.preventDefault(); loadTrash()
+      } else if ((key === '/' || key === '?') && !e.shiftKey) {
+        e.preventDefault()
+        showSettings.value = true
+        settingsTab.value = 'shortcuts'
+      }
     },
     true,
   )
@@ -1809,7 +1841,8 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       <SettingsModal
         v-if="showSettings"
         :cache-bytes="cacheBytes"
-        @close="showSettings = false"
+        :initial-tab="settingsTab"
+        @close="showSettings = false; settingsTab = 'general'"
         @clear-cache="onClearCache"
       />
     </Transition>

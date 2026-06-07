@@ -28,7 +28,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::types::{
-    AgentStats, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, UsageSummary,
+    AgentStats, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, TrayStats, UsageSummary,
 };
 use crate::util::is_jsonl;
 
@@ -634,12 +634,7 @@ fn detect_terminals() -> Vec<String> {
         if Path::new("/Applications/Ghostty.app").exists() {
             found.push("ghostty".to_string());
         }
-        if std::process::Command::new("which")
-            .arg("cmux")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
+        if Path::new("/Applications/cmux.app").exists() {
             found.push("cmux".to_string());
         }
         if Path::new("/Applications/Warp.app").exists() {
@@ -779,6 +774,15 @@ fn list_pricing() -> Vec<stats::pricing::PricingEntry> {
     stats::pricing::list_for_ui()
 }
 
+/// 托盘弹窗用的快速统计：一次扫描三个时间窗口，返回 per-agent 的 token + cost。
+/// async + spawn_blocking —— 扫描耗时取决于会话数量（几百毫秒到几秒），不能阻塞主线程。
+#[tauri::command]
+async fn tray_quick_stats() -> Result<TrayStats, String> {
+    tauri::async_runtime::spawn_blocking(stats::tray::quick_stats)
+        .await
+        .map_err(|e| format!("join: {e}"))?
+}
+
 /// Attach an empty `NSToolbar` with `unifiedCompact` style so AppKit grows the
 /// titlebar to ~40px and auto-centers the traffic lights vertically inside it
 /// — matching our 40px CSS topbar. This is the SUPPORTED AppKit way to extend
@@ -866,6 +870,7 @@ pub fn run() {
             refresh_pricing,
             pricing_status,
             list_pricing,
+            tray_quick_stats,
         ])
         .setup(|app| {
             // 启动期后台拉一次 LiteLLM 模型价格表，新模型上架不必发版。

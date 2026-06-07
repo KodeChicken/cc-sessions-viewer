@@ -60,14 +60,16 @@ const shortcuts = [
   { key: k([mod, 'E']), label: 'settings.shortcut.exportSession' },
   { key: k([mod, 'B']), label: 'settings.shortcut.toggleSidebar' },
   { key: k([mod, shift, 'S']), label: 'settings.shortcut.stats' },
+  { key: k([mod, shift, 'T']), label: 'settings.shortcut.trash' },
   { key: k([mod, ',']), label: 'settings.shortcut.settings' },
+  { key: k([mod, '/']), label: 'settings.shortcut.shortcuts' },
   { key: 'Esc', label: 'settings.shortcut.escape' },
 ]
 
-const props = defineProps<{ cacheBytes: number }>()
+const props = defineProps<{ cacheBytes: number; initialTab?: SettingsTab }>()
 const emit = defineEmits<{ close: []; clearCache: [] }>()
 
-const activeTab = ref<SettingsTab>('general')
+const activeTab = ref<SettingsTab>(props.initialTab ?? 'general')
 
 const cacheLabel = computed(() =>
   props.cacheBytes > 0 ? formatSize(props.cacheBytes) : '0 B',
