@@ -1898,6 +1898,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
         @view-click="onTuiViewClick"
         @tab-closed="onTuiTabClosed"
         @tab-rename="openRenameFromTuiTab"
+        @new-session="newSession"
       />
 
       <!-- view 层 / TUI 层 同时存在；activeUiId === null 时只显示 view，

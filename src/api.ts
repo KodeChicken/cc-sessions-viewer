@@ -127,6 +127,10 @@ export const emptyTrash = () => invoke<void>('empty_trash')
 export const revealInFinder = (path: string) =>
   invoke<void>('reveal_in_finder', { path })
 
+/** 打开本地文件；若 path 带 `:line[:column]`，后端会尽量跳到对应位置。 */
+export const openLocalPath = (path: string) =>
+  invoke<void>('open_local_path', { path })
+
 /** 在系统默认浏览器中打开一个外部链接（仅 http/https）。 */
 export const openUrl = (url: string) => invoke<void>('open_url', { url })
 

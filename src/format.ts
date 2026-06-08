@@ -8,10 +8,46 @@ function escapeHtml(s: string): string {
     .replace(/>/g, '&gt;')
 }
 
+function escapeHtmlAttr(s: string): string {
+  return escapeHtml(s).replace(/"/g, '&quot;')
+}
+
 const URL_RE = /https?:\/\/[^\s<>&)}\]]+/g
+const MD_LINK_RE = /\[([^\]\n]+)\]\((<[^>\n]+>|[^)\n]+)\)/g
+
+function isExternalUrl(target: string): boolean {
+  return /^https?:\/\//i.test(target)
+}
+
+function isAbsoluteLocalPath(target: string): boolean {
+  return (
+    target.startsWith('/') ||
+    /^[A-Za-z]:[\\/]/.test(target) ||
+    target.startsWith('\\\\')
+  )
+}
+
+function renderMarkdownLink(label: string, rawTarget: string): string {
+  const target = rawTarget.trim().replace(/^<|>$/g, '')
+  const text = escapeHtml(label)
+  if (isAbsoluteLocalPath(target)) {
+    const escapedTarget = escapeHtmlAttr(target)
+    return `<a href="${escapedTarget}" class="local-file-link" data-local-file-link="1" data-local-target="${escapedTarget}" title="${escapedTarget}">${text}</a>`
+  }
+  if (isExternalUrl(target)) {
+    const escapedTarget = escapeHtmlAttr(target)
+    return `<a href="${escapedTarget}" target="_blank" rel="noopener">${text}</a>`
+  }
+  return `<a href="${escapeHtmlAttr(target)}">${text}</a>`
+}
 
 function inline(text: string): string {
-  let s = escapeHtml(text)
+  const links: string[] = []
+  let s = text.replace(MD_LINK_RE, (_m, label, target) => {
+    const idx = links.push(renderMarkdownLink(label, target)) - 1
+    return `\u0001LINK${idx}\u0001`
+  })
+  s = escapeHtml(s)
   s = s.replace(URL_RE, (url) => `<a href="${url}" target="_blank" rel="noopener">${url}</a>`)
   s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>')
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
@@ -19,6 +55,9 @@ function inline(text: string): string {
   s = s.replace(/^##\s+(.+)$/gm, '<h3>$1</h3>')
   s = s.replace(/^#\s+(.+)$/gm, '<h3>$1</h3>')
   s = s.replace(/\n/g, '<br>')
+  if (links.length) {
+    s = s.replace(/\u0001LINK(\d+)\u0001/g, (_m, n) => links[Number(n)] ?? '')
+  }
   return s
 }
 
@@ -145,11 +184,30 @@ function renderTableHtml(
   return `<div class="md-table-wrap"><table class="md-table"><thead>${head}</thead><tbody>${body}</tbody></table></div>`
 }
 
-type MdSegment = { kind: 'table'; html: string } | { kind: 'text'; text: string }
+const BULLET_ITEM_RE = /^\s*[-*]\s+(.+?)\s*$/
 
-/** 把一段非代码块文本按 markdown table 切片。非 table 部分保留原换行，
+function isBulletItem(line: string): boolean {
+  return BULLET_ITEM_RE.test(line)
+}
+
+function bulletItemText(line: string): string {
+  const m = BULLET_ITEM_RE.exec(line)
+  return m?.[1] ?? line.trim()
+}
+
+function renderBulletListHtml(items: string[]): string {
+  const body = items.map((item) => `<li>${inline(item)}</li>`).join('')
+  return `<ul class="md-list">${body}</ul>`
+}
+
+type MdSegment =
+  | { kind: 'table'; html: string }
+  | { kind: 'list'; html: string }
+  | { kind: 'text'; text: string }
+
+/** 把一段非代码块文本按 markdown table / bullet list 切片。未命中的部分保留原换行，
  *  之后交由 inline() 处理。 */
-function extractTables(text: string): MdSegment[] {
+function extractMarkdownBlocks(text: string): MdSegment[] {
   const lines = text.split('\n')
   const segs: MdSegment[] = []
   let buf: string[] = []
@@ -180,6 +238,18 @@ function extractTables(text: string): MdSegment[] {
       i = j
       continue
     }
+    if (isBulletItem(line)) {
+      flushBuf()
+      const items: string[] = [bulletItemText(line)]
+      let j = i + 1
+      while (j < lines.length && isBulletItem(lines[j])) {
+        items.push(bulletItemText(lines[j]))
+        j++
+      }
+      segs.push({ kind: 'list', html: renderBulletListHtml(items) })
+      i = j
+      continue
+    }
     buf.push(line)
     i++
   }
@@ -204,11 +274,12 @@ export function renderText(raw: string): string {
         // 切换时可以重新渲染。
         html += `<div class="md-mermaid" data-source="${encodeURIComponent(src)}"><pre class="md-mermaid-source">${escapeHtml(src)}</pre></div>`
       } else {
-        html += `<pre class="code-block"><code>${escapeHtml(src)}</code></pre>`
+        html += `<pre class="code-block"${lang ? ` data-lang="${escapeHtml(lang)}"` : ''}><code>${escapeHtml(src)}</code></pre>`
       }
     } else if (part) {
-      for (const seg of extractTables(part)) {
+      for (const seg of extractMarkdownBlocks(part)) {
         if (seg.kind === 'table') html += seg.html
+        else if (seg.kind === 'list') html += seg.html
         else if (seg.text) html += `<div class="text-run">${inline(seg.text)}</div>`
       }
     }

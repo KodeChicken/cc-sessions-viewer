@@ -62,7 +62,7 @@ describe('TerminalStrip', () => {
     tabs.value = [t]
     const wrapper = factory()
 
-    await wrapper.findAll('.term-tab').at(-1)!.trigger('contextmenu', {
+    await wrapper.findAll('.term-tab').slice(-1)[0].trigger('contextmenu', {
       clientX: 80,
       clientY: 40,
     })
@@ -71,19 +71,11 @@ describe('TerminalStrip', () => {
       .findAll('.term-tab-ctx-menu .ctx-item')
       .map((item) => item.attributes('data-menu-action'))
     expect(actions).toEqual([
-      'native-back',
-      'native-reload',
-      'native-save-as',
-      'native-print',
-      'native-more-tools',
-      'native-share',
       'tab-rename',
       'tab-close',
       'tab-close-others',
       'tab-close-project',
     ])
-    expect(wrapper.find('[data-menu-action="native-reload"]').text()).toContain('Ctrl+R')
-    expect(wrapper.find('[data-menu-action="native-print"]').text()).toContain('Ctrl+P')
     expect(wrapper.emitted('tabRename')).toBeUndefined()
   })
 
@@ -92,7 +84,7 @@ describe('TerminalStrip', () => {
     tabs.value = [t]
     const wrapper = factory()
 
-    await wrapper.findAll('.term-tab').at(-1)!.trigger('click')
+    await wrapper.findAll('.term-tab').slice(-1)[0].trigger('click')
 
     expect(wrapper.find('.term-tab-more').exists()).toBe(false)
     expect(wrapper.find('.term-tab-ctx-menu').exists()).toBe(false)
@@ -104,7 +96,7 @@ describe('TerminalStrip', () => {
     tabs.value = [t]
     const wrapper = factory()
 
-    await wrapper.findAll('.term-tab').at(-1)!.trigger('contextmenu', {
+    await wrapper.findAll('.term-tab').slice(-1)[0].trigger('contextmenu', {
       clientX: 80,
       clientY: 40,
     })

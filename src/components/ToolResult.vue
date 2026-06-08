@@ -50,19 +50,29 @@ const diffStat = computed(() => {
     }
   return `+${add} −${del}`
 })
+
+const hasRenderableText = computed(() => {
+  if (props.block.diff) return true
+  return !!(props.block.text ?? '').trim()
+})
 </script>
 
 <template>
-  <details class="block-card" :class="{ 'in-user': inUser }" :open="!!block.diff">
+  <details
+    v-if="hasRenderableText"
+    class="block-card"
+    :class="{ 'in-user': inUser, 'auto-open': !!block.diff }"
+    :open="!!block.diff"
+  >
     <summary class="block-summary">
       <span class="chev"><IconChevronRight /></span>
       <span class="label" :class="{ error: block.isError }">{{ label }}</span>
       <span v-if="diffStat" class="diff-stat">{{ diffStat }}</span>
     </summary>
     <div class="block-body">
-      <CollapsibleBox :max-height="400">
-        <DiffBlock v-if="block.diff" :hunks="block.diff" />
-        <pre v-else-if="diffHtml" class="lang-diff" v-html="diffHtml" />
+      <DiffBlock v-if="block.diff" :hunks="block.diff" :file-path="block.filePath" class="diff-scroll" />
+      <CollapsibleBox v-else :max-height="400">
+        <pre v-if="diffHtml" class="lang-diff" v-html="diffHtml" />
         <pre v-else-if="jsonHtml" class="lang-json" v-html="jsonHtml" />
         <pre v-else>{{ block.text }}</pre>
       </CollapsibleBox>

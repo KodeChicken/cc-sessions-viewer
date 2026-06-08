@@ -2060,6 +2060,17 @@ mark.locate-hl {
   text-underline-offset: 2px;
   text-decoration-thickness: 0.5px;
 }
+.md-list {
+  margin: 10px 0;
+  padding-left: 1.4em;
+  list-style: disc;
+}
+.md-list li {
+  margin: 4px 0;
+}
+.md-list li::marker {
+  color: var(--text-dim);
+}
 .bubble code {
   background: color-mix(in srgb, var(--text) 8%, transparent);
   padding: 1px 5px;
@@ -2081,10 +2092,37 @@ mark.locate-hl {
   font-size: var(--font-code-size);
   line-height: 1.55;
 }
-.code-block code {
-  background: none;
+.code-block code,
+.lang-json.shiki code,
+.lang-diff.shiki code {
+  background: none !important;
   padding: 0;
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+.code-block.shiki {
+  background: var(--code-bg) !important;
+}
+:root:not(.theme-dark) .code-block.shiki {
+  background: #fff !important;
+}
+.lang-json.shiki,
+.lang-diff.shiki {
+  background: none !important;
+}
+.code-block.shiki code {
+  counter-reset: shiki-line;
+}
+.code-block.shiki code .line::before {
+  counter-increment: shiki-line;
+  content: counter(shiki-line);
+  display: inline-block;
+  width: 2.5em;
+  margin-right: 1em;
+  text-align: right;
+  color: var(--text-mute);
+  opacity: 0.5;
+  font-size: 0.85em;
+  user-select: none;
 }
 
 /* Mermaid 图占位符（待 mermaid.js 渲染）+ 渲染失败兜底。
@@ -2249,6 +2287,9 @@ details[open] > .block-summary > .chev {
 .block-summary .label.error {
   color: var(--danger);
 }
+.block-summary.static {
+  cursor: default;
+}
 .block-body {
   padding: 10px 12px;
   border-top: 1px solid var(--border);
@@ -2268,6 +2309,158 @@ details[open] > .block-summary > .chev {
   max-height: 360px;
   overflow: auto;
   color: var(--text);
+}
+.inline-tool-code .block-body .code-block {
+  margin: 0;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  max-height: 360px;
+}
+.inline-tool-code-flat .code-block {
+  max-height: 420px;
+  overflow: auto;
+}
+.inline-tool-code-flat {
+  margin: 8px 0 12px;
+}
+.inline-tool-code .block-body .codex-apply-patch {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.inline-tool-code-flat .codex-apply-patch {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.codex-patch-file {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--code-bg);
+}
+.codex-patch-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 72%, var(--code-bg));
+  font-size: 12px;
+  line-height: 1.4;
+}
+.codex-patch-path {
+  min-width: 0;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 13px;
+  color: var(--text);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+.codex-patch-path:hover {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.codex-patch-op,
+.codex-patch-stat {
+  flex: 0 0 auto;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-mute);
+}
+.codex-patch-stat {
+  display: inline-flex;
+  gap: 8px;
+}
+.codex-patch-stat .add {
+  color: var(--diff-added);
+}
+.codex-patch-stat .del {
+  color: var(--diff-removed);
+}
+.codex-patch-diff {
+  padding: 10px 0;
+  max-height: 420px;
+  overflow: auto;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: var(--font-code-size);
+  line-height: 1.55;
+}
+.codex-patch-line {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.codex-patch-line.hunk {
+  display: block;
+  padding: 0 14px;
+  color: hsl(214 50% 45%);
+  font-weight: 500;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.codex-patch-line.add {
+  background: color-mix(in srgb, var(--diff-added) 12%, transparent);
+}
+.codex-patch-line.del {
+  background: color-mix(in srgb, var(--diff-removed) 12%, transparent);
+}
+.codex-patch-sign {
+  text-align: center;
+  user-select: none;
+  color: var(--text-mute);
+}
+.codex-patch-line.add .codex-patch-sign,
+.codex-patch-line.add .codex-patch-text {
+  color: var(--diff-added);
+}
+.codex-patch-line.del .codex-patch-sign,
+.codex-patch-line.del .codex-patch-text {
+  color: var(--diff-removed);
+}
+.codex-patch-text {
+  display: block;
+  padding-right: 14px;
+}
+.codex-patch-line.ctx .codex-patch-text {
+  color: var(--text);
+}
+.codex-patch-empty {
+  padding: 12px 14px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: var(--font-code-size);
+  color: var(--text-mute);
+}
+.inline-tool-code .block-body .code-block .inline-code-line {
+  display: grid;
+  grid-template-columns: 3.5em minmax(0, 1fr);
+  align-items: start;
+}
+.inline-tool-code .block-body .code-block .inline-code-no {
+  display: inline-block;
+  padding-right: 12px;
+  text-align: right;
+  user-select: none;
+  color: var(--text-mute);
+  border-right: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  margin-right: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.inline-tool-code .block-body .code-block .inline-code-text {
+  display: block;
+  min-width: 0;
+}
+.inline-tool-code .block-body .code-block .inline-code-text > span {
+  display: block;
 }
 .tool-chip {
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;
@@ -2392,15 +2585,22 @@ details[open] > .block-summary > .chev {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 12px;
+  padding: 6px 6px 6px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
+}
+.term-strip-scroll {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: thin;
 }
-.terminal-strip::-webkit-scrollbar { height: 6px; }
-.terminal-strip::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
-.terminal-strip::-webkit-scrollbar-track { background: transparent; }
+.term-strip-scroll::-webkit-scrollbar { height: 6px; }
+.term-strip-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+.term-strip-scroll::-webkit-scrollbar-track { background: transparent; }
 
 .term-tab {
   display: inline-flex;
@@ -2504,6 +2704,27 @@ details[open] > .block-summary > .chev {
 .term-tab-close:hover {
   background: color-mix(in srgb, currentColor 16%, transparent);
   opacity: 1;
+}
+.term-tab-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  color: var(--text-mute);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.term-tab-new svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+}
+.term-tab-new:hover {
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 /* ============================ TUI 主体布局 ============================ */
@@ -2620,6 +2841,12 @@ details[open] > .block-summary > .chev {
 .diff-text {
   padding-right: 16px;
   color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.diff-scroll {
+  max-height: 400px;
+  overflow-y: auto;
 }
 .diff-sep {
   padding: 4px 0 4px 54px;

@@ -4,11 +4,14 @@ import type { Agent, Msg, SessionMeta, Block } from '../types'
 import { renderText, formatTime, isCaveatOnlyMsg, parseSystemEvent } from '../format'
 import { prettifyAndHighlightJson } from '../jsonHighlight'
 import { renderAllMermaid, resetMermaidForTheme } from '../mermaid'
+import { highlightAllCodeBlocks, rehighlightAllCodeBlocks } from '../shikiHighlight'
 import { theme } from '../settings'
 import { t } from '../i18n'
 import ToolResult from '../components/ToolResult.vue'
 import CollapsibleBox from '../components/CollapsibleBox.vue'
 import VueEasyLightbox from 'vue-easy-lightbox'
+import { highlightDiff, looksLikeDiff } from '../diffHighlight'
+import { renderCodexApplyPatchHtml } from '../codexApplyPatch'
 import {
   search,
   searchCount,
@@ -96,6 +99,41 @@ function toolLabel(b: Block): string {
   return ''
 }
 
+function isCodexInlineCodeToolUse(b: Block): boolean {
+  return props.agent === 'codex' && b.kind === 'tool_use' && b.toolName === 'apply_patch'
+}
+
+function renderNumberedCodeHtml(html: string): string {
+  const lines = html.split('\n')
+  return lines
+    .map((line, i) => {
+      const content = line || '&nbsp;'
+      return `<div class="inline-code-line"><span class="inline-code-no">${i + 1}</span><span class="inline-code-text">${content}</span></div>`
+    })
+    .join('')
+}
+
+function toolUseCodeHtml(b: Block): string {
+  const input = b.toolInput ?? ''
+  if (isCodexInlineCodeToolUse(b)) {
+    const rendered = renderCodexApplyPatchHtml(input, props.cwd)
+    if (rendered) return rendered
+  }
+  const highlighted = looksLikeDiff(input)
+    ? highlightDiff(input)
+    : prettifyAndHighlightJson(input)
+  return renderNumberedCodeHtml(highlighted)
+}
+
+function isCodexApplyPatchStructured(b: Block): boolean {
+  return isCodexInlineCodeToolUse(b) && !!renderCodexApplyPatchHtml(b.toolInput ?? '', props.cwd)
+}
+
+function toolUseCodeClass(b: Block): string[] {
+  if (isCodexApplyPatchStructured(b)) return ['codex-apply-patch']
+  return ['code-block', looksLikeDiff(b.toolInput ?? '') ? 'lang-diff' : 'lang-json']
+}
+
 // 这几个工具会让 tool_result 携带 structuredPatch / 文件 diff，需要单独以
 // 一个块呈现，便于一眼看到改动；其它工具（Read / Bash / TaskUpdate / Grep …）
 // 的结果只是文本输出，嵌入到 Tool call 内部更紧凑。
@@ -131,6 +169,16 @@ const resultByToolId = computed(() => {
   return map
 })
 
+const toolUseById = computed(() => {
+  const map = new Map<string, Block>()
+  for (const m of props.messages) {
+    for (const b of m.blocks) {
+      if (b.kind === 'tool_use' && b.toolId) map.set(b.toolId, b)
+    }
+  }
+  return map
+})
+
 const inlinedResultIds = computed(() => {
   const set = new Set<string>()
   for (const m of props.messages) {
@@ -158,11 +206,17 @@ function isInlinedResult(b: Block): boolean {
   return b.kind === 'tool_result' && !!b.toolId && inlinedResultIds.value.has(b.toolId)
 }
 
+function shouldHideToolResult(b: Block): boolean {
+  if (b.kind !== 'tool_result' || !b.toolId) return false
+  const toolUse = toolUseById.value.get(b.toolId)
+  return !!toolUse && isCodexInlineCodeToolUse(toolUse)
+}
+
 function rowHasContent(m: Msg): boolean {
   // Local-command caveat user messages are pure plumbing — hide the row entirely.
   if (isCaveatOnlyMsg(m)) return false
   if (!isToolOnly(m)) return true
-  return m.blocks.some((b) => !isInlinedResult(b))
+  return m.blocks.some((b) => !isInlinedResult(b) && !shouldHideToolResult(b))
 }
 
 // ---- 消息右键隐藏 ----
@@ -538,6 +592,7 @@ function sweepDetails(open: boolean) {
   const root = innerEl.value
   if (!root) return
   for (const el of root.querySelectorAll<HTMLDetailsElement>('details')) {
+    if (!open && el.classList.contains('auto-open')) continue
     el.open = open
   }
 }
@@ -673,9 +728,8 @@ watch(
     nextTick(() => {
       if (toolsCollapsed.value) sweepDetails(false)
       if (search.value) applySearch()
-      // 新挂载的 .md-mermaid 占位符 → 调 mermaid.render() 替换。幂等 ——
-      // 已渲染过的会带 data-rendered 跳过。
       renderAllMermaid(innerEl.value ?? null)
+      highlightAllCodeBlocks(innerEl.value ?? null)
     })
   },
   { flush: 'post' },
@@ -686,6 +740,7 @@ watch(theme, () => {
   nextTick(() => {
     resetMermaidForTheme(innerEl.value ?? null)
     renderAllMermaid(innerEl.value ?? null)
+    rehighlightAllCodeBlocks(innerEl.value ?? null)
   })
 })
 
@@ -693,7 +748,10 @@ onMounted(() => {
   setSearchNavigator(navigateMatches)
   document.addEventListener('click', onDocClick)
   // 初次挂载也跑一遍 —— 会话已经有 messages 时 watch 不会触发。
-  nextTick(() => renderAllMermaid(innerEl.value ?? null))
+  nextTick(() => {
+    renderAllMermaid(innerEl.value ?? null)
+    highlightAllCodeBlocks(innerEl.value ?? null)
+  })
 })
 onUnmounted(() => {
   setSearchNavigator(null)
@@ -1005,7 +1063,7 @@ function onDocClick(e: MouseEvent) {
 
         <div v-else-if="isToolOnly(m)" style="max-width: 86%; min-width: 0">
           <template v-for="(b, bi) in m.blocks" :key="bi">
-            <ToolResult v-if="!isInlinedResult(b)" :block="b" />
+            <ToolResult v-if="!isInlinedResult(b) && !shouldHideToolResult(b)" :block="b" />
           </template>
         </div>
 
@@ -1056,6 +1114,17 @@ function onDocClick(e: MouseEvent) {
                 <div class="block-body"><pre>{{ b.text }}</pre></div>
               </details>
 
+              <div
+                v-else-if="isCodexInlineCodeToolUse(b)"
+                class="inline-tool-code inline-tool-code-flat"
+                :data-search-scope="toolUseScope(b)"
+              >
+                <div
+                  :class="toolUseCodeClass(b)"
+                  v-html="toolUseCodeHtml(b)"
+                />
+              </div>
+
               <details
                 v-else-if="b.kind === 'tool_use'"
                 class="block-card"
@@ -1076,7 +1145,7 @@ function onDocClick(e: MouseEvent) {
               </details>
 
               <ToolResult
-                v-else-if="b.kind === 'tool_result' && !isInlinedResult(b)"
+                v-else-if="b.kind === 'tool_result' && !isInlinedResult(b) && !shouldHideToolResult(b)"
                 :block="b"
                 :in-user="m.role === 'user'"
               />

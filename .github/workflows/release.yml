@@ -72,6 +72,21 @@ jobs:
         with:
           args: ${{ matrix.args }}
 
+      - name: Strip bundled libwayland-client from AppImage
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          APPIMAGE=$(find src-tauri/target -name '*.AppImage' -type f | head -1)
+          [ -z "$APPIMAGE" ] && { echo "No AppImage found, skipping"; exit 0; }
+          chmod +x "$APPIMAGE"
+          # Extract, remove the conflicting lib, repack
+          "$APPIMAGE" --appimage-extract
+          rm -f squashfs-root/usr/lib/libwayland-client.so*
+          # Download appimagetool if not present
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ./appimagetool squashfs-root "$APPIMAGE"
+          rm -rf squashfs-root appimagetool
+
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4
         with:

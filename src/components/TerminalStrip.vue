@@ -11,7 +11,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { Agent } from '../types'
 import type { TerminalTab } from '../terminals'
 import { tabs, activeUiId, setActive, closeTab } from '../terminals'
-import { IconClose, IconChat, IconList, agentIcons } from './icons'
+import { IconClose, IconChat, IconList, IconPlus, agentIcons } from './icons'
 import { t } from '../i18n'
 
 const props = defineProps<{
@@ -34,6 +34,8 @@ const emit = defineEmits<{
   tabClosed: []
   /** TUI tab 操作菜单 —— 复用会话重命名弹窗 */
   tabRename: [tab: TerminalTab]
+  /** 新建会话 */
+  newSession: []
 }>()
 
 const visibleTabs = computed(() =>
@@ -50,7 +52,7 @@ const listActive = computed(
 const viewActive = computed(
   () => activeUiId.value === null && props.hasOpenSession,
 )
-const canGoBack = computed(() => typeof window !== 'undefined' && window.history.length > 1)
+// const canGoBack = computed(() => typeof window !== 'undefined' && window.history.length > 1)
 const tabCtx = ref<{ x: number; y: number; tab: TerminalTab } | null>(null)
 const nativeMenuSupported = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
@@ -96,43 +98,43 @@ async function openNativeTabContextMenu(tab: TerminalTab, ev: MouseEvent): Promi
     ])
     const menu = await Menu.new({
       items: [
-        {
-          id: 'native-back',
-          text: t('context.back'),
-          enabled: window.history.length > 1,
-          accelerator: 'Alt+Left',
-          action: () => window.history.back(),
-        },
-        {
-          id: 'native-reload',
-          text: t('context.reload'),
-          accelerator: 'CmdOrCtrl+R',
-          action: () => window.location.reload(),
-        },
-        { item: 'Separator' },
-        {
-          id: 'native-save-as',
-          text: t('context.saveAs'),
-          action: () => undefined,
-        },
-        {
-          id: 'native-print',
-          text: t('context.print'),
-          accelerator: 'CmdOrCtrl+P',
-          action: () => window.print(),
-        },
-        {
-          id: 'native-more-tools',
-          text: t('context.moreTools'),
-          items: [
-            {
-              id: 'native-share',
-              text: t('context.share'),
-              action: () => shareCurrentPage(),
-            },
-          ],
-        },
-        { item: 'Separator' },
+        // {
+        //   id: 'native-back',
+        //   text: t('context.back'),
+        //   enabled: window.history.length > 1,
+        //   accelerator: 'Alt+Left',
+        //   action: () => window.history.back(),
+        // },
+        // {
+        //   id: 'native-reload',
+        //   text: t('context.reload'),
+        //   accelerator: 'CmdOrCtrl+R',
+        //   action: () => window.location.reload(),
+        // },
+        // { item: 'Separator' },
+        // {
+        //   id: 'native-save-as',
+        //   text: t('context.saveAs'),
+        //   action: () => undefined,
+        // },
+        // {
+        //   id: 'native-print',
+        //   text: t('context.print'),
+        //   accelerator: 'CmdOrCtrl+P',
+        //   action: () => window.print(),
+        // },
+        // {
+        //   id: 'native-more-tools',
+        //   text: t('context.moreTools'),
+        //   items: [
+        //     {
+        //       id: 'native-share',
+        //       text: t('context.share'),
+        //       action: () => shareCurrentPage(),
+        //     },
+        //   ],
+        // },
+        // { item: 'Separator' },
         {
           id: 'tab-rename',
           text: t('chat.tui.tabRename'),
@@ -226,19 +228,19 @@ function closeProjectNativeCtxTabs() {
   emit('tabClosed')
 }
 
-function runNativeLikeCtxAction(action: 'back' | 'reload' | 'print' | 'share') {
-  closeTabCtx()
-  if (action === 'back') window.history.back()
-  else if (action === 'reload') window.location.reload()
-  else if (action === 'print') window.print()
-  else shareCurrentPage()
-}
+// function runNativeLikeCtxAction(action: 'back' | 'reload' | 'print' | 'share') {
+//   closeTabCtx()
+//   if (action === 'back') window.history.back()
+//   else if (action === 'reload') window.location.reload()
+//   else if (action === 'print') window.print()
+//   else shareCurrentPage()
+// }
 
-function shareCurrentPage() {
-  if (navigator.share) {
-    void navigator.share({ title: document.title, url: window.location.href })
-  }
-}
+// function shareCurrentPage() {
+//   if (navigator.share) {
+//     void navigator.share({ title: document.title, url: window.location.href })
+//   }
+// }
 
 function onDocMouseDown(e: MouseEvent) {
   if (!tabCtx.value) return
@@ -268,82 +270,95 @@ onUnmounted(() => {
 
 <template>
   <div v-if="visible" class="terminal-strip" data-tauri-drag-region="false">
-    <!-- List —— 项目浏览模式下永久显示 -->
-    <div
-      v-if="inProjectBrowse"
-      class="term-tab view-tab"
-      :class="{ active: listActive }"
-      v-tooltip:bottom="t('chat.tui.listTabTooltip')"
-      role="button"
-      tabindex="0"
-      @click="onListClick"
-      @keydown.enter.prevent="onListClick"
-      @keydown.space.prevent="onListClick"
-    >
-      <IconList class="term-tab-agent" />
-      <span class="term-tab-title">{{ t('chat.tui.listTab') }}</span>
-    </div>
-
-    <!-- View —— 仅当用户已经打开了某个会话时显示 -->
-    <div
-      v-if="inProjectBrowse && hasOpenSession"
-      class="term-tab view-tab"
-      :class="{ active: viewActive }"
-      v-tooltip:bottom="t('chat.tui.viewTabTooltip')"
-      role="button"
-      tabindex="0"
-      @click="onViewClick"
-      @keydown.enter.prevent="onViewClick"
-      @keydown.space.prevent="onViewClick"
-    >
-      <IconChat class="term-tab-agent" />
-      <span class="term-tab-title">{{ t('chat.tui.viewTab') }}</span>
-    </div>
-
-    <div
-      v-if="inProjectBrowse && visibleTabs.length > 0"
-      class="term-tab-sep"
-      aria-hidden="true"
-    />
-
-    <div
-      v-for="tab in visibleTabs"
-      :key="tab.uiId"
-      class="term-tab"
-      :class="{
-        active: activeUiId === tab.uiId,
-        exited: tab.status === 'exited' || tab.status === 'error',
-      }"
-      v-tooltip:bottom="tab.title"
-      role="button"
-      tabindex="0"
-      @click="onTabClick(tab.uiId)"
-      @contextmenu="onTabContextMenu(tab, $event)"
-      @keydown.enter.prevent="onTabClick(tab.uiId)"
-      @keydown.space.prevent="onTabClick(tab.uiId)"
-    >
-      <component :is="agentIcons[tab.agent]" class="term-tab-agent" :class="tab.agent" />
-      <span class="term-tab-title">{{ shortTitle(tab.title) }}</span>
-      <span
-        v-if="tab.status === 'spawning'"
-        class="term-tab-spinner"
-        aria-hidden="true"
-      />
-      <span
-        v-else-if="tab.status === 'exited' || tab.status === 'error'"
-        class="term-tab-exited-dot"
-        aria-hidden="true"
-      />
-      <span
-        class="term-tab-close"
-        v-tooltip:bottom="t('chat.tui.tabClose')"
+    <div class="term-strip-scroll">
+      <!-- List —— 项目浏览模式下永久显示 -->
+      <div
+        v-if="inProjectBrowse"
+        class="term-tab view-tab"
+        :class="{ active: listActive }"
+        v-tooltip:bottom="t('chat.tui.listTabTooltip')"
         role="button"
         tabindex="0"
-        @click="onClose(tab.uiId, $event)"
-        @keydown.enter.prevent="onClose(tab.uiId, $event)"
+        @click="onListClick"
+        @keydown.enter.prevent="onListClick"
+        @keydown.space.prevent="onListClick"
       >
-        <IconClose />
-      </span>
+        <IconList class="term-tab-agent" />
+        <span class="term-tab-title">{{ t('chat.tui.listTab') }}</span>
+      </div>
+
+      <!-- View —— 仅当用户已经打开了某个会话时显示 -->
+      <div
+        v-if="inProjectBrowse && hasOpenSession"
+        class="term-tab view-tab"
+        :class="{ active: viewActive }"
+        v-tooltip:bottom="t('chat.tui.viewTabTooltip')"
+        role="button"
+        tabindex="0"
+        @click="onViewClick"
+        @keydown.enter.prevent="onViewClick"
+        @keydown.space.prevent="onViewClick"
+      >
+        <IconChat class="term-tab-agent" />
+        <span class="term-tab-title">{{ t('chat.tui.viewTab') }}</span>
+      </div>
+
+      <div
+        v-if="inProjectBrowse && visibleTabs.length > 0"
+        class="term-tab-sep"
+        aria-hidden="true"
+      />
+
+      <div
+        v-for="tab in visibleTabs"
+        :key="tab.uiId"
+        class="term-tab"
+        :class="{
+          active: activeUiId === tab.uiId,
+          exited: tab.status === 'exited' || tab.status === 'error',
+        }"
+        v-tooltip:bottom="tab.title"
+        role="button"
+        tabindex="0"
+        @click="onTabClick(tab.uiId)"
+        @contextmenu="onTabContextMenu(tab, $event)"
+        @keydown.enter.prevent="onTabClick(tab.uiId)"
+        @keydown.space.prevent="onTabClick(tab.uiId)"
+      >
+        <component :is="agentIcons[tab.agent]" class="term-tab-agent" :class="tab.agent" />
+        <span class="term-tab-title">{{ shortTitle(tab.title) }}</span>
+        <span
+          v-if="tab.status === 'spawning'"
+          class="term-tab-spinner"
+          aria-hidden="true"
+        />
+        <span
+          v-else-if="tab.status === 'exited' || tab.status === 'error'"
+          class="term-tab-exited-dot"
+          aria-hidden="true"
+        />
+        <span
+          class="term-tab-close"
+          v-tooltip:bottom="t('chat.tui.tabClose')"
+          role="button"
+          tabindex="0"
+          @click="onClose(tab.uiId, $event)"
+          @keydown.enter.prevent="onClose(tab.uiId, $event)"
+        >
+          <IconClose />
+        </span>
+      </div>
+    </div>
+
+    <div
+      class="term-tab-new"
+      v-tooltip:bottom="t('chat.tui.newSessionTitle')"
+      role="button"
+      tabindex="0"
+      @click="emit('newSession')"
+      @keydown.enter.prevent="emit('newSession')"
+    >
+      <IconPlus />
     </div>
 
     <div
@@ -353,7 +368,7 @@ onUnmounted(() => {
       @click.stop
       @contextmenu.prevent.stop
     >
-      <button
+      <!-- <button
         type="button"
         class="ctx-item"
         data-menu-action="native-back"
@@ -401,7 +416,7 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
-      <div class="ctx-sep" />
+      <div class="ctx-sep" /> -->
       <button type="button" class="ctx-item" data-menu-action="tab-rename" @click="renameCtxTab">
         <span>{{ t('chat.tui.tabRename') }}</span>
       </button>
