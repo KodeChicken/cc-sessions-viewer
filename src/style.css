@@ -2522,8 +2522,7 @@ details[open] > .block-summary > .chev {
   inset: 8px 12px;
 }
 .terminal-host .xterm,
-.terminal-host .xterm-viewport,
-.terminal-host .xterm-screen {
+.terminal-host .xterm-viewport {
   width: 100% !important;
   height: 100% !important;
 }
