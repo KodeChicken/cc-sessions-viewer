@@ -297,6 +297,10 @@ describe('shortName', () => {
     expect(shortName('/Users/me/apps/viewer')).toBe('viewer')
   })
 
+  it('returns the last Windows path segment', () => {
+    expect(shortName('C:\\Users\\me\\apps\\viewer')).toBe('viewer')
+  })
+
   it('ignores a trailing slash', () => {
     expect(shortName('/Users/me/apps/viewer/')).toBe('viewer')
   })
