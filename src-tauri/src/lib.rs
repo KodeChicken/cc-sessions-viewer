@@ -26,6 +26,7 @@ mod util;
 mod watch;
 
 use std::fs;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::types::{
@@ -781,6 +782,152 @@ fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+fn path_env_candidates() -> Vec<PathBuf> {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default()
+}
+
+fn find_in_path(bin: &str) -> Option<PathBuf> {
+    let candidates = path_env_candidates();
+    #[cfg(target_os = "windows")]
+    let exts: Vec<OsString> = std::env::var_os("PATHEXT")
+        .map(|v| {
+            v.to_string_lossy()
+                .split(';')
+                .filter(|s| !s.is_empty())
+                .map(OsString::from)
+                .collect()
+        })
+        .unwrap_or_else(|| vec![OsString::from(".exe"), OsString::from(".cmd"), OsString::from(".bat")]);
+    #[cfg(not(target_os = "windows"))]
+    let exts: Vec<OsString> = vec![OsString::new()];
+
+    for dir in candidates {
+        for ext in &exts {
+            let cand = if ext.is_empty() {
+                dir.join(bin)
+            } else {
+                dir.join(format!("{bin}{}", ext.to_string_lossy()))
+            };
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+fn parse_local_target(input: &str) -> (String, Option<u32>, Option<u32>) {
+    let trimmed = input.trim();
+    let parts: Vec<&str> = trimmed.rsplitn(3, ':').collect();
+    if parts.len() >= 2 {
+        if let Ok(last) = parts[0].parse::<u32>() {
+            let base_one = parts[1..].iter().rev().copied().collect::<Vec<_>>().join(":");
+            let base_one_path = Path::new(&base_one);
+            if base_one_path.is_absolute() || base_one_path.exists() {
+                if parts.len() == 3 {
+                    if let Ok(mid) = parts[1].parse::<u32>() {
+                        let base_two = parts[2];
+                        let base_two_path = Path::new(base_two);
+                        if base_two_path.is_absolute() || base_two_path.exists() {
+                            return (base_two.to_string(), Some(mid), Some(last));
+                        }
+                    }
+                }
+                return (base_one, Some(last), None);
+            }
+        }
+    }
+    (trimmed.to_string(), None, None)
+}
+
+fn open_with_editor(path: &str, line: Option<u32>, column: Option<u32>) -> Result<bool, String> {
+    let Some(line) = line else {
+        return Ok(false);
+    };
+    let column = column.unwrap_or(1);
+
+    let specs: &[(&str, &[&str])] = &[
+        ("cursor", &["-g"]),
+        ("code", &["-g"]),
+        ("code-insiders", &["-g"]),
+        ("codium", &["-g"]),
+        ("windsurf", &["-g"]),
+        ("zed", &[]),
+        ("subl", &[]),
+        ("mate", &["-l"]),
+        ("bbedit", &[]),
+    ];
+
+    for (bin, prefix) in specs {
+        let Some(found) = find_in_path(bin) else {
+            continue;
+        };
+        let mut cmd = std::process::Command::new(found);
+        for arg in *prefix {
+            cmd.arg(arg);
+        }
+        match *bin {
+            "mate" => {
+                cmd.arg(line.to_string()).arg(path);
+            }
+            "bbedit" => {
+                cmd.arg(format!("+{line}")).arg(path);
+            }
+            "zed" | "subl" => {
+                cmd.arg(format!("{path}:{line}:{column}"));
+            }
+            _ => {
+                cmd.arg(format!("{path}:{line}:{column}"));
+            }
+        }
+        match cmd.spawn() {
+            Ok(_) => return Ok(true),
+            Err(err) => return Err(format!("调用编辑器失败: {err}")),
+        }
+    }
+    Ok(false)
+}
+
+/// 打开本地文件。若 path 形如 `/abs/file:12:3`，会尽量让编辑器定位到该行列。
+#[tauri::command]
+fn open_local_path(path: String) -> Result<(), String> {
+    let (file_path, line, column) = parse_local_target(&path);
+    let target = PathBuf::from(&file_path);
+
+    if !target.is_absolute() {
+        return Err("仅支持绝对路径".to_string());
+    }
+
+    if open_with_editor(&file_path, line, column)? {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&file_path)
+            .spawn()
+            .map_err(|e| format!("打开本地文件失败: {e}"))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &file_path])
+            .spawn()
+            .map_err(|e| format!("打开本地文件失败: {e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&file_path)
+            .spawn()
+            .map_err(|e| format!("打开本地文件失败: {e}"))?;
+    }
+    Ok(())
+}
+
 /// 手动从 LiteLLM 上游拉一次模型价格表，覆盖本地 24h 缓存。前端 Settings
 /// 「立即刷新模型价格」按钮调用。返回入表条数；失败返回错误字符串（前端弹 toast）。
 ///
@@ -860,7 +1007,9 @@ fn pin_traffic_lights(window: &tauri::WebviewWindow) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init());
 
     // 开发期注入 MCP Bridge —— 让 AI 助手经 WebSocket 直接看/控这个 app（截图 /
     // DOM 快照 / 执行 JS / 监控 IPC）。仅 debug：release 构建里这段被 cfg 去掉。
@@ -904,6 +1053,7 @@ pub fn run() {
             pty_resize,
             pty_kill,
             reveal_in_finder,
+            open_local_path,
             open_url,
             write_file,
             add_bookmark,

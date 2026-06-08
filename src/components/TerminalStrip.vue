@@ -11,7 +11,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { Agent } from '../types'
 import type { TerminalTab } from '../terminals'
 import { tabs, activeUiId, setActive, closeTab } from '../terminals'
-import { IconClose, IconChat, IconList, agentIcons } from './icons'
+import { IconClose, IconChat, IconList, IconPlus, agentIcons } from './icons'
 import { t } from '../i18n'
 
 const props = defineProps<{
@@ -341,45 +341,46 @@ onUnmounted(() => {
     @dblclick="onStripDoubleClick"
     @contextmenu="onStripContextMenu"
   >
-    <!-- List —— 项目浏览模式下永久显示 -->
-    <div
-      v-if="inProjectBrowse"
-      class="term-tab view-tab"
-      :class="{ active: listActive }"
-      v-tooltip:bottom="t('chat.tui.listTabTooltip')"
-      role="button"
-      tabindex="0"
-      @click="onListClick"
-      @keydown.enter.prevent="onListClick"
-      @keydown.space.prevent="onListClick"
-    >
-      <IconList class="term-tab-agent" />
-      <span class="term-tab-title">{{ t('chat.tui.listTab') }}</span>
-    </div>
+    <div class="term-strip-scroll">
+      <!-- List —— 项目浏览模式下永久显示 -->
+      <div
+        v-if="inProjectBrowse"
+        class="term-tab view-tab"
+        :class="{ active: listActive }"
+        v-tooltip:bottom="t('chat.tui.listTabTooltip')"
+        role="button"
+        tabindex="0"
+        @click="onListClick"
+        @keydown.enter.prevent="onListClick"
+        @keydown.space.prevent="onListClick"
+      >
+        <IconList class="term-tab-agent" />
+        <span class="term-tab-title">{{ t('chat.tui.listTab') }}</span>
+      </div>
 
-    <!-- View —— 仅当用户已经打开了某个会话时显示 -->
-    <div
-      v-if="inProjectBrowse && hasOpenSession"
-      class="term-tab view-tab"
-      :class="{ active: viewActive }"
-      v-tooltip:bottom="t('chat.tui.viewTabTooltip')"
-      role="button"
-      tabindex="0"
-      @click="onViewClick"
-      @keydown.enter.prevent="onViewClick"
-      @keydown.space.prevent="onViewClick"
-    >
-      <IconChat class="term-tab-agent" />
-      <span class="term-tab-title">{{ t('chat.tui.viewTab') }}</span>
-    </div>
+      <!-- View —— 仅当用户已经打开了某个会话时显示 -->
+      <div
+        v-if="inProjectBrowse && hasOpenSession"
+        class="term-tab view-tab"
+        :class="{ active: viewActive }"
+        v-tooltip:bottom="t('chat.tui.viewTabTooltip')"
+        role="button"
+        tabindex="0"
+        @click="onViewClick"
+        @keydown.enter.prevent="onViewClick"
+        @keydown.space.prevent="onViewClick"
+      >
+        <IconChat class="term-tab-agent" />
+        <span class="term-tab-title">{{ t('chat.tui.viewTab') }}</span>
+      </div>
 
-    <div
-      v-if="inProjectBrowse && visibleTabs.length > 0"
-      class="term-tab-sep"
-      aria-hidden="true"
-    />
+      <div
+        v-if="inProjectBrowse && visibleTabs.length > 0"
+        class="term-tab-sep"
+        aria-hidden="true"
+      />
 
-    <div
+      <div
       v-for="tab in visibleTabs"
       :key="tab.uiId"
       class="term-tab"
@@ -427,6 +428,18 @@ onUnmounted(() => {
       >
         <IconClose />
       </span>
+      </div>
+    </div>
+
+    <div
+      class="term-tab-new"
+      v-tooltip:bottom="t('chat.tui.newSessionTitle')"
+      role="button"
+      tabindex="0"
+      @click="emit('newSession')"
+      @keydown.enter.prevent="emit('newSession')"
+    >
+      <IconPlus />
     </div>
 
     <div

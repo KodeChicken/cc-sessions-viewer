@@ -77,7 +77,7 @@ describe('TerminalStrip', () => {
     tabs.value = [t]
     const wrapper = factory()
 
-    await wrapper.findAll('.term-tab').at(-1)!.trigger('contextmenu', {
+    await wrapper.findAll('.term-tab').slice(-1)[0].trigger('contextmenu', {
       clientX: 80,
       clientY: 40,
     })
@@ -107,7 +107,7 @@ describe('TerminalStrip', () => {
     tabs.value = [t]
     const wrapper = factory()
 
-    await wrapper.findAll('.term-tab').at(-1)!.trigger('click')
+    await wrapper.findAll('.term-tab').slice(-1)[0].trigger('click')
 
     expect(wrapper.find('.term-tab-more').exists()).toBe(false)
     expect(wrapper.find('.term-tab-ctx-menu').exists()).toBe(false)
@@ -170,7 +170,7 @@ describe('TerminalStrip', () => {
     tabs.value = [t]
     const wrapper = factory()
 
-    await wrapper.findAll('.term-tab').at(-1)!.trigger('contextmenu', {
+    await wrapper.findAll('.term-tab').slice(-1)[0].trigger('contextmenu', {
       clientX: 80,
       clientY: 40,
     })

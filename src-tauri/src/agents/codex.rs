@@ -74,6 +74,12 @@ struct Meta {
 }
 
 #[derive(Debug, Clone)]
+struct TitleIndexEntry {
+    name: String,
+    updated_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
 struct CodexAppThreadInfo {
     rank: usize,
 }
@@ -468,8 +474,8 @@ fn meta(path: &Path) -> Option<Meta> {
 
 /// 读取 `~/.codex/session_index.jsonl`，返回 thread_id → 最新 thread_name。
 /// 文件不存在 / 不可读时返回空 map，调用方自动回落到旧的 JSONL 内联策略。
-fn load_title_index() -> HashMap<String, String> {
-    let mut map: HashMap<String, String> = HashMap::new();
+fn load_title_index() -> HashMap<String, TitleIndexEntry> {
+    let mut map: HashMap<String, TitleIndexEntry> = HashMap::new();
     let path = home().join(".codex").join("session_index.jsonl");
     let file = match fs::File::open(&path) {
         Ok(f) => f,
@@ -488,7 +494,16 @@ fn load_title_index() -> HashMap<String, String> {
             let trimmed = name.trim();
             if !trimmed.is_empty() {
                 // append-only：后写入的覆盖先写入的
-                map.insert(id, trimmed.to_string());
+                map.insert(
+                    id,
+                    TitleIndexEntry {
+                        name: trimmed.to_string(),
+                        updated_at_ms: v
+                            .get("updated_at")
+                            .and_then(|x| x.as_str())
+                            .and_then(parse_iso8601_ms),
+                    },
+                );
             }
         }
     }
@@ -558,10 +573,135 @@ fn output_text(v: Option<&Value>) -> String {
     }
 }
 
+fn apply_patch_section_order(input: &str) -> Vec<String> {
+    let mut order = Vec::new();
+    for line in input.lines() {
+        for prefix in ["*** Update File: ", "*** Add File: ", "*** Delete File: "] {
+            if let Some(path) = line.strip_prefix(prefix) {
+                order.push(path.to_string());
+                break;
+            }
+        }
+    }
+    order
+}
+
+fn build_apply_patch_section(path: &str, change: &Value) -> Option<String> {
+    let op = change.get("type").and_then(Value::as_str)?;
+    let move_path = change.get("move_path").and_then(Value::as_str);
+    let mut lines = Vec::new();
+    match op {
+        "update" => {
+            lines.push(format!("*** Update File: {path}"));
+            if let Some(target) = move_path.filter(|target| !target.is_empty() && *target != path) {
+                lines.push(format!("*** Move to: {target}"));
+            }
+            if let Some(diff) = change.get("unified_diff").and_then(Value::as_str) {
+                lines.extend(diff.lines().map(str::to_owned));
+            }
+        }
+        "add" => {
+            let target = move_path
+                .filter(|target| !target.is_empty())
+                .unwrap_or(path);
+            lines.push(format!("*** Add File: {target}"));
+            if let Some(content) = change.get("content").and_then(Value::as_str) {
+                if !content.is_empty() {
+                    lines.push("@@".to_string());
+                    lines.extend(content.lines().map(|line| format!("+{line}")));
+                }
+            }
+        }
+        "delete" => {
+            lines.push(format!("*** Delete File: {path}"));
+            if let Some(content) = change.get("content").and_then(Value::as_str) {
+                if !content.is_empty() {
+                    lines.push("@@".to_string());
+                    lines.extend(content.lines().map(|line| format!("-{line}")));
+                }
+            }
+        }
+        _ => return None,
+    }
+    Some(lines.join("\n"))
+}
+
+fn augment_apply_patch_input(input: &str, changes: &Value) -> Option<String> {
+    let changes = changes.as_object()?;
+    if changes.is_empty() {
+        return None;
+    }
+
+    let mut sections = Vec::new();
+    let mut used_paths: HashMap<String, bool> = HashMap::new();
+    for path in apply_patch_section_order(input) {
+        let Some(change) = changes.get(&path) else { continue };
+        let Some(section) = build_apply_patch_section(&path, change) else {
+            continue;
+        };
+        sections.push(section);
+        used_paths.insert(path, true);
+    }
+    for (path, change) in changes {
+        if used_paths.contains_key(path) {
+            continue;
+        }
+        let Some(section) = build_apply_patch_section(path, change) else {
+            continue;
+        };
+        sections.push(section);
+    }
+    if sections.is_empty() {
+        return None;
+    }
+    let mut patch = String::from("*** Begin Patch\n");
+    patch.push_str(&sections.join("\n"));
+    patch.push_str("\n*** End Patch");
+    Some(patch)
+}
+
+fn agent_message_phase(payload: &Value) -> Option<&str> {
+    payload.get("phase").and_then(Value::as_str)
+}
+
+fn rename_system_reminder(name: &str) -> String {
+    format!(
+        "<system-reminder>\nThe user named this session \"{name}\". This may indicate the session's focus or intent.\n</system-reminder>"
+    )
+}
+
+fn rename_system_msg(ts: Option<String>, name: &str) -> Msg {
+    simple_msg("user", ts, text_block("text", &rename_system_reminder(name)))
+}
+
+fn should_synthesize_title_rename(
+    title_name: &str,
+    first_user_title: &str,
+    created_ms: Option<i64>,
+    updated_at_ms: Option<i64>,
+) -> bool {
+    if title_name.trim().is_empty() {
+        return false;
+    }
+    if !first_user_title.trim().is_empty() && title_name.trim() == first_user_title.trim() {
+        return false;
+    }
+    let (Some(created_ms), Some(updated_at_ms)) = (created_ms, updated_at_ms) else {
+        return false;
+    };
+    // `session_index.jsonl` 既有首次自动命名，也有用户中途 rename。
+    // 只把明显晚于建会话时间的更新当成 rename 事件，避免给每条会话都凭空加一行。
+    updated_at_ms.saturating_sub(created_ms) > 60_000
+}
+
+fn format_iso8601ish(ms: i64) -> String {
+    format_iso8601_utc(ms.div_euclid(1000), ms.rem_euclid(1000) as u32)
+}
+
 fn scan(
     fp: &Path,
     m: &Meta,
-    title_index: &HashMap<String, String>,
+    title_index: &HashMap<String, TitleIndexEntry>,
     flags: CodexThreadFlags,
 ) -> SessionMeta {
     let file_name = fp
@@ -602,7 +742,10 @@ fn scan(
                 }
                 continue;
             }
-            if pt == "user_message" || pt == "agent_message" {
+            if pt == "user_message"
+                || (pt == "agent_message"
+                    && agent_message_phase(p) != Some("commentary"))
+            {
                 message_count += 1;
             }
             if first_user_title.is_empty() && pt == "user_message" {
@@ -625,7 +768,7 @@ fn scan(
     // > 首条 user_message。
     let title = title_index
         .get(&id)
-        .cloned()
+        .map(|entry| entry.name.clone())
         .or(thread_name)
         .unwrap_or_else(|| {
             if first_user_title.is_empty() {
@@ -663,10 +806,18 @@ fn scan(
 ///
 /// 用 event_msg 那条作为最终用户气泡的文本来源，扫到对应 response_item 时
 /// 先把里面的 `input_image` 块缓存起来，等到下一条 user_message 出现时一起渲染。
-fn read(path: &str) -> Result<Vec<Msg>, String> {
+fn read_with_title_index(
+    path: &str,
+    title_index: &HashMap<String, TitleIndexEntry>,
+) -> Result<Vec<Msg>, String> {
     let file = fs::File::open(path).map_err(|e| format!("打开会话失败: {e}"))?;
     let mut msgs = Vec::new();
     let mut pending_user_images: Vec<Block> = Vec::new();
+    let mut apply_patch_by_call_id: HashMap<String, usize> = HashMap::new();
+    let mut session_id: Option<String> = None;
+    let mut created_ms: Option<i64> = None;
+    let mut first_user_title = String::new();
+    let mut saw_explicit_rename = false;
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         if line.trim().is_empty() {
             continue;
@@ -687,6 +838,21 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
         let pt = p.get("type").and_then(|x| x.as_str()).unwrap_or("");
 
         match (t, pt) {
+            ("session_meta", _) => {
+                if session_id.is_none() {
+                    session_id = p
+                        .get("id")
+                        .and_then(|x| x.as_str())
+                        .map(|s| s.to_string());
+                }
+                if created_ms.is_none() {
+                    created_ms = p
+                        .get("timestamp")
+                        .and_then(|x| x.as_str())
+                        .and_then(parse_iso8601_ms)
+                        .or_else(|| ts.as_deref().and_then(parse_iso8601_ms));
+                }
+            }
             ("response_item", "message")
                 if p.get("role").and_then(|x| x.as_str()) == Some("user") =>
             {
@@ -707,6 +873,12 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
             ("event_msg", "user_message") => {
                 let text = p.get("message").and_then(|x| x.as_str()).unwrap_or("");
                 let mut blocks: Vec<Block> = std::mem::take(&mut pending_user_images);
+                if first_user_title.is_empty() {
+                    let clean = clean_title(text);
+                    if !clean.is_empty() {
+                        first_user_title = clean;
+                    }
+                }
                 if !text.trim().is_empty() {
                     blocks.push(text_block("text", text));
                 }
@@ -728,17 +900,28 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
                     }
                 }
             }
+            ("event_msg", "thread_name_updated") => {
+                if let Some(name) = p.get("thread_name").and_then(|x| x.as_str()) {
+                    let trimmed = name.trim();
+                    if !trimmed.is_empty() {
+                        saw_explicit_rename = true;
+                        msgs.push(rename_system_msg(ts, trimmed));
+                    }
+                }
+            }
             ("response_item", "function_call") | ("response_item", "custom_tool_call") => {
                 let name = p
                     .get("name")
                     .and_then(|x| x.as_str())
                     .unwrap_or("tool")
                     .to_string();
+                let is_apply_patch = name == "apply_patch";
                 let input = format_args(p.get("arguments").or_else(|| p.get("input")));
                 let id = p
                     .get("call_id")
                     .and_then(|x| x.as_str())
                     .map(|s| s.to_string());
+                let id_for_index = id.clone();
                 msgs.push(simple_msg(
                     "assistant",
                     ts,
@@ -750,6 +933,11 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
                         ..Default::default()
                     },
                 ));
+                if is_apply_patch {
+                    if let Some(call_id) = id_for_index {
+                        apply_patch_by_call_id.insert(call_id, msgs.len().saturating_sub(1));
+                    }
+                }
             }
             ("response_item", "function_call_output")
             | ("response_item", "custom_tool_call_output") => {
@@ -768,6 +956,27 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
                         ..Default::default()
                     },
                 ));
+            }
+            ("event_msg", "patch_apply_end") => {
+                let Some(call_id) = p.get("call_id").and_then(|x| x.as_str()) else {
+                    continue;
+                };
+                let Some(msg_index) = apply_patch_by_call_id.get(call_id).copied() else {
+                    continue;
+                };
+                let Some(block) = msgs
+                    .get_mut(msg_index)
+                    .and_then(|msg| msg.blocks.get_mut(0))
+                else {
+                    continue;
+                };
+                let original = block.tool_input.clone().unwrap_or_default();
+                if let Some(next_input) = augment_apply_patch_input(
+                    &original,
+                    p.get("changes").unwrap_or(&Value::Null),
+                ) {
+                    block.tool_input = Some(next_input);
+                }
             }
             ("response_item", "web_search_call") => {
                 let query = p
@@ -790,6 +999,33 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
             _ => {}
         }
     }
+    if !saw_explicit_rename {
+        if let Some(session_id) = session_id.as_deref() {
+            if let Some(entry) = title_index.get(session_id) {
+                if should_synthesize_title_rename(
+                    &entry.name,
+                    &first_user_title,
+                    created_ms,
+                    entry.updated_at_ms,
+                ) {
+                    let rename_msg =
+                        rename_system_msg(entry.updated_at_ms.map(format_iso8601ish), &entry.name);
+                    let insert_at = msgs
+                        .iter()
+                        .position(|m| {
+                            m.timestamp
+                                .as_deref()
+                                .and_then(parse_iso8601_ms)
+                                .zip(entry.updated_at_ms)
+                                .map(|(msg_ms, rename_ms)| msg_ms > rename_ms)
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(msgs.len());
+                    msgs.insert(insert_at, rename_msg);
+                }
+            }
+        }
+    }
     // 兜底：若文件结尾仍有未消费的图片（异常截断），别把它们丢掉。
     if !pending_user_images.is_empty() {
         msgs.push(Msg {
@@ -802,6 +1038,11 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
         });
     }
     Ok(msgs)
+}
+
+fn read(path: &str) -> Result<Vec<Msg>, String> {
+    let title_index = load_title_index();
+    read_with_title_index(path, &title_index)
 }
 
 impl SessionSource for CodexSource {
@@ -1563,6 +1804,108 @@ mod tests {
         let turns = read_turns(&p);
         let last_call = turns.last().and_then(|t| t.calls.last()).expect("call");
         assert_eq!(last_call.model, "gpt-5.5");
+    }
+
+    #[test]
+    fn read_session_keeps_commentary_and_final_answers_but_counts_only_visible_turns() {
+        let p = write_temp(
+            "codex-read-session-commentary.jsonl",
+            &[
+                r#"{"timestamp":"2026-06-08T02:12:13.012Z","type":"session_meta","payload":{"id":"abc","cwd":"/tmp"}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:15.000Z","type":"event_msg","payload":{"type":"user_message","message":"hi","images":[],"local_images":[],"text_elements":[]}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:16.000Z","type":"event_msg","payload":{"type":"agent_message","message":"checking...","phase":"commentary"}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:17.000Z","type":"event_msg","payload":{"type":"agent_message","message":"hello back","phase":"final_answer"}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:18.000Z","type":"event_msg","payload":{"type":"user_message","message":"vue3","images":[],"local_images":[],"text_elements":[]}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:19.000Z","type":"event_msg","payload":{"type":"agent_message","message":"scanning repo...","phase":"commentary"}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:20.000Z","type":"event_msg","payload":{"type":"agent_message","message":"What about Vue 3?","phase":"final_answer"}}"#,
+            ],
+        );
+
+        let title_index = HashMap::new();
+        let msgs =
+            read_with_title_index(p.to_string_lossy().as_ref(), &title_index).expect("session should parse");
+        assert_eq!(msgs.len(), 6, "commentary + final answers should all render");
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[0].blocks[0].text.as_deref(), Some("hi"));
+        assert_eq!(msgs[1].role, "assistant");
+        assert_eq!(msgs[1].blocks[0].text.as_deref(), Some("checking..."));
+        assert_eq!(msgs[2].role, "assistant");
+        assert_eq!(msgs[2].blocks[0].text.as_deref(), Some("hello back"));
+        assert_eq!(msgs[3].role, "user");
+        assert_eq!(msgs[3].blocks[0].text.as_deref(), Some("vue3"));
+        assert_eq!(msgs[4].role, "assistant");
+        assert_eq!(msgs[4].blocks[0].text.as_deref(), Some("scanning repo..."));
+        assert_eq!(msgs[5].role, "assistant");
+        assert_eq!(msgs[5].blocks[0].text.as_deref(), Some("What about Vue 3?"));
+
+        let meta = meta(&p).expect("meta");
+        let session = scan(&p, &meta, &title_index, CodexThreadFlags::default());
+        assert_eq!(session.message_count, 4, "commentary should not inflate session counts");
+    }
+
+    #[test]
+    fn read_session_synthesizes_rename_from_title_index_when_rollout_lacks_event() {
+        let p = write_temp(
+            "codex-read-session-synth-rename.jsonl",
+            &[
+                r#"{"timestamp":"2026-06-08T02:12:13.012Z","type":"session_meta","payload":{"id":"abc","timestamp":"2026-06-08T02:12:13.012Z","cwd":"/tmp"}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:15.000Z","type":"event_msg","payload":{"type":"user_message","message":"time","images":[],"local_images":[],"text_elements":[]}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:16.000Z","type":"event_msg","payload":{"type":"agent_message","message":"我取一下本机当前时间。","phase":"commentary"}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:17.000Z","type":"event_msg","payload":{"type":"agent_message","message":"2026-06-08 11:46:21 CST","phase":"final_answer"}}"#,
+            ],
+        );
+
+        let mut title_index = HashMap::new();
+        title_index.insert(
+            "abc".to_string(),
+            TitleIndexEntry {
+                name: "codex-live".to_string(),
+                updated_at_ms: parse_iso8601_ms("2026-06-08T04:43:09.162185Z"),
+            },
+        );
+
+        let msgs =
+            read_with_title_index(p.to_string_lossy().as_ref(), &title_index).expect("session should parse");
+        let rename = msgs
+            .iter()
+            .find(|m| {
+                m.role == "user"
+                    && m.blocks
+                        .first()
+                        .and_then(|b| b.text.as_deref())
+                        .map(|text| text.contains("The user named this session \"codex-live\""))
+                        .unwrap_or(false)
+            })
+            .expect("rename system event should be synthesized");
+        assert_eq!(rename.timestamp.as_deref(), Some("2026-06-08T04:43:09.162Z"));
+    }
+
+    #[test]
+    fn read_session_augments_apply_patch_with_patch_apply_end_changes() {
+        let p = write_temp(
+            "codex-read-session-apply-patch-delete.jsonl",
+            &[
+                r#"{"timestamp":"2026-06-08T05:30:56.167Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","call_id":"call_patch_1","name":"apply_patch","input":"*** Begin Patch\n*** Delete File: /repo/src/old.ts\n*** Update File: /repo/test/new.test.ts\n@@\n+new line\n*** End Patch\n"}}"#,
+                r#"{"timestamp":"2026-06-08T05:30:56.216Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"call_patch_1","changes":{"/repo/src/old.ts":{"type":"delete","content":"alpha\nbeta\n"},"/repo/test/new.test.ts":{"type":"update","unified_diff":"@@ -1 +1,2 @@\n old line\n+new line","move_path":null}}}}"#,
+                r#"{"timestamp":"2026-06-08T05:30:56.318Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_patch_1","output":"ok"}}"#,
+            ],
+        );
+
+        let title_index = HashMap::new();
+        let msgs =
+            read_with_title_index(p.to_string_lossy().as_ref(), &title_index).expect("session should parse");
+        let tool_use = msgs
+            .iter()
+            .flat_map(|m| m.blocks.iter())
+            .find(|b| b.kind == "tool_use" && b.tool_name.as_deref() == Some("apply_patch"))
+            .expect("apply_patch tool_use should exist");
+        let input = tool_use.tool_input.as_deref().unwrap_or("");
+        assert!(input.contains("*** Delete File: /repo/src/old.ts"));
+        assert!(input.contains("@@"));
+        assert!(input.contains("-alpha"));
+        assert!(input.contains("-beta"));
+        assert!(input.contains("*** Update File: /repo/test/new.test.ts"));
+        assert!(input.contains("+new line"));
     }
 
     #[test]

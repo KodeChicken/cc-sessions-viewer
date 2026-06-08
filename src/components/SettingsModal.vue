@@ -57,6 +57,7 @@ const shortcuts = [
   { key: k([mod, 'G']), label: 'settings.shortcut.findNext' },
   { key: k([mod, shift, 'G']), label: 'settings.shortcut.findPrev' },
   { key: k([mod, 'N']), label: 'settings.shortcut.newSession' },
+  { key: k([mod, 'O']), label: 'settings.shortcut.addFolder' },
   { key: k([mod, 'E']), label: 'settings.shortcut.exportSession' },
   { key: k([mod, 'B']), label: 'settings.shortcut.toggleSidebar' },
   { key: k([mod, shift, 'S']), label: 'settings.shortcut.stats' },

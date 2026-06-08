@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import type { DiffHunk } from '../types'
 
-defineProps<{ hunks: DiffHunk[] }>()
+defineProps<{ hunks: DiffHunk[]; filePath?: string }>()
 </script>
 
 <template>
-  <div class="diff">
+  <div class="diff" :data-file="filePath || undefined">
     <template v-for="(h, hi) in hunks" :key="hi">
       <div v-if="hi > 0" class="diff-sep">···</div>
       <div

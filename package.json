@@ -1,7 +1,7 @@
 {
   "name": "cc-sessions-viewer",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -53,10 +53,12 @@
     "@antv/g2": "^5.4.8",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "mermaid": "^11.15.0",
+    "shiki": "^4.2.0",
     "vue": "^3.5.34",
     "vue-easy-lightbox": "^1.19.0"
   },

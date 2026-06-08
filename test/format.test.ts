@@ -41,7 +41,7 @@ describe('renderText', () => {
 
   it('renders a fenced code block with a language line', () => {
     const html = renderText('```js\nconst x = 1\n```')
-    expect(html).toContain('<pre class="code-block"><code>const x = 1</code></pre>')
+    expect(html).toContain('<pre class="code-block" data-lang="js"><code>const x = 1</code></pre>')
   })
 
   it('renders a fenced code block with no language line', () => {
@@ -83,6 +83,25 @@ describe('renderText', () => {
     expect(html).toContain('<td><code>code</code></td>')
   })
 
+  it('renders markdown bullet lists as <ul><li>', () => {
+    const html = renderText('- tool_use directly rendered\n- paired tool result hidden')
+    expect(html).toContain('<ul class="md-list">')
+    expect(html).toContain('<li>tool_use directly rendered</li>')
+    expect(html).toContain('<li>paired tool result hidden</li>')
+    expect(html).not.toContain('<div class="text-run">- tool_use directly rendered')
+  })
+
+  it('renders absolute local markdown links as clickable file links', () => {
+    const html = renderText(
+      'See [src/views/ChatView.vue](/Users/wuchao/apps/claude-session-viewer/src/views/ChatView.vue:97).',
+    )
+    expect(html).toContain('class="local-file-link"')
+    expect(html).toContain(
+      'data-local-target="/Users/wuchao/apps/claude-session-viewer/src/views/ChatView.vue:97"',
+    )
+    expect(html).toContain('>src/views/ChatView.vue<')
+  })
+
   // Mermaid 块：emit 占位符给 ChatView 后置 mermaid.render() 替换；fallback 露源码。
   it('emits a mermaid placeholder with encoded source for ```mermaid blocks', () => {
     const html = renderText('```mermaid\nflowchart TD\n  A --> B\n```')
@@ -97,7 +116,7 @@ describe('renderText', () => {
 
   it('still emits a regular code-block for non-mermaid fenced code', () => {
     const html = renderText('```js\nconst x = 1\n```')
-    expect(html).toContain('<pre class="code-block">')
+    expect(html).toContain('<pre class="code-block" data-lang="js">')
     expect(html).not.toContain('md-mermaid')
   })
 
