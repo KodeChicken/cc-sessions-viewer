@@ -76,9 +76,11 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     // ---------- File ----------
     let new_session = MenuItem::with_id(app, "new-session", "New Session in Current Project", true, Some("CmdOrCtrl+N"))?;
+    let add_folder = MenuItem::with_id(app, "add-folder", "Add Folder…", true, Some("CmdOrCtrl+O"))?;
     let export = MenuItem::with_id(app, "export-session", "Export Session…", true, Some("CmdOrCtrl+E"))?;
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(&new_session)
+        .item(&add_folder)
         .separator()
         .item(&export)
         .build()?;

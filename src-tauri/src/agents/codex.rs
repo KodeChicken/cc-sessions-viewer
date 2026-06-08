@@ -558,6 +558,10 @@ fn output_text(v: Option<&Value>) -> String {
     }
 }
 
+fn agent_message_phase(payload: &Value) -> Option<&str> {
+    payload.get("phase").and_then(Value::as_str)
+}
+
 fn scan(
     fp: &Path,
     m: &Meta,
@@ -602,7 +606,10 @@ fn scan(
                 }
                 continue;
             }
-            if pt == "user_message" || pt == "agent_message" {
+            if pt == "user_message"
+                || (pt == "agent_message"
+                    && agent_message_phase(p) != Some("commentary"))
+            {
                 message_count += 1;
             }
             if first_user_title.is_empty() && pt == "user_message" {
@@ -722,6 +729,9 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
                 }
             }
             ("event_msg", "agent_message") => {
+                if agent_message_phase(p) == Some("commentary") {
+                    continue;
+                }
                 if let Some(m) = p.get("message").and_then(|x| x.as_str()) {
                     if !m.trim().is_empty() {
                         msgs.push(simple_msg("assistant", ts, text_block("text", m)));
@@ -1563,6 +1573,38 @@ mod tests {
         let turns = read_turns(&p);
         let last_call = turns.last().and_then(|t| t.calls.last()).expect("call");
         assert_eq!(last_call.model, "gpt-5.5");
+    }
+
+    #[test]
+    fn read_session_skips_commentary_messages_but_keeps_final_answers_across_turns() {
+        let p = write_temp(
+            "codex-read-session-commentary.jsonl",
+            &[
+                r#"{"timestamp":"2026-06-08T02:12:13.012Z","type":"session_meta","payload":{"id":"abc","cwd":"/tmp"}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:15.000Z","type":"event_msg","payload":{"type":"user_message","message":"hi","images":[],"local_images":[],"text_elements":[]}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:16.000Z","type":"event_msg","payload":{"type":"agent_message","message":"checking...","phase":"commentary"}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:17.000Z","type":"event_msg","payload":{"type":"agent_message","message":"hello back","phase":"final_answer"}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:18.000Z","type":"event_msg","payload":{"type":"user_message","message":"vue3","images":[],"local_images":[],"text_elements":[]}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:19.000Z","type":"event_msg","payload":{"type":"agent_message","message":"scanning repo...","phase":"commentary"}}"#,
+                r#"{"timestamp":"2026-06-08T02:12:20.000Z","type":"event_msg","payload":{"type":"agent_message","message":"What about Vue 3?","phase":"final_answer"}}"#,
+            ],
+        );
+
+        let msgs = read(p.to_string_lossy().as_ref()).expect("session should parse");
+        assert_eq!(msgs.len(), 4, "only user + final assistant messages should remain");
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[0].blocks[0].text.as_deref(), Some("hi"));
+        assert_eq!(msgs[1].role, "assistant");
+        assert_eq!(msgs[1].blocks[0].text.as_deref(), Some("hello back"));
+        assert_eq!(msgs[2].role, "user");
+        assert_eq!(msgs[2].blocks[0].text.as_deref(), Some("vue3"));
+        assert_eq!(msgs[3].role, "assistant");
+        assert_eq!(msgs[3].blocks[0].text.as_deref(), Some("What about Vue 3?"));
+
+        let title_index = HashMap::new();
+        let meta = meta(&p).expect("meta");
+        let session = scan(&p, &meta, &title_index, CodexThreadFlags::default());
+        assert_eq!(session.message_count, 4, "commentary should not inflate session counts");
     }
 
     #[test]

@@ -64,6 +64,10 @@ import ExportHistoryView from './views/ExportHistoryView.vue'
 import PricingView from './views/PricingView.vue'
 import ProjectContextMenu from './modals/ProjectContextMenu.vue'
 import {
+  clearPendingLiveNotification,
+  enqueueLiveNotification,
+} from './liveNotifications'
+import {
   activeUiId,
   openOrFocusTui,
   setActive as setActiveTui,
@@ -271,6 +275,7 @@ watch(openSession, (val, old) => {
   // openChat 里会再起新的；openTrashSession / null 都不需要 watcher。
   if (val?.path !== old?.path) {
     clearLive()
+    clearPendingLiveNotification()
     api.unwatchSession().catch(() => {})
   }
   if (!val && old) {
@@ -587,7 +592,12 @@ async function loadProjects() {
 }
 
 async function addBookmarkByPath(path: string) {
-  if (projects.value.some(p => p.displayPath === path)) {
+  // 先刷新项目列表，避免用 stale 的列表做重复判断
+  await loadProjects()
+  const existing = projects.value.find(p => p.displayPath === path)
+  if (existing) {
+    // 已有同路径项目 → 不重复添加，直接选中它
+    selectProject(existing.dirName)
     notify(t('toast.bookmarkExists'))
     return
   }
@@ -1475,9 +1485,16 @@ function onClearCache() {
 const windowFocused = ref(document.hasFocus())
 function onFocus() {
   windowFocused.value = true
+  clearPendingLiveNotification()
 }
 function onBlur() {
   windowFocused.value = false
+}
+function appVisible() {
+  return windowFocused.value && document.visibilityState === 'visible'
+}
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') clearPendingLiveNotification()
 }
 
 onMounted(() => {
@@ -1492,6 +1509,7 @@ onMounted(() => {
   window.addEventListener('focus', onFocus)
   window.addEventListener('blur', onBlur)
   window.addEventListener('resize', onWindowResize)
+  document.addEventListener('visibilitychange', onVisibilityChange)
   // 右键菜单的全局关闭：任意点击 / 滚轮 / ESC
   document.addEventListener('mousedown', (e) => {
     if (!ctxMenu.value) return
@@ -1527,6 +1545,8 @@ onMounted(() => {
         e.preventDefault(); chatNavigate(-1)
       } else if (key === 'n' && !e.shiftKey) {
         e.preventDefault(); newSession()
+      } else if (key === 'o' && !e.shiftKey) {
+        e.preventDefault(); addBookmark()
       } else if (key === 'e' && !e.shiftKey) {
         e.preventDefault()
         if (openSession.value) exportSession('md')
@@ -1555,6 +1575,7 @@ onMounted(() => {
     'find-prev': () => chatNavigate(-1),
     'toggle-sidebar': toggleSidebar,
     'new-session': () => newSession(),
+    'add-folder': () => addBookmark(),
     'open-settings': () => {
       showSettings.value = true
     },
@@ -1638,6 +1659,13 @@ async function installLiveTailListeners() {
       chatMsgs.value = chatMsgs.value.concat(added)
       // 真的有新增 → 标"Live"，并续命 fade 定时器。
       markLive()
+      enqueueLiveNotification({
+        agent: chatAgent.value,
+        sessionTitle: cur.title || shortName(cur.path),
+        sessionPath: cur.path,
+        messages: added,
+        appVisible: appVisible(),
+      })
       // 等 v-for 把新行挂上 DOM，再交给 ChatView 决定是否自动滚到底。
       nextTick(() => chatViewRef.value?.onLiveAppend?.(added.length))
     },
@@ -1676,7 +1704,11 @@ onUnmounted(() => {
   window.removeEventListener('pointermove', onSidebarResizePointerMove)
   window.removeEventListener('pointerup', onSidebarResizePointerUp)
   window.removeEventListener('pointercancel', onSidebarResizePointerUp)
+  clearPendingLiveNotification()
   api.unwatchSession().catch(() => {})
+  window.removeEventListener('focus', onFocus)
+  window.removeEventListener('blur', onBlur)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 // 全局搜索命中：跳到对应项目并打开会话；正文命中再滚到目标消息并触发闪烁动画。

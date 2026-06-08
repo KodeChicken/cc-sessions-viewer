@@ -822,7 +822,9 @@ fn pin_traffic_lights(window: &tauri::WebviewWindow) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init());
 
     // 开发期注入 MCP Bridge —— 让 AI 助手经 WebSocket 直接看/控这个 app（截图 /
     // DOM 快照 / 执行 JS / 监控 IPC）。仅 debug：release 构建里这段被 cfg 去掉。

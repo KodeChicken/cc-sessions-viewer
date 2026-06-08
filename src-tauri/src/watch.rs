@@ -17,10 +17,15 @@
 //   session:gone     { path }                      文件不再存在
 //
 // 这一层不缓存 mtime —— 文件系统事件本身就是触发源，不需要轮询。
+//
+// 注意：这里不能直接盯单个 JSONL 文件。很多 CLI / 编辑器会用“先写临时文件，再 rename
+// 覆盖”的原子替换模式落盘；如果只 watch 旧文件 inode，替换后 watcher 会失联，后续再有
+// 新内容也收不到。这里统一 watch 父目录，每次事件 debounce 后回头检查目标文件当前状态，
+// 这样 append / truncate / replace / recreate 都能兜住。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
@@ -33,9 +38,12 @@ use crate::types::Msg;
 struct WatchState {
     /// 让 watcher 活着 —— drop 后回调停。
     _watcher: RecommendedWatcher,
-    /// 仅在 #[cfg(test)] 的 current_path() 里读出来 —— 测试核对当前 watch 的是哪条 path。
+    /// 当前打开的目标文件。
     #[allow(dead_code)]
     path: PathBuf,
+    /// notify 实际监听的目录（目标文件的父目录）。
+    #[allow(dead_code)]
+    watch_root: PathBuf,
     #[allow(dead_code)]
     agent: String,
 }
@@ -45,23 +53,40 @@ static STATE: OnceLock<Mutex<Option<WatchState>>> = OnceLock::new();
 
 /// 每个文件路径独立维护"上次 emit 的 Msg 数量"。即使 watch 被换了又换回来，
 /// 仍能用这个 cache 接上上次的进度，避免误把整段当 append。
-/// key = 绝对路径串；value = (last_msg_count, last_modify_instant)
-static LAST_COUNT: OnceLock<Mutex<std::collections::HashMap<String, (usize, Instant)>>> =
+/// key = 绝对路径串；value = last_msg_count
+static LAST_COUNT: OnceLock<Mutex<std::collections::HashMap<String, usize>>> =
     OnceLock::new();
+
+/// 真正的 debounce：每次文件事件都 bump 一次序号并延后处理；只有睡眠结束后序号仍然
+/// 是最新的那次事件才会触发整文件重读。这样既能合并 burst 写入，又不会把"唯一的一次"
+/// 事件直接丢掉。
+static DEBOUNCE_SEQ: OnceLock<Mutex<std::collections::HashMap<String, u64>>> = OnceLock::new();
 
 fn state() -> &'static Mutex<Option<WatchState>> {
     STATE.get_or_init(|| Mutex::new(None))
 }
 
-fn last_count_map(
-) -> &'static Mutex<std::collections::HashMap<String, (usize, Instant)>> {
+fn last_count_map() -> &'static Mutex<std::collections::HashMap<String, usize>> {
     LAST_COUNT.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn debounce_seq_map() -> &'static Mutex<std::collections::HashMap<String, u64>> {
+    DEBOUNCE_SEQ.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn watch_root_for(path: &Path) -> Result<PathBuf, String> {
+    path.parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| format!("无法确定父目录: {}", path.to_string_lossy()))
 }
 
 /// debounce 窗口：notify 一次写入可能拆成多条事件，攒一拨再 emit。
 /// 200ms 平衡：人类感知接近实时（<300ms 觉得是即时），又能压平 IDE / agent 的多次
 /// 小写入。
 const DEBOUNCE_MS: u64 = 200;
+/// 文件系统事件在某些场景下会漏（例如 AppKit / CLI 写入模式差异）；轮询兜底能确保
+/// 正在跑的会话最终还是会被补进来。频率保持低一些，避免空转。
+const POLL_MS: u64 = 1500;
 
 #[derive(Serialize, Clone)]
 struct AppendPayload {
@@ -81,13 +106,14 @@ pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), 
     if !p.exists() {
         return Err(format!("文件不存在: {path}"));
     }
+    let watch_root = watch_root_for(&p)?;
 
     // 先把 baseline 写好，避免 watcher 起来后回调先到 process_change 时拿不到 count。
     let src = agents::source(&agent)?;
     let initial = src.read_session(&path).unwrap_or_default();
     {
         let mut m = last_count_map().lock().map_err(|e| e.to_string())?;
-        m.insert(path.clone(), (initial.len(), Instant::now()));
+        m.insert(path.clone(), initial.len());
     }
 
     let app_handle = app.clone();
@@ -102,23 +128,64 @@ pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), 
             ) {
                 return;
             }
-            if matches!(ev.kind, EventKind::Remove(_)) {
-                let _ = app_handle.emit(
-                    "session:gone",
-                    PathPayload {
-                        path: path_for_cb.clone(),
-                    },
-                );
-                return;
-            }
-            process_change(&app_handle, &agent_for_cb, &path_for_cb);
+            let seq = {
+                let mut m = match debounce_seq_map().lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                let next = m.get(&path_for_cb).copied().unwrap_or(0) + 1;
+                m.insert(path_for_cb.clone(), next);
+                next
+            };
+            let app_for_job = app_handle.clone();
+            let agent_for_job = agent_for_cb.clone();
+            let path_for_job = path_for_cb.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(DEBOUNCE_MS));
+                let latest = debounce_seq_map()
+                    .lock()
+                    .ok()
+                    .and_then(|m| m.get(&path_for_job).copied());
+                if latest != Some(seq) {
+                    return;
+                }
+                process_change(&app_for_job, &agent_for_job, &path_for_job);
+            });
         },
     )
     .map_err(|e| format!("notify init 失败: {e}"))?;
 
     watcher
-        .watch(&p, RecursiveMode::NonRecursive)
+        .watch(&watch_root, RecursiveMode::NonRecursive)
         .map_err(|e| format!("watch 失败: {e}"))?;
+
+    // notify 事件偶发漏报时，轮询兜底仍能把新消息补进来。process_change 内部会按
+    // active watcher 校验 path/agent，并且只在 Msg 数增长时 emit 尾段，所以这里
+    // 安全地定时调用即可。
+    {
+        let app_for_poll = app.clone();
+        let agent_for_poll = agent.clone();
+        let path_for_poll = path.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(POLL_MS));
+            let should_continue = {
+                let slot = match state().lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                matches!(
+                    slot.as_ref(),
+                    Some(active)
+                        if active.agent == agent_for_poll
+                            && active.path == Path::new(&path_for_poll)
+                )
+            };
+            if !should_continue {
+                return;
+            }
+            process_change(&app_for_poll, &agent_for_poll, &path_for_poll);
+        });
+    }
 
     // 替换上一个 watcher（如果有）—— 旧 RecommendedWatcher 随 WatchState drop。
     {
@@ -126,6 +193,7 @@ pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), 
         *slot = Some(WatchState {
             _watcher: watcher,
             path: p,
+            watch_root,
             agent,
         });
     }
@@ -141,20 +209,34 @@ pub fn unwatch_session() -> Result<(), String> {
 
 /// 单次文件变更处理：整文件重解析 → 跟上次 emit 的数量比 → emit 尾段或 reset。
 fn process_change(app: &AppHandle, agent: &str, path: &str) {
-    // debounce：如果上一次处理距现在不到 DEBOUNCE_MS，跳过 —— 后续事件会再触发一次。
+    // 旧 watcher / 已切走的会话不再处理，避免延迟任务把过期 append 打到前端。
     {
-        let mut m = match last_count_map().lock() {
+        let slot = match state().lock() {
             Ok(g) => g,
             Err(_) => return,
         };
-        if let Some((_, ts)) = m.get(path) {
-            if ts.elapsed() < Duration::from_millis(DEBOUNCE_MS) {
-                return;
-            }
+        let Some(active) = slot.as_ref() else {
+            return;
+        };
+        if active.agent != agent || active.path != Path::new(path) {
+            return;
         }
-        // 占位更新 ts，避免并发回调挤进来。真正的 count 在解析后再写。
-        let prev_count = m.get(path).map(|(c, _)| *c).unwrap_or(0);
-        m.insert(path.to_string(), (prev_count, Instant::now()));
+    }
+
+    if !Path::new(path).exists() {
+        let _ = app.emit(
+            "session:gone",
+            PathPayload {
+                path: path.to_string(),
+            },
+        );
+        if let Ok(mut m) = last_count_map().lock() {
+            m.remove(path);
+        }
+        if let Ok(mut m) = debounce_seq_map().lock() {
+            m.remove(path);
+        }
+        return;
     }
 
     let src = match agents::source(agent) {
@@ -171,7 +253,7 @@ fn process_change(app: &AppHandle, agent: &str, path: &str) {
             Ok(g) => g,
             Err(_) => return,
         };
-        m.get(path).map(|(c, _)| *c).unwrap_or(0)
+        m.get(path).copied().unwrap_or(0)
     };
 
     if msgs.len() < prev_count {
@@ -186,7 +268,7 @@ fn process_change(app: &AppHandle, agent: &str, path: &str) {
             Ok(g) => g,
             Err(_) => return,
         };
-        m.insert(path.to_string(), (msgs.len(), Instant::now()));
+        m.insert(path.to_string(), msgs.len());
         return;
     }
 
@@ -204,7 +286,7 @@ fn process_change(app: &AppHandle, agent: &str, path: &str) {
             Ok(g) => g,
             Err(_) => return,
         };
-        m.insert(path.to_string(), (msgs.len(), Instant::now()));
+        m.insert(path.to_string(), msgs.len());
     }
 }
 
@@ -245,11 +327,33 @@ mod tests {
         let m = last_count_map();
         {
             let mut g = m.lock().unwrap();
-            g.insert("/tmp/a.jsonl".into(), (3, Instant::now()));
-            g.insert("/tmp/b.jsonl".into(), (7, Instant::now()));
+            g.insert("/tmp/a.jsonl".into(), 3);
+            g.insert("/tmp/b.jsonl".into(), 7);
         }
         let g = m.lock().unwrap();
-        assert_eq!(g.get("/tmp/a.jsonl").map(|(c, _)| *c), Some(3));
-        assert_eq!(g.get("/tmp/b.jsonl").map(|(c, _)| *c), Some(7));
+        assert_eq!(g.get("/tmp/a.jsonl").copied(), Some(3));
+        assert_eq!(g.get("/tmp/b.jsonl").copied(), Some(7));
+    }
+
+    /// debounce 序号同样按 path 隔离；新事件只覆盖自己的路径。
+    #[test]
+    fn debounce_seq_is_keyed_per_path() {
+        let m = debounce_seq_map();
+        {
+            let mut g = m.lock().unwrap();
+            g.insert("/tmp/a.jsonl".into(), 1);
+            g.insert("/tmp/b.jsonl".into(), 4);
+        }
+        let g = m.lock().unwrap();
+        assert_eq!(g.get("/tmp/a.jsonl").copied(), Some(1));
+        assert_eq!(g.get("/tmp/b.jsonl").copied(), Some(4));
+    }
+
+    /// 原子替换场景下必须 watch 父目录而不是目标文件本身。
+    #[test]
+    fn watch_root_uses_parent_directory() {
+        let p = PathBuf::from("/tmp/demo/rollout.jsonl");
+        let root = watch_root_for(&p).unwrap();
+        assert_eq!(root, PathBuf::from("/tmp/demo"));
     }
 }

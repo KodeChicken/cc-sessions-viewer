@@ -1842,7 +1842,7 @@ mark.locate-hl {
   -webkit-user-select: text;
 }
 .chat-inner {
-  max-width: 860px;
+  max-width: min(86%, 1800px);
   margin: 0 auto;
   padding: 0 22px;
 }
