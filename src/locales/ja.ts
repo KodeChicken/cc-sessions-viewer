@@ -51,6 +51,13 @@ export default {
 
   'topbar.github': 'GitHub でソースを表示',
 
+  'context.back': '戻る',
+  'context.reload': '再読み込み',
+  'context.saveAs': '名前を付けて保存',
+  'context.print': '印刷',
+  'context.moreTools': 'その他のツール',
+  'context.share': '共有',
+
   'proj.pin': '上にピン留め',
   'proj.unpin': 'ピン留めを解除',
   'proj.sink': '下に沈める',
@@ -164,7 +171,10 @@ export default {
   'chat.action.resume': 'ターミナルで再開',
   'chat.action.resumeHere': 'ウィンドウ内で開く',
   'chat.action.resumeUnavailable': '作業ディレクトリが見つからず再開できません',
+  'chat.tui.tabRename': 'セッション名を変更',
   'chat.tui.tabClose': 'ターミナルを閉じる',
+  'chat.tui.tabCloseOthers': '他のターミナルを閉じる',
+  'chat.tui.tabCloseProject': 'このプロジェクトのターミナルをすべて閉じる',
   'chat.tui.untitled': '無題',
   'chat.tui.listTab': 'リスト',
   'chat.tui.listTabTooltip': 'セッション一覧に戻る',
@@ -266,6 +276,7 @@ export default {
   'toast.resumed': 'ターミナルで再開しました',
   'toast.resumeNoCwd': '作業ディレクトリが不明なため再開できません',
   'toast.newSession': 'ターミナルで新しいセッションを開きました',
+  'toast.sessionStillStarting': 'セッションはまだ起動中です。少し待ってから再試行してください',
   'toast.exported': '{path} に書き出しました',
   'toast.exportFail': '書き出しに失敗: {e}',
   'toast.exportNoSession': '先にセッションを開いてから書き出してください',

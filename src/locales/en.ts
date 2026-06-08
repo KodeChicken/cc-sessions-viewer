@@ -51,6 +51,13 @@ export default {
 
   'topbar.github': 'View source on GitHub',
 
+  'context.back': 'Back',
+  'context.reload': 'Reload',
+  'context.saveAs': 'Save as',
+  'context.print': 'Print',
+  'context.moreTools': 'More tools',
+  'context.share': 'Share',
+
   'proj.pin': 'Pin to top',
   'proj.unpin': 'Unpin',
   'proj.sink': 'Send to bottom',
@@ -164,7 +171,10 @@ export default {
   'chat.action.resume': 'Resume in terminal',
   'chat.action.resumeHere': 'Open in window',
   'chat.action.resumeUnavailable': 'Cannot resume — missing working directory',
+  'chat.tui.tabRename': 'Rename session',
   'chat.tui.tabClose': 'Close terminal',
+  'chat.tui.tabCloseOthers': 'Close other terminals',
+  'chat.tui.tabCloseProject': 'Close project terminals',
   'chat.tui.untitled': 'Untitled',
   'chat.tui.listTab': 'List',
   'chat.tui.listTabTooltip': 'Back to session list',
@@ -266,6 +276,7 @@ export default {
   'toast.resumed': 'Resumed in terminal',
   'toast.resumeNoCwd': 'Cannot resume — original working directory is unknown',
   'toast.newSession': 'Started a new session in terminal',
+  'toast.sessionStillStarting': 'Session is still starting. Try again shortly.',
   'toast.exported': 'Exported to {path}',
   'toast.exportFail': 'Export failed: {e}',
   'toast.exportNoSession': 'Open a session first to export it',
