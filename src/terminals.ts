@@ -297,6 +297,15 @@ function setTurnState(
   tab.turnStateUpdatedAt = Date.now()
 }
 
+function clearLocalWorkingTurn(tab: TerminalTab) {
+  if (tab.turnState !== 'working') return
+  setTurnState(tab, activeUiId.value === tab.uiId ? 'idle' : 'review', 'pty')
+}
+
+function isTerminalCancelInput(data: string) {
+  return data === '\x1b' || data === '\x03'
+}
+
 function tabsBySession(agent: Agent, sessionPath: string) {
   if (!sessionPath) return []
   return tabs.value.filter(
@@ -586,7 +595,9 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   tab.onDataDisp = term.onData((data) => {
     if (tab.ptyId === null || tab.processState !== 'alive') return
     tab.lastUserInputAt = Date.now()
-    if ((data.includes('\r') || data.includes('\n')) && tab.turnState !== 'blocked') {
+    if (isTerminalCancelInput(data)) {
+      clearLocalWorkingTurn(tab)
+    } else if ((data.includes('\r') || data.includes('\n')) && tab.turnState !== 'blocked') {
       setTurnState(tab, 'working', 'pty')
     }
     setQuietCursor(tab, false)

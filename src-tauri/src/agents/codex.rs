@@ -20,6 +20,7 @@ use serde_json::Value;
 use serde_json::{json, Map};
 
 use super::SessionSource;
+use crate::agent_command::AgentCommand;
 use crate::stats::{
     pricing, shell as shell_util,
     types::{CallRecord, Turn},
@@ -1256,12 +1257,12 @@ impl SessionSource for CodexSource {
         first_user_text(path)
     }
 
-    fn resume_cli(&self, session_id: &str, _path: &str) -> String {
-        format!("codex resume {session_id}")
+    fn resume_command(&self, session_id: &str, _path: &str) -> AgentCommand {
+        AgentCommand::new("codex").arg("resume").arg(session_id)
     }
 
-    fn new_session_cli(&self) -> String {
-        "codex".to_string()
+    fn new_session_command(&self) -> AgentCommand {
+        AgentCommand::new("codex")
     }
 
     fn image_src(&self, block: &Value) -> Option<String> {

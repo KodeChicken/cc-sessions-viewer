@@ -18,6 +18,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use crate::agent_command::AgentCommand;
 use crate::stats::types::Turn;
 use crate::types::{
     AgentStats, DailyActivity, Msg, ProjectInfo, ProjectStats, SearchHit, SessionMeta,
@@ -127,10 +128,10 @@ pub trait SessionSource: Send + Sync {
     fn trash_title(&self, path: &Path) -> String;
 
     /// 终端里 resume 一个会话用的 CLI 命令。`session_id` 已经过 [A-Za-z0-9-]+ 校验。
-    fn resume_cli(&self, session_id: &str, path: &str) -> String;
+    fn resume_command(&self, session_id: &str, path: &str) -> AgentCommand;
 
     /// 终端里开一个全新会话用的 CLI 命令（不带 --resume）。
-    fn new_session_cli(&self) -> String;
+    fn new_session_command(&self) -> AgentCommand;
 
     /// 从单个 content 块中尝试提取图片 src（data:URL 或外链）。
     /// 主要供该 agent 自己的 `read_session` 内部使用，放在 trait 上也方便外部预览图片块。

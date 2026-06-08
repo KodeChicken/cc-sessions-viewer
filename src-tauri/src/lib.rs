@@ -13,6 +13,7 @@
 // an external consumer of the lib crate) can call into the dedup pipeline
 // directly. Everything else stays crate-private.
 pub mod agents;
+mod agent_command;
 mod bookmarks;
 mod menu;
 mod pty;
@@ -29,6 +30,7 @@ use std::fs;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use crate::agent_command::AgentCommand;
 use crate::types::{
     AgentStats, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, TrayStats, UsageSummary,
 };
@@ -279,9 +281,8 @@ fn pty_spawn(
     {
         return Err("会话 ID 非法".to_string());
     }
-    let mut cli = agents::source(&agent)?.resume_cli(&session_id, &path);
-    append_extra_args(&mut cli, &extra_args);
-    pty::spawn(app, cwd, cli, cols, rows)
+    let command = agents::source(&agent)?.resume_command(&session_id, &path).with_extra_args(&extra_args);
+    pty::spawn(app, cwd, command, cols, rows)
 }
 
 /// 启动一个 “new session” PTY（不带 --resume）。session_id 不需要 —— 由 CLI 自己生成新 id。
@@ -297,9 +298,8 @@ fn pty_spawn_new(
     if !Path::new(&cwd).is_dir() {
         return Err("项目目录已不存在，无法创建会话".to_string());
     }
-    let mut cli = agents::source(&agent)?.new_session_cli();
-    append_extra_args(&mut cli, &extra_args);
-    pty::spawn(app, cwd, cli, cols, rows)
+    let command = agents::source(&agent)?.new_session_command().with_extra_args(&extra_args);
+    pty::spawn(app, cwd, command, cols, rows)
 }
 
 #[tauri::command]
@@ -338,9 +338,8 @@ fn resume_session(
     {
         return Err("会话 ID 非法".to_string());
     }
-    let mut cli = agents::source(&agent)?.resume_cli(&session_id, &path);
-    append_extra_args(&mut cli, &extra_args);
-    spawn_terminal(&cli, &cwd, &terminal_app)
+    let command = agents::source(&agent)?.resume_command(&session_id, &path).with_extra_args(&extra_args);
+    spawn_terminal(&command, &cwd, &terminal_app)
 }
 
 /// 在终端里为某个项目目录开一个全新会话（不带 --resume）。
@@ -349,20 +348,11 @@ fn new_session(agent: String, cwd: String, extra_args: String, terminal_app: Str
     if !Path::new(&cwd).is_dir() {
         return Err("项目目录已不存在，无法创建会话".to_string());
     }
-    let mut cli = agents::source(&agent)?.new_session_cli();
-    append_extra_args(&mut cli, &extra_args);
-    spawn_terminal(&cli, &cwd, &terminal_app)
+    let command = agents::source(&agent)?.new_session_command().with_extra_args(&extra_args);
+    spawn_terminal(&command, &cwd, &terminal_app)
 }
 
-fn append_extra_args(cli: &mut String, extra: &str) {
-    let trimmed = extra.trim();
-    if !trimmed.is_empty() {
-        cli.push(' ');
-        cli.push_str(trimmed);
-    }
-}
-
-fn spawn_terminal(cli: &str, cwd: &str, _terminal_app: &str) -> Result<(), String> {
+fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Result<(), String> {
     use std::sync::Mutex;
     use std::time::Instant;
     static LAST_SPAWN: Mutex<Option<(String, Instant)>> = Mutex::new(None);
@@ -378,8 +368,8 @@ fn spawn_terminal(cli: &str, cwd: &str, _terminal_app: &str) -> Result<(), Strin
 
     #[cfg(target_os = "macos")]
     {
-        let cwd_quoted = cwd.replace('\'', "'\\''");
-        let shell_cmd = format!("cd '{cwd_quoted}' && {cli}");
+        let cli = command.to_posix_shell();
+        let shell_cmd = format!("cd {} && {}", crate::agent_command::posix_quote(cwd), cli);
 
         match _terminal_app {
             "iterm2" => {
@@ -423,7 +413,7 @@ fn spawn_terminal(cli: &str, cwd: &str, _terminal_app: &str) -> Result<(), Strin
                         "bash",
                         "-lc",
                     ])
-                    .arg(cli)
+                    .arg(&cli)
                     .spawn()
                     .map_err(|e| format!("启动 Ghostty 失败: {e}"))?;
             }
@@ -441,11 +431,8 @@ fn spawn_terminal(cli: &str, cwd: &str, _terminal_app: &str) -> Result<(), Strin
                     });
 
                 if let Some(ws_ref) = found_ref {
-                    // 从 cli 提取会话 ID（UUID-like token）用于去重
-                    let session_id = cli.split_whitespace().find(|s| {
-                        s.len() > 8 && s.contains('-')
-                            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-                    });
+                    // 从结构化参数提取会话 ID（UUID-like token）用于去重。
+                    let session_id = command_session_id(command);
 
                     // 检查 workspace 里是否已有运行这个会话的 surface
                     let existing_surface = session_id.and_then(|sid| {
@@ -507,7 +494,7 @@ fn spawn_terminal(cli: &str, cwd: &str, _terminal_app: &str) -> Result<(), Strin
                             .args(["new-split", split_dir, "--workspace", &ws_ref, "--focus", "true"])
                             .output();
                         let _ = std::process::Command::new("cmux")
-                            .args(["send", "--workspace", &ws_ref, cli])
+                            .args(["send", "--workspace", &ws_ref, cli.as_str()])
                             .output();
                         std::process::Command::new("cmux")
                             .args(["send-key", "--workspace", &ws_ref, "enter"])
@@ -524,7 +511,7 @@ fn spawn_terminal(cli: &str, cwd: &str, _terminal_app: &str) -> Result<(), Strin
                         "--cwd",
                         cwd,
                         "--command",
-                        cli,
+                        cli.as_str(),
                         "--focus",
                         "true",
                     ];
@@ -613,29 +600,16 @@ fn spawn_terminal(cli: &str, cwd: &str, _terminal_app: &str) -> Result<(), Strin
 
     #[cfg(target_os = "windows")]
     {
-        let cwd_win = cwd.replace('/', "\\");
-        let ps_cmd = format!("Set-Location \"{}\"; {}", cwd_win, cli);
-        let launched = std::process::Command::new("cmd")
-            .args(["/c", "start", "powershell", "-NoExit", "-Command", &ps_cmd])
+        let ps_cmd = crate::agent_command::powershell_set_location_and_run(cwd, command);
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", "powershell.exe", "-NoExit", "-Command", &ps_cmd])
             .spawn()
-            .is_ok();
-        if !launched {
-            std::process::Command::new("cmd")
-                .args([
-                    "/c",
-                    "start",
-                    "cmd",
-                    "/k",
-                    &format!("cd /d \"{}\" && {}", cwd_win, cli),
-                ])
-                .spawn()
-                .map_err(|e| format!("启动终端失败: {e}"))?;
-        }
+            .map_err(|e| format!("启动终端失败: {e}"))?;
     }
 
     #[cfg(target_os = "linux")]
     {
-        let shell_cmd = format!("cd '{}' && {}", cwd.replace('\'', "'\\''"), cli);
+        let shell_cmd = format!("cd {} && {}", crate::agent_command::posix_quote(cwd), command.to_posix_shell());
         let terminals = ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"];
         let mut launched = false;
         for term in &terminals {
@@ -659,6 +633,16 @@ fn spawn_terminal(cli: &str, cwd: &str, _terminal_app: &str) -> Result<(), Strin
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn command_session_id(command: &AgentCommand) -> Option<&str> {
+    command.args().iter().find_map(|arg| {
+        (arg.len() > 8
+            && arg.contains('-')
+            && arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .then_some(arg.as_str())
+    })
 }
 
 /// 检测 macOS 上已安装的外部终端应用。返回可用终端 key 列表（不含 terminal —— 那个始终可用）。
