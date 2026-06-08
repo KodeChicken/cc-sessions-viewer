@@ -376,88 +376,6 @@ fn process_signal_file(app: &AppHandle, path: &Path) {
     }
 }
 
-#[cfg(test)]
-#[allow(clippy::items_after_test_module)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn codex_infers_turn_lifecycle_from_event_messages() {
-        assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"user_message"}})),
-            Some("started")
-        );
-        assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_started"}})),
-            Some("started")
-        );
-        assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}})),
-            Some("completed")
-        );
-        assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_complete"}})),
-            Some("completed")
-        );
-        assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"final_answer","message":"done"}})),
-            Some("completed")
-        );
-        assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"checking"}})),
-            None
-        );
-        assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"error","message":"boom"}})),
-            Some("failed")
-        );
-        assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_failed","message":"boom"}})),
-            Some("failed")
-        );
-        assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"token_count"}})),
-            None
-        );
-    }
-
-    #[test]
-    fn gemini_infers_turn_lifecycle_from_user_and_response_records() {
-        assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"user","content":"hi"})),
-            Some("started")
-        );
-        assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"gemini","content":"ok"})),
-            Some("completed")
-        );
-        assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"gemini","tokens":{"output":1}})),
-            Some("completed")
-        );
-        assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"gemini","tokens":{"thoughts":1}})),
-            Some("completed")
-        );
-        assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"gemini","toolCalls":[] })),
-            None
-        );
-        assert_eq!(infer_gemini_turn_state(&json!({"type":"error"})), Some("failed"));
-    }
-
-    #[test]
-    fn jsonl_consumption_keeps_partial_line_for_next_event() {
-        assert_eq!(complete_jsonl_prefix_len(""), 0);
-        assert_eq!(complete_jsonl_prefix_len("{\"a\":1}"), 7);
-        assert_eq!(complete_jsonl_prefix_len("{\"a\":"), 0);
-        assert_eq!(complete_jsonl_prefix_len("{\"a\":1}\n{\"b\":"), 8);
-        assert_eq!(complete_jsonl_prefix_len("{\"a\":1}\n{\"b\":2}"), 15);
-        assert_eq!(complete_jsonl_prefix_len("{\"a\":\"中\"}\n"), "{\"a\":\"中\"}\n".len());
-    }
-}
-
 pub fn install_claude_hooks() -> Result<String, String> {
     let signal_path = signal_file_path()?;
     if let Some(parent) = signal_path.parent() {
@@ -613,3 +531,85 @@ process.stdin.on('end', () => {
   }
 });
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn codex_infers_turn_lifecycle_from_event_messages() {
+        assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"user_message"}})),
+            Some("started")
+        );
+        assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_started"}})),
+            Some("started")
+        );
+        assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}})),
+            Some("completed")
+        );
+        assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_complete"}})),
+            Some("completed")
+        );
+        assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"final_answer","message":"done"}})),
+            Some("completed")
+        );
+        assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"checking"}})),
+            None
+        );
+        assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"error","message":"boom"}})),
+            Some("failed")
+        );
+        assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_failed","message":"boom"}})),
+            Some("failed")
+        );
+        assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"token_count"}})),
+            None
+        );
+    }
+
+    #[test]
+    fn gemini_infers_turn_lifecycle_from_user_and_response_records() {
+        assert_eq!(
+            infer_gemini_turn_state(&json!({"type":"user","content":"hi"})),
+            Some("started")
+        );
+        assert_eq!(
+            infer_gemini_turn_state(&json!({"type":"gemini","content":"ok"})),
+            Some("completed")
+        );
+        assert_eq!(
+            infer_gemini_turn_state(&json!({"type":"gemini","tokens":{"output":1}})),
+            Some("completed")
+        );
+        assert_eq!(
+            infer_gemini_turn_state(&json!({"type":"gemini","tokens":{"thoughts":1}})),
+            Some("completed")
+        );
+        assert_eq!(
+            infer_gemini_turn_state(&json!({"type":"gemini","toolCalls":[] })),
+            None
+        );
+        assert_eq!(infer_gemini_turn_state(&json!({"type":"error"})), Some("failed"));
+    }
+
+    #[test]
+    fn jsonl_consumption_keeps_partial_line_for_next_event() {
+        assert_eq!(complete_jsonl_prefix_len(""), 0);
+        assert_eq!(complete_jsonl_prefix_len("{\"a\":1}"), 7);
+        assert_eq!(complete_jsonl_prefix_len("{\"a\":"), 0);
+        assert_eq!(complete_jsonl_prefix_len("{\"a\":1}\n{\"b\":"), 8);
+        assert_eq!(complete_jsonl_prefix_len("{\"a\":1}\n{\"b\":2}"), 15);
+        assert_eq!(complete_jsonl_prefix_len("{\"a\":\"中\"}\n"), "{\"a\":\"中\"}\n".len());
+    }
+}
+
