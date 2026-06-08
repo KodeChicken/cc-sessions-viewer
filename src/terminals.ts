@@ -48,6 +48,11 @@ export interface TerminalTab {
   unlistenData: UnlistenFn | null
   unlistenExit: UnlistenFn | null
   onDataDisp: { dispose: () => void } | null
+  lastSyncedCols: number
+  lastSyncedRows: number
+  quietCursor: boolean
+  quietCursorTimer: number | null
+  lastUserInputAt: number
   /** 'spawning' 期间不响应键盘，避免空指针；'exited' 后保留 scrollback 直到用户关 */
   status: 'spawning' | 'running' | 'exited' | 'error'
   errorMessage?: string
@@ -114,13 +119,44 @@ function isDarkActive(): boolean {
   return document.documentElement.classList.contains('theme-dark')
 }
 
+function terminalTheme(tab: TerminalTab) {
+  const base = xtermTheme(isDarkActive())
+  if (!tab.quietCursor) return base
+  return {
+    ...base,
+    cursor: 'rgba(0,0,0,0)',
+    cursorAccent: 'rgba(0,0,0,0)',
+  }
+}
+
+function applyTerminalTheme(tab: TerminalTab) {
+  tab.term.options.theme = terminalTheme(tab)
+}
+
 // 主题切换：把所有活跃 Terminal 的 theme 选项替换；xterm 自己会重绘。
 watch(theme, () => {
-  const t = xtermTheme(isDarkActive())
   for (const tab of tabs.value) {
-    tab.term.options.theme = t
+    applyTerminalTheme(tab)
   }
 })
+
+function setQuietCursor(tab: TerminalTab, quiet: boolean) {
+  if (tab.quietCursor === quiet) return
+  tab.quietCursor = quiet
+  applyTerminalTheme(tab)
+}
+
+function markTerminalOutputBusy(tab: TerminalTab) {
+  if (Date.now() - tab.lastUserInputAt < 250) return
+  if (tab.quietCursorTimer !== null) {
+    window.clearTimeout(tab.quietCursorTimer)
+  }
+  setQuietCursor(tab, true)
+  tab.quietCursorTimer = window.setTimeout(() => {
+    tab.quietCursorTimer = null
+    setQuietCursor(tab, false)
+  }, 700)
+}
 
 // ============================ base64 双向 ============================
 // btoa / atob 对多字节字符不友好，统一走 Uint8Array 转换 + 分块避免栈溢出。
@@ -223,7 +259,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
       fontSize: 13,
       fontFamily:
         '"SF Mono", "Menlo", "Consolas", "Liberation Mono", "Courier New", monospace',
-      cursorBlink: true,
+      cursorBlink: false,
       convertEol: false,
       allowProposedApi: true,
       scrollback: 5000,
@@ -258,6 +294,11 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     unlistenData: null,
     unlistenExit: null,
     onDataDisp: null,
+    lastSyncedCols: 0,
+    lastSyncedRows: 0,
+    quietCursor: false,
+    quietCursorTimer: null,
+    lastUserInputAt: 0,
     status: 'spawning',
   }) as TerminalTab
   tabs.value.push(tab)
@@ -304,6 +345,8 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   }
   const cols = term.cols || 80
   const rows = term.rows || 24
+  tab.lastSyncedCols = cols
+  tab.lastSyncedRows = rows
 
   let ptyId: number
   try {
@@ -331,6 +374,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   // 后端 → xterm（按 id 过滤多 tab）
   tab.unlistenData = await listen<{ id: number; base64: string }>('pty://data', (e) => {
     if (e.payload.id !== ptyId) return
+    markTerminalOutputBusy(tab)
     term.write(base64ToBytes(e.payload.base64))
   })
   tab.unlistenExit = await listen<{ id: number; code: number }>('pty://exit', (e) => {
@@ -343,6 +387,8 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   // xterm → 后端（注：spawning / exited 时屏蔽，避免空 ptyId 或写已死管道）
   tab.onDataDisp = term.onData((data) => {
     if (tab.ptyId === null || tab.status !== 'running') return
+    tab.lastUserInputAt = Date.now()
+    setQuietCursor(tab, false)
     const bytes = new TextEncoder().encode(data)
     api.ptyWrite(tab.ptyId, bytesToBase64(bytes)).catch(() => {})
   })
@@ -379,6 +425,10 @@ export function closeTab(uiId: number) {
   const idx = tabs.value.findIndex((t) => t.uiId === uiId)
   if (idx < 0) return
   const tab = tabs.value[idx]
+  if (tab.quietCursorTimer !== null) {
+    window.clearTimeout(tab.quietCursorTimer)
+    tab.quietCursorTimer = null
+  }
   tab.onDataDisp?.dispose()
   tab.unlistenData?.()
   tab.unlistenExit?.()
@@ -419,7 +469,14 @@ export function refit(uiId?: number) {
   }
   const cols = target.term.cols
   const rows = target.term.rows
-  if (target.ptyId !== null && cols > 0 && rows > 0) {
+  if (
+    target.ptyId !== null &&
+    cols > 0 &&
+    rows > 0 &&
+    (cols !== target.lastSyncedCols || rows !== target.lastSyncedRows)
+  ) {
+    target.lastSyncedCols = cols
+    target.lastSyncedRows = rows
     api.ptyResize(target.ptyId, cols, rows).catch(() => {})
   }
 }
