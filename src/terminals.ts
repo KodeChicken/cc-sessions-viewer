@@ -262,6 +262,34 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   }) as TerminalTab
   tabs.value.push(tab)
   activeUiId.value = uiId
+  term.attachCustomKeyEventHandler((ev) => {
+    const isCtrl =
+      ev.type === 'keydown' &&
+      ev.ctrlKey &&
+      !ev.altKey &&
+      !ev.metaKey
+    if (!isCtrl) return true
+
+    const key = ev.key.toLowerCase()
+    const isCtrlC = key === 'c'
+    const isCtrlV = key === 'v'
+
+    if (isCtrlC && term.hasSelection()) {
+      ev.preventDefault()
+      void navigator.clipboard.writeText(term.getSelection()).catch(() => {})
+      return false
+    }
+
+    if (isCtrlV) {
+      ev.preventDefault()
+      void navigator.clipboard.readText().then((text) => {
+        if (text) term.paste(text)
+      }).catch(() => {})
+      return false
+    }
+
+    return true
+  })
 
   // 等 slot 把 container append 到可见 DOM 后再 fit + spawn —— 否则尺寸 = 0。
   // 两轮 rAF：一轮让 Vue 把 v-show 切完，一轮等浏览器布局稳定。
