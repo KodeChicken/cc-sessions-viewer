@@ -209,6 +209,22 @@ describe('TerminalStrip', () => {
     expect(item.find('.term-tab-status-done').exists()).toBe(true)
   })
 
+  it('does not downgrade an agent-completed turn when session append arrives later', () => {
+    const t = tab({
+      sessionPath: '/repo/session.jsonl',
+      sessionId: 'session-1',
+      turnState: 'working',
+    })
+    tabs.value = [t]
+
+    markTabTurnCompleted('codex', '/repo/session.jsonl')
+    expect(t.turnState).toBe('review')
+
+    markTabSessionActivity('codex', '/repo/session.jsonl')
+    expect(t.turnState).toBe('review')
+    expect(t.turnStateSource).toBe('agent')
+  })
+
   it('keeps process exit separate from turn completion', () => {
     const t = tab({
       sessionPath: '/repo/session.jsonl',

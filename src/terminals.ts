@@ -341,7 +341,11 @@ export function markTabSessionActivity(agent: Agent, sessionPath: string) {
   const now = Date.now()
   for (const tab of tabsBySession(agent, sessionPath)) {
     tab.lastSessionActivityAt = now
-    if (tab.turnState !== 'blocked' && tab.turnState !== 'error') {
+    if (
+      tab.turnState !== 'blocked' &&
+      tab.turnState !== 'error' &&
+      !(tab.turnStateSource === 'agent' && (tab.turnState === 'idle' || tab.turnState === 'review'))
+    ) {
       setTurnState(tab, 'working', 'session')
     }
   }

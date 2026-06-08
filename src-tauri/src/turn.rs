@@ -3,6 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -54,6 +55,8 @@ pub fn signal_file_path() -> Result<PathBuf, String> {
 fn hook_script_path() -> Result<PathBuf, String> {
     Ok(data_dir()?.join("claude-turn-signal-hook.cjs"))
 }
+
+const SESSION_TURN_POLL_MS: u64 = 1500;
 
 pub fn emit_turn_signal(app: &AppHandle, payload: TerminalTurnPayload) -> Result<(), String> {
     if payload.agent != "claude" && payload.agent != "codex" && payload.agent != "gemini" {
@@ -128,6 +131,10 @@ pub fn watch_session_turn(
     } else {
         fs::metadata(&p).map(|m| m.len()).unwrap_or(0)
     };
+    let watch_root = p
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| format!("无法确定父目录: {path}"))?;
     let app_for_cb = app.clone();
     let agent_for_cb = agent.clone();
     let agent_for_catchup = agent.clone();
@@ -145,7 +152,7 @@ pub fn watch_session_turn(
     .map_err(|e| format!("turn session watcher 初始化失败: {e}"))?;
 
     watcher
-        .watch(&p, RecursiveMode::NonRecursive)
+        .watch(&watch_root, RecursiveMode::NonRecursive)
         .map_err(|e| format!("监听会话状态失败: {e}"))?;
 
     let mut watches = session_turn_watches().lock().map_err(|e| e.to_string())?;
@@ -162,6 +169,7 @@ pub fn watch_session_turn(
     if catch_up {
         process_session_turn_file(&app, &agent_for_catchup, &path, &p);
     }
+    start_session_turn_poll(app, agent_for_catchup, path, p);
     Ok(())
 }
 
@@ -169,6 +177,26 @@ pub fn unwatch_session_turn(path: String) -> Result<(), String> {
     let mut watches = session_turn_watches().lock().map_err(|e| e.to_string())?;
     watches.remove(&path);
     Ok(())
+}
+
+fn start_session_turn_poll(app: AppHandle, agent: String, path: String, fp: PathBuf) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(SESSION_TURN_POLL_MS));
+        let should_continue = {
+            let guard = match session_turn_watches().lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            matches!(
+                guard.get(&path),
+                Some(state) if state.agent == agent && state.path == fp
+            )
+        };
+        if !should_continue {
+            return;
+        }
+        process_session_turn_file(&app, &agent, &path, &fp);
+    });
 }
 
 fn process_session_turn_file(app: &AppHandle, agent: &str, path: &str, fp: &Path) {
@@ -230,7 +258,16 @@ fn process_session_turn_file(app: &AppHandle, agent: &str, path: &str, fp: &Path
 }
 
 fn complete_jsonl_prefix_len(buf: &str) -> usize {
-    buf.rfind('\n').map(|idx| idx + 1).unwrap_or(0)
+    let newline_prefix_len = buf.rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+    let tail = &buf[newline_prefix_len..];
+    if tail.trim().is_empty() {
+        return newline_prefix_len;
+    }
+    if serde_json::from_str::<Value>(tail.trim()).is_ok() {
+        buf.len()
+    } else {
+        newline_prefix_len
+    }
 }
 
 fn infer_turn_state(agent: &str, line: &str) -> Option<&'static str> {
@@ -248,8 +285,17 @@ fn infer_codex_turn_state(value: &Value) -> Option<&'static str> {
     }
     let payload = value.get("payload")?;
     match payload.get("type").and_then(Value::as_str)? {
+        "task_started" => Some("started"),
         "user_message" => Some("started"),
-        "agent_message" => Some("completed"),
+        "task_complete" => Some("completed"),
+        "agent_message" => {
+            if payload.get("phase").and_then(Value::as_str) == Some("commentary") {
+                None
+            } else {
+                Some("completed")
+            }
+        }
+        "task_failed" => Some("failed"),
         "error" => Some("failed"),
         _ => None,
     }
@@ -342,11 +388,31 @@ mod tests {
             Some("started")
         );
         assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_started"}})),
+            Some("started")
+        );
+        assert_eq!(
             infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}})),
             Some("completed")
         );
         assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_complete"}})),
+            Some("completed")
+        );
+        assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"final_answer","message":"done"}})),
+            Some("completed")
+        );
+        assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"checking"}})),
+            None
+        );
+        assert_eq!(
             infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"error","message":"boom"}})),
+            Some("failed")
+        );
+        assert_eq!(
+            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_failed","message":"boom"}})),
             Some("failed")
         );
         assert_eq!(
@@ -383,8 +449,10 @@ mod tests {
     #[test]
     fn jsonl_consumption_keeps_partial_line_for_next_event() {
         assert_eq!(complete_jsonl_prefix_len(""), 0);
-        assert_eq!(complete_jsonl_prefix_len("{\"a\":1}"), 0);
+        assert_eq!(complete_jsonl_prefix_len("{\"a\":1}"), 7);
+        assert_eq!(complete_jsonl_prefix_len("{\"a\":"), 0);
         assert_eq!(complete_jsonl_prefix_len("{\"a\":1}\n{\"b\":"), 8);
+        assert_eq!(complete_jsonl_prefix_len("{\"a\":1}\n{\"b\":2}"), 15);
         assert_eq!(complete_jsonl_prefix_len("{\"a\":\"中\"}\n"), "{\"a\":\"中\"}\n".len());
     }
 }
