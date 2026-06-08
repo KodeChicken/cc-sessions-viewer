@@ -362,7 +362,7 @@ fn append_extra_args(cli: &mut String, extra: &str) {
     }
 }
 
-fn spawn_terminal(cli: &str, cwd: &str, terminal_app: &str) -> Result<(), String> {
+fn spawn_terminal(cli: &str, cwd: &str, _terminal_app: &str) -> Result<(), String> {
     use std::sync::Mutex;
     use std::time::Instant;
     static LAST_SPAWN: Mutex<Option<(String, Instant)>> = Mutex::new(None);
@@ -381,7 +381,7 @@ fn spawn_terminal(cli: &str, cwd: &str, terminal_app: &str) -> Result<(), String
         let cwd_quoted = cwd.replace('\'', "'\\''");
         let shell_cmd = format!("cd '{cwd_quoted}' && {cli}");
 
-        match terminal_app {
+        match _terminal_app {
             "iterm2" => {
                 let as_arg = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
                 let script = format!(
@@ -664,9 +664,9 @@ fn spawn_terminal(cli: &str, cwd: &str, terminal_app: &str) -> Result<(), String
 /// 检测 macOS 上已安装的外部终端应用。返回可用终端 key 列表（不含 terminal —— 那个始终可用）。
 #[tauri::command]
 fn detect_terminals() -> Vec<String> {
-    let mut found = Vec::new();
     #[cfg(target_os = "macos")]
     {
+        let mut found = Vec::new();
         if Path::new("/Applications/iTerm.app").exists() {
             found.push("iterm2".to_string());
         }
@@ -679,8 +679,12 @@ fn detect_terminals() -> Vec<String> {
         if Path::new("/Applications/Warp.app").exists() {
             found.push("warp".to_string());
         }
+        found
     }
-    found
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
 }
 
 #[tauri::command]
