@@ -40,6 +40,7 @@ export interface TerminalTab {
   sessionPath: string
   title: string
   cwd: string
+  createdAt: number
   /* xterm 实例 —— 用 markRaw() 防 Vue 代理 */
   term: Terminal
   fitAddon: FitAddon
@@ -184,6 +185,21 @@ const findTab = (uiId: number) => tabs.value.find((t) => t.uiId === uiId)
 const findTabBySession = (path: string) =>
   tabs.value.find((t) => t.sessionPath === path && t.status !== 'exited' && t.status !== 'error')
 
+type SessionForTabSync = {
+  path: string
+  id: string
+  modified: number
+  title?: string
+}
+
+function applySessionToTab(tab: TerminalTab, session: SessionForTabSync) {
+  tab.sessionPath = session.path
+  tab.sessionId = session.id
+  if (session.title?.trim()) {
+    tab.title = session.title
+  }
+}
+
 /**
  * 新会话 tab 的 sessionPath/sessionId 在创建时都是空的（CLI 自己生成 id），
  * 等用户从 TUI 回到列表后，刷新出的 sessions 里会包含刚才创建的会话。
@@ -192,12 +208,14 @@ const findTabBySession = (path: string) =>
  */
 export function reconcileNewTabs(
   projectKey: string,
-  sessions: Array<{ path: string; id: string; modified: number }>,
+  sessions: SessionForTabSync[],
+  agent?: Agent,
 ) {
   const unmatched = tabs.value.filter(
     (t) =>
       t.sessionPath === '' &&
       t.projectKey === projectKey &&
+      (!agent || t.agent === agent) &&
       t.status !== 'exited' &&
       t.status !== 'error',
   )
@@ -211,10 +229,35 @@ export function reconcileNewTabs(
     .sort((a, b) => (b.modified ?? 0) - (a.modified ?? 0))
 
   for (const tab of unmatched) {
-    const match = available.shift()
+    const matchIdx = available.findIndex((s) => (s.modified ?? 0) >= tab.createdAt - 5000)
+    const match = matchIdx >= 0 ? available.splice(matchIdx, 1)[0] : undefined
     if (match) {
-      tab.sessionPath = match.path
-      tab.sessionId = match.id
+      applySessionToTab(tab, match)
+    }
+  }
+}
+
+export function syncTabTitlesFromSessions(
+  agent: Agent,
+  projectKey: string,
+  sessions: SessionForTabSync[],
+) {
+  const byPath = new Map(sessions.map((s) => [s.path, s]))
+  for (const tab of tabs.value) {
+    if (tab.agent !== agent || tab.projectKey !== projectKey || !tab.sessionPath) continue
+    const session = byPath.get(tab.sessionPath)
+    if (session?.title?.trim() && tab.title !== session.title) {
+      tab.title = session.title
+    }
+  }
+}
+
+export function syncTabTitleBySessionPath(agent: Agent, sessionPath: string, title: string) {
+  const trimmed = title.trim()
+  if (!trimmed) return
+  for (const tab of tabs.value) {
+    if (tab.agent === agent && tab.sessionPath === sessionPath) {
+      tab.title = trimmed
     }
   }
 }
@@ -288,6 +331,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     sessionPath: opts.sessionPath,
     title: opts.title,
     cwd: opts.cwd,
+    createdAt: Date.now(),
     term,
     fitAddon,
     container,

@@ -51,6 +51,13 @@ export default {
 
   'topbar.github': '在 GitHub 上查看源码',
 
+  'context.back': '返回',
+  'context.reload': '重新加载',
+  'context.saveAs': '另存为',
+  'context.print': '打印',
+  'context.moreTools': '更多工具',
+  'context.share': '共享',
+
   'proj.pin': '置顶',
   'proj.unpin': '取消置顶',
   'proj.sink': '沉底',
@@ -165,7 +172,10 @@ export default {
   'chat.action.resume': '在终端中恢复会话',
   'chat.action.resumeHere': '在窗口内打开',
   'chat.action.resumeUnavailable': '缺少工作目录，无法在窗口内打开',
+  'chat.tui.tabRename': '重命名会话',
   'chat.tui.tabClose': '关闭终端',
+  'chat.tui.tabCloseOthers': '关闭其他终端',
+  'chat.tui.tabCloseProject': '关闭该项目全部终端',
   'chat.tui.untitled': '未命名',
   'chat.tui.listTab': '列表',
   'chat.tui.listTabTooltip': '回到会话列表',
@@ -261,6 +271,7 @@ export default {
   'toast.resumed': '已在终端中恢复会话',
   'toast.resumeNoCwd': '无法恢复 —— 原始工作目录未知',
   'toast.newSession': '已在终端中新建会话',
+  'toast.sessionStillStarting': '会话仍在启动中，稍后再试',
   'toast.exported': '已导出到 {path}',
   'toast.exportFail': '导出失败：{e}',
   'toast.exportNoSession': '先打开一个会话再导出',

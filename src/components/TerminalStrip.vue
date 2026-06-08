@@ -7,8 +7,9 @@
 // 隐藏的 PTY tab（别的项目 / 别的 agent）不在这里出现，但 PTY 仍在后台跑 ——
 // 切回对应项目时它们会再次显示，scrollback 全程不丢。
 
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { Agent } from '../types'
+import type { TerminalTab } from '../terminals'
 import { tabs, activeUiId, setActive, closeTab } from '../terminals'
 import { IconClose, IconChat, IconList, agentIcons } from './icons'
 import { t } from '../i18n'
@@ -31,6 +32,8 @@ const emit = defineEmits<{
   viewClick: []
   /** Tab 被手动关闭（点 ×）—— App 据此刷新数据 */
   tabClosed: []
+  /** TUI tab 操作菜单 —— 复用会话重命名弹窗 */
+  tabRename: [tab: TerminalTab]
 }>()
 
 const visibleTabs = computed(() =>
@@ -47,6 +50,9 @@ const listActive = computed(
 const viewActive = computed(
   () => activeUiId.value === null && props.hasOpenSession,
 )
+const canGoBack = computed(() => typeof window !== 'undefined' && window.history.length > 1)
+const tabCtx = ref<{ x: number; y: number; tab: TerminalTab } | null>(null)
+const nativeMenuSupported = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 function shortTitle(title: string): string {
   if (!title) return t('chat.tui.untitled')
@@ -72,6 +78,192 @@ function onClose(uiId: number, ev: Event) {
   closeTab(uiId)
   emit('tabClosed')
 }
+
+async function onTabContextMenu(tab: TerminalTab, ev: MouseEvent) {
+  ev.preventDefault()
+  ev.stopPropagation()
+  closeTabCtx()
+  if (await openNativeTabContextMenu(tab, ev)) return
+  openFallbackTabContextMenu(tab, ev)
+}
+
+async function openNativeTabContextMenu(tab: TerminalTab, ev: MouseEvent): Promise<boolean> {
+  if (!nativeMenuSupported) return false
+  try {
+    const [{ Menu }, { LogicalPosition }] = await Promise.all([
+      import('@tauri-apps/api/menu'),
+      import('@tauri-apps/api/dpi'),
+    ])
+    const menu = await Menu.new({
+      items: [
+        {
+          id: 'native-back',
+          text: t('context.back'),
+          enabled: window.history.length > 1,
+          accelerator: 'Alt+Left',
+          action: () => window.history.back(),
+        },
+        {
+          id: 'native-reload',
+          text: t('context.reload'),
+          accelerator: 'CmdOrCtrl+R',
+          action: () => window.location.reload(),
+        },
+        { item: 'Separator' },
+        {
+          id: 'native-save-as',
+          text: t('context.saveAs'),
+          action: () => undefined,
+        },
+        {
+          id: 'native-print',
+          text: t('context.print'),
+          accelerator: 'CmdOrCtrl+P',
+          action: () => window.print(),
+        },
+        {
+          id: 'native-more-tools',
+          text: t('context.moreTools'),
+          items: [
+            {
+              id: 'native-share',
+              text: t('context.share'),
+              action: () => shareCurrentPage(),
+            },
+          ],
+        },
+        { item: 'Separator' },
+        {
+          id: 'tab-rename',
+          text: t('chat.tui.tabRename'),
+          action: () => emit('tabRename', tab),
+        },
+        { item: 'Separator' },
+        {
+          id: 'tab-close',
+          text: t('chat.tui.tabClose'),
+          action: () => closeNativeCtxTab(tab),
+        },
+        {
+          id: 'tab-close-others',
+          text: t('chat.tui.tabCloseOthers'),
+          action: () => closeOtherNativeCtxTabs(tab),
+        },
+        {
+          id: 'tab-close-project',
+          text: t('chat.tui.tabCloseProject'),
+          action: () => closeProjectNativeCtxTabs(),
+        },
+      ],
+    })
+    await menu.popup(new LogicalPosition(ev.clientX, ev.clientY))
+    return true
+  } catch (err) {
+    console.warn('Failed to open native tab context menu, falling back to HTML menu', err)
+    return false
+  }
+}
+
+function openFallbackTabContextMenu(tab: TerminalTab, ev: MouseEvent) {
+  const menuW = 220
+  const menuH = 318
+  tabCtx.value = {
+    x: Math.max(8, Math.min(ev.clientX, window.innerWidth - menuW - 8)),
+    y: Math.max(8, Math.min(ev.clientY, window.innerHeight - menuH - 8)),
+    tab,
+  }
+}
+
+function closeTabCtx() {
+  tabCtx.value = null
+}
+
+function renameCtxTab() {
+  const tab = tabCtx.value?.tab
+  closeTabCtx()
+  if (tab) emit('tabRename', tab)
+}
+
+function closeCtxTab() {
+  const tab = tabCtx.value?.tab
+  closeTabCtx()
+  if (!tab) return
+  closeTab(tab.uiId)
+  emit('tabClosed')
+}
+
+function closeOtherCtxTabs() {
+  const tab = tabCtx.value?.tab
+  closeTabCtx()
+  if (!tab) return
+  for (const item of visibleTabs.value) {
+    if (item.uiId !== tab.uiId) closeTab(item.uiId)
+  }
+  emit('tabClosed')
+}
+
+function closeProjectCtxTabs() {
+  closeTabCtx()
+  closeProjectNativeCtxTabs()
+}
+
+function closeNativeCtxTab(tab: TerminalTab) {
+  closeTab(tab.uiId)
+  emit('tabClosed')
+}
+
+function closeOtherNativeCtxTabs(tab: TerminalTab) {
+  for (const item of visibleTabs.value) {
+    if (item.uiId !== tab.uiId) closeTab(item.uiId)
+  }
+  emit('tabClosed')
+}
+
+function closeProjectNativeCtxTabs() {
+  for (const item of visibleTabs.value) {
+    closeTab(item.uiId)
+  }
+  emit('tabClosed')
+}
+
+function runNativeLikeCtxAction(action: 'back' | 'reload' | 'print' | 'share') {
+  closeTabCtx()
+  if (action === 'back') window.history.back()
+  else if (action === 'reload') window.location.reload()
+  else if (action === 'print') window.print()
+  else shareCurrentPage()
+}
+
+function shareCurrentPage() {
+  if (navigator.share) {
+    void navigator.share({ title: document.title, url: window.location.href })
+  }
+}
+
+function onDocMouseDown(e: MouseEvent) {
+  if (!tabCtx.value) return
+  const target = e.target as HTMLElement | null
+  if (target?.closest('.term-tab-ctx-menu')) return
+  closeTabCtx()
+}
+
+function onDocKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') closeTabCtx()
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', onDocMouseDown)
+  document.addEventListener('keydown', onDocKeydown)
+  document.addEventListener('wheel', closeTabCtx, { passive: true })
+  window.addEventListener('blur', closeTabCtx)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onDocMouseDown)
+  document.removeEventListener('keydown', onDocKeydown)
+  document.removeEventListener('wheel', closeTabCtx)
+  window.removeEventListener('blur', closeTabCtx)
+})
 </script>
 
 <template>
@@ -126,6 +318,7 @@ function onClose(uiId: number, ev: Event) {
       role="button"
       tabindex="0"
       @click="onTabClick(tab.uiId)"
+      @contextmenu="onTabContextMenu(tab, $event)"
       @keydown.enter.prevent="onTabClick(tab.uiId)"
       @keydown.space.prevent="onTabClick(tab.uiId)"
     >
@@ -151,6 +344,87 @@ function onClose(uiId: number, ev: Event) {
       >
         <IconClose />
       </span>
+    </div>
+
+    <div
+      v-if="tabCtx"
+      class="ctx-menu term-tab-ctx-menu"
+      :style="{ left: tabCtx.x + 'px', top: tabCtx.y + 'px' }"
+      @click.stop
+      @contextmenu.prevent.stop
+    >
+      <button
+        type="button"
+        class="ctx-item"
+        data-menu-action="native-back"
+        :disabled="!canGoBack"
+        @click="runNativeLikeCtxAction('back')"
+      >
+        <span>{{ t('context.back') }}</span>
+        <span class="ctx-shortcut">Alt+Left</span>
+      </button>
+      <button
+        type="button"
+        class="ctx-item"
+        data-menu-action="native-reload"
+        @click="runNativeLikeCtxAction('reload')"
+      >
+        <span>{{ t('context.reload') }}</span>
+        <span class="ctx-shortcut">Ctrl+R</span>
+      </button>
+      <div class="ctx-sep" />
+      <button type="button" class="ctx-item" data-menu-action="native-save-as">
+        <span>{{ t('context.saveAs') }}</span>
+      </button>
+      <button
+        type="button"
+        class="ctx-item"
+        data-menu-action="native-print"
+        @click="runNativeLikeCtxAction('print')"
+      >
+        <span>{{ t('context.print') }}</span>
+        <span class="ctx-shortcut">Ctrl+P</span>
+      </button>
+      <div class="ctx-submenu">
+        <button type="button" class="ctx-item" data-menu-action="native-more-tools">
+          <span>{{ t('context.moreTools') }}</span>
+          <span class="ctx-shortcut">›</span>
+        </button>
+        <div class="ctx-menu ctx-submenu-panel">
+          <button
+            type="button"
+            class="ctx-item"
+            data-menu-action="native-share"
+            @click="runNativeLikeCtxAction('share')"
+          >
+            <span>{{ t('context.share') }}</span>
+          </button>
+        </div>
+      </div>
+      <div class="ctx-sep" />
+      <button type="button" class="ctx-item" data-menu-action="tab-rename" @click="renameCtxTab">
+        <span>{{ t('chat.tui.tabRename') }}</span>
+      </button>
+      <div class="ctx-sep" />
+      <button type="button" class="ctx-item" data-menu-action="tab-close" @click="closeCtxTab">
+        <span>{{ t('chat.tui.tabClose') }}</span>
+      </button>
+      <button
+        type="button"
+        class="ctx-item"
+        data-menu-action="tab-close-others"
+        @click="closeOtherCtxTabs"
+      >
+        <span>{{ t('chat.tui.tabCloseOthers') }}</span>
+      </button>
+      <button
+        type="button"
+        class="ctx-item danger"
+        data-menu-action="tab-close-project"
+        @click="closeProjectCtxTabs"
+      >
+        <span>{{ t('chat.tui.tabCloseProject') }}</span>
+      </button>
     </div>
   </div>
 </template>

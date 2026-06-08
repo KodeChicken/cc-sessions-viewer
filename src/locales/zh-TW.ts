@@ -51,6 +51,13 @@ export default {
 
   'topbar.github': '在 GitHub 上檢視原始碼',
 
+  'context.back': '返回',
+  'context.reload': '重新載入',
+  'context.saveAs': '另存為',
+  'context.print': '列印',
+  'context.moreTools': '更多工具',
+  'context.share': '分享',
+
   'proj.pin': '釘選',
   'proj.unpin': '取消釘選',
   'proj.sink': '沉到底部',
@@ -163,7 +170,10 @@ export default {
   'chat.action.resume': '在終端機中恢復會話',
   'chat.action.resumeHere': '在視窗內開啟',
   'chat.action.resumeUnavailable': '缺少工作目錄，無法在視窗內開啟',
+  'chat.tui.tabRename': '重新命名會話',
   'chat.tui.tabClose': '關閉終端機',
+  'chat.tui.tabCloseOthers': '關閉其他終端機',
+  'chat.tui.tabCloseProject': '關閉該專案全部終端機',
   'chat.tui.untitled': '未命名',
   'chat.tui.listTab': '列表',
   'chat.tui.listTabTooltip': '回到會話列表',
@@ -261,6 +271,7 @@ export default {
   'toast.resumed': '已在終端機中恢復會話',
   'toast.resumeNoCwd': '無法恢復 —— 原始工作目錄未知',
   'toast.newSession': '已在終端機中新增會話',
+  'toast.sessionStillStarting': '會話仍在啟動中，請稍後再試',
   'toast.exported': '已匯出至 {path}',
   'toast.exportFail': '匯出失敗：{e}',
   'toast.exportNoSession': '請先開啟一個會話再匯出',

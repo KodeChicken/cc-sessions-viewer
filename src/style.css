@@ -3599,6 +3599,7 @@ details[open] > .block-summary > .chev {
   display: flex;
   align-items: center;
   gap: 9px;
+  width: 100%;
   padding: 7px 10px;
   border-radius: 6px;
   font-size: 12.5px;
@@ -3606,13 +3607,18 @@ details[open] > .block-summary > .chev {
   text-align: left;
   transition: background 0.1s, color 0.1s;
 }
+.ctx-item:disabled {
+  color: var(--text-mute);
+  cursor: default;
+  opacity: 0.55;
+}
 .ctx-item svg {
   width: 13px;
   height: 13px;
   color: var(--text-mute);
   flex-shrink: 0;
 }
-.ctx-item:hover {
+.ctx-item:hover:not(:disabled) {
   background: var(--surface-hover);
 }
 .ctx-item.danger {
@@ -3628,6 +3634,29 @@ details[open] > .block-summary > .chev {
   height: 1px;
   margin: 3px 4px;
   background: var(--border);
+}
+.term-tab-ctx-menu {
+  min-width: 288px;
+}
+.ctx-shortcut {
+  margin-left: auto;
+  color: var(--text-mute);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.ctx-submenu {
+  position: relative;
+}
+.ctx-submenu-panel {
+  display: none;
+  position: absolute;
+  top: -4px;
+  left: calc(100% + 4px);
+  min-width: 112px;
+}
+.ctx-submenu:hover .ctx-submenu-panel,
+.ctx-submenu:focus-within .ctx-submenu-panel {
+  display: flex;
 }
 
 /* ---------- Message hide / context menu ---------- */

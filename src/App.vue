@@ -71,7 +71,11 @@ import {
   closeTabsByProject,
   closeTabBySessionPath,
   reconcileNewTabs,
+  syncTabTitlesFromSessions,
+  syncTabTitleBySessionPath,
   migrateTabsProjectKey,
+  tabs as tuiTabs,
+  type TerminalTab,
 } from './terminals'
 
 // ---------- 状态 ----------
@@ -260,6 +264,9 @@ const listScrollEl = computed<HTMLElement | undefined>(
   () => sessionsViewRef.value?.scrollEl,
 )
 let savedListScroll = 0
+const TUI_TITLE_SYNC_INTERVAL_MS = 4000
+let tuiTitleSyncTimer = 0
+let syncingTuiTitles = false
 
 watch(openSession, (val, old) => {
   // 切换 / 关闭会话时把聊天页顶栏（搜索 / 折叠 / 等）状态归零，
@@ -524,6 +531,18 @@ function openRename(s: SessionMeta) {
     defaultTitle: s.title,
   }
 }
+
+function openRenameState(a: Agent, path: string, id: string, title: string) {
+  renameModal.value = {
+    show: true,
+    agent: a,
+    path,
+    id,
+    value: title,
+    defaultTitle: title,
+  }
+}
+
 async function confirmRename() {
   const m = renameModal.value
   if (!m.show || renaming.value) return
@@ -542,6 +561,7 @@ async function confirmRename() {
     if (openSession.value?.path === m.path) {
       openSession.value = { ...openSession.value, title: name }
     }
+    syncTabTitleBySessionPath(m.agent, m.path, name)
     m.show = false
     notify(t('toast.renamed'))
   } catch (e) {
@@ -730,6 +750,7 @@ async function loadAllSessions() {
     )
     sessions.value = page.sessions
     sessionTotal.value = page.total
+    syncTuiTabsFromCurrentSessions()
   } catch (e) {
     notify(t('toast.loadMoreFail', { e: String(e) }), true)
   } finally {
@@ -741,6 +762,44 @@ async function loadAllSessions() {
 watch(sessionsFilterActive, (active) => {
   if (active) loadAllSessions()
 })
+
+function syncTuiTabsFromCurrentSessions() {
+  if (!activeDir.value) return
+  reconcileNewTabs(activeDir.value, sessions.value, agent.value)
+  syncTabTitlesFromSessions(agent.value, activeDir.value, sessions.value)
+}
+
+function hasCurrentProjectTuiTabs(): boolean {
+  if (!activeDir.value || showTrash.value || showStats.value) return false
+  return tuiTabs.value.some(
+    (tab) =>
+      tab.agent === agent.value &&
+      tab.projectKey === activeDir.value &&
+      tab.status !== 'exited' &&
+      tab.status !== 'error',
+  )
+}
+
+async function syncTuiTitlesNow() {
+  if (!activeDir.value || syncingTuiTitles || !hasCurrentProjectTuiTabs()) return
+  syncingTuiTitles = true
+  try {
+    const page = await api.listSessions(
+      agent.value,
+      activeDir.value,
+      0,
+      Math.max(PAGE_SIZE, sessions.value.length),
+      sessionListOptions(),
+    )
+    sessions.value = page.sessions
+    sessionTotal.value = page.total
+    syncTuiTabsFromCurrentSessions()
+  } catch {
+    // 后台标题同步不能打扰正在运行的 TUI；用户手动刷新时会看到错误 toast。
+  } finally {
+    syncingTuiTitles = false
+  }
+}
 
 async function refreshSessions() {
   if (!activeDir.value || loadingList.value) return
@@ -755,6 +814,7 @@ async function refreshSessions() {
     )
     sessions.value = page.sessions
     sessionTotal.value = page.total
+    syncTuiTabsFromCurrentSessions()
   } catch (e) {
     notify(t('toast.loadSessionsFail', { e: String(e) }), true)
   } finally {
@@ -1386,8 +1446,14 @@ async function onTuiListClick() {
   if (activeDir.value) {
     await loadProjects()
     await refreshSessions()
-    reconcileNewTabs(activeDir.value, sessions.value)
   }
+}
+
+function startTuiTitleSyncTimer() {
+  window.clearInterval(tuiTitleSyncTimer)
+  tuiTitleSyncTimer = window.setInterval(() => {
+    syncTuiTitlesNow()
+  }, TUI_TITLE_SYNC_INTERVAL_MS)
 }
 function onTuiViewClick() {
   setActiveTui(null)
@@ -1400,7 +1466,17 @@ async function onTuiTabClosed() {
   if (!activeDir.value || showTrash.value || showStats.value) return
   await loadProjects()
   await refreshSessions()
-  if (activeDir.value) reconcileNewTabs(activeDir.value, sessions.value)
+}
+
+async function openRenameFromTuiTab(tab: TerminalTab) {
+  if (!tab.sessionPath) {
+    await syncTuiTitlesNow()
+  }
+  if (!tab.sessionPath) {
+    notify(t('toast.sessionStillStarting'), true)
+    return
+  }
+  openRenameState(tab.agent, tab.sessionPath, tab.sessionId, tab.title)
 }
 
 /** Resume 一个会话 —— 根据设置决定走窗口内 TUI 还是外部终端。 */
@@ -1489,6 +1565,7 @@ onMounted(() => {
   // 后台检查 GitHub release —— 缓存 24h，失败完全静默；结果驱动侧边栏 Settings
   // 按钮上的"有新版本"小红点。
   runBackgroundCheck()
+  startTuiTitleSyncTimer()
   window.addEventListener('focus', onFocus)
   window.addEventListener('blur', onBlur)
   window.addEventListener('resize', onWindowResize)
@@ -1668,6 +1745,8 @@ onMounted(() => {
 onUnmounted(() => {
   menuUnlisten?.()
   menuUnlisten = null
+  window.clearInterval(tuiTitleSyncTimer)
+  tuiTitleSyncTimer = 0
   liveUnlisteners.forEach((u) => u())
   liveUnlisteners = []
   clearLive()
@@ -1786,6 +1865,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
         @list-click="onTuiListClick"
         @view-click="onTuiViewClick"
         @tab-closed="onTuiTabClosed"
+        @tab-rename="openRenameFromTuiTab"
       />
 
       <!-- view 层 / TUI 层 同时存在；activeUiId === null 时只显示 view，
