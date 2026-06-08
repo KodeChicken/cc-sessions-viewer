@@ -268,7 +268,7 @@ export function formatTime(input: number | string | undefined): string {
 
 /** 从完整路径取最后一段，作为项目短名。 */
 export function shortName(path: string): string {
-  const parts = path.split('/').filter(Boolean)
+  const parts = path.split(/[\\/]/).filter(Boolean)
   return parts.length ? parts[parts.length - 1] : path
 }
 
