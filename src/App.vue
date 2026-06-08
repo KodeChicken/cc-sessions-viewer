@@ -90,6 +90,60 @@ function toggleSidebar() {
   sidebarOpen.value = !sidebarOpen.value
 }
 
+const SIDEBAR_WIDTH_KEY = 'sidebarWidth:v1'
+const SIDEBAR_MIN_WIDTH = 220
+const SIDEBAR_MAX_WIDTH = 420
+
+function clampSidebarWidth(width: number): number {
+  const viewportMax = Math.max(SIDEBAR_MIN_WIDTH, window.innerWidth - 360)
+  return Math.round(Math.min(Math.max(width, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH, viewportMax))
+}
+
+function loadSidebarWidth(): number {
+  const raw = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
+  return clampSidebarWidth(Number.isFinite(raw) && raw > 0 ? raw : 248)
+}
+
+const sidebarWidth = ref(loadSidebarWidth())
+const sidebarResizing = ref(false)
+const appStyle = computed<Record<string, string>>(() => ({
+  '--sidebar-w': `${sidebarWidth.value}px`,
+}))
+let sidebarResizeStartX = 0
+let sidebarResizeStartWidth = 0
+
+function onSidebarResizePointerDown(e: PointerEvent) {
+  e.preventDefault()
+  sidebarResizing.value = true
+  sidebarResizeStartX = e.clientX
+  sidebarResizeStartWidth = sidebarWidth.value
+  document.body.classList.add('is-sidebar-resizing')
+  window.addEventListener('pointermove', onSidebarResizePointerMove)
+  window.addEventListener('pointerup', onSidebarResizePointerUp, { once: true })
+  window.addEventListener('pointercancel', onSidebarResizePointerUp, { once: true })
+}
+
+function onSidebarResizePointerMove(e: PointerEvent) {
+  if (!sidebarResizing.value) return
+  sidebarWidth.value = clampSidebarWidth(
+    sidebarResizeStartWidth + e.clientX - sidebarResizeStartX,
+  )
+}
+
+function onSidebarResizePointerUp() {
+  if (!sidebarResizing.value) return
+  sidebarResizing.value = false
+  document.body.classList.remove('is-sidebar-resizing')
+  localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value))
+  window.removeEventListener('pointermove', onSidebarResizePointerMove)
+  window.removeEventListener('pointerup', onSidebarResizePointerUp)
+  window.removeEventListener('pointercancel', onSidebarResizePointerUp)
+}
+
+function onWindowResize() {
+  sidebarWidth.value = clampSidebarWidth(sidebarWidth.value)
+}
+
 const codexSessionOptions = computed(() => ({
   includeCodexInternal: codexShowInternalSessions.value,
   includeCodexArchived: codexShowArchivedSessions.value,
@@ -1437,6 +1491,7 @@ onMounted(() => {
   runBackgroundCheck()
   window.addEventListener('focus', onFocus)
   window.addEventListener('blur', onBlur)
+  window.addEventListener('resize', onWindowResize)
   // 右键菜单的全局关闭：任意点击 / 滚轮 / ESC
   document.addEventListener('mousedown', (e) => {
     if (!ctxMenu.value) return
@@ -1616,6 +1671,11 @@ onUnmounted(() => {
   liveUnlisteners.forEach((u) => u())
   liveUnlisteners = []
   clearLive()
+  document.body.classList.remove('is-sidebar-resizing')
+  window.removeEventListener('resize', onWindowResize)
+  window.removeEventListener('pointermove', onSidebarResizePointerMove)
+  window.removeEventListener('pointerup', onSidebarResizePointerUp)
+  window.removeEventListener('pointercancel', onSidebarResizePointerUp)
   api.unwatchSession().catch(() => {})
 })
 
@@ -1644,9 +1704,11 @@ async function onGlobalSearchOpen(hit: SearchHit) {
 <template>
   <div
     class="app"
+    :style="appStyle"
     :class="[
       `agent-${agent}`,
       sidebarOpen ? 'sidebar-open' : 'sidebar-closed',
+      { 'sidebar-resizing': sidebarResizing },
       { 'is-blurred': !windowFocused },
     ]"
   >
@@ -1703,6 +1765,13 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       @open-settings="showSettings = true"
       @refresh="refreshAll"
       @add-bookmark="addBookmark"
+    />
+    <div
+      v-show="sidebarOpen"
+      class="sidebar-resizer"
+      role="separator"
+      aria-orientation="vertical"
+      @pointerdown="onSidebarResizePointerDown"
     />
 
     <!-- 主区 -->

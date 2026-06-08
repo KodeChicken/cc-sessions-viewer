@@ -60,6 +60,7 @@
   --radius-lg: 12px;
   --radius-xl: 16px;
   --titlebar-h: 40px;
+  --sidebar-w: 248px;
   --traffic-lights-w: 0px;
   --font-ui-size: 14px;
   --font-code-size: 12px;
@@ -257,15 +258,15 @@ button {
   -webkit-app-region: drag;
   background: linear-gradient(
     to right,
-    var(--sidebar-bg) 0 248px,
-    var(--bg) 248px 100%
+    var(--sidebar-bg) 0 var(--sidebar-w),
+    var(--bg) var(--sidebar-w) 100%
   );
   border-bottom: 1px solid transparent;
 }
 .app.sidebar-closed .app-topbar {
   background: var(--bg);
 }
-/* Sidebar zone (left 248px of topbar). Hosts toggle+refresh on the left
+/* Sidebar zone (left side of topbar). Hosts toggle+refresh on the left
    (hugging the traffic lights) and the trash button on the right (at the
    sidebar/main divider). */
 .topbar-sidebar-zone {
@@ -276,7 +277,7 @@ button {
   padding-right: 6px;
 }
 .app.sidebar-open .topbar-sidebar-zone {
-  width: 248px;
+  width: var(--sidebar-w);
   justify-content: space-between;
   /* 续上 .sidebar 的 border-right，让分割线从顶栏一直延伸到底 */
   border-right: 1px solid var(--border);
@@ -584,12 +585,33 @@ button {
 }
 
 .sidebar {
-  width: 248px;
+  width: var(--sidebar-w);
   flex-shrink: 0;
   background: var(--sidebar-bg);
-  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+}
+.sidebar-resizer {
+  width: 1px;
+  flex: 0 0 1px;
+  background: var(--border);
+  cursor: col-resize;
+  position: relative;
+  z-index: 5;
+  -webkit-app-region: no-drag;
+}
+.sidebar-resizer::before {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+}
+.sidebar-resizer:hover,
+.app.sidebar-resizing .sidebar-resizer {
+  background: var(--border-strong);
+}
+body.is-sidebar-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 .sidebar-top {
   padding: 8px 12px 8px;
