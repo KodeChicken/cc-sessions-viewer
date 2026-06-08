@@ -178,47 +178,47 @@ describe('checkUpdate', () => {
     vi.stubGlobal('fetch', vi.fn(impl))
   }
 
-  function svgBadge(version: string) {
-    return `<svg><g><text>release</text><text>v${version}</text></g></svg>`
+  function releaseJson(version: string, htmlUrl = `https://github.com/jerrywu001/cc-sessions-viewer/releases/tag/v${version}`) {
+    return { tag_name: `v${version}`, html_url: htmlUrl }
   }
 
-  function textResponse(body: string, init: { status?: number } = {}) {
+  function jsonResponse(body: unknown, init: { status?: number } = {}) {
     return {
       ok: (init.status ?? 200) < 400,
       status: init.status ?? 200,
-      text: async () => body,
+      json: async () => body,
     } as Response
   }
 
   it('reports hasUpdate=true when remote tag is newer', async () => {
     invoke.mockResolvedValueOnce('0.1.1')
-    mockFetch(async () => textResponse(svgBadge('0.2.0')))
+    mockFetch(async () => jsonResponse(releaseJson('0.2.0')))
     const r = await api.checkUpdate()
     expect(r).toEqual({
       current: '0.1.1',
       latest: '0.2.0',
       hasUpdate: true,
-      htmlUrl: 'https://github.com/jerrywu001/cc-sessions-viewer/releases/latest',
+      htmlUrl: 'https://github.com/jerrywu001/cc-sessions-viewer/releases/tag/v0.2.0',
     })
   })
 
   it('reports hasUpdate=false when versions match', async () => {
     invoke.mockResolvedValueOnce('0.1.1')
-    mockFetch(async () => textResponse(svgBadge('0.1.1')))
+    mockFetch(async () => jsonResponse(releaseJson('0.1.1')))
     const r = await api.checkUpdate()
     expect(r.hasUpdate).toBe(false)
     expect(r.latest).toBe('0.1.1')
   })
 
-  it('treats 404 as an error (shields.io unavailable)', async () => {
+  it('treats 404 as an error (GitHub releases unavailable)', async () => {
     invoke.mockResolvedValueOnce('0.1.0')
-    mockFetch(async () => textResponse('Not Found', { status: 404 }))
+    mockFetch(async () => jsonResponse({ message: 'Not Found' }, { status: 404 }))
     await expect(api.checkUpdate()).rejects.toThrow(/404/)
   })
 
   it('throws on other HTTP errors so the caller can surface the failure', async () => {
     invoke.mockResolvedValueOnce('0.1.0')
-    mockFetch(async () => textResponse('rate limited', { status: 503 }))
+    mockFetch(async () => jsonResponse({ message: 'rate limited' }, { status: 503 }))
     await expect(api.checkUpdate()).rejects.toThrow(/503/)
   })
 })
