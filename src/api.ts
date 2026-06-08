@@ -150,6 +150,12 @@ export const terminalTurnSignal = (
 
 export const installClaudeTurnHooks = () => invoke<string>('install_claude_turn_hooks')
 
+export const watchSessionTurn = (agent: Agent, path: string, catchUp = false) =>
+  invoke<void>('watch_session_turn', { agent, path, catchUp })
+
+export const unwatchSessionTurn = (path: string) =>
+  invoke<void>('unwatch_session_turn', { path })
+
 export const resumeSession = (
   agent: Agent,
   sessionId: string,

@@ -155,6 +155,22 @@ describe('api wrappers', () => {
     expect(invoke).toHaveBeenCalledWith('unwatch_session')
   })
 
+  it('watchSessionTurn → watch_session_turn', () => {
+    api.watchSessionTurn('codex', '/p/s.jsonl', true)
+    expect(invoke).toHaveBeenCalledWith('watch_session_turn', {
+      agent: 'codex',
+      path: '/p/s.jsonl',
+      catchUp: true,
+    })
+  })
+
+  it('unwatchSessionTurn → unwatch_session_turn', () => {
+    api.unwatchSessionTurn('/p/s.jsonl')
+    expect(invoke).toHaveBeenCalledWith('unwatch_session_turn', {
+      path: '/p/s.jsonl',
+    })
+  })
+
   it('appVersion → app_version', () => {
     api.appVersion()
     expect(invoke).toHaveBeenCalledWith('app_version')

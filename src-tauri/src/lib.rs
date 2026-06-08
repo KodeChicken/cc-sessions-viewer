@@ -20,6 +20,7 @@ pub mod stats;
 #[cfg(target_os = "macos")]
 mod tray;
 mod trash;
+mod turn;
 mod types;
 mod util;
 mod watch;
@@ -107,6 +108,43 @@ fn watch_session(app: tauri::AppHandle, agent: String, path: String) -> Result<(
 #[tauri::command]
 fn unwatch_session() -> Result<(), String> {
     watch::unwatch_session()
+}
+
+#[tauri::command]
+fn terminal_turn_signal(
+    app: tauri::AppHandle,
+    agent: String,
+    path: String,
+    state: String,
+) -> Result<(), String> {
+    turn::emit_turn_signal(
+        &app,
+        turn::TerminalTurnPayload {
+            agent,
+            path,
+            state,
+        },
+    )
+}
+
+#[tauri::command]
+fn install_claude_turn_hooks() -> Result<String, String> {
+    turn::install_claude_hooks()
+}
+
+#[tauri::command]
+fn watch_session_turn(
+    app: tauri::AppHandle,
+    agent: String,
+    path: String,
+    catch_up: bool,
+) -> Result<(), String> {
+    turn::watch_session_turn(app, agent, path, catch_up)
+}
+
+#[tauri::command]
+fn unwatch_session_turn(path: String) -> Result<(), String> {
+    turn::unwatch_session_turn(path)
 }
 
 /// 单个会话的 token 用量汇总（按 path + mtime 缓存）。
@@ -841,6 +879,10 @@ pub fn run() {
             read_session,
             watch_session,
             unwatch_session,
+            terminal_turn_signal,
+            install_claude_turn_hooks,
+            watch_session_turn,
+            unwatch_session_turn,
             session_usage,
             agent_stats,
             start_agent_stats,
@@ -877,6 +919,9 @@ pub fn run() {
             // 不阻塞 setup —— init() 自己 spawn 后台线程，离线 / 失败时 lookup 自动落回
             // hardcoded 兜底表。
             stats::pricing::init();
+            if let Err(e) = turn::start_signal_watcher(app.handle().clone()) {
+                eprintln!("turn signal watcher failed: {e}");
+            }
 
             // 原生应用菜单 —— 主要价值在 macOS 顶部菜单栏。
             // Windows / Linux 也会挂菜单，但视觉上不那么重要。

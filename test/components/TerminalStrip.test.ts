@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import TerminalStrip from '../../src/components/TerminalStrip.vue'
 import { vTooltip } from '../../src/tooltip'
@@ -13,6 +13,11 @@ import {
   tabs,
   type TerminalTab,
 } from '../../src/terminals'
+
+vi.mock('../../src/api', () => ({
+  watchSessionTurn: vi.fn().mockResolvedValue(undefined),
+  unwatchSessionTurn: vi.fn().mockResolvedValue(undefined),
+}))
 
 beforeEach(() => {
   setLang('en')
@@ -48,6 +53,7 @@ function tab(over: Partial<TerminalTab> = {}): TerminalTab {
     turnStateUpdatedAt: 1_000,
     lastOutputAt: 0,
     lastSessionActivityAt: 0,
+    turnWatchPath: null,
     status: 'running',
     ...over,
   }

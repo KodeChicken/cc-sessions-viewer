@@ -27,6 +27,10 @@ import type { Agent } from './types'
 import { theme, launchArgs } from './settings'
 import * as api from './api'
 
+export type TerminalProcessState = 'spawning' | 'alive' | 'exited' | 'error'
+export type TerminalTurnState = 'idle' | 'working' | 'blocked' | 'review' | 'error' | 'unknown'
+export type TerminalTurnSignalSource = 'pty' | 'session' | 'agent'
+
 export interface TerminalTab {
   /** 本地稳定 id，供 v-for 用；和后端 pty id 是两套号 */
   uiId: number
@@ -54,7 +58,16 @@ export interface TerminalTab {
   quietCursor: boolean
   quietCursorTimer: number | null
   lastUserInputAt: number
-  /** 'spawning' 期间不响应键盘，避免空指针；'exited' 后保留 scrollback 直到用户关 */
+  /** 进程生命周期：只描述 PTY/CLI 进程本身，不代表本轮回答是否完成。 */
+  processState: TerminalProcessState
+  /** 本轮问答状态：完成/阻塞/错误只能由 agent/session 的明确信号推进。 */
+  turnState: TerminalTurnState
+  turnStateSource: TerminalTurnSignalSource | null
+  turnStateUpdatedAt: number
+  lastOutputAt: number
+  lastSessionActivityAt: number
+  turnWatchPath: string | null
+  /** 兼容旧调用点；语义等同于 processState 的旧命名。 */
   status: 'spawning' | 'running' | 'exited' | 'error'
   errorMessage?: string
   exitCode?: number
@@ -63,6 +76,10 @@ export interface TerminalTab {
 export const tabs = ref<TerminalTab[]>([])
 export const activeUiId = ref<number | null>(null)
 let nextUiId = 1
+const pendingTurnStates = new Map<
+  string,
+  { state: TerminalTurnState; source: TerminalTurnSignalSource; updatedAt: number }
+>()
 
 // ============================ 主题 ============================
 
@@ -182,8 +199,10 @@ function base64ToBytes(b64: string): Uint8Array {
 // ============================ 查询 ============================
 
 const findTab = (uiId: number) => tabs.value.find((t) => t.uiId === uiId)
+export const isTabProcessAlive = (tab: TerminalTab) =>
+  tab.processState === 'spawning' || tab.processState === 'alive'
 const findTabBySession = (path: string) =>
-  tabs.value.find((t) => t.sessionPath === path && t.status !== 'exited' && t.status !== 'error')
+  tabs.value.find((t) => t.sessionPath === path && isTabProcessAlive(t))
 
 type SessionForTabSync = {
   path: string
@@ -198,6 +217,8 @@ function applySessionToTab(tab: TerminalTab, session: SessionForTabSync) {
   if (session.title?.trim()) {
     tab.title = session.title
   }
+  ensureSessionTurnWatch(tab, true)
+  applyPendingTurnState(tab)
 }
 
 /**
@@ -216,8 +237,7 @@ export function reconcileNewTabs(
       t.sessionPath === '' &&
       t.projectKey === projectKey &&
       (!agent || t.agent === agent) &&
-      t.status !== 'exited' &&
-      t.status !== 'error',
+      isTabProcessAlive(t),
   )
   if (!unmatched.length) return
 
@@ -260,6 +280,123 @@ export function syncTabTitleBySessionPath(agent: Agent, sessionPath: string, tit
       tab.title = trimmed
     }
   }
+}
+
+function setProcessState(tab: TerminalTab, state: TerminalProcessState) {
+  tab.processState = state
+  tab.status = state === 'alive' ? 'running' : state
+}
+
+function setTurnState(
+  tab: TerminalTab,
+  state: TerminalTurnState,
+  source: TerminalTurnSignalSource,
+) {
+  tab.turnState = state
+  tab.turnStateSource = source
+  tab.turnStateUpdatedAt = Date.now()
+}
+
+function tabsBySession(agent: Agent, sessionPath: string) {
+  if (!sessionPath) return []
+  return tabs.value.filter(
+    (tab) => tab.agent === agent && tab.sessionPath === sessionPath && isTabProcessAlive(tab),
+  )
+}
+
+function turnStateKey(agent: Agent, sessionPath: string) {
+  return `${agent}\0${sessionPath}`
+}
+
+function rememberTurnState(agent: Agent, sessionPath: string, state: TerminalTurnState) {
+  if (!sessionPath) return
+  pendingTurnStates.set(turnStateKey(agent, sessionPath), {
+    state,
+    source: 'agent',
+    updatedAt: Date.now(),
+  })
+  if (pendingTurnStates.size > 200) {
+    const first = pendingTurnStates.keys().next().value
+    if (first) pendingTurnStates.delete(first)
+  }
+}
+
+function applyPendingTurnState(tab: TerminalTab) {
+  if (!tab.sessionPath) return
+  const key = turnStateKey(tab.agent, tab.sessionPath)
+  const pending = pendingTurnStates.get(key)
+  if (!pending) return
+  const state =
+    pending.state === 'idle' || pending.state === 'review'
+      ? activeUiId.value === tab.uiId
+        ? 'idle'
+        : 'review'
+      : pending.state
+  setTurnState(tab, state, pending.source)
+  tab.turnStateUpdatedAt = pending.updatedAt
+  pendingTurnStates.delete(key)
+}
+
+export function markTabSessionActivity(agent: Agent, sessionPath: string) {
+  const now = Date.now()
+  for (const tab of tabsBySession(agent, sessionPath)) {
+    tab.lastSessionActivityAt = now
+    if (tab.turnState !== 'blocked' && tab.turnState !== 'error') {
+      setTurnState(tab, 'working', 'session')
+    }
+  }
+}
+
+export function markTabTurnStarted(agent: Agent, sessionPath: string) {
+  const targets = tabsBySession(agent, sessionPath)
+  if (!targets.length) rememberTurnState(agent, sessionPath, 'working')
+  for (const tab of targets) {
+    if (tab.turnState !== 'blocked' && tab.turnState !== 'error') {
+      setTurnState(tab, 'working', 'agent')
+    }
+  }
+}
+
+export function markTabTurnCompleted(agent: Agent, sessionPath: string) {
+  const targets = tabsBySession(agent, sessionPath)
+  if (!targets.length) rememberTurnState(agent, sessionPath, 'review')
+  for (const tab of targets) {
+    setTurnState(tab, activeUiId.value === tab.uiId ? 'idle' : 'review', 'agent')
+  }
+}
+
+export function markTabTurnBlocked(agent: Agent, sessionPath: string) {
+  const targets = tabsBySession(agent, sessionPath)
+  if (!targets.length) rememberTurnState(agent, sessionPath, 'blocked')
+  for (const tab of targets) {
+    setTurnState(tab, 'blocked', 'agent')
+  }
+}
+
+export function markTabTurnFailed(agent: Agent, sessionPath: string) {
+  const targets = tabsBySession(agent, sessionPath)
+  if (!targets.length) rememberTurnState(agent, sessionPath, 'error')
+  for (const tab of targets) {
+    setTurnState(tab, 'error', 'agent')
+  }
+}
+
+function shouldWatchSessionTurns(tab: TerminalTab) {
+  return (tab.agent === 'codex' || tab.agent === 'gemini') && !!tab.sessionPath
+}
+
+function ensureSessionTurnWatch(tab: TerminalTab, catchUp: boolean) {
+  if (!shouldWatchSessionTurns(tab)) return
+  if (tab.turnWatchPath === tab.sessionPath) return
+  if (tab.turnWatchPath) {
+    api.unwatchSessionTurn(tab.turnWatchPath).catch(() => {})
+  }
+  tab.turnWatchPath = tab.sessionPath
+  api.watchSessionTurn(tab.agent, tab.sessionPath, catchUp).catch(() => {
+    if (tab.turnWatchPath === tab.sessionPath) {
+      tab.turnWatchPath = null
+    }
+  })
 }
 
 export function activeTab(): TerminalTab | null {
@@ -343,6 +480,13 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     quietCursor: false,
     quietCursorTimer: null,
     lastUserInputAt: 0,
+    processState: 'spawning',
+    turnState: 'unknown',
+    turnStateSource: null,
+    turnStateUpdatedAt: Date.now(),
+    lastOutputAt: 0,
+    lastSessionActivityAt: 0,
+    turnWatchPath: null,
     status: 'spawning',
   }) as TerminalTab
   tabs.value.push(tab)
@@ -407,31 +551,40 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
           extra,
         )
   } catch (e) {
-    tab.status = 'error'
+    setProcessState(tab, 'error')
+    setTurnState(tab, 'error', 'pty')
     tab.errorMessage = String(e)
     term.write(`\r\n\x1b[31m[error] ${e}\x1b[0m\r\n`)
     return
   }
   tab.ptyId = ptyId
-  tab.status = 'running'
+  setProcessState(tab, 'alive')
+  ensureSessionTurnWatch(tab, false)
 
   // 后端 → xterm（按 id 过滤多 tab）
   tab.unlistenData = await listen<{ id: number; base64: string }>('pty://data', (e) => {
     if (e.payload.id !== ptyId) return
+    tab.lastOutputAt = Date.now()
     markTerminalOutputBusy(tab)
     term.write(base64ToBytes(e.payload.base64))
   })
   tab.unlistenExit = await listen<{ id: number; code: number }>('pty://exit', (e) => {
     if (e.payload.id !== ptyId) return
-    tab.status = 'exited'
+    setProcessState(tab, 'exited')
+    if (tab.turnState === 'working') {
+      setTurnState(tab, e.payload.code === 0 ? 'unknown' : 'error', 'pty')
+    }
     tab.exitCode = e.payload.code
     term.write(`\r\n\x1b[2m[process exited: ${e.payload.code}]\x1b[0m\r\n`)
   })
 
   // xterm → 后端（注：spawning / exited 时屏蔽，避免空 ptyId 或写已死管道）
   tab.onDataDisp = term.onData((data) => {
-    if (tab.ptyId === null || tab.status !== 'running') return
+    if (tab.ptyId === null || tab.processState !== 'alive') return
     tab.lastUserInputAt = Date.now()
+    if ((data.includes('\r') || data.includes('\n')) && tab.turnState !== 'blocked') {
+      setTurnState(tab, 'working', 'pty')
+    }
     setQuietCursor(tab, false)
     const bytes = new TextEncoder().encode(data)
     api.ptyWrite(tab.ptyId, bytesToBase64(bytes)).catch(() => {})
@@ -476,6 +629,10 @@ export function closeTab(uiId: number) {
   tab.onDataDisp?.dispose()
   tab.unlistenData?.()
   tab.unlistenExit?.()
+  if (tab.turnWatchPath) {
+    api.unwatchSessionTurn(tab.turnWatchPath).catch(() => {})
+    tab.turnWatchPath = null
+  }
   if (tab.ptyId !== null) {
     api.ptyKill(tab.ptyId).catch(() => {})
   }

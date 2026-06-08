@@ -78,6 +78,8 @@ const cacheLabel = computed(() =>
 const version = ref('—')
 const updateMsg = ref('')
 const checking = ref(false)
+const installingClaudeHooks = ref(false)
+const claudeHooksMsg = ref('')
 
 // custom dropdown state
 const langMenuOpen = ref(false)
@@ -191,6 +193,20 @@ async function doCheck() {
     updateMsg.value = t('settings.updateFail', { e: String(e) })
   } finally {
     checking.value = false
+  }
+}
+
+async function installClaudeHooks() {
+  if (installingClaudeHooks.value) return
+  installingClaudeHooks.value = true
+  claudeHooksMsg.value = t('settings.turnStatus.installing')
+  try {
+    const path = await api.installClaudeTurnHooks()
+    claudeHooksMsg.value = t('settings.turnStatus.installed', { path })
+  } catch (e) {
+    claudeHooksMsg.value = t('settings.turnStatus.installFail', { e: String(e) })
+  } finally {
+    installingClaudeHooks.value = false
   }
 }
 </script>
@@ -402,6 +418,24 @@ async function doCheck() {
                 >↵</button>
               </div>
             </div>
+          </section>
+
+          <!-- 状态跟踪 -->
+          <section class="set-section">
+            <header class="set-section-head">
+              <span class="set-section-title">{{ t('settings.section.turnStatus') }}</span>
+            </header>
+            <p class="set-section-desc set-toggle-hint">{{ t('settings.turnStatus.desc') }}</p>
+            <div class="set-update-actions">
+              <button
+                class="btn"
+                :disabled="installingClaudeHooks"
+                @click="installClaudeHooks"
+              >
+                {{ installingClaudeHooks ? t('settings.turnStatus.installing') : t('settings.turnStatus.installClaude') }}
+              </button>
+            </div>
+            <p v-if="claudeHooksMsg" class="set-section-desc set-toggle-hint">{{ claudeHooksMsg }}</p>
           </section>
 
           <!-- Codex -->

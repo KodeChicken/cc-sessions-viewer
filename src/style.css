@@ -2444,10 +2444,26 @@ details[open] > .block-summary > .chev {
 }
 .term-tab.active .term-tab-close { color: var(--bg); opacity: 0.7; }
 .term-tab.active .term-tab-close:hover { opacity: 1; }
-.term-tab.exited {
-  opacity: 0.6;
+.term-tab.state-working {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent) 55%, transparent);
 }
-.term-tab.exited.active {
+.term-tab.state-done {
+  border-color: color-mix(in srgb, #10b981 58%, var(--border));
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, #10b981 62%, transparent);
+}
+.term-tab.state-blocked {
+  border-color: color-mix(in srgb, #f59e0b 62%, var(--border));
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, #f59e0b 66%, transparent);
+}
+.term-tab.state-error {
+  border-color: color-mix(in srgb, #ef4444 62%, var(--border));
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, #ef4444 66%, transparent);
+}
+.term-tab.state-exited {
+  opacity: 0.68;
+}
+.term-tab.state-exited.active {
   /* 已退出但仍是 active —— 视觉上提示用户该关掉 */
   background: var(--surface-active);
   color: var(--text-dim);
@@ -2464,24 +2480,59 @@ details[open] > .block-summary > .chev {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.term-tab-spinner {
+.term-tab-status {
+  position: relative;
   width: 8px;
   height: 8px;
-  border-radius: 50%;
-  border: 1.5px solid currentColor;
-  border-right-color: transparent;
-  animation: term-tab-spin 0.8s linear infinite;
   flex-shrink: 0;
 }
-@keyframes term-tab-spin {
-  to { transform: rotate(360deg); }
+.term-tab-status-working {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 18px;
+  height: 10px;
 }
-.term-tab-exited-dot {
-  width: 6px;
-  height: 6px;
+.term-tab-status-working i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.42;
+  animation: term-tab-pulse-dot 1.05s ease-in-out infinite;
+}
+.term-tab-status-working i:nth-child(2) {
+  animation-delay: 0.14s;
+}
+.term-tab-status-working i:nth-child(3) {
+  animation-delay: 0.28s;
+}
+@keyframes term-tab-pulse-dot {
+  0%, 72%, 100% {
+    transform: translateY(0) scale(0.72);
+    opacity: 0.32;
+  }
+  36% {
+    transform: translateY(-2px) scale(1.1);
+    opacity: 1;
+  }
+}
+.term-tab-status-done,
+.term-tab-status-blocked,
+.term-tab-status-error,
+.term-tab-status-exited,
+.term-tab-status-unknown {
   border-radius: 50%;
   background: var(--text-mute);
-  flex-shrink: 0;
+}
+.term-tab-status-done { background: #10b981; }
+.term-tab-status-blocked { background: #f59e0b; }
+.term-tab-status-error { background: #ef4444; }
+.term-tab-status-exited { background: var(--text-mute); }
+.term-tab-status-unknown {
+  background: transparent;
+  border: 1.5px solid var(--text-mute);
 }
 
 .term-tab-close {

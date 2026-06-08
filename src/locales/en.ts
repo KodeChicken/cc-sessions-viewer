@@ -338,6 +338,13 @@ export default {
   'settings.launchArgs': 'Launch arguments',
   'settings.launchArgsDesc': 'Extra CLI flags appended when resuming or starting a session.',
   'settings.launchArgsFill': 'Fill default',
+  'settings.section.turnStatus': 'Session status tracking',
+  'settings.turnStatus.desc':
+    'Uses agent lifecycle signals to mark a turn as running, done, blocked, or failed. Terminal silence is not treated as completion.',
+  'settings.turnStatus.installClaude': 'Enable Claude status tracking',
+  'settings.turnStatus.installing': 'Enabling…',
+  'settings.turnStatus.installed': 'Claude hooks written to: {path}',
+  'settings.turnStatus.installFail': 'Failed to enable: {e}',
   'settings.section.codex': 'Codex',
   'settings.codexVisibilityDesc':
     'Controls whether Codex lists include hidden internal review threads and archived threads.',
