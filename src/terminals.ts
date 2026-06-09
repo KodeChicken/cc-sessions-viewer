@@ -26,10 +26,25 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { Agent } from './types'
 import { theme, launchArgs } from './settings'
 import * as api from './api'
+import {
+  applyPendingTurnState,
+  applyTurnSignal,
+  clearLocalWorkingTurn,
+  markSessionActivity,
+  rememberPendingTurnState,
+  setProcessState,
+  setTurnState,
+  type TerminalProcessState,
+  type TerminalTurnSignalSource,
+  type TerminalTurnState,
+} from './tabStatus'
 
-export type TerminalProcessState = 'spawning' | 'alive' | 'exited' | 'error'
-export type TerminalTurnState = 'idle' | 'working' | 'blocked' | 'review' | 'error' | 'unknown'
-export type TerminalTurnSignalSource = 'pty' | 'session' | 'agent'
+export type {
+  TerminalProcessState,
+  TerminalTurnEventState,
+  TerminalTurnSignalSource,
+  TerminalTurnState,
+} from './tabStatus'
 
 export interface TerminalTab {
   /** 本地稳定 id，供 v-for 用；和后端 pty id 是两套号 */
@@ -77,10 +92,6 @@ export interface TerminalTab {
 export const tabs = ref<TerminalTab[]>([])
 export const activeUiId = ref<number | null>(null)
 let nextUiId = 1
-const pendingTurnStates = new Map<
-  string,
-  { state: TerminalTurnState; source: TerminalTurnSignalSource; updatedAt: number }
->()
 
 // ============================ 主题 ============================
 
@@ -361,7 +372,7 @@ function applySessionToTab(tab: TerminalTab, session: SessionForTabSync) {
     tab.title = session.title
   }
   ensureSessionTurnWatch(tab, true)
-  applyPendingTurnState(tab)
+  applyPendingTurnState(tab, activeUiId.value === tab.uiId)
 }
 
 /**
@@ -425,26 +436,6 @@ export function syncTabTitleBySessionPath(agent: Agent, sessionPath: string, tit
   }
 }
 
-function setProcessState(tab: TerminalTab, state: TerminalProcessState) {
-  tab.processState = state
-  tab.status = state === 'alive' ? 'running' : state
-}
-
-function setTurnState(
-  tab: TerminalTab,
-  state: TerminalTurnState,
-  source: TerminalTurnSignalSource,
-) {
-  tab.turnState = state
-  tab.turnStateSource = source
-  tab.turnStateUpdatedAt = Date.now()
-}
-
-function clearLocalWorkingTurn(tab: TerminalTab) {
-  if (tab.turnState !== 'working') return
-  setTurnState(tab, activeUiId.value === tab.uiId ? 'idle' : 'review', 'pty')
-}
-
 function isTerminalCancelInput(data: string) {
   return data === '\x1b' || data === '\x03'
 }
@@ -456,96 +447,55 @@ function tabsBySession(agent: Agent, sessionPath: string) {
   )
 }
 
-function turnStateKey(agent: Agent, sessionPath: string) {
-  return `${agent}\0${sessionPath}`
-}
-
-function rememberTurnState(agent: Agent, sessionPath: string, state: TerminalTurnState) {
-  if (!sessionPath) return
-  pendingTurnStates.set(turnStateKey(agent, sessionPath), {
-    state,
-    source: 'agent',
-    updatedAt: Date.now(),
-  })
-  if (pendingTurnStates.size > 200) {
-    const first = pendingTurnStates.keys().next().value
-    if (first) pendingTurnStates.delete(first)
-  }
-}
-
-function applyPendingTurnState(tab: TerminalTab) {
-  if (!tab.sessionPath) return
-  const key = turnStateKey(tab.agent, tab.sessionPath)
-  const pending = pendingTurnStates.get(key)
-  if (!pending) return
-  const state =
-    pending.state === 'idle' || pending.state === 'review'
-      ? activeUiId.value === tab.uiId
-        ? 'idle'
-        : 'review'
-      : pending.state
-  setTurnState(tab, state, pending.source)
-  tab.turnStateUpdatedAt = pending.updatedAt
-  pendingTurnStates.delete(key)
-}
-
 export function markTabSessionActivity(agent: Agent, sessionPath: string) {
   const now = Date.now()
   for (const tab of tabsBySession(agent, sessionPath)) {
     tab.lastSessionActivityAt = now
-    if (
-      tab.turnState !== 'blocked' &&
-      tab.turnState !== 'error' &&
-      !(tab.turnStateSource === 'agent' && (tab.turnState === 'idle' || tab.turnState === 'review'))
-    ) {
-      setTurnState(tab, 'working', 'session')
-    }
+    markSessionActivity(tab)
   }
 }
 
 export function markTabTurnStarted(agent: Agent, sessionPath: string) {
   const targets = tabsBySession(agent, sessionPath)
-  if (!targets.length) rememberTurnState(agent, sessionPath, 'working')
+  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'started', 'session-jsonl')
   for (const tab of targets) {
-    if (tab.turnState !== 'blocked' && tab.turnState !== 'error') {
-      setTurnState(tab, 'working', 'agent')
-    }
+    applyTurnSignal(tab, 'started', 'session-jsonl', activeUiId.value === tab.uiId)
   }
 }
 
 export function markTabTurnCompleted(agent: Agent, sessionPath: string) {
   const targets = tabsBySession(agent, sessionPath)
-  if (!targets.length) rememberTurnState(agent, sessionPath, 'review')
+  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'completed', 'session-jsonl')
   for (const tab of targets) {
-    setTurnState(tab, activeUiId.value === tab.uiId ? 'idle' : 'review', 'agent')
+    applyTurnSignal(tab, 'completed', 'session-jsonl', activeUiId.value === tab.uiId)
   }
 }
 
 export function markTabTurnBlocked(agent: Agent, sessionPath: string) {
   const targets = tabsBySession(agent, sessionPath)
-  if (!targets.length) rememberTurnState(agent, sessionPath, 'blocked')
+  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'blocked', 'session-jsonl')
   for (const tab of targets) {
-    setTurnState(tab, 'blocked', 'agent')
+    applyTurnSignal(tab, 'blocked', 'session-jsonl', activeUiId.value === tab.uiId)
   }
 }
 
 export function markTabTurnFailed(agent: Agent, sessionPath: string) {
   const targets = tabsBySession(agent, sessionPath)
-  if (!targets.length) rememberTurnState(agent, sessionPath, 'error')
+  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'failed', 'session-jsonl')
   for (const tab of targets) {
-    setTurnState(tab, 'error', 'agent')
+    applyTurnSignal(tab, 'failed', 'session-jsonl', activeUiId.value === tab.uiId)
   }
 }
 
 export function markTabViewed(uiId: number) {
   const tab = findTab(uiId)
   if (tab?.turnState === 'review') {
-    setTurnState(tab, 'idle', 'agent')
+    setTurnState(tab, 'idle', 'session-jsonl')
   }
 }
 
 function shouldWatchSessionTurns(tab: TerminalTab) {
-  return (tab.agent === 'codex' || tab.agent === 'gemini') && !!tab.sessionPath
+  return (tab.agent === 'claude' || tab.agent === 'codex' || tab.agent === 'gemini') && !!tab.sessionPath
 }
 
 function ensureSessionTurnWatch(tab: TerminalTab, catchUp: boolean) {
@@ -718,7 +668,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
         )
   } catch (e) {
     setProcessState(tab, 'error')
-    setTurnState(tab, 'error', 'pty')
+    setTurnState(tab, 'error', 'pty-exit')
     tab.errorMessage = String(e)
     term.write(`\r\n\x1b[31m[error] ${e}\x1b[0m\r\n`)
     return
@@ -746,7 +696,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     if (e.payload.id !== ptyId) return
     setProcessState(tab, 'exited')
     if (tab.turnState === 'working') {
-      setTurnState(tab, e.payload.code === 0 ? 'unknown' : 'error', 'pty')
+      setTurnState(tab, e.payload.code === 0 ? 'unknown' : 'error', 'pty-exit')
     }
     tab.exitCode = e.payload.code
     term.write(`\r\n\x1b[2m[process exited: ${e.payload.code}]\x1b[0m\r\n`)
@@ -757,9 +707,9 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     if (tab.ptyId === null || tab.processState !== 'alive') return
     tab.lastUserInputAt = Date.now()
     if (isTerminalCancelInput(data)) {
-      clearLocalWorkingTurn(tab)
+      clearLocalWorkingTurn(tab, activeUiId.value === tab.uiId)
     } else if ((data.includes('\r') || data.includes('\n')) && tab.turnState !== 'blocked') {
-      setTurnState(tab, 'working', 'pty')
+      setTurnState(tab, 'working', 'pty-input')
     }
     setQuietCursor(tab, false)
     const bytes = new TextEncoder().encode(data)

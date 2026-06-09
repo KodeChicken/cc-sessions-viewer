@@ -119,7 +119,7 @@ pub fn watch_session_turn(
     path: String,
     catch_up: bool,
 ) -> Result<(), String> {
-    if agent != "codex" && agent != "gemini" {
+    if agent != "claude" && agent != "codex" && agent != "gemini" {
         return Ok(());
     }
     let p = PathBuf::from(&path);
@@ -273,8 +273,41 @@ fn complete_jsonl_prefix_len(buf: &str) -> usize {
 fn infer_turn_state(agent: &str, line: &str) -> Option<&'static str> {
     let value: Value = serde_json::from_str(line.trim()).ok()?;
     match agent {
+        "claude" => infer_claude_turn_state(&value),
         "codex" => infer_codex_turn_state(&value),
         "gemini" => infer_gemini_turn_state(&value),
+        _ => None,
+    }
+}
+
+fn infer_claude_turn_state(value: &Value) -> Option<&'static str> {
+    match value.get("type").and_then(Value::as_str)? {
+        "user" => {
+            if value.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
+                None
+            } else {
+                Some("started")
+            }
+        }
+        "attachment" => {
+            if value
+                .get("attachment")
+                .and_then(|attachment| attachment.get("type"))
+                .and_then(Value::as_str)
+                == Some("queued_command")
+            {
+                Some("started")
+            } else {
+                None
+            }
+        }
+        "assistant" => {
+            if value.get("message").is_some() {
+                Some("completed")
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -536,6 +569,38 @@ process.stdin.on('end', () => {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn claude_infers_turn_lifecycle_from_transcript_records() {
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"user","message":{"role":"user","content":"hi"}})),
+            Some("started")
+        );
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"user","isMeta":true,"message":{"role":"user","content":"image uploaded"}})),
+            None
+        );
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"attachment","attachment":{"type":"queued_command","command":"npm test"}})),
+            Some("started")
+        );
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}})),
+            Some("completed")
+        );
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"custom-title","title":"new title"})),
+            None
+        );
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"agent-name","name":"Claude"})),
+            None
+        );
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"attachment","attachment":{"type":"hook_success"}})),
+            None
+        );
+    }
 
     #[test]
     fn codex_infers_turn_lifecycle_from_event_messages() {
