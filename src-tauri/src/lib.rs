@@ -354,6 +354,23 @@ fn new_session(agent: String, cwd: String, extra_args: String, terminal_app: Str
     spawn_terminal(&command, &cwd, &terminal_app)
 }
 
+#[cfg(target_os = "macos")]
+fn create_terminal_script(tab_name: &str, shell_cmd: &str) -> Result<String, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join("cc-sessions-viewer");
+    fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    let path = dir.join(format!("resume-{}.command", std::process::id()));
+    let content = format!(
+        "#!/bin/zsh\n\
+         printf '\\033]0;{tab_name}\\007'\n\
+         {shell_cmd}\n"
+    );
+    fs::write(&path, &content).map_err(|e| format!("写入脚本失败: {e}"))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("设置权限失败: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Result<(), String> {
     use std::sync::Mutex;
     use std::time::Instant;
@@ -374,34 +391,6 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
         let shell_cmd = format!("cd {} && {}", crate::agent_command::posix_quote(cwd), cli);
 
         match _terminal_app {
-            "iterm2" => {
-                let as_arg = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
-                let script = format!(
-                    "set wasRunning to false\n\
-                     tell application \"System Events\"\n\
-                       set wasRunning to (exists process \"iTerm2\")\n\
-                     end tell\n\
-                     tell application \"iTerm\"\n\
-                     activate\n\
-                     end tell\n\
-                     if not wasRunning then\n\
-                       delay 0.5\n\
-                       tell application \"iTerm\"\n\
-                         tell current session of current window to write text \"{as_arg}\"\n\
-                       end tell\n\
-                     else\n\
-                       tell application \"iTerm\"\n\
-                         tell current window to create tab with default profile\n\
-                         tell current session of current window to write text \"{as_arg}\"\n\
-                       end tell\n\
-                     end if"
-                );
-                std::process::Command::new("osascript")
-                    .arg("-e")
-                    .arg(&script)
-                    .spawn()
-                    .map_err(|e| format!("启动 iTerm2 失败: {e}"))?;
-            }
             // TODO: Ghostty macOS 没有窗口管理 API，无法按 cwd 复用已有窗口，
             // 每次都会开新实例。等 Ghostty 支持 IPC 后再实现窗口复用。
             "ghostty" => {
@@ -527,75 +516,22 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                         .map_err(|e| format!("启动 cmux 失败: {e}"))?;
                 }
             }
-            "warp" => {
+            // iTerm2 / Warp / Terminal.app: 写临时脚本 + open -a，不需要辅助功能权限
+            _ => {
+                let app_name = match _terminal_app {
+                    "iterm2" => "iTerm",
+                    "warp" => "Warp",
+                    _ => "Terminal",
+                };
                 let tab_name = Path::new(cwd)
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                let titled_cmd = format!("printf '\\033]0;{tab_name}\\007'; {shell_cmd}");
-                let as_arg = titled_cmd.replace('\\', "\\\\").replace('"', "\\\"");
-                let script = format!(
-                    "set the clipboard to \"{as_arg}\"\n\
-                     tell application \"Warp\"\n\
-                     activate\n\
-                     end tell\n\
-                     delay 0.3\n\
-                     tell application \"System Events\"\n\
-                     tell process \"Warp\"\n\
-                       keystroke \"t\" using command down\n\
-                     end tell\n\
-                     end tell\n\
-                     delay 0.3\n\
-                     tell application \"System Events\"\n\
-                     tell process \"Warp\"\n\
-                       key code 53\n\
-                     end tell\n\
-                     end tell\n\
-                     delay 0.3\n\
-                     tell application \"System Events\"\n\
-                     tell process \"Warp\"\n\
-                       keystroke \"v\" using command down\n\
-                     end tell\n\
-                     end tell\n\
-                     delay 0.5\n\
-                     tell application \"System Events\"\n\
-                     tell process \"Warp\"\n\
-                       key code 36\n\
-                     end tell\n\
-                     end tell"
-                );
-                std::process::Command::new("osascript")
-                    .arg("-e")
-                    .arg(&script)
+                let script_path = create_terminal_script(&tab_name, &shell_cmd)?;
+                std::process::Command::new("open")
+                    .args(["-a", app_name, &script_path])
                     .spawn()
-                    .map_err(|e| format!("启动 Warp 失败: {e}"))?;
-            }
-            _ => {
-                let as_arg = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
-                let script = format!(
-                    "set wasRunning to false\n\
-                     tell application \"System Events\"\n\
-                       set wasRunning to (exists process \"Terminal\")\n\
-                     end tell\n\
-                     tell application \"Terminal\"\n\
-                     activate\n\
-                     end tell\n\
-                     if not wasRunning then\n\
-                       delay 0.3\n\
-                       tell application \"Terminal\"\n\
-                         do script \"{as_arg}\" in front window\n\
-                       end tell\n\
-                     else\n\
-                       tell application \"Terminal\"\n\
-                         do script \"{as_arg}\"\n\
-                       end tell\n\
-                     end if"
-                );
-                std::process::Command::new("osascript")
-                    .arg("-e")
-                    .arg(&script)
-                    .spawn()
-                    .map_err(|e| format!("启动终端失败: {e}"))?;
+                    .map_err(|e| format!("启动 {app_name} 失败: {e}"))?;
             }
         }
     }

@@ -14,12 +14,20 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Fix PTY environment: remove `npm_config_prefix` to prevent nvm conflict for Codex/Gemini sessions
 - Fix tab status border: only active tabs show colored state borders
 - Fix view navigation on tab close: correctly return to session list or chat view
+- Fix embedded Codex terminal light theme input box black background (PR #17 by @KodeChicken)
+- Fix terminal tab "unviewed" status dot not clearing after click (PR #17 by @KodeChicken)
+- Fix update checker version source
+- Fix Clippy warnings and Rust compilation warnings
 
 ### Features
 
 - Add terminal spawning overlay with loading animation
 - Add batch project delete from sidebar
 - Add settings tooltip icons replacing verbose descriptions
+- Add Claude transcript JSONL-based tab status inference — terminal tabs now track idle/working/blocked/review for Claude sessions, not just Codex and Gemini (PR #17 by @KodeChicken)
+- Add multi-agent session state tracking for terminal tabs (PR #13 by @KodeChicken)
+- Add new session creation from terminal strip empty area (PR #13 by @KodeChicken)
+- **Drop macOS accessibility permission requirement** — external terminal resume (iTerm2 / Warp / Terminal.app) now uses `open -a` with a temp `.command` script instead of osascript, eliminating the macOS accessibility permission prompt (fix #16)
 
 ### Performance
 
@@ -32,6 +40,9 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Extract turn state classification into per-agent shared functions (codex.rs, gemini.rs)
 - Clean up TerminalStrip context menu: remove unused browser actions
 - Replace `.at(-1)` with `.slice(-1)[0]` in tests to fix IDE TS diagnostics
+- Unify agent CLI launch command rendering (PR #13 by @KodeChicken)
+- Extract independent `tabStatus` module from TerminalStrip, unify `statusKind` consumption (PR #17 by @KodeChicken)
+- Optimize terminal tab status styling (PR #13 by @KodeChicken)
 
 ## [v0.1.6]
 
