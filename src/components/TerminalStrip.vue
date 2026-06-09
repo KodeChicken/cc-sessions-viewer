@@ -31,7 +31,7 @@ const emit = defineEmits<{
   /** View —— 保留当前会话，仅退出 TUI，回到聊天详情 */
   viewClick: []
   /** Tab 被手动关闭（点 ×）—— App 据此刷新数据 */
-  tabClosed: []
+  tabClosed: [sessionPath: string]
   /** TUI tab 操作菜单 —— 复用会话重命名弹窗 */
   tabRename: [tab: TerminalTab]
   /** 双击 tab 条空白处 —— 复用列表页加号的新建会话能力 */
@@ -52,7 +52,6 @@ const listActive = computed(
 const viewActive = computed(
   () => activeUiId.value === null && props.hasOpenSession,
 )
-const canGoBack = computed(() => typeof window !== 'undefined' && window.history.length > 1)
 const tabCtx = ref<{ x: number; y: number; tab: TerminalTab } | null>(null)
 const stripCtx = ref<{ x: number; y: number } | null>(null)
 const nativeMenuSupported = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -87,8 +86,10 @@ function onViewClick() {
 
 function onClose(uiId: number, ev: Event) {
   ev.stopPropagation()
+  const tab = tabs.value.find(t => t.uiId === uiId)
+  const sessionPath = tab?.sessionPath ?? ''
   closeTab(uiId)
-  emit('tabClosed')
+  emit('tabClosed', sessionPath)
 }
 
 function onStripDoubleClick(ev: MouseEvent) {
@@ -124,43 +125,6 @@ async function openNativeTabContextMenu(tab: TerminalTab, ev: MouseEvent): Promi
     ])
     const menu = await Menu.new({
       items: [
-        {
-          id: 'native-back',
-          text: t('context.back'),
-          enabled: window.history.length > 1,
-          accelerator: 'Alt+Left',
-          action: () => window.history.back(),
-        },
-        {
-          id: 'native-reload',
-          text: t('context.reload'),
-          accelerator: 'CmdOrCtrl+R',
-          action: () => window.location.reload(),
-        },
-        { item: 'Separator' },
-        {
-          id: 'native-save-as',
-          text: t('context.saveAs'),
-          action: () => undefined,
-        },
-        {
-          id: 'native-print',
-          text: t('context.print'),
-          accelerator: 'CmdOrCtrl+P',
-          action: () => window.print(),
-        },
-        {
-          id: 'native-more-tools',
-          text: t('context.moreTools'),
-          items: [
-            {
-              id: 'native-share',
-              text: t('context.share'),
-              action: () => shareCurrentPage(),
-            },
-          ],
-        },
-        { item: 'Separator' },
         {
           id: 'tab-rename',
           text: t('chat.tui.tabRename'),
@@ -255,8 +219,9 @@ function closeCtxTab() {
   const tab = tabCtx.value?.tab
   closeTabCtx()
   if (!tab) return
+  const sessionPath = tab.sessionPath ?? ''
   closeTab(tab.uiId)
-  emit('tabClosed')
+  emit('tabClosed', sessionPath)
 }
 
 function closeOtherCtxTabs() {
@@ -266,7 +231,7 @@ function closeOtherCtxTabs() {
   for (const item of visibleTabs.value) {
     if (item.uiId !== tab.uiId) closeTab(item.uiId)
   }
-  emit('tabClosed')
+  emit('tabClosed', '')
 }
 
 function closeProjectCtxTabs() {
@@ -275,37 +240,25 @@ function closeProjectCtxTabs() {
 }
 
 function closeNativeCtxTab(tab: TerminalTab) {
+  const sessionPath = tab.sessionPath ?? ''
   closeTab(tab.uiId)
-  emit('tabClosed')
+  emit('tabClosed', sessionPath)
 }
 
 function closeOtherNativeCtxTabs(tab: TerminalTab) {
   for (const item of visibleTabs.value) {
     if (item.uiId !== tab.uiId) closeTab(item.uiId)
   }
-  emit('tabClosed')
+  emit('tabClosed', '')
 }
 
 function closeProjectNativeCtxTabs() {
   for (const item of visibleTabs.value) {
     closeTab(item.uiId)
   }
-  emit('tabClosed')
+  emit('tabClosed', '')
 }
 
-function runNativeLikeCtxAction(action: 'back' | 'reload' | 'print' | 'share') {
-  closeTabCtx()
-  if (action === 'back') window.history.back()
-  else if (action === 'reload') window.location.reload()
-  else if (action === 'print') window.print()
-  else shareCurrentPage()
-}
-
-function shareCurrentPage() {
-  if (navigator.share) {
-    void navigator.share({ title: document.title, url: window.location.href })
-  }
-}
 
 function onDocMouseDown(e: MouseEvent) {
   if (!tabCtx.value && !stripCtx.value) return
@@ -466,55 +419,6 @@ onUnmounted(() => {
       @click.stop
       @contextmenu.prevent.stop
     >
-      <button
-        type="button"
-        class="ctx-item"
-        data-menu-action="native-back"
-        :disabled="!canGoBack"
-        @click="runNativeLikeCtxAction('back')"
-      >
-        <span>{{ t('context.back') }}</span>
-        <span class="ctx-shortcut">Alt+Left</span>
-      </button>
-      <button
-        type="button"
-        class="ctx-item"
-        data-menu-action="native-reload"
-        @click="runNativeLikeCtxAction('reload')"
-      >
-        <span>{{ t('context.reload') }}</span>
-        <span class="ctx-shortcut">Ctrl+R</span>
-      </button>
-      <div class="ctx-sep" />
-      <button type="button" class="ctx-item" data-menu-action="native-save-as">
-        <span>{{ t('context.saveAs') }}</span>
-      </button>
-      <button
-        type="button"
-        class="ctx-item"
-        data-menu-action="native-print"
-        @click="runNativeLikeCtxAction('print')"
-      >
-        <span>{{ t('context.print') }}</span>
-        <span class="ctx-shortcut">Ctrl+P</span>
-      </button>
-      <div class="ctx-submenu">
-        <button type="button" class="ctx-item" data-menu-action="native-more-tools">
-          <span>{{ t('context.moreTools') }}</span>
-          <span class="ctx-shortcut">›</span>
-        </button>
-        <div class="ctx-menu ctx-submenu-panel">
-          <button
-            type="button"
-            class="ctx-item"
-            data-menu-action="native-share"
-            @click="runNativeLikeCtxAction('share')"
-          >
-            <span>{{ t('context.share') }}</span>
-          </button>
-        </div>
-      </div>
-      <div class="ctx-sep" />
       <button type="button" class="ctx-item" data-menu-action="tab-rename" @click="renameCtxTab">
         <span>{{ t('chat.tui.tabRename') }}</span>
       </button>

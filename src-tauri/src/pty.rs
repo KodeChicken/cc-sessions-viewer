@@ -97,8 +97,8 @@ fn build_shell_command(cwd: &str, command: &AgentCommand) -> CommandBuilder {
     cmd.arg("-i");
     cmd.arg("-c");
     cmd.arg(&inner);
-    // CLI 探测 isatty + ANSI 重绘都靠 TERM；xterm.js 默认按 xterm-256color 解析。
     cmd.env("TERM", "xterm-256color");
+    cmd.env_remove("npm_config_prefix");
     cmd.cwd(cwd);
     cmd
 }

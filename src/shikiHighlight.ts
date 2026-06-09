@@ -1,26 +1,60 @@
-import { createHighlighter, type Highlighter } from 'shiki'
+import { createHighlighterCore, type HighlighterCore } from '@shikijs/core'
+import { createJavaScriptRegexEngine } from '@shikijs/engine-javascript'
 
-let highlighterPromise: Promise<Highlighter> | null = null
+let highlighterPromise: Promise<HighlighterCore> | null = null
 
-const BUNDLED_LANGS = [
-  'javascript', 'typescript', 'jsx', 'tsx',
-  'python', 'rust', 'go', 'java', 'c', 'cpp',
-  'html', 'css', 'scss', 'vue', 'svelte',
-  'json', 'yaml', 'toml', 'xml',
-  'bash', 'shell', 'zsh', 'powershell',
-  'sql', 'graphql',
-  'markdown', 'diff',
-  'ruby', 'php', 'swift', 'kotlin', 'dart',
-  'dockerfile', 'lua', 'zig',
-] as const
+const LANG_IMPORTS: Record<string, () => Promise<any>> = {
+  javascript: () => import('@shikijs/langs/javascript'),
+  typescript: () => import('@shikijs/langs/typescript'),
+  jsx: () => import('@shikijs/langs/jsx'),
+  tsx: () => import('@shikijs/langs/tsx'),
+  python: () => import('@shikijs/langs/python'),
+  rust: () => import('@shikijs/langs/rust'),
+  go: () => import('@shikijs/langs/go'),
+  java: () => import('@shikijs/langs/java'),
+  c: () => import('@shikijs/langs/c'),
+  cpp: () => import('@shikijs/langs/cpp'),
+  html: () => import('@shikijs/langs/html'),
+  css: () => import('@shikijs/langs/css'),
+  scss: () => import('@shikijs/langs/scss'),
+  vue: () => import('@shikijs/langs/vue'),
+  svelte: () => import('@shikijs/langs/svelte'),
+  json: () => import('@shikijs/langs/json'),
+  yaml: () => import('@shikijs/langs/yaml'),
+  toml: () => import('@shikijs/langs/toml'),
+  xml: () => import('@shikijs/langs/xml'),
+  bash: () => import('@shikijs/langs/bash'),
+  shell: () => import('@shikijs/langs/shellscript'),
+  zsh: () => import('@shikijs/langs/shellscript'),
+  powershell: () => import('@shikijs/langs/powershell'),
+  sql: () => import('@shikijs/langs/sql'),
+  graphql: () => import('@shikijs/langs/graphql'),
+  markdown: () => import('@shikijs/langs/markdown'),
+  diff: () => import('@shikijs/langs/diff'),
+  ruby: () => import('@shikijs/langs/ruby'),
+  php: () => import('@shikijs/langs/php'),
+  swift: () => import('@shikijs/langs/swift'),
+  kotlin: () => import('@shikijs/langs/kotlin'),
+  dart: () => import('@shikijs/langs/dart'),
+  dockerfile: () => import('@shikijs/langs/dockerfile'),
+  lua: () => import('@shikijs/langs/lua'),
+  zig: () => import('@shikijs/langs/zig'),
+}
+
+const SUPPORTED_LANGS = new Set(Object.keys(LANG_IMPORTS))
 
 const THEMES = ['github-light', 'github-dark', 'dracula'] as const
 
-function getHighlighter(): Promise<Highlighter> {
+function getHighlighter(): Promise<HighlighterCore> {
   if (!highlighterPromise) {
-    highlighterPromise = createHighlighter({
-      themes: [...THEMES],
-      langs: [...BUNDLED_LANGS],
+    highlighterPromise = createHighlighterCore({
+      themes: [
+        import('@shikijs/themes/github-light'),
+        import('@shikijs/themes/github-dark'),
+        import('@shikijs/themes/dracula'),
+      ],
+      langs: [],
+      engine: createJavaScriptRegexEngine(),
     })
   }
   return highlighterPromise
@@ -33,10 +67,12 @@ function currentTheme(): typeof THEMES[number] {
   return 'github-light'
 }
 
-async function tryLoadLang(hl: Highlighter, lang: string): Promise<boolean> {
+async function tryLoadLang(hl: HighlighterCore, lang: string): Promise<boolean> {
+  if (!SUPPORTED_LANGS.has(lang)) return false
   if (hl.getLoadedLanguages().includes(lang as any)) return true
   try {
-    await hl.loadLanguage(lang as any)
+    const mod = await LANG_IMPORTS[lang]()
+    await hl.loadLanguage(mod.default ?? mod)
     return true
   } catch {
     return false
@@ -105,7 +141,7 @@ function escapeHtml(s: string): string {
 
 function applyTokensToSpans(
   textSpans: NodeListOf<HTMLSpanElement>,
-  hl: Highlighter,
+  hl: HighlighterCore,
   lang: string,
   themeName: string,
 ): void {
@@ -139,7 +175,7 @@ const DIFF_TARGETS: { selector: string; textSelector: string; getFilePath: (el: 
   },
 ]
 
-async function highlightDiffBlocks(root: HTMLElement, hl: Highlighter, themeName: string): Promise<void> {
+async function highlightDiffBlocks(root: HTMLElement, hl: HighlighterCore, themeName: string): Promise<void> {
   for (const target of DIFF_TARGETS) {
     const diffs = root.querySelectorAll<HTMLElement>(target.selector)
     for (const diffEl of diffs) {
@@ -158,7 +194,7 @@ async function highlightDiffBlocks(root: HTMLElement, hl: Highlighter, themeName
   }
 }
 
-async function rehighlightDiffBlocks(root: HTMLElement, hl: Highlighter, themeName: string): Promise<void> {
+async function rehighlightDiffBlocks(root: HTMLElement, hl: HighlighterCore, themeName: string): Promise<void> {
   for (const target of DIFF_TARGETS) {
     const done = target.selector.replace(':not([data-shiki])', '[data-shiki="done"]')
     const diffs = root.querySelectorAll<HTMLElement>(done)
@@ -197,6 +233,7 @@ export async function highlightAllCodeBlocks(root: HTMLElement | null): Promise<
   for (const pre of toolJson) {
     const code = pre.textContent ?? ''
     if (!code.trim()) { pre.dataset.shiki = 'skip'; continue }
+    if (!(await tryLoadLang(hl, 'json'))) { pre.dataset.shiki = 'skip'; continue }
     const html = hl.codeToHtml(code, { lang: 'json', theme: themeName })
     replaceWithShiki(pre, html, 'json', code, 'lang-json')
   }
@@ -204,6 +241,7 @@ export async function highlightAllCodeBlocks(root: HTMLElement | null): Promise<
   for (const pre of toolDiff) {
     const code = pre.textContent ?? ''
     if (!code.trim()) { pre.dataset.shiki = 'skip'; continue }
+    if (!(await tryLoadLang(hl, 'diff'))) { pre.dataset.shiki = 'skip'; continue }
     const html = hl.codeToHtml(code, { lang: 'diff', theme: themeName })
     replaceWithShiki(pre, html, 'diff', code, 'lang-diff')
   }

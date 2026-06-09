@@ -9,6 +9,8 @@ export default {
 
   'sidebar.projectsCount': 'プロジェクト {count} 件',
   'sidebar.noSessions': '{agent} のセッションがありません',
+  'sidebar.selectedCount': '{n} 件選択中',
+  'sidebar.batchDelete': '選択を削除',
   'sidebar.trash': 'ゴミ箱',
   'sidebar.settings': '設定',
   'sidebar.updateAvailable': '新しいバージョン v{v} があります — 設定を開く',
@@ -260,6 +262,9 @@ export default {
   'dialog.deleteProject.body':
     'プロジェクト「{name}」内の {n} 件のセッションをすべてゴミ箱へ移動します。いつでも復元できます。',
   'dialog.deleteProject.ok': 'すべてゴミ箱へ移動',
+  'dialog.batchDeleteProject.title': 'プロジェクトの一括削除',
+  'dialog.batchDeleteProject.body': '{n} 件のプロジェクト（セッション {sessions} 件）をゴミ箱に移動します。',
+  'dialog.batchDeleteProject.ok': 'すべてゴミ箱へ移動',
   'dialog.rename.title': 'セッション名を変更',
   'dialog.clearCache.title': 'キャッシュを削除',
   'dialog.clearCache.body':
@@ -270,6 +275,7 @@ export default {
   'toast.renamed': '名前を変更しました',
   'toast.renameFail': '名前の変更に失敗: {e}',
   'toast.projDeleted': 'プロジェクトをゴミ箱へ移動しました',
+  'toast.batchProjDeleted': '{n} 件のプロジェクトをゴミ箱へ移動しました',
   'toast.restored': '復元しました',
   'toast.permDeleted': '完全に削除しました',
   'toast.trashEmptied': 'ゴミ箱を空にしました',
@@ -342,6 +348,7 @@ export default {
   'settings.section.turnStatus': 'セッション状態トラッキング',
   'settings.turnStatus.desc':
     'agent のライフサイクル信号で実行中・完了・ブロック・失敗を判定します。ターミナルの無出力時間は完了判定に使いません。',
+  'settings.turnStatus.brief': 'タブ状態インジケーター',
   'settings.turnStatus.installClaude': 'Claude 状態トラッキングを有効化',
   'settings.turnStatus.installing': '有効化中…',
   'settings.turnStatus.installed': 'Claude hooks を書き込みました: {path}',
@@ -349,6 +356,7 @@ export default {
   'settings.section.codex': 'Codex',
   'settings.codexVisibilityDesc':
     'Codex の一覧に、通常は非表示の内部レビューセッションとアーカイブ済みセッションを表示するかを切り替えます。',
+  'settings.codex.brief': 'セッション表示設定',
   'settings.codex.showInternal': 'レビューセッションを表示',
   'settings.codex.showArchived': 'アーカイブ済みを表示',
   'settings.clearCache': 'キャッシュを削除',

@@ -663,9 +663,12 @@ export function closeTab(uiId: number) {
 
   tabs.value.splice(idx, 1)
 
-  // active fallback：尽量保持视觉连续性 —— 右邻居优先，没有就左邻居，再没有就退到 view。
+  // active fallback：只在同 agent + 同 project 里找邻居，跨 agent 的 tab 不能 fallback 过去。
   if (activeUiId.value === uiId) {
-    const next = tabs.value[idx] ?? tabs.value[idx - 1] ?? null
+    const sameCtx = tabs.value.filter(
+      (t) => t.agent === tab.agent && t.projectKey === tab.projectKey,
+    )
+    const next = sameCtx[0] ?? null
     activeUiId.value = next?.uiId ?? null
   }
 }

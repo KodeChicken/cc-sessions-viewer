@@ -273,54 +273,8 @@ fn complete_jsonl_prefix_len(buf: &str) -> usize {
 fn infer_turn_state(agent: &str, line: &str) -> Option<&'static str> {
     let value: Value = serde_json::from_str(line.trim()).ok()?;
     match agent {
-        "codex" => infer_codex_turn_state(&value),
-        "gemini" => infer_gemini_turn_state(&value),
-        _ => None,
-    }
-}
-
-fn infer_codex_turn_state(value: &Value) -> Option<&'static str> {
-    if value.get("type").and_then(Value::as_str) != Some("event_msg") {
-        return None;
-    }
-    let payload = value.get("payload")?;
-    match payload.get("type").and_then(Value::as_str)? {
-        "task_started" => Some("started"),
-        "user_message" => Some("started"),
-        "task_complete" => Some("completed"),
-        "agent_message" => {
-            if payload.get("phase").and_then(Value::as_str) == Some("commentary") {
-                None
-            } else {
-                Some("completed")
-            }
-        }
-        "task_failed" => Some("failed"),
-        "error" => Some("failed"),
-        _ => None,
-    }
-}
-
-fn infer_gemini_turn_state(value: &Value) -> Option<&'static str> {
-    match value.get("type").and_then(Value::as_str)? {
-        "user" => Some("started"),
-        "gemini" => {
-            let content_done = value
-                .get("content")
-                .and_then(Value::as_str)
-                .is_some_and(|content| !content.trim().is_empty());
-            let token_done = value.get("tokens").is_some_and(|tokens| {
-                let output = tokens.get("output").and_then(Value::as_u64).unwrap_or(0);
-                let thoughts = tokens.get("thoughts").and_then(Value::as_u64).unwrap_or(0);
-                output > 0 || thoughts > 0
-            });
-            if content_done || token_done {
-                Some("completed")
-            } else {
-                None
-            }
-        }
-        "error" => Some("failed"),
+        "codex" => crate::agents::codex::classify_turn_state(&value),
+        "gemini" => crate::agents::gemini::classify_turn_state(&value),
         _ => None,
     }
 }
@@ -537,42 +491,45 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    use crate::agents::codex::classify_turn_state as codex_classify;
+    use crate::agents::gemini::classify_turn_state as gemini_classify;
+
     #[test]
     fn codex_infers_turn_lifecycle_from_event_messages() {
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"user_message"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"user_message"}})),
             Some("started")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_started"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"task_started"}})),
             Some("started")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}})),
             Some("completed")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_complete"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"task_complete"}})),
             Some("completed")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"final_answer","message":"done"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"final_answer","message":"done"}})),
             Some("completed")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"checking"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"checking"}})),
             None
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"error","message":"boom"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"error","message":"boom"}})),
             Some("failed")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_failed","message":"boom"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"task_failed","message":"boom"}})),
             Some("failed")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"token_count"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"token_count"}})),
             None
         );
     }
@@ -580,26 +537,26 @@ mod tests {
     #[test]
     fn gemini_infers_turn_lifecycle_from_user_and_response_records() {
         assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"user","content":"hi"})),
+            gemini_classify(&json!({"type":"user","content":"hi"})),
             Some("started")
         );
         assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"gemini","content":"ok"})),
+            gemini_classify(&json!({"type":"gemini","content":"ok"})),
             Some("completed")
         );
         assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"gemini","tokens":{"output":1}})),
+            gemini_classify(&json!({"type":"gemini","tokens":{"output":1}})),
             Some("completed")
         );
         assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"gemini","tokens":{"thoughts":1}})),
+            gemini_classify(&json!({"type":"gemini","tokens":{"thoughts":1}})),
             Some("completed")
         );
         assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"gemini","toolCalls":[] })),
+            gemini_classify(&json!({"type":"gemini","toolCalls":[] })),
             None
         );
-        assert_eq!(infer_gemini_turn_state(&json!({"type":"error"})), Some("failed"));
+        assert_eq!(gemini_classify(&json!({"type":"error"})), Some("failed"));
     }
 
     #[test]
