@@ -537,6 +537,13 @@ export function markTabTurnFailed(agent: Agent, sessionPath: string) {
   }
 }
 
+export function markTabViewed(uiId: number) {
+  const tab = findTab(uiId)
+  if (tab?.turnState === 'review') {
+    setTurnState(tab, 'idle', 'agent')
+  }
+}
+
 function shouldWatchSessionTurns(tab: TerminalTab) {
   return (tab.agent === 'codex' || tab.agent === 'gemini') && !!tab.sessionPath
 }
@@ -595,7 +602,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
       fontSize: 13,
       fontFamily:
         '"SF Mono", "Menlo", "Consolas", "Liberation Mono", "Courier New", monospace',
-      cursorBlink: false,
+      cursorBlink: true,
       convertEol: false,
       allowProposedApi: true,
       scrollback: 5000,
@@ -765,6 +772,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
 /** 切换激活 tab。`null` = 隐藏 TUI 层，露出 view（聊天/列表/统计/...）。 */
 export function setActive(uiId: number | null) {
   activeUiId.value = uiId
+  if (uiId !== null) markTabViewed(uiId)
 }
 
 /** 书签合并到真实项目时，把旧 projectKey 的 tab 迁移到新 key，避免 strip 过滤丢失。 */

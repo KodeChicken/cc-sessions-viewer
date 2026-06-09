@@ -10,7 +10,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { Agent } from '../types'
 import type { TerminalTab } from '../terminals'
-import { tabs, activeUiId, setActive, closeTab } from '../terminals'
+import { tabs, activeUiId, setActive, closeTab, markTabViewed } from '../terminals'
 import { IconClose, IconChat, IconList, IconPlus, agentIcons } from './icons'
 import { t } from '../i18n'
 
@@ -68,11 +68,13 @@ function tabStatusKind(tab: TerminalTab) {
   if (tab.processState === 'exited') return 'exited'
   if (tab.turnState === 'blocked') return 'blocked'
   if (tab.processState === 'spawning' || tab.turnState === 'working') return 'working'
-  if (tab.turnState === 'review' || tab.turnState === 'idle') return 'done'
+  if (tab.turnState === 'review') return 'done'
+  if (tab.turnState === 'idle') return 'none'
   return 'unknown'
 }
 
 function onTabClick(uiId: number) {
+  markTabViewed(uiId)
   // 点已激活的 tab 不做切换 —— 避免和"× 关闭"的视觉位置混淆。要回 view 用左侧的 meta tab。
   if (activeUiId.value === uiId) return
   setActive(uiId)
@@ -413,7 +415,7 @@ onUnmounted(() => {
         <i />
       </span>
       <span
-        v-else
+        v-else-if="tabStatusKind(tab) !== 'none'"
         class="term-tab-status"
         :class="'term-tab-status-' + tabStatusKind(tab)"
         aria-hidden="true"
