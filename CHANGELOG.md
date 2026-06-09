@@ -6,6 +6,19 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.1.8]
+
+### Features
+
+- **Font size setting** — Settings → General gains a "Font Size" segment control (Small / Normal / Large) with visual "A" icon previews. Uses CSS `zoom` to scale the entire UI proportionally (0.9× / 1.0× / 1.1×). Persisted to localStorage; defaults to Normal.
+- **Switch pricing data source to models.dev** — Replace LiteLLM upstream with [models.dev](https://models.dev) for model pricing. models.dev is significantly more responsive to new model launches (e.g. Claude Fable 5 was available on launch day while LiteLLM lagged by days). Covers all three CLI agents (Claude / Codex / Gemini) with cache pricing and context window data included.
+- **Pricing page "open source" button** — Add an external-link icon next to the pricing page title that opens models.dev in the system browser.
+
+### Bug Fixes
+
+- Fix packaged `.app` unable to launch cmux — resolve cmux binary path via user login shell (`$SHELL -l -c "which cmux"`) so it works even when the bundled app has a minimal system PATH
+- Fix flaky pricing unit test caused by concurrent `with_remote` / `seed_test_prices` sharing the same global key — tests now use exclusive keys and restore-on-cleanup semantics
+
 ## [v0.1.7]
 
 ### Bug Fixes

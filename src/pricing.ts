@@ -1,4 +1,4 @@
-// 模型价格表（LiteLLM 上游）加载状态 —— 给 StatsView 决定渲染什么。
+// 模型价格表（models.dev 上游）加载状态 —— 给 StatsView 决定渲染什么。
 //
 // 后端 `stats::pricing::init()` 在 app 启动时后台线程拉一份，本模块通过
 // `invoke('pricing_status')` 读那份状态。三种情况：

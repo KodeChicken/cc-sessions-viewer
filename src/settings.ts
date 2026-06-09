@@ -14,6 +14,7 @@ const TERMINAL_APP_KEY = 'terminalApp:v1'
 const CODEX_SHOW_INTERNAL_KEY = 'codexShowInternalSessions:v1'
 const CODEX_SHOW_ARCHIVED_KEY = 'codexShowArchivedSessions:v1'
 const LAUNCH_ARGS_KEY = 'launchArgs:v1'
+const FONT_SCALE_KEY = 'fontScale:v1'
 
 /**
  * 根据浏览器/系统语言探测默认语言。
@@ -72,6 +73,32 @@ export function setLaunchArgs(agent: keyof LaunchArgs, args: string) {
   launchArgs.value = { ...launchArgs.value, [agent]: args }
   localStorage.setItem(LAUNCH_ARGS_KEY, JSON.stringify(launchArgs.value))
 }
+
+export type FontScale = 'small' | 'normal' | 'large'
+
+function readFontScale(): FontScale {
+  const v = localStorage.getItem(FONT_SCALE_KEY)
+  return v === 'small' || v === 'normal' || v === 'large' ? v : 'normal'
+}
+export const fontScale = ref<FontScale>(readFontScale())
+
+export function setFontScale(s: FontScale) {
+  fontScale.value = s
+  localStorage.setItem(FONT_SCALE_KEY, s)
+}
+
+const FONT_ZOOM: Record<FontScale, number> = {
+  small: 0.9,
+  normal: 1,
+  large: 1.1,
+}
+
+function applyFontScale() {
+  const zoom = FONT_ZOOM[fontScale.value]
+  document.documentElement.style.setProperty('--app-zoom', String(zoom))
+  document.body.style.zoom = String(zoom)
+}
+watchEffect(applyFontScale)
 
 export function setLang(l: Lang) {
   lang.value = l

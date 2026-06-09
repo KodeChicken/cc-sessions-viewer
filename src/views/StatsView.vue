@@ -87,7 +87,7 @@ onMounted(() => {
   // scope 保持组件内部状态：默认 'all'，不跟随侧栏当前 agent 走 ——
   // 统计页是「全局视角」，用户在这里自己决定看哪个 agent。
   refresh()
-  // 价格表（LiteLLM 上游）—— 启动期可能还在拉。先读一次状态，没就绪就开 poll。
+  // 价格表（models.dev 上游）—— 启动期可能还在拉。先读一次状态，没就绪就开 poll。
   refreshPricingStatus().then(() => watchPricingUntilReady())
 })
 

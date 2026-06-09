@@ -293,9 +293,14 @@ button {
   padding-right: 6px;
 }
 .app.sidebar-open .topbar-sidebar-zone {
-  width: var(--sidebar-w);
+  /* sidebar 本体 248px + 旁边 resizer 1px = 分割线在 249px 处。
+     box-sizing: border-box 下 width 包含 border，所以这里要 +1px
+     才能让 topbar 的竖线和下方 resizer 对齐。
+     height +1px 让竖线向下延伸覆盖 .app-topbar 的 border-bottom 区域，
+     避免底部出现 1px 断层。 */
+  width: calc(var(--sidebar-w) + 1px);
+  height: calc(100% + 1px);
   justify-content: space-between;
-  /* 续上 .sidebar 的 border-right，让分割线从顶栏一直延伸到底 */
   border-right: 1px solid var(--border);
 }
 .topbar-icons {
@@ -3466,6 +3471,39 @@ details[open] > .block-summary > .chev {
   height: 13px !important;
   color: var(--text);
 }
+.set-segment {
+  margin-left: auto;
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.set-segment-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--border);
+  padding: 3px 10px;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.set-segment-btn:last-child { border-right: 0; }
+.set-segment-btn:hover { background: var(--surface-hover); }
+.set-segment-btn.active {
+  background: var(--surface-hover);
+  color: var(--text);
+  font-weight: 600;
+}
+.set-segment-icon {
+  font-weight: 700;
+  line-height: 1;
+}
+.set-segment-icon-small { font-size: 10px; }
+.set-segment-icon-normal { font-size: 13px; }
+.set-segment-icon-large { font-size: 16px; }
 .theme-swatch {
   width: 26px;
   height: 26px;
@@ -4910,6 +4948,12 @@ details[open] > .block-summary > .chev {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+/* 标题旁的「打开数据源」外链按钮 —— h2 转 inline-flex 让 icon 跟文字垂直居中 */
+.pricing-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .pricing-scroll {
   padding: 0 16px 24px;

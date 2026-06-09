@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 「模型实时价格」视图 —— 跟 TrashView / ExportHistoryView 同级，从顶栏
-// More 菜单里进。数据来自 src-tauri 启动期从 LiteLLM 拉的内存表，by family
+// More 菜单里进。数据来自 src-tauri 启动期从 models.dev 拉的内存表，by family
 // 分 3 段（Claude / Codex / Gemini）展示。
 //
 // 主题：完全靠 style.css 里的 design tokens（--surface / --border / --text /
@@ -23,8 +23,16 @@ import {
   IconGemini,
   IconSearch,
   IconClose,
+  IconExternalLink,
 } from '../components/icons'
 import StatsLoadingIcon from '../components/StatsLoadingIcon.vue'
+import { openUrl } from '../api'
+
+// 价格数据源主页 —— 标题旁的外链按钮直接在系统浏览器打开。
+const SOURCE_URL = 'https://models.dev'
+function openSource() {
+  openUrl(SOURCE_URL).catch((e) => console.error('open models.dev failed:', e))
+}
 
 const entries = ref<PricingEntry[]>([])
 const loading = ref(true)
@@ -189,7 +197,17 @@ async function settleAfterLoad() {
   <div class="pricing-root">
   <div class="list-head list-head-row">
     <div class="grow">
-      <h2>{{ t('pricing.title') }}</h2>
+      <h2 class="pricing-title">
+        {{ t('pricing.title') }}
+        <button
+          type="button"
+          class="icon-btn"
+          v-tooltip="t('pricing.openSource')"
+          @click="openSource"
+        >
+          <IconExternalLink />
+        </button>
+      </h2>
       <div class="path">{{ t('pricing.subtitle') }}</div>
     </div>
     <button

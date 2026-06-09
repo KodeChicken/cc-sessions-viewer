@@ -354,6 +354,34 @@ fn new_session(agent: String, cwd: String, extra_args: String, terminal_app: Str
     spawn_terminal(&command, &cwd, &terminal_app)
 }
 
+/// 通过用户登录 shell 解析命令的完整路径。
+/// 打包后的 .app 不继承用户 PATH，直接 `Command::new("cmux")` 会 ENOENT。
+/// 对于 macOS GUI app（如 cmux），登录 shell 也可能找不到 —— 用已知安装路径兜底。
+#[cfg(unix)]
+fn resolve_bin(name: &str) -> Result<PathBuf, String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let output = std::process::Command::new(&shell)
+        .args(["-l", "-c", &format!("which {name}")])
+        .output()
+        .map_err(|e| format!("无法通过 shell 解析 {name}: {e}"))?;
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() && !path.is_empty() {
+        return Ok(PathBuf::from(path));
+    }
+    // macOS GUI app 内置的 CLI 二进制不在 PATH 里 —— 逐个检查已知路径。
+    let known_paths: &[&str] = match name {
+        "cmux" => &["/Applications/cmux.app/Contents/Resources/bin/cmux"],
+        _ => &[],
+    };
+    for p in known_paths {
+        let pb = PathBuf::from(p);
+        if pb.exists() {
+            return Ok(pb);
+        }
+    }
+    Err(format!("未找到 {name}，请确认已安装并在 PATH 中"))
+}
+
 #[cfg(target_os = "macos")]
 fn create_terminal_script(tab_name: &str, shell_cmd: &str) -> Result<String, String> {
     use std::os::unix::fs::PermissionsExt;
@@ -409,7 +437,8 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                     .map_err(|e| format!("启动 Ghostty 失败: {e}"))?;
             }
             "cmux" => {
-                let found_ref = std::process::Command::new("cmux")
+                let cmux_bin = resolve_bin("cmux")?;
+                let found_ref = std::process::Command::new(&cmux_bin)
                     .args(["workspace", "list", "--json"])
                     .env("CMUX_QUIET", "1")
                     .output()
@@ -427,7 +456,7 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
 
                     // 检查 workspace 里是否已有运行这个会话的 surface
                     let existing_surface = session_id.and_then(|sid| {
-                        let o = std::process::Command::new("cmux")
+                        let o = std::process::Command::new(&cmux_bin)
                             .args(["rpc", "surface.list", &format!("{{\"workspace_id\":\"{ws_ref}\"}}")])
                             .output()
                             .ok()?;
@@ -448,26 +477,26 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                     });
 
                     if let Some((_pane_ref, surface_ref)) = existing_surface {
-                        let _ = std::process::Command::new("cmux")
+                        let _ = std::process::Command::new(&cmux_bin)
                             .args(["workspace", "select", &ws_ref])
                             .output();
-                        let _ = std::process::Command::new("cmux")
+                        let _ = std::process::Command::new(&cmux_bin)
                             .args([
                                 "rpc",
                                 "surface.focus",
                                 &format!("{{\"workspace_id\":\"{ws_ref}\",\"surface_id\":\"{surface_ref}\"}}"),
                             ])
                             .output();
-                        let _ = std::process::Command::new("cmux")
+                        let _ = std::process::Command::new(&cmux_bin)
                             .args(["trigger-flash", "--workspace", &ws_ref, "--surface", &surface_ref])
                             .spawn();
                     } else {
                         // 新开 split
-                        let _ = std::process::Command::new("cmux")
+                        let _ = std::process::Command::new(&cmux_bin)
                             .args(["workspace", "select", &ws_ref])
                             .output();
 
-                        let split_dir = std::process::Command::new("cmux")
+                        let split_dir = std::process::Command::new(&cmux_bin)
                             .args(["rpc", "pane.list", &format!("{{\"workspace_id\":\"{ws_ref}\"}}")])
                             .output()
                             .ok()
@@ -481,13 +510,13 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                             })
                             .unwrap_or("down");
 
-                        let _ = std::process::Command::new("cmux")
+                        let _ = std::process::Command::new(&cmux_bin)
                             .args(["new-split", split_dir, "--workspace", &ws_ref, "--focus", "true"])
                             .output();
-                        let _ = std::process::Command::new("cmux")
+                        let _ = std::process::Command::new(&cmux_bin)
                             .args(["send", "--workspace", &ws_ref, cli.as_str()])
                             .output();
-                        std::process::Command::new("cmux")
+                        std::process::Command::new(&cmux_bin)
                             .args(["send-key", "--workspace", &ws_ref, "enter"])
                             .spawn()
                             .map_err(|e| format!("启动 cmux 失败: {e}"))?;
@@ -510,7 +539,7 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                         args.push("--name");
                         args.push(&ws_name);
                     }
-                    std::process::Command::new("cmux")
+                    std::process::Command::new(&cmux_bin)
                         .args(&args)
                         .spawn()
                         .map_err(|e| format!("启动 cmux 失败: {e}"))?;
@@ -854,7 +883,7 @@ fn open_local_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// 手动从 LiteLLM 上游拉一次模型价格表，覆盖本地 24h 缓存。前端 Settings
+/// 手动从 models.dev 上游拉一次模型价格表，覆盖本地 24h 缓存。前端 Settings
 /// 「立即刷新模型价格」按钮调用。返回入表条数；失败返回错误字符串（前端弹 toast）。
 ///
 /// **必须是 async**：内部 `refresh_blocking` 走 `ureq::get(...).call()`，是真同步阻塞
@@ -991,9 +1020,9 @@ pub fn run() {
             tray_quick_stats,
         ])
         .setup(|app| {
-            // 启动期后台拉一次 LiteLLM 模型价格表，新模型上架不必发版。
-            // 不阻塞 setup —— init() 自己 spawn 后台线程，离线 / 失败时 lookup 自动落回
-            // hardcoded 兜底表。
+            // 启动期后台拉一次 models.dev 模型价格表，新模型上架不必发版。
+            // 不阻塞 setup —— init() 自己 spawn 后台线程，离线 / 失败时先用过期
+            // 磁盘缓存兜着，前端按 pricing_status 渲染 error placeholder。
             stats::pricing::init();
             if let Err(e) = turn::start_signal_watcher(app.handle().clone()) {
                 eprintln!("turn signal watcher failed: {e}");

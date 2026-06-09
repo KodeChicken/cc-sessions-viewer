@@ -1,15 +1,18 @@
-// 模型 → $/token 价格表。**唯一数据源是 LiteLLM 上游**
-// (`raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`)：
+// 模型 → $/token 价格表。**唯一数据源是 models.dev 上游**
+// (`https://models.dev/api.json`，开源模型目录，sst 维护、opencode 同源)：
 //
 //   - 启动期 `init()` 后台线程拉一份，落盘到
-//     `~/Library/Caches/cc-sessions-viewer/litellm-pricing.json`（24h TTL）。
+//     `~/Library/Caches/cc-sessions-viewer/models-dev-pricing.json`（24h TTL）。
 //   - `lookup()` 只查这一份内存表 —— 没拉到 / 没命中就返回 None（成本按 $0 计）。
 //   - 前端通过 `pricing_status` Tauri 命令读 `status()`，决定显示
 //     正常 / loading / error placeholder。
 //
 // 历史背景：之前有一份 hardcoded `PRICING` 兜底表，但每次有新模型上市都要发版改代码，
-// 违背了「remote-driven 配置」的初衷。现在这份模块只剩两件事：
-//   1. 把 CLI 里的"花式"模型名归一成 LiteLLM 的 canonical key（去 @pin / 日期 / provider，
+// 违背了「remote-driven 配置」的初衷。后来用 LiteLLM 上游，但它 PR 驱动、新模型
+// 常滞后数天（Fable 5 发布当天 models.dev 已收录而 LiteLLM 没有），于是切到
+// models.dev —— 按 provider 分组、裸模型 ID、价格直接是 $/MTok 且含 cache 两档。
+// 现在这份模块只剩两件事：
+//   1. 把 CLI 里的"花式"模型名归一成上游的 canonical key（去 @pin / 日期 / provider，
 //      `claude-opus-4.7` → `claude-opus-4-7` 这种别名）
 //   2. 把 canonical 模型名转成展示名（"Opus 4.7" / "GPT-5.3 Codex" / "Gemini 2.5 Flash"），
 //      用通用规则推导而非维护映射表 —— 新版本零改动也能渲染对。
@@ -24,12 +27,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelCosts {
-    /// $/token —— 不是 $/Mtok。和 LiteLLM 原始格式一致，乘法直接得 USD。
+    /// $/token —— 不是 $/Mtok（models.dev 原始是 $/MTok，入表时已 ÷1e6），
+    /// 乘 token 数直接得 USD。
     pub input: f64,
     pub output: f64,
     pub cache_write: f64,
     pub cache_read: f64,
-    /// 模型上下文窗口大小（max_input_tokens），单位：tokens。0 = LiteLLM 没列出。
+    /// 模型上下文窗口大小（limit.context），单位：tokens。0 = 上游没列出。
     /// 计费完全不用这个字段；纯展示给 PricingView 的 CONTEXT 列。
     #[serde(default)]
     pub context: u32,
@@ -107,8 +111,8 @@ pub fn cost_usd(model: &str, usage: &UsageSummary) -> f64 {
 
 // ---------- 名称归一 ----------
 
-/// 别名表 —— 把 CLI 里多写的"花式"名映射到 LiteLLM canonical key。
-/// LiteLLM 都是 dash 形式 (`claude-opus-4-7`)，CLI 偶尔写 dot 形式或加 mode 后缀。
+/// 别名表 —— 把 CLI 里多写的"花式"名映射到上游 canonical key。
+/// 上游都是 dash 形式 (`claude-opus-4-7`)，CLI 偶尔写 dot 形式或加 mode 后缀。
 const ALIASES: &[(&str, &str)] = &[
     ("claude-opus-4.8",   "claude-opus-4-8"),
     ("claude-opus-4.7",   "claude-opus-4-7"),
@@ -157,12 +161,13 @@ fn resolve_alias(name: &str) -> String {
     name.to_string()
 }
 
-// ---------- 动态层（LiteLLM 远端） ----------
+// ---------- 动态层（models.dev 远端） ----------
 
-const LITELLM_URL: &str =
-    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 const CACHE_TTL_SECS: u64 = 24 * 60 * 60;
-const CACHE_FILE_NAME: &str = "litellm-pricing.json";
+// 注意：换源时连文件名一起换（旧 litellm-pricing.json 直接弃用），
+// 避免新解析逻辑去读旧格式缓存。
+const CACHE_FILE_NAME: &str = "models-dev-pricing.json";
 
 static REMOTE_PRICING: OnceCell<RwLock<HashMap<String, ModelCosts>>> = OnceCell::new();
 static IS_FETCHING: AtomicBool = AtomicBool::new(false);
@@ -184,7 +189,7 @@ pub struct PricingStatus {
 }
 
 /// 前端「模型实时价格」窗口要展示的单条记录。`family` 用来在 UI 上分 tab
-/// （Claude / Codex / Gemini），名字按 LiteLLM 原始 key（用户已熟悉的标识符）。
+/// （Claude / Codex / Gemini），名字按上游原始 key（用户已熟悉的标识符）。
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PricingEntry {
@@ -194,7 +199,7 @@ pub struct PricingEntry {
     pub output: f64,
     pub cache_write: f64,
     pub cache_read: f64,
-    /// 上下文窗口 tokens（max_input_tokens）；0 表示 LiteLLM 没列出。
+    /// 上下文窗口 tokens（limit.context）；0 表示上游没列出。
     pub context: u32,
 }
 
@@ -258,8 +263,8 @@ fn pin_date(name: &str) -> Option<u32> {
 }
 
 /// 我们只展示三家 CLI 用户实际会跑的模型：Anthropic Claude、OpenAI Codex（含
-/// `gpt-…-codex` / `codex-…` / `o1-…` 系列）、Google Gemini。LiteLLM 表里其它
-/// vendor (anyscale / together / ...) 一律过滤掉 —— 否则一打开就是几千行。
+/// `gpt-…-codex` / `codex-…` / `o1-…` 系列）、Google Gemini。入表时已只取这
+/// 三家 provider，这里的前缀过滤是第二道防线（顺带踢掉 embedding 等非 chat 条目）。
 ///
 /// 排序：先 family（claude → codex → gemini），再按"版本号自然顺序倒序"
 /// —— 最新型号在前。`claude-opus-4-8` > `claude-opus-4-7` > `claude-opus-4` > `claude-3-7-sonnet`，
@@ -273,14 +278,10 @@ pub fn list_for_ui() -> Vec<PricingEntry> {
     };
     let mut out: Vec<PricingEntry> = Vec::with_capacity(64);
     for (raw_name, costs) in table.iter() {
-        // 跳过带 provider 前缀的 entry —— 我们入表时同名插了一份剥前缀的，
-        // 否则会重复（`anthropic/claude-opus-4-7` 和 `claude-opus-4-7` 价完全一样）。
-        if raw_name.contains('/') {
-            continue;
-        }
-        // 跳过 `<name>@default` —— LiteLLM 给的"默认 deployment alias"，跟裸名同价同 context，
-        // 列出来只是噪声。带日期的 `@20241022` 仍保留，那是具体 pinned 版本。
-        if raw_name.ends_with("@default") {
+        // 防御：带 provider 前缀 / `@default` deployment alias 的 key 不展示。
+        // models.dev 的三家 provider 都是裸 ID，正常拉取不会出现这两种；留着
+        // 是防上游格式漂移（测试 with_remote 塞的 key 也可能带）。
+        if raw_name.contains('/') || raw_name.ends_with("@default") {
             continue;
         }
         let lower = raw_name.to_ascii_lowercase();
@@ -380,6 +381,13 @@ pub fn init() {
     REMOTE_PRICING.get_or_init(|| RwLock::new(HashMap::new()));
     LAST_FETCH_ERROR.get_or_init(|| Mutex::new(None));
 
+    // 清理 LiteLLM 时代的旧缓存文件 —— 换源后文件名已换，旧文件永远不会再被读。
+    if let Some(path) = cache_path() {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_file(dir.join("litellm-pricing.json"));
+        }
+    }
+
     let mut cache_is_fresh = false;
     if let Some((fresh, table)) = load_from_cache() {
         cache_is_fresh = fresh;
@@ -448,7 +456,7 @@ fn set_last_error(err: Option<String>) {
     }
 }
 
-/// 磁盘缓存路径：`<cache_dir>/cc-sessions-viewer/litellm-pricing.json`。
+/// 磁盘缓存路径：`<cache_dir>/cc-sessions-viewer/models-dev-pricing.json`。
 /// macOS: `~/Library/Caches/...`；Linux: `~/.cache/...`；Windows: `%LOCALAPPDATA%\...`。
 fn cache_path() -> Option<std::path::PathBuf> {
     let base = dirs::cache_dir()?;
@@ -467,15 +475,16 @@ fn load_from_cache() -> Option<(bool, HashMap<String, ModelCosts>)> {
     Some((age < CACHE_TTL_SECS, parsed.data))
 }
 
-/// GET LiteLLM JSON → 解析 → 写盘 → 返回表。每一步失败都映射成可读错误字符串。
+/// GET models.dev JSON → 解析 → 写盘 → 返回表。每一步失败都映射成可读错误字符串。
 fn fetch_and_store() -> Result<HashMap<String, ModelCosts>, String> {
-    let body = ureq::get(LITELLM_URL)
+    let body = ureq::get(MODELS_DEV_URL)
         .timeout(Duration::from_secs(20))
         .call()
         .map_err(|e| format!("network: {e}"))?
         .into_string()
         .map_err(|e| format!("read body: {e}"))?;
-    let table = parse_litellm_json(&body).ok_or_else(|| "parse: empty or malformed".to_string())?;
+    let table =
+        parse_models_dev_json(&body).ok_or_else(|| "parse: empty or malformed".to_string())?;
     save_to_cache(&table);
     Ok(table)
 }
@@ -500,24 +509,28 @@ fn save_to_cache(table: &HashMap<String, ModelCosts>) {
     }
 }
 
-/// 解析 LiteLLM 的根 JSON 对象。只挑 input/output/cache 四个字段；
-/// 缺 input 或 output 的 entry 跳过（`sample_spec` 这类元数据条目）。
-/// 同时把带 provider 前缀的 key (`anthropic/claude-opus-4-6`) 也以剥前缀后的形式
-/// (`claude-opus-4-6`) 插一份 —— 首次写入生效，不被 vertex/bedrock 镜像覆盖。
-pub(crate) fn parse_litellm_json(body: &str) -> Option<HashMap<String, ModelCosts>> {
+/// 解析 models.dev 的根 JSON：`{ <provider>: { models: { <id>: { cost, limit, … } } } }`。
+/// 只取三家 CLI 实际会跑的 provider（anthropic / openai / google）—— 其余 130+ 个
+/// provider 多是镜像网关（openrouter / bedrock / vercel / …），模型 ID 还带前缀，
+/// 入表只是噪声；裸 ID 入表后 `lookup()` 的 canonical / 前缀匹配逻辑原样工作。
+pub(crate) fn parse_models_dev_json(body: &str) -> Option<HashMap<String, ModelCosts>> {
+    const PROVIDERS: &[&str] = &["anthropic", "openai", "google"];
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
-    let map = value.as_object()?;
-    let mut out: HashMap<String, ModelCosts> = HashMap::with_capacity(map.len());
-    for (name, entry) in map.iter() {
-        let Some(costs) = parse_litellm_entry(entry) else {
+    let root = value.as_object()?;
+    let mut out: HashMap<String, ModelCosts> = HashMap::with_capacity(128);
+    for prov in PROVIDERS {
+        let Some(models) = root
+            .get(*prov)
+            .and_then(|p| p.get("models"))
+            .and_then(|m| m.as_object())
+        else {
             continue;
         };
-        out.insert(name.clone(), costs);
-        if let Some(slash) = name.find('/') {
-            let stripped = &name[slash + 1..];
-            if !stripped.is_empty() {
-                out.entry(stripped.to_string()).or_insert(costs);
-            }
+        for (name, entry) in models.iter() {
+            let Some(costs) = parse_models_dev_entry(entry) else {
+                continue;
+            };
+            out.insert(name.clone(), costs);
         }
     }
     if out.is_empty() {
@@ -526,21 +539,27 @@ pub(crate) fn parse_litellm_json(body: &str) -> Option<HashMap<String, ModelCost
     Some(out)
 }
 
-fn parse_litellm_entry(v: &serde_json::Value) -> Option<ModelCosts> {
+fn parse_models_dev_entry(v: &serde_json::Value) -> Option<ModelCosts> {
     let obj = v.as_object()?;
-    let input = obj.get("input_cost_per_token").and_then(|x| x.as_f64())?;
-    let output = obj.get("output_cost_per_token").and_then(|x| x.as_f64())?;
-    let cw = obj
-        .get("cache_creation_input_token_cost")
-        .and_then(|x| x.as_f64());
-    let cr = obj
-        .get("cache_read_input_token_cost")
-        .and_then(|x| x.as_f64());
-    // max_input_tokens 是 LiteLLM 对"prompt + cache 总 token 上限"的说法 —— 等价于
-    // 用户口里的 context window；max_tokens 多半是 output 上限，不是 context。
-    // 越界（> u32::MAX = 4B）的极端情况钳到 0 当未知处理。
+    // cost 单位是 $/MTok，内存表统一成 $/token（÷1e6）。没有 cost 的条目
+    // （gpt-image / gemma 开源权重这类）直接跳过 —— CLI 也跑不到它们。
+    const PER_MTOK: f64 = 1e-6;
+    let cost = obj.get("cost").and_then(|c| c.as_object())?;
+    let input = cost.get("input").and_then(|x| x.as_f64())? * PER_MTOK;
+    let output = cost.get("output").and_then(|x| x.as_f64())? * PER_MTOK;
+    // 缺 cache 字段沿用旧约定兜底：write = input×1.25，read = input×0.1。
+    let cw = cost
+        .get("cache_write")
+        .and_then(|x| x.as_f64())
+        .map(|x| x * PER_MTOK);
+    let cr = cost
+        .get("cache_read")
+        .and_then(|x| x.as_f64())
+        .map(|x| x * PER_MTOK);
+    // limit.context = 上下文窗口 tokens。越界（> u32::MAX）钳到 0 当未知处理。
     let context = obj
-        .get("max_input_tokens")
+        .get("limit")
+        .and_then(|l| l.get("context"))
         .and_then(|x| x.as_u64())
         .map(|n| u32::try_from(n).unwrap_or(0))
         .unwrap_or(0);
@@ -707,21 +726,31 @@ mod tests {
         }
     }
 
-    /// 测试辅助：往内存 REMOTE_PRICING 塞一份"模拟拉来的"价格表，并在闭包结束后清理。
-    /// cargo test 默认多线程，所以每条测试用各自专属的 model key 避免互相串扰。
+    /// 测试辅助：往内存 REMOTE_PRICING 塞一份"模拟拉来的"价格表，并在闭包结束后
+    /// **恢复原值**（而不是一删了之）。cargo test 默认多线程，每条测试应使用
+    /// 各自专属的 model key 避免互相串扰；恢复语义保证即便和 seed_test_prices
+    /// 共享了 key（如 claude-opus-4-7），清理也不会把别的测试正在用的条目删掉。
     fn with_remote<F: FnOnce()>(rows: &[(&str, ModelCosts)], f: F) {
         let cell = REMOTE_PRICING.get_or_init(|| RwLock::new(HashMap::new()));
-        let keys: Vec<String> = rows.iter().map(|(k, _)| k.to_string()).collect();
+        let saved: Vec<(String, Option<ModelCosts>)>;
         {
             let mut w = cell.write().unwrap();
-            for (k, v) in rows {
-                w.insert(k.to_string(), *v);
-            }
+            saved = rows
+                .iter()
+                .map(|(k, v)| (k.to_string(), w.insert(k.to_string(), *v)))
+                .collect();
         }
         f();
         let mut w = cell.write().unwrap();
-        for k in &keys {
-            w.remove(k);
+        for (k, old) in saved {
+            match old {
+                Some(v) => {
+                    w.insert(k, v);
+                }
+                None => {
+                    w.remove(&k);
+                }
+            }
         }
     }
 
@@ -859,19 +888,23 @@ mod tests {
         });
     }
 
+    // 注意：cargo test 多线程跑，REMOTE_PRICING 是全局共享表 —— 每条测试必须用
+    // 没有其它测试（含 seed_test_prices / list_for_ui 排序测试）共享的专属 key，
+    // 否则一边的 with_remote 清理会把另一边正在 lookup 的条目摘走，随机挂。
+    // 别名测试必须用 ALIASES 里的真实 key，选了独占的 claude-opus-4-6。
     #[test]
     fn lookup_resolves_dot_alias_to_dash_form() {
-        with_remote(&[("claude-opus-4-7", opus_4_7_costs())], || {
-            let dot = lookup("claude-opus-4.7").expect("aliased");
-            let dash = lookup("claude-opus-4-7").expect("direct");
+        with_remote(&[("claude-opus-4-6", opus_4_7_costs())], || {
+            let dot = lookup("claude-opus-4.6").expect("aliased");
+            let dash = lookup("claude-opus-4-6").expect("direct");
             assert_eq!(dot, dash);
         });
     }
 
     #[test]
     fn lookup_strips_provider_prefix_when_canonicalizing() {
-        with_remote(&[("claude-opus-4-7", opus_4_7_costs())], || {
-            let prefixed = lookup("anthropic/claude-opus-4-7").expect("provider stripped");
+        with_remote(&[("prefix-strip-target", opus_4_7_costs())], || {
+            let prefixed = lookup("anthropic/prefix-strip-target").expect("provider stripped");
             assert_eq!(prefixed, opus_4_7_costs());
         });
     }
@@ -910,58 +943,62 @@ mod tests {
     }
 
     #[test]
-    fn parse_litellm_json_extracts_costs_and_handles_fallbacks() {
-        // 三种典型 entry：
-        //   - 全字段齐：直接落进表
-        //   - 没 cache_creation：套兜底公式 input × 1.25
-        //   - 没 cache_read：套兜底公式 input × 0.1
-        //   - 缺 input 或 output：跳过（sample_spec 这种元数据条目）
-        //   - 带 provider 前缀的 key 也以剥前缀后的形式索引一份
+    fn parse_models_dev_json_extracts_costs_and_handles_fallbacks() {
+        // 覆盖点：
+        //   - $/MTok → $/token 换算（÷1e6）+ limit.context 抽取
+        //   - 缺 cache_write：套兜底公式 input × 1.25
+        //   - 缺 cache_read：套兜底公式 input × 0.1
+        //   - 没有 cost 的条目（image / 开源权重）跳过
+        //   - 非 anthropic/openai/google 的 provider（镜像网关）整组跳过
         let body = r#"{
-            "full-entry": {
-                "input_cost_per_token": 1e-6,
-                "output_cost_per_token": 5e-6,
-                "cache_creation_input_token_cost": 2e-6,
-                "cache_read_input_token_cost": 1e-7
-            },
-            "no-cw": {
-                "input_cost_per_token": 2e-6,
-                "output_cost_per_token": 10e-6,
-                "cache_read_input_token_cost": 2e-7
-            },
-            "no-cr": {
-                "input_cost_per_token": 4e-6,
-                "output_cost_per_token": 20e-6,
-                "cache_creation_input_token_cost": 5e-6
-            },
-            "no-prices": {
-                "max_input_tokens": 200000,
-                "mode": "chat"
-            },
-            "anthropic/claude-magic-9": {
-                "input_cost_per_token": 7e-6,
-                "output_cost_per_token": 35e-6
-            },
-            "sample_spec": { "litellm_provider": "openai" }
+            "anthropic": { "models": {
+                "claude-magic-9": {
+                    "cost": { "input": 10, "output": 50, "cache_read": 1, "cache_write": 12.5 },
+                    "limit": { "context": 1000000, "output": 128000 }
+                }
+            }},
+            "openai": { "models": {
+                "gpt-no-cw": {
+                    "cost": { "input": 2, "output": 10, "cache_read": 0.2 }
+                },
+                "gpt-no-cr": {
+                    "cost": { "input": 4, "output": 20, "cache_write": 5 },
+                    "limit": { "context": 400000 }
+                },
+                "gpt-image-x": { "limit": { "context": 32000 } }
+            }},
+            "google": { "models": {
+                "gemini-cheap": { "cost": { "input": 0.3, "output": 2.5 } }
+            }},
+            "openrouter": { "models": {
+                "anthropic/claude-magic-9": { "cost": { "input": 99, "output": 99 } }
+            }}
         }"#;
-        let table = parse_litellm_json(body).expect("parsed");
+        let table = parse_models_dev_json(body).expect("parsed");
 
-        let full = table.get("full-entry").expect("full");
-        assert!((full.input - 1e-6).abs() < 1e-15);
-        assert!((full.cache_write - 2e-6).abs() < 1e-15);
+        let full = table.get("claude-magic-9").expect("full");
+        assert!((full.input - 1e-5).abs() < 1e-15, "$10/MTok → $1e-5/token");
+        assert!((full.output - 5e-5).abs() < 1e-15);
+        assert!((full.cache_read - 1e-6).abs() < 1e-15);
+        assert!((full.cache_write - 1.25e-5).abs() < 1e-15);
+        assert_eq!(full.context, 1_000_000);
 
-        let no_cw = table.get("no-cw").expect("no-cw");
+        let no_cw = table.get("gpt-no-cw").expect("no-cw");
         assert!((no_cw.cache_write - 2.5e-6).abs() < 1e-15, "input×1.25 fallback");
+        assert_eq!(no_cw.context, 0, "缺 limit → context 0");
 
-        let no_cr = table.get("no-cr").expect("no-cr");
+        let no_cr = table.get("gpt-no-cr").expect("no-cr");
         assert!((no_cr.cache_read - 4e-7).abs() < 1e-15, "input×0.1 fallback");
+        assert_eq!(no_cr.context, 400_000);
 
-        assert!(!table.contains_key("no-prices"), "无价格 entry 跳过");
-        assert!(!table.contains_key("sample_spec"), "元数据 entry 跳过");
-
-        assert!(table.contains_key("anthropic/claude-magic-9"));
-        let stripped = table.get("claude-magic-9").expect("stripped form");
-        assert!((stripped.input - 7e-6).abs() < 1e-15);
+        assert!(table.contains_key("gemini-cheap"));
+        assert!(!table.contains_key("gpt-image-x"), "无 cost entry 跳过");
+        assert!(
+            !table.contains_key("anthropic/claude-magic-9"),
+            "镜像 provider 整组跳过"
+        );
+        // openrouter 的镜像价 ($99) 不能覆盖 anthropic 官方价
+        assert!((table.get("claude-magic-9").unwrap().input - 1e-5).abs() < 1e-15);
     }
 
     #[test]
@@ -1013,7 +1050,7 @@ mod tests {
         assert_eq!(short_name("codex-mini-latest"), "Codex Mini");
     }
 
-    /// PricingView 一打开就期望「新型号在前」：在 LiteLLM 表里塞一组同 family
+    /// PricingView 一打开就期望「新型号在前」：在价格表里塞一组同 family
     /// 的不同代次模型，验证 list_for_ui() 按"版本号"自然倒序排（4-8 在 4-7 之前，
     /// 4 在 3-7-sonnet 之前），不是按 input 单价或字典序。
     ///

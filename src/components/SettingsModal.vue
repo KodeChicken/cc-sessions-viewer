@@ -9,16 +9,19 @@ import {
   setCodexShowInternalSessions,
   setLang,
   setTheme,
+  setFontScale,
   setUseExternalTerminal,
   setTerminalApp,
   applyTerminalDefault,
   launchArgs,
   setLaunchArgs,
   theme,
+  fontScale,
   useExternalTerminal,
   terminalApp,
   type Lang,
   type Theme,
+  type FontScale,
   type TerminalApp,
 } from '../settings'
 import { formatSize } from '../format'
@@ -171,6 +174,13 @@ const themeOptions: ThemeOpt[] = [
   { v: 'dracula', key: 'settings.theme.dracula' },
 ]
 
+type FontScaleOpt = { v: FontScale; key: string }
+const fontScaleOptions: FontScaleOpt[] = [
+  { v: 'small', key: 'settings.fontSize.small' },
+  { v: 'normal', key: 'settings.fontSize.normal' },
+  { v: 'large', key: 'settings.fontSize.large' },
+]
+
 const currentLangLabel = computed(() => {
   const o = langOptions.find(o => o.v === lang.value)
   return o ? t(o.key) : lang.value
@@ -309,6 +319,26 @@ async function installClaudeHooks() {
                     <span>{{ t(o.key) }}</span>
                   </button>
                 </div>
+              </div>
+            </header>
+          </section>
+
+          <!-- 字体大小 -->
+          <section class="set-section">
+            <header class="set-section-head">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>
+              <span class="set-section-title">{{ t('settings.section.fontSize') }}</span>
+              <div class="set-segment">
+                <button
+                  v-for="o in fontScaleOptions"
+                  :key="o.v"
+                  class="set-segment-btn"
+                  :class="{ active: fontScale === o.v }"
+                  @click="setFontScale(o.v)"
+                >
+                  <span class="set-segment-icon" :class="`set-segment-icon-${o.v}`">A</span>
+                  {{ t(o.key) }}
+                </button>
               </div>
             </header>
           </section>
