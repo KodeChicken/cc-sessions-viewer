@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::SessionSource;
+use crate::agent_command::AgentCommand;
 use crate::stats::types::Turn;
 use crate::types::{Block, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary};
 use crate::util::{
@@ -556,7 +557,7 @@ impl SessionSource for GeminiSource {
         first_user_text(path)
     }
 
-    fn resume_cli(&self, session_id: &str, path: &str) -> String {
+    fn resume_command(&self, session_id: &str, path: &str) -> AgentCommand {
         // Gemini CLI 的 --resume 高度依赖当前目录（CWD）。
         // 我们强制回到该会话所属的 .project_root（由 App.vue 传入的 cwd 保证）。
         //
@@ -565,7 +566,7 @@ impl SessionSource for GeminiSource {
         // 2. 否则，计算该文件在项目所有会话中的 1-based 索引（按 mtime 升序）。
         //    Gemini CLI 的 --list-sessions 索引就是按时间从旧到新排列的。
         if session_id.len() == 36 && session_id.contains('-') {
-            return format!("gemini --resume {session_id}");
+            return AgentCommand::new("gemini").arg("--resume").arg(session_id);
         }
 
         let p = Path::new(path);
@@ -583,14 +584,14 @@ impl SessionSource for GeminiSource {
             // 按修改时间升序（从旧到新），匹配 gemini --list-sessions 的序号
             files.sort_by_key(|x| x.1);
             if let Some(pos) = files.iter().position(|x| x.0 == p) {
-                return format!("gemini --resume {}", pos + 1);
+                return AgentCommand::new("gemini").arg("--resume").arg((pos + 1).to_string());
             }
         }
-        "gemini --resume latest".to_string()
+        AgentCommand::new("gemini").arg("--resume").arg("latest")
     }
 
-    fn new_session_cli(&self) -> String {
-        "gemini".to_string()
+    fn new_session_command(&self) -> AgentCommand {
+        AgentCommand::new("gemini")
     }
 
     fn image_src(&self, block: &Value) -> Option<String> {

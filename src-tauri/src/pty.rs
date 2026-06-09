@@ -38,6 +38,8 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use crate::agent_command::AgentCommand;
+
 struct PtyHandle {
     /// 保留 master 主要为了 resize（reader / writer 都已克隆出去）。
     master: Mutex<Box<dyn MasterPty + Send>>,
@@ -78,10 +80,9 @@ struct ExitPayload {
 /// `-Command` 默认会 load `$PROFILE` —— nvm-windows / volta 在 profile 里改的 PATH 能
 /// 拿到；msi / choco 装的 CLI 直接走系统 PATH。
 ///
-/// `cwd` 已在 lib.rs 校验过是真实目录；`cli` 已由 `SessionSource::resume_cli` 拼好（含
-/// --resume / session-id，且只含字母数字 + 横杠，没有 shell 元字符）。
+/// `cwd` 已在 lib.rs 校验过是真实目录；`command` 已由 agent 构造并负责平台渲染。
 #[cfg(unix)]
-fn build_shell_command(cwd: &str, cli: &str) -> CommandBuilder {
+fn build_shell_command(cwd: &str, command: &AgentCommand) -> CommandBuilder {
     #[cfg(target_os = "macos")]
     const DEFAULT_SHELL: &str = "/bin/zsh";
     #[cfg(not(target_os = "macos"))]
@@ -89,8 +90,7 @@ fn build_shell_command(cwd: &str, cli: &str) -> CommandBuilder {
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string());
     // POSIX sh quoting：单引号字符串里 ' 改成 '\'' 关 + 转义 + 重开。
-    let cwd_quoted = cwd.replace('\'', "'\\''");
-    let inner = format!("cd '{cwd_quoted}' && {cli}");
+    let inner = format!("cd {} && {}", crate::agent_command::posix_quote(cwd), command.to_posix_shell());
 
     let mut cmd = CommandBuilder::new(&shell);
     cmd.arg("-l");
@@ -104,15 +104,12 @@ fn build_shell_command(cwd: &str, cli: &str) -> CommandBuilder {
 }
 
 #[cfg(windows)]
-fn build_shell_command(cwd: &str, cli: &str) -> CommandBuilder {
+fn build_shell_command(cwd: &str, command: &AgentCommand) -> CommandBuilder {
     // PowerShell 单引号字面串里 ' 用 '' 转义。
-    let cwd_ps = cwd.replace('\'', "''");
-    let inner = format!("Set-Location -LiteralPath '{cwd_ps}'; {cli}");
-
     let mut cmd = CommandBuilder::new("powershell.exe");
     cmd.arg("-NoLogo");
     cmd.arg("-Command");
-    cmd.arg(&inner);
+    cmd.arg(crate::agent_command::powershell_set_location_and_run(cwd, command));
     // ConPTY 自己处理 VT 序列；TERM 对 Win 上的 Node CLI（claude / codex / gemini）也无害。
     cmd.env("TERM", "xterm-256color");
     cmd.cwd(cwd);
@@ -121,12 +118,11 @@ fn build_shell_command(cwd: &str, cli: &str) -> CommandBuilder {
 
 /// 拉起 PTY 跑 OS 对应的 shell 调用（详见 [`build_shell_command`]）。
 ///
-/// `cli` 已由 `SessionSource::resume_cli` 拼好（含 --resume / session-id）；
-/// `cwd` 已在 lib.rs 里校验是真实目录。返回新 PTY 的内部 id。
+/// `command` 已由 agent 构造；`cwd` 已在 lib.rs 里校验是真实目录。返回新 PTY 的内部 id。
 pub fn spawn(
     app: AppHandle,
     cwd: String,
-    cli: String,
+    command: AgentCommand,
     cols: u16,
     rows: u16,
 ) -> Result<u64, String> {
@@ -145,7 +141,7 @@ pub fn spawn(
 
     // 按操作系统装配 shell 调用 —— 把 PATH 注入 + cwd 切换合并到一条命令里。
     // 见模块顶端注释，POSIX / Windows 各自的取舍都在那里。
-    let cmd = build_shell_command(&cwd, &cli);
+    let cmd = build_shell_command(&cwd, &command);
 
     let child = pair
         .slave

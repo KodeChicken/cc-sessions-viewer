@@ -77,6 +77,12 @@ import {
   reconcileNewTabs,
   syncTabTitlesFromSessions,
   syncTabTitleBySessionPath,
+  isTabProcessAlive,
+  markTabSessionActivity,
+  markTabTurnStarted,
+  markTabTurnCompleted,
+  markTabTurnBlocked,
+  markTabTurnFailed,
   migrateTabsProjectKey,
   tabs as tuiTabs,
   type TerminalTab,
@@ -785,8 +791,7 @@ function hasCurrentProjectTuiTabs(): boolean {
     (tab) =>
       tab.agent === agent.value &&
       tab.projectKey === activeDir.value &&
-      tab.status !== 'exited' &&
-      tab.status !== 'error',
+      isTabProcessAlive(tab),
   )
 }
 
@@ -1725,6 +1730,12 @@ let menuUnlisten: UnlistenFn | null = null
 // 我们只接当前 openSession.path 一致的事件，避免把 A 会话的尾段塞到 B 里。
 let liveUnlisteners: UnlistenFn[] = []
 
+type TerminalTurnEvent = {
+  agent: Agent
+  path: string
+  state: 'started' | 'completed' | 'blocked' | 'failed'
+}
+
 async function installLiveTailListeners() {
   const appendUnlisten = await listen<{ path: string; messages: Msg[] }>(
     'session:append',
@@ -1733,6 +1744,7 @@ async function installLiveTailListeners() {
       if (!cur || cur.path !== e.payload.path) return
       const added = e.payload.messages
       if (!added.length) return
+      markTabSessionActivity(chatAgent.value, cur.path)
       chatMsgs.value = chatMsgs.value.concat(added)
       // 真的有新增 → 标"Live"，并续命 fade 定时器。
       markLive()
@@ -1752,6 +1764,7 @@ async function installLiveTailListeners() {
     if (!cur || cur.path !== e.payload.path) return
     // 整段重读 —— 不动 openSession 自身，避免 watch 重置 chat-toolbar 状态。
     try {
+      markTabSessionActivity(chatAgent.value, cur.path)
       chatMsgs.value = await api.readSession(chatAgent.value, cur.path)
     } catch {
       // 读不出来通常是文件刚被换掉；下一次 emit 会再来一次。
@@ -1766,8 +1779,21 @@ async function installLiveTailListeners() {
   liveUnlisteners.push(appendUnlisten, resetUnlisten, goneUnlisten)
 }
 
+async function installTerminalTurnListeners() {
+  const turnUnlisten = await listen<TerminalTurnEvent>('terminal-turn://state', (e) => {
+    const { agent: eventAgent, path, state } = e.payload
+    if (!path) return
+    if (state === 'started') markTabTurnStarted(eventAgent, path)
+    else if (state === 'completed') markTabTurnCompleted(eventAgent, path)
+    else if (state === 'blocked') markTabTurnBlocked(eventAgent, path)
+    else if (state === 'failed') markTabTurnFailed(eventAgent, path)
+  })
+  liveUnlisteners.push(turnUnlisten)
+}
+
 onMounted(() => {
   installLiveTailListeners()
+  installTerminalTurnListeners()
 })
 
 onUnmounted(() => {

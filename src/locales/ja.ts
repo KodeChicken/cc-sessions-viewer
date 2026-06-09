@@ -339,6 +339,13 @@ export default {
   'settings.launchArgs': '起動引数',
   'settings.launchArgsDesc': 'セッション再開・新規作成時に追加する CLI 引数。',
   'settings.launchArgsFill': 'デフォルト値を入力',
+  'settings.section.turnStatus': 'セッション状態トラッキング',
+  'settings.turnStatus.desc':
+    'agent のライフサイクル信号で実行中・完了・ブロック・失敗を判定します。ターミナルの無出力時間は完了判定に使いません。',
+  'settings.turnStatus.installClaude': 'Claude 状態トラッキングを有効化',
+  'settings.turnStatus.installing': '有効化中…',
+  'settings.turnStatus.installed': 'Claude hooks を書き込みました: {path}',
+  'settings.turnStatus.installFail': '有効化に失敗しました: {e}',
   'settings.section.codex': 'Codex',
   'settings.codexVisibilityDesc':
     'Codex の一覧に、通常は非表示の内部レビューセッションとアーカイブ済みセッションを表示するかを切り替えます。',

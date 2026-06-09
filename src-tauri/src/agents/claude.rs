@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::SessionSource;
+use crate::agent_command::AgentCommand;
 use crate::stats::{pricing, shell as shell_util, types::{CallRecord, Turn}};
 use crate::types::{
     Block, DiffHunk, DiffLine, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary,
@@ -195,12 +196,12 @@ impl SessionSource for ClaudeSource {
         scan(path).title
     }
 
-    fn resume_cli(&self, session_id: &str, _path: &str) -> String {
-        format!("claude --resume {session_id}")
+    fn resume_command(&self, session_id: &str, _path: &str) -> AgentCommand {
+        AgentCommand::new("claude").arg("--resume").arg(session_id)
     }
 
-    fn new_session_cli(&self) -> String {
-        "claude".to_string()
+    fn new_session_command(&self) -> AgentCommand {
+        AgentCommand::new("claude")
     }
 
     fn image_src(&self, block: &Value) -> Option<String> {

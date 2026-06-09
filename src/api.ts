@@ -146,6 +146,20 @@ export const watchSession = (agent: Agent, path: string) =>
 /** 关闭 Live tail。可重入 —— 没有活跃 watcher 也不会抛错。 */
 export const unwatchSession = () => invoke<void>('unwatch_session')
 
+export const terminalTurnSignal = (
+  agent: Agent,
+  path: string,
+  state: 'started' | 'completed' | 'blocked' | 'failed',
+) => invoke<void>('terminal_turn_signal', { agent, path, state })
+
+export const installClaudeTurnHooks = () => invoke<string>('install_claude_turn_hooks')
+
+export const watchSessionTurn = (agent: Agent, path: string, catchUp = false) =>
+  invoke<void>('watch_session_turn', { agent, path, catchUp })
+
+export const unwatchSessionTurn = (path: string) =>
+  invoke<void>('unwatch_session_turn', { path })
+
 export const resumeSession = (
   agent: Agent,
   sessionId: string,
@@ -205,10 +219,15 @@ export const appVersion = () => invoke<string>('app_version')
 // 仓库地址直接写死 —— 与 src/App.vue 里 REPO_URL 同源。GitHub /releases/latest 已经
 // 过滤掉 draft / prerelease，所以拿到的就是当前稳定版。Tauri WKWebView 自带 fetch，
 // 没有 CSP 限制（tauri.conf.json csp=null），不需要在 Rust 侧加 HTTP client 依赖。
-const SHIELDS_VERSION_URL =
-  'https://img.shields.io/github/v/release/jerrywu001/cc-sessions-viewer.svg'
+const GITHUB_LATEST_RELEASE_URL =
+  'https://api.github.com/repos/jerrywu001/cc-sessions-viewer/releases/latest'
 const RELEASE_PAGE_URL =
   'https://github.com/jerrywu001/cc-sessions-viewer/releases/latest'
+
+interface GitHubRelease {
+  tag_name?: string
+  html_url?: string
+}
 
 function compareVer(a: string, b: string): number {
   const pa = a.replace(/^v/i, '').split(/[.-]/).map((x) => parseInt(x, 10) || 0)
@@ -224,16 +243,15 @@ function compareVer(a: string, b: string): number {
 
 export async function checkUpdate(): Promise<UpdateInfo> {
   const current = await appVersion()
-  const res = await fetch(SHIELDS_VERSION_URL)
+  const res = await fetch(GITHUB_LATEST_RELEASE_URL)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  const svg = await res.text()
-  const m = svg.match(/>v?([\d.]+)<\/text>\s*<\/g>/)
-  if (!m) return { current, latest: current, hasUpdate: false }
-  const latest = m[1]
+  const release = await res.json() as GitHubRelease
+  const latest = release.tag_name?.replace(/^v/i, '')
+  if (!latest) return { current, latest: current, hasUpdate: false }
   return {
     current,
     latest,
     hasUpdate: compareVer(latest, current) > 0,
-    htmlUrl: RELEASE_PAGE_URL,
+    htmlUrl: release.html_url ?? RELEASE_PAGE_URL,
   }
 }

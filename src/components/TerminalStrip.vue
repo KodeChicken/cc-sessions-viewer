@@ -34,7 +34,7 @@ const emit = defineEmits<{
   tabClosed: []
   /** TUI tab 操作菜单 —— 复用会话重命名弹窗 */
   tabRename: [tab: TerminalTab]
-  /** 新建会话 */
+  /** 双击 tab 条空白处 —— 复用列表页加号的新建会话能力 */
   newSession: []
 }>()
 
@@ -52,14 +52,24 @@ const listActive = computed(
 const viewActive = computed(
   () => activeUiId.value === null && props.hasOpenSession,
 )
-// const canGoBack = computed(() => typeof window !== 'undefined' && window.history.length > 1)
+const canGoBack = computed(() => typeof window !== 'undefined' && window.history.length > 1)
 const tabCtx = ref<{ x: number; y: number; tab: TerminalTab } | null>(null)
+const stripCtx = ref<{ x: number; y: number } | null>(null)
 const nativeMenuSupported = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 function shortTitle(title: string): string {
   if (!title) return t('chat.tui.untitled')
   if (title.length > 22) return title.slice(0, 20) + '…'
   return title
+}
+
+function tabStatusKind(tab: TerminalTab) {
+  if (tab.turnState === 'error' || tab.processState === 'error') return 'error'
+  if (tab.processState === 'exited') return 'exited'
+  if (tab.turnState === 'blocked') return 'blocked'
+  if (tab.processState === 'spawning' || tab.turnState === 'working') return 'working'
+  if (tab.turnState === 'review' || tab.turnState === 'idle') return 'done'
+  return 'unknown'
 }
 
 function onTabClick(uiId: number) {
@@ -81,6 +91,22 @@ function onClose(uiId: number, ev: Event) {
   emit('tabClosed')
 }
 
+function onStripDoubleClick(ev: MouseEvent) {
+  const target = ev.target as HTMLElement | null
+  if (target?.closest('.term-tab, .term-tab-ctx-menu')) return
+  closeTabCtx()
+  emit('newSession')
+}
+
+async function onStripContextMenu(ev: MouseEvent) {
+  const target = ev.target as HTMLElement | null
+  if (target?.closest('.term-tab, .term-tab-ctx-menu, .term-strip-ctx-menu')) return
+  ev.preventDefault()
+  closeTabCtx()
+  if (await openNativeStripContextMenu(ev)) return
+  openFallbackStripContextMenu(ev)
+}
+
 async function onTabContextMenu(tab: TerminalTab, ev: MouseEvent) {
   ev.preventDefault()
   ev.stopPropagation()
@@ -98,43 +124,43 @@ async function openNativeTabContextMenu(tab: TerminalTab, ev: MouseEvent): Promi
     ])
     const menu = await Menu.new({
       items: [
-        // {
-        //   id: 'native-back',
-        //   text: t('context.back'),
-        //   enabled: window.history.length > 1,
-        //   accelerator: 'Alt+Left',
-        //   action: () => window.history.back(),
-        // },
-        // {
-        //   id: 'native-reload',
-        //   text: t('context.reload'),
-        //   accelerator: 'CmdOrCtrl+R',
-        //   action: () => window.location.reload(),
-        // },
-        // { item: 'Separator' },
-        // {
-        //   id: 'native-save-as',
-        //   text: t('context.saveAs'),
-        //   action: () => undefined,
-        // },
-        // {
-        //   id: 'native-print',
-        //   text: t('context.print'),
-        //   accelerator: 'CmdOrCtrl+P',
-        //   action: () => window.print(),
-        // },
-        // {
-        //   id: 'native-more-tools',
-        //   text: t('context.moreTools'),
-        //   items: [
-        //     {
-        //       id: 'native-share',
-        //       text: t('context.share'),
-        //       action: () => shareCurrentPage(),
-        //     },
-        //   ],
-        // },
-        // { item: 'Separator' },
+        {
+          id: 'native-back',
+          text: t('context.back'),
+          enabled: window.history.length > 1,
+          accelerator: 'Alt+Left',
+          action: () => window.history.back(),
+        },
+        {
+          id: 'native-reload',
+          text: t('context.reload'),
+          accelerator: 'CmdOrCtrl+R',
+          action: () => window.location.reload(),
+        },
+        { item: 'Separator' },
+        {
+          id: 'native-save-as',
+          text: t('context.saveAs'),
+          action: () => undefined,
+        },
+        {
+          id: 'native-print',
+          text: t('context.print'),
+          accelerator: 'CmdOrCtrl+P',
+          action: () => window.print(),
+        },
+        {
+          id: 'native-more-tools',
+          text: t('context.moreTools'),
+          items: [
+            {
+              id: 'native-share',
+              text: t('context.share'),
+              action: () => shareCurrentPage(),
+            },
+          ],
+        },
+        { item: 'Separator' },
         {
           id: 'tab-rename',
           text: t('chat.tui.tabRename'),
@@ -166,6 +192,30 @@ async function openNativeTabContextMenu(tab: TerminalTab, ev: MouseEvent): Promi
   }
 }
 
+async function openNativeStripContextMenu(ev: MouseEvent): Promise<boolean> {
+  if (!nativeMenuSupported) return false
+  try {
+    const [{ Menu }, { LogicalPosition }] = await Promise.all([
+      import('@tauri-apps/api/menu'),
+      import('@tauri-apps/api/dpi'),
+    ])
+    const menu = await Menu.new({
+      items: [
+        {
+          id: 'strip-new-session',
+          text: t('list.action.newSession'),
+          action: () => emit('newSession'),
+        },
+      ],
+    })
+    await menu.popup(new LogicalPosition(ev.clientX, ev.clientY))
+    return true
+  } catch (err) {
+    console.warn('Failed to open native strip context menu, falling back to HTML menu', err)
+    return false
+  }
+}
+
 function openFallbackTabContextMenu(tab: TerminalTab, ev: MouseEvent) {
   const menuW = 220
   const menuH = 318
@@ -176,8 +226,23 @@ function openFallbackTabContextMenu(tab: TerminalTab, ev: MouseEvent) {
   }
 }
 
+function openFallbackStripContextMenu(ev: MouseEvent) {
+  const menuW = 220
+  const menuH = 44
+  stripCtx.value = {
+    x: Math.max(8, Math.min(ev.clientX, window.innerWidth - menuW - 8)),
+    y: Math.max(8, Math.min(ev.clientY, window.innerHeight - menuH - 8)),
+  }
+}
+
 function closeTabCtx() {
   tabCtx.value = null
+  stripCtx.value = null
+}
+
+function newSessionFromStripCtx() {
+  closeTabCtx()
+  emit('newSession')
 }
 
 function renameCtxTab() {
@@ -228,24 +293,24 @@ function closeProjectNativeCtxTabs() {
   emit('tabClosed')
 }
 
-// function runNativeLikeCtxAction(action: 'back' | 'reload' | 'print' | 'share') {
-//   closeTabCtx()
-//   if (action === 'back') window.history.back()
-//   else if (action === 'reload') window.location.reload()
-//   else if (action === 'print') window.print()
-//   else shareCurrentPage()
-// }
+function runNativeLikeCtxAction(action: 'back' | 'reload' | 'print' | 'share') {
+  closeTabCtx()
+  if (action === 'back') window.history.back()
+  else if (action === 'reload') window.location.reload()
+  else if (action === 'print') window.print()
+  else shareCurrentPage()
+}
 
-// function shareCurrentPage() {
-//   if (navigator.share) {
-//     void navigator.share({ title: document.title, url: window.location.href })
-//   }
-// }
+function shareCurrentPage() {
+  if (navigator.share) {
+    void navigator.share({ title: document.title, url: window.location.href })
+  }
+}
 
 function onDocMouseDown(e: MouseEvent) {
-  if (!tabCtx.value) return
+  if (!tabCtx.value && !stripCtx.value) return
   const target = e.target as HTMLElement | null
-  if (target?.closest('.term-tab-ctx-menu')) return
+  if (target?.closest('.term-tab-ctx-menu, .term-strip-ctx-menu')) return
   closeTabCtx()
 }
 
@@ -269,7 +334,13 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="visible" class="terminal-strip" data-tauri-drag-region="false">
+  <div
+    v-if="visible"
+    class="terminal-strip"
+    data-tauri-drag-region="false"
+    @dblclick="onStripDoubleClick"
+    @contextmenu="onStripContextMenu"
+  >
     <div class="term-strip-scroll">
       <!-- List —— 项目浏览模式下永久显示 -->
       <div
@@ -310,43 +381,53 @@ onUnmounted(() => {
       />
 
       <div
-        v-for="tab in visibleTabs"
-        :key="tab.uiId"
-        class="term-tab"
-        :class="{
-          active: activeUiId === tab.uiId,
-          exited: tab.status === 'exited' || tab.status === 'error',
-        }"
-        v-tooltip:bottom="tab.title"
+      v-for="tab in visibleTabs"
+      :key="tab.uiId"
+      class="term-tab"
+      :class="{
+        active: activeUiId === tab.uiId,
+        'state-working': tabStatusKind(tab) === 'working',
+        'state-done': tabStatusKind(tab) === 'done',
+        'state-blocked': tabStatusKind(tab) === 'blocked',
+        'state-error': tabStatusKind(tab) === 'error',
+        'state-exited': tabStatusKind(tab) === 'exited',
+        'state-unknown': tabStatusKind(tab) === 'unknown',
+      }"
+      v-tooltip:bottom="tab.title"
+      role="button"
+      tabindex="0"
+      @click="onTabClick(tab.uiId)"
+      @contextmenu="onTabContextMenu(tab, $event)"
+      @keydown.enter.prevent="onTabClick(tab.uiId)"
+      @keydown.space.prevent="onTabClick(tab.uiId)"
+    >
+      <component :is="agentIcons[tab.agent]" class="term-tab-agent" :class="tab.agent" />
+      <span class="term-tab-title">{{ shortTitle(tab.title) }}</span>
+      <span
+        v-if="tabStatusKind(tab) === 'working'"
+        class="term-tab-status term-tab-status-working"
+        aria-hidden="true"
+      >
+        <i />
+        <i />
+        <i />
+      </span>
+      <span
+        v-else
+        class="term-tab-status"
+        :class="'term-tab-status-' + tabStatusKind(tab)"
+        aria-hidden="true"
+      />
+      <span
+        class="term-tab-close"
+        v-tooltip:bottom="t('chat.tui.tabClose')"
         role="button"
         tabindex="0"
-        @click="onTabClick(tab.uiId)"
-        @contextmenu="onTabContextMenu(tab, $event)"
-        @keydown.enter.prevent="onTabClick(tab.uiId)"
-        @keydown.space.prevent="onTabClick(tab.uiId)"
+        @click="onClose(tab.uiId, $event)"
+        @keydown.enter.prevent="onClose(tab.uiId, $event)"
       >
-        <component :is="agentIcons[tab.agent]" class="term-tab-agent" :class="tab.agent" />
-        <span class="term-tab-title">{{ shortTitle(tab.title) }}</span>
-        <span
-          v-if="tab.status === 'spawning'"
-          class="term-tab-spinner"
-          aria-hidden="true"
-        />
-        <span
-          v-else-if="tab.status === 'exited' || tab.status === 'error'"
-          class="term-tab-exited-dot"
-          aria-hidden="true"
-        />
-        <span
-          class="term-tab-close"
-          v-tooltip:bottom="t('chat.tui.tabClose')"
-          role="button"
-          tabindex="0"
-          @click="onClose(tab.uiId, $event)"
-          @keydown.enter.prevent="onClose(tab.uiId, $event)"
-        >
-          <IconClose />
-        </span>
+        <IconClose />
+      </span>
       </div>
     </div>
 
@@ -362,13 +443,30 @@ onUnmounted(() => {
     </div>
 
     <div
+      v-if="stripCtx"
+      class="ctx-menu term-strip-ctx-menu"
+      :style="{ left: stripCtx.x + 'px', top: stripCtx.y + 'px' }"
+      @click.stop
+      @contextmenu.prevent.stop
+    >
+      <button
+        type="button"
+        class="ctx-item"
+        data-menu-action="strip-new-session"
+        @click="newSessionFromStripCtx"
+      >
+        <span>{{ t('list.action.newSession') }}</span>
+      </button>
+    </div>
+
+    <div
       v-if="tabCtx"
       class="ctx-menu term-tab-ctx-menu"
       :style="{ left: tabCtx.x + 'px', top: tabCtx.y + 'px' }"
       @click.stop
       @contextmenu.prevent.stop
     >
-      <!-- <button
+      <button
         type="button"
         class="ctx-item"
         data-menu-action="native-back"
@@ -416,7 +514,7 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
-      <div class="ctx-sep" /> -->
+      <div class="ctx-sep" />
       <button type="button" class="ctx-item" data-menu-action="tab-rename" @click="renameCtxTab">
         <span>{{ t('chat.tui.tabRename') }}</span>
       </button>
