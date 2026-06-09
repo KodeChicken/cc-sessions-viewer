@@ -86,19 +86,11 @@ describe('TerminalStrip', () => {
       .findAll('.term-tab-ctx-menu .ctx-item')
       .map((item) => item.attributes('data-menu-action'))
     expect(actions).toEqual([
-      'native-back',
-      'native-reload',
-      'native-save-as',
-      'native-print',
-      'native-more-tools',
-      'native-share',
       'tab-rename',
       'tab-close',
       'tab-close-others',
       'tab-close-project',
     ])
-    expect(wrapper.find('[data-menu-action="native-reload"]').text()).toContain('Ctrl+R')
-    expect(wrapper.find('[data-menu-action="native-print"]').text()).toContain('Ctrl+P')
     expect(wrapper.emitted('tabRename')).toBeUndefined()
   })
 
@@ -129,7 +121,7 @@ describe('TerminalStrip', () => {
     tabs.value = [t]
     const wrapper = factory()
 
-    await wrapper.findAll('.term-tab').at(-1)!.trigger('dblclick')
+    await wrapper.findAll('.term-tab').slice(-1)[0].trigger('dblclick')
 
     expect(wrapper.emitted('newSession')).toBeUndefined()
   })
@@ -155,7 +147,7 @@ describe('TerminalStrip', () => {
     tabs.value = [t]
     const wrapper = factory()
 
-    await wrapper.findAll('.term-tab').at(-1)!.trigger('contextmenu', {
+    await wrapper.findAll('.term-tab').slice(-1)[0].trigger('contextmenu', {
       clientX: 80,
       clientY: 40,
     })
@@ -184,7 +176,7 @@ describe('TerminalStrip', () => {
     tabs.value = [t]
     const wrapper = factory()
 
-    const item = wrapper.findAll('.term-tab').at(-1)!
+    const item = wrapper.findAll('.term-tab').slice(-1)[0]
     expect(item.classes()).toContain('state-working')
     expect(item.findAll('.term-tab-status-working i')).toHaveLength(3)
   })
@@ -204,7 +196,7 @@ describe('TerminalStrip', () => {
     expect(t.turnState).toBe('review')
 
     const wrapper = factory()
-    const item = wrapper.findAll('.term-tab').at(-1)!
+    const item = wrapper.findAll('.term-tab').slice(-1)[0]
     expect(item.classes()).toContain('state-done')
     expect(item.find('.term-tab-status-done').exists()).toBe(true)
   })
@@ -239,7 +231,7 @@ describe('TerminalStrip', () => {
     expect(t.turnState).toBe('unknown')
 
     const wrapper = factory()
-    const item = wrapper.findAll('.term-tab').at(-1)!
+    const item = wrapper.findAll('.term-tab').slice(-1)[0]
     expect(item.classes()).toContain('state-exited')
     expect(item.classes()).not.toContain('state-done')
   })

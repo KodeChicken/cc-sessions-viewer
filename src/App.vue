@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, shallowRef, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import type { Agent, ProjectInfo, SessionMeta, TrashItem, Msg } from './types'
 import * as api from './api'
 import { shortName } from './format'
@@ -223,10 +223,10 @@ async function refreshAll() {
     refreshing.value = false
   }
 }
-const sessions = ref<SessionMeta[]>([])
+const sessions = shallowRef<SessionMeta[]>([])
 const sessionTotal = ref(0)
 const loadingMore = ref(false)
-const trash = ref<TrashItem[]>([])
+const trash = shallowRef<TrashItem[]>([])
 const loadingList = ref(false)
 
 const PAGE_SIZE = 40
@@ -234,7 +234,7 @@ const PAGE_SIZE = 40
 const openSession = ref<SessionMeta | null>(null)
 // 非空表示当前打开的会话来自回收站（只读查看）—— 详情页据此切换为「回收站模式」。
 const openTrashItem = ref<TrashItem | null>(null)
-const chatMsgs = ref<Msg[]>([])
+const chatMsgs = shallowRef<Msg[]>([])
 const loadingChat = ref(false)
 // "● Live" 徽章：仅当会话**确实正在被写入**时为 true。
 //   - 打开时 mtime 距今 < FRESH_MS → 视作"刚才还在跑"，先亮起来
@@ -270,6 +270,7 @@ const sessionStatsFrom = ref<'chat' | 'global' | null>(null)
 
 const sessionsViewRef = ref<InstanceType<typeof SessionsView> | null>(null)
 const chatViewRef = ref<InstanceType<typeof ChatView> | null>(null)
+const sidebarRef = ref<InstanceType<typeof Sidebar> | null>(null)
 const listScrollEl = computed<HTMLElement | undefined>(
   () => sessionsViewRef.value?.scrollEl,
 )
@@ -462,6 +463,68 @@ function deleteProject(p: ProjectInfo) {
         // 批量删除后刷新回收站，保持顶栏红点准确
         api.listTrash().then((items) => { trash.value = items }).catch(() => {})
         notify(t('toast.projDeleted'))
+      } catch (e) {
+        notify(t('toast.deleteFail', { e: String(e) }), true)
+      }
+    },
+  })
+}
+
+function batchDeleteProjects(dirs: string[]) {
+  if (!dirs.length) return
+  const totalSessions = dirs.reduce((sum, dir) => {
+    const p = projects.value.find(pp => pp.dirName === dir)
+    return sum + (p?.sessionCount ?? 0)
+  }, 0)
+  ask({
+    title: t('dialog.batchDeleteProject.title'),
+    message: t('dialog.batchDeleteProject.body', { n: dirs.length, sessions: totalSessions }),
+    okText: t('dialog.batchDeleteProject.ok'),
+    danger: true,
+    onOk: async () => {
+      try {
+        await loadProjects()
+        for (const dir of dirs) {
+          const p = projects.value.find(pp => pp.dirName === dir)
+          if (!p) continue
+          const counterpart = projects.value.find(
+            (rp) => rp.dirName !== p.dirName && rp.displayPath === p.displayPath,
+          )
+          closeTabsByProject(p.dirName)
+          if (counterpart) closeTabsByProject(counterpart.dirName)
+
+          const all: SessionMeta[] = []
+          const keysToScan = [p.dirName]
+          if (counterpart) keysToScan.push(counterpart.dirName)
+          for (const key of keysToScan) {
+            let offset = 0
+            while (true) {
+              const page = await api.listSessions(agent.value, key, offset, 200, sessionListOptions())
+              all.push(...page.sessions)
+              offset += page.sessions.length
+              if (all.length >= page.total || page.sessions.length === 0) break
+            }
+          }
+          for (const s of all) {
+            try {
+              if (openSession.value?.path === s.path) {
+                openSession.value = null
+                clearLive()
+              }
+              await api.softDeleteSession(agent.value, s.path, p.displayPath)
+            } catch {}
+          }
+          await api.removeBookmark(agent.value, p.displayPath)
+        }
+        if (activeDir.value && dirs.includes(activeDir.value)) {
+          activeDir.value = null
+          sessions.value = []
+          openSession.value = null
+        }
+        sidebarRef.value?.exitSelect()
+        await loadProjects()
+        api.listTrash().then((items) => { trash.value = items }).catch(() => {})
+        notify(t('toast.batchProjDeleted', { n: dirs.length }))
       } catch (e) {
         notify(t('toast.deleteFail', { e: String(e) }), true)
       }
@@ -737,7 +800,7 @@ async function loadMore() {
       PAGE_SIZE,
       sessionListOptions(),
     )
-    sessions.value.push(...page.sessions)
+    sessions.value = [...sessions.value, ...page.sessions]
     sessionTotal.value = page.total
   } catch (e) {
     notify(t('toast.loadMoreFail', { e: String(e) }), true)
@@ -1476,8 +1539,12 @@ function onTuiViewClick() {
 
 // Tab 被手动关闭（× 按钮）后，如果 TUI 层消失（无更多 tab），刷新数据——
 // 和 onTuiListClick 同等效果，确保 CLI 新建的会话出现在列表里。
-async function onTuiTabClosed() {
+async function onTuiTabClosed(closedSessionPath: string) {
   if (activeUiId.value !== null) return
+  if (openSession.value && (!closedSessionPath || openSession.value.path === closedSessionPath)) {
+    openSession.value = null
+    clearLive()
+  }
   if (!activeDir.value || showTrash.value || showStats.value) return
   await loadProjects()
   await refreshSessions()
@@ -1902,6 +1969,8 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       @open-settings="showSettings = true"
       @refresh="refreshAll"
       @add-bookmark="addBookmark"
+      @batch-delete="batchDeleteProjects"
+      ref="sidebarRef"
     />
     <div
       v-show="sidebarOpen"

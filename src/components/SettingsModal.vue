@@ -318,9 +318,9 @@ async function installClaudeHooks() {
             <header class="set-section-head">
               <IconDatabase />
               <span class="set-section-title">{{ t('settings.section.data') }}</span>
+              <IconInfo class="set-hint-icon" v-tooltip="t('settings.clearCacheDesc')" />
               <span class="set-section-tail">{{ cacheLabel }}</span>
             </header>
-            <p class="set-section-desc">{{ t('settings.clearCacheDesc') }}</p>
             <button
               class="btn danger"
               :disabled="false"
@@ -363,12 +363,11 @@ async function installClaudeHooks() {
               <span class="set-section-title">{{ t('settings.section.terminal') }}</span>
             </header>
             <label class="set-toggle-row" @click.prevent="setUseExternalTerminal(!useExternalTerminal)">
-              <span class="set-toggle-label">{{ t('settings.useExternalTerminal') }}</span>
+              <span class="set-toggle-label">{{ t('settings.useExternalTerminal') }} <IconInfo class="set-hint-icon" v-tooltip="t('settings.terminalDesc')" /></span>
               <span class="set-toggle-track" :class="{ on: useExternalTerminal }">
                 <span class="set-toggle-thumb" />
               </span>
             </label>
-            <p class="set-section-desc set-toggle-hint">{{ t('settings.terminalDesc') }}</p>
 
             <div v-if="useExternalTerminal && isMacOS && terminalOptions.length > 1" class="set-terminal-app-row">
               <span class="set-toggle-label">{{ t('settings.terminalApp.label') }}</span>
@@ -400,8 +399,7 @@ async function installClaudeHooks() {
             </div>
 
             <div class="set-launch-args">
-              <label class="set-launch-args-label">{{ t('settings.launchArgs') }}</label>
-              <p class="set-section-desc set-toggle-hint">{{ t('settings.launchArgsDesc') }}</p>
+              <label class="set-launch-args-label">{{ t('settings.launchArgs') }} <IconInfo class="set-hint-icon" v-tooltip="t('settings.launchArgsDesc')" /></label>
               <div class="set-launch-args-row" v-for="a in (['claude', 'codex', 'gemini'] as const)" :key="a">
                 <component :is="agentIcons[a]" class="set-launch-args-icon" />
                 <input
@@ -425,8 +423,9 @@ async function installClaudeHooks() {
           <section class="set-section">
             <header class="set-section-head">
               <span class="set-section-title">{{ t('settings.section.turnStatus') }}</span>
+              <span class="set-section-subtitle">{{ t('settings.turnStatus.brief') }}</span>
+              <IconInfo class="set-hint-icon" v-tooltip="t('settings.turnStatus.desc')" />
             </header>
-            <p class="set-section-desc set-toggle-hint">{{ t('settings.turnStatus.desc') }}</p>
             <div class="set-update-actions">
               <button
                 class="btn"
@@ -443,6 +442,8 @@ async function installClaudeHooks() {
           <section class="set-section">
             <header class="set-section-head">
               <span class="set-section-title">Codex</span>
+              <span class="set-section-subtitle">{{ t('settings.codex.brief') }}</span>
+              <IconInfo class="set-hint-icon" v-tooltip="t('settings.codexVisibilityDesc')" />
             </header>
             <label class="set-toggle-row" @click.prevent="setCodexShowInternalSessions(!codexShowInternalSessions)">
               <span class="set-toggle-label">{{ t('settings.codex.showInternal') }}</span>
@@ -456,7 +457,6 @@ async function installClaudeHooks() {
                 <span class="set-toggle-thumb" />
               </span>
             </label>
-            <p class="set-section-desc set-toggle-hint">{{ t('settings.codexVisibilityDesc') }}</p>
           </section>
         </template>
 

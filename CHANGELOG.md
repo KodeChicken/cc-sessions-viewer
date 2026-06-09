@@ -6,6 +6,33 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.1.7]
+
+### Bug Fixes
+
+- Fix cross-agent tab fallback: closing a tab now only falls back to same-agent tabs, fix #14
+- Fix PTY environment: remove `npm_config_prefix` to prevent nvm conflict for Codex/Gemini sessions
+- Fix tab status border: only active tabs show colored state borders
+- Fix view navigation on tab close: correctly return to session list or chat view
+
+### Features
+
+- Add terminal spawning overlay with loading animation
+- Add batch project delete from sidebar
+- Add settings tooltip icons replacing verbose descriptions
+
+### Performance
+
+- Optimize shiki highlighting with explicit language imports and JS regex engine
+- Add Rust release profile optimizations (strip, LTO, codegen-units, opt-level)
+- Use `shallowRef` for large reactive arrays (chatMsgs, sessions, trash)
+
+### Refactor
+
+- Extract turn state classification into per-agent shared functions (codex.rs, gemini.rs)
+- Clean up TerminalStrip context menu: remove unused browser actions
+- Replace `.at(-1)` with `.slice(-1)[0]` in tests to fix IDE TS diagnostics
+
 ## [v0.1.6]
 
 ### Added

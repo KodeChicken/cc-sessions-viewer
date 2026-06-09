@@ -665,6 +665,28 @@ fn agent_message_phase(payload: &Value) -> Option<&str> {
     payload.get("phase").and_then(Value::as_str)
 }
 
+/// Classify a Codex JSONL entry for turn-state inference.
+/// Returns "started" / "completed" / "failed" / None.
+pub fn classify_turn_state(value: &Value) -> Option<&'static str> {
+    if value.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    match payload.get("type").and_then(Value::as_str)? {
+        "task_started" | "user_message" => Some("started"),
+        "task_complete" => Some("completed"),
+        "agent_message" => {
+            if agent_message_phase(payload) == Some("commentary") {
+                None
+            } else {
+                Some("completed")
+            }
+        }
+        "task_failed" | "error" => Some("failed"),
+        _ => None,
+    }
+}
+
 fn rename_system_reminder(name: &str) -> String {
     format!(
         "<system-reminder>\nThe user named this session \"{name}\". This may indicate the session's focus or intent.\n</system-reminder>"

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { Agent, ProjectInfo } from '../types'
 import { shortName } from '../format'
 import { t } from '../i18n'
-import { IconExternalLink, IconRefresh, IconSettings, agentIcons } from './icons'
+import { IconExternalLink, IconRefresh, IconSettings, IconClose, IconCheck, IconTrash, IconSelect, agentIcons } from './icons'
 import { latestVersion, openReleasePage, updateAvailable } from '../updateCheck'
 
 type ProjState = 'pinned' | 'sunk'
@@ -24,6 +24,7 @@ const emit = defineEmits<{
   (e: 'open-settings'): void
   (e: 'refresh'): void
   (e: 'add-bookmark'): void
+  (e: 'batch-delete', dirs: string[]): void
 }>()
 
 const agents: Agent[] = ['claude', 'codex', 'gemini']
@@ -52,7 +53,55 @@ function pinColor(p: ProjectInfo): string {
   return `hsl(${hue} 72% 52%)`
 }
 
+const selecting = ref(false)
+const selectedDirs = ref(new Set<string>())
+watch(() => props.agent, () => exitSelect())
 
+function exitSelect() {
+  selecting.value = false
+  selectedDirs.value = new Set()
+}
+
+function toggleSelect(dir: string) {
+  const next = new Set(selectedDirs.value)
+  if (next.has(dir)) next.delete(dir)
+  else next.add(dir)
+  selectedDirs.value = next
+  if (next.size === 0) selecting.value = false
+}
+
+const allSelected = computed(() =>
+  props.projects.length > 0 && selectedDirs.value.size === props.projects.length,
+)
+
+function toggleSelectAll() {
+  if (allSelected.value) {
+    selectedDirs.value = new Set()
+  } else {
+    selectedDirs.value = new Set(props.projects.map(p => p.dirName))
+  }
+}
+
+function onProjClick(p: ProjectInfo) {
+  if (selecting.value) {
+    toggleSelect(p.dirName)
+    return
+  }
+  emit('select-project', p.dirName)
+}
+
+function onProjContextMenu(e: MouseEvent, p: ProjectInfo) {
+  if (selecting.value) return
+  emit('context-menu', e, p)
+}
+
+function doBatchDelete() {
+  const dirs = [...selectedDirs.value]
+  if (!dirs.length) return
+  emit('batch-delete', dirs)
+}
+
+defineExpose({ exitSelect })
 </script>
 
 <template>
@@ -72,31 +121,68 @@ function pinColor(p: ProjectInfo): string {
         </button>
       </div>
       <div class="sidebar-sub">
-        <span class="sidebar-sub-label">
-          {{ agentName }} ·
-          {{ t('sidebar.projectsCount', { count: projects.length }) }}
-        </span>
-        <!-- 刷新按钮：只重拉当前 agent 的项目 / 会话 / 当前打开的对话。
-             之前挂在顶部 SidebarTopbar 上离 agent switch 较远，挪到这里
-             跟 "{agent} · N projects" 同行，"刷新这家 agent" 的语义更直观。 -->
-        <button
-          type="button"
-          class="sidebar-sub-add"
-          v-tooltip="t('sidebar.addFolder')"
-          @click="emit('add-bookmark')"
-        >
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2Z"/></svg>
-        </button>
-        <button
-          type="button"
-          class="sidebar-sub-refresh"
-          :class="{ spinning: refreshing }"
-          v-tooltip="t('sidebar.refresh')"
-          :disabled="refreshing"
-          @click="emit('refresh')"
-        >
-          <IconRefresh />
-        </button>
+        <template v-if="selecting">
+          <span class="sidebar-sub-label">{{ t('sidebar.selectedCount', { n: selectedDirs.size }) }}</span>
+          <button
+            type="button"
+            class="sidebar-sub-btn"
+            v-tooltip="allSelected ? t('list.tb.selectNone') : t('list.tb.selectAll')"
+            @click="toggleSelectAll"
+          >
+            <IconCheck />
+          </button>
+          <button
+            type="button"
+            class="sidebar-sub-btn"
+            v-tooltip="t('list.tb.selectCancel')"
+            @click="exitSelect"
+          >
+            <IconClose />
+          </button>
+          <span class="sidebar-sub-divider" />
+          <button
+            type="button"
+            class="sidebar-sub-btn danger"
+            :disabled="!selectedDirs.size"
+            v-tooltip="t('sidebar.batchDelete')"
+            @click="doBatchDelete"
+          >
+            <IconTrash />
+          </button>
+        </template>
+        <template v-else>
+          <span class="sidebar-sub-label">
+            {{ agentName }} ·
+            {{ t('sidebar.projectsCount', { count: projects.length }) }}
+          </span>
+          <button
+            type="button"
+            class="sidebar-sub-btn"
+            v-tooltip="t('sidebar.addFolder')"
+            @click="emit('add-bookmark')"
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2Z"/></svg>
+          </button>
+          <button
+            v-if="projects.length > 1"
+            type="button"
+            class="sidebar-sub-btn"
+            v-tooltip="t('list.tb.select')"
+            @click="selecting = true"
+          >
+            <IconSelect />
+          </button>
+          <button
+            type="button"
+            class="sidebar-sub-btn"
+            :class="{ spinning: refreshing }"
+            v-tooltip="t('sidebar.refresh')"
+            :disabled="refreshing"
+            @click="emit('refresh')"
+          >
+            <IconRefresh />
+          </button>
+        </template>
       </div>
     </div>
 
@@ -107,18 +193,22 @@ function pinColor(p: ProjectInfo): string {
         class="proj-item"
         :data-path="p.displayPath"
         :class="{
-          active: activeDir === p.dirName && !showTrash,
+          active: activeDir === p.dirName && !showTrash && !selecting,
           missing: !p.exists,
           pinned: projStateOf(p) === 'pinned',
           sunk: projStateOf(p) === 'sunk',
+          selected: selecting && selectedDirs.has(p.dirName),
         }"
         v-tooltip:right="p.exists ? p.displayPath : p.displayPath + t('proj.missing')"
-        @click="emit('select-project', p.dirName)"
-        @contextmenu="emit('context-menu', $event, p)"
+        @click="onProjClick(p)"
+        @contextmenu="onProjContextMenu($event, p)"
       >
+        <span v-if="selecting" class="proj-check" :class="{ checked: selectedDirs.has(p.dirName) }">
+          <IconCheck v-if="selectedDirs.has(p.dirName)" />
+        </span>
         <!-- 置顶项目前的小圆点：颜色按项目名稳定哈希，不同项目互不相同 -->
         <span
-          v-if="projStateOf(p) === 'pinned'"
+          v-if="!selecting && projStateOf(p) === 'pinned'"
           class="pin-dot"
           :style="{ background: pinColor(p) }"
           :aria-label="t('proj.pin')"

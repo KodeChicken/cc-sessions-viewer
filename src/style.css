@@ -691,6 +691,7 @@ body.is-sidebar-resizing {
   white-space: nowrap;
 }
 /* 与项目数同行的小刷新按钮 —— 比顶部 .top-btn 更细，跟 sub-label 视觉权重一致。 */
+.sidebar-sub-btn,
 .sidebar-sub-add {
   flex: 0 0 auto;
   display: inline-flex;
@@ -706,9 +707,20 @@ body.is-sidebar-resizing {
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
 }
+.sidebar-sub-btn:hover:not(:disabled),
 .sidebar-sub-add:hover {
   background: var(--surface-hover);
   color: var(--text);
+}
+.sidebar-sub-btn:disabled { cursor: default; opacity: 0.4; }
+.sidebar-sub-btn.danger { color: var(--danger); }
+.sidebar-sub-btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
+.sidebar-sub-btn svg { width: 13px; height: 13px; }
+.sidebar-sub-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+  margin: 0 2px;
 }
 .proj-item.flash {
   animation: proj-flash 0.6s ease-out 2;
@@ -744,7 +756,8 @@ body.is-sidebar-resizing {
   width: 13px;
   height: 13px;
 }
-.sidebar-sub-refresh.spinning svg {
+.sidebar-sub-refresh.spinning svg,
+.sidebar-sub-btn.spinning svg {
   animation: spin 0.9s linear infinite;
 }
 
@@ -853,6 +866,32 @@ body.is-sidebar-resizing {
 .proj-item.missing .proj-name {
   text-decoration: line-through;
   text-decoration-color: var(--text-mute);
+}
+
+/* ---------- Project batch select ---------- */
+.proj-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 4px;
+  background: transparent;
+  transition: background 0.12s, border-color 0.12s;
+}
+.proj-check.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.proj-check.checked svg {
+  width: 11px;
+  height: 11px;
+  color: var(--bg);
+}
+.proj-item.selected {
+  background: var(--accent-soft);
 }
 
 /* ---------- Pin/sink actions ---------- */
@@ -2662,20 +2701,20 @@ details[open] > .block-summary > .chev {
 }
 .term-tab.active .term-tab-close { color: var(--text-mute); opacity: 0.62; }
 .term-tab.active .term-tab-close:hover { color: var(--text); opacity: 1; }
-.term-tab.state-working {
+.term-tab.active.state-working {
   border-color: color-mix(in srgb, var(--status-running) 28%, var(--border));
   background: color-mix(in srgb, var(--status-running) 6%, var(--surface));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--status-running) 6%, transparent);
 }
-.term-tab.state-done {
+.term-tab.active.state-done {
   border-color: color-mix(in srgb, var(--status-done) 36%, var(--border));
   background: color-mix(in srgb, var(--status-done) 7%, var(--surface));
 }
-.term-tab.state-blocked {
+.term-tab.active.state-blocked {
   border-color: color-mix(in srgb, var(--status-blocked) 40%, var(--border));
   background: color-mix(in srgb, var(--status-blocked) 8%, var(--surface));
 }
-.term-tab.state-error {
+.term-tab.active.state-error {
   border-color: color-mix(in srgb, var(--status-error) 40%, var(--border));
   background: color-mix(in srgb, var(--status-error) 7%, var(--surface));
 }
@@ -3318,6 +3357,23 @@ details[open] > .block-summary > .chev {
   line-height: 1.55;
   margin: 0 0 10px;
 }
+.set-section-subtitle {
+  font-size: 11px;
+  color: var(--text-mute);
+  font-weight: 400;
+}
+.set-hint-icon {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  min-width: 13px;
+  color: var(--text-mute);
+  vertical-align: -1.5px;
+  cursor: help;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+.set-hint-icon:hover { opacity: 1; }
 
 /* Settings 里用的按钮支持图标 + 文字横向排布 */
 .set-section .btn svg {

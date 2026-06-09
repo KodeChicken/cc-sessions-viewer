@@ -296,6 +296,32 @@ fn tool_call_blocks(tc: &Value) -> Vec<Block> {
     blocks
 }
 
+/// Classify a Gemini JSONL entry for turn-state inference.
+/// Returns "started" / "completed" / "failed" / None.
+pub fn classify_turn_state(value: &Value) -> Option<&'static str> {
+    match value.get("type").and_then(Value::as_str)? {
+        "user" => Some("started"),
+        "gemini" => {
+            let content_done = value
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|c| !c.trim().is_empty());
+            let token_done = value.get("tokens").is_some_and(|tokens| {
+                let output = tokens.get("output").and_then(Value::as_u64).unwrap_or(0);
+                let thoughts = tokens.get("thoughts").and_then(Value::as_u64).unwrap_or(0);
+                output > 0 || thoughts > 0
+            });
+            if content_done || token_done {
+                Some("completed")
+            } else {
+                None
+            }
+        }
+        "error" => Some("failed"),
+        _ => None,
+    }
+}
+
 fn read(path: &str) -> Result<Vec<Msg>, String> {
     let file = fs::File::open(path).map_err(|e| format!("打开会话失败: {e}"))?;
 

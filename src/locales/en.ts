@@ -9,6 +9,8 @@ export default {
 
   'sidebar.projectsCount': '{count} projects',
   'sidebar.noSessions': 'No {agent} sessions',
+  'sidebar.selectedCount': '{n} selected',
+  'sidebar.batchDelete': 'Delete selected',
   'sidebar.trash': 'Trash',
   'sidebar.settings': 'Settings',
   'sidebar.updateAvailable': 'Update available: v{v} — open Settings',
@@ -260,6 +262,9 @@ export default {
   'dialog.deleteProject.body':
     'All {n} sessions in "{name}" will be moved to Trash; you can restore them anytime.',
   'dialog.deleteProject.ok': 'Move all to Trash',
+  'dialog.batchDeleteProject.title': 'Delete projects',
+  'dialog.batchDeleteProject.body': '{n} projects ({sessions} sessions) will be moved to Trash.',
+  'dialog.batchDeleteProject.ok': 'Move all to Trash',
   'dialog.rename.title': 'Rename session',
   'dialog.clearCache.title': 'Clear cache',
   'dialog.clearCache.body':
@@ -270,6 +275,7 @@ export default {
   'toast.renamed': 'Renamed',
   'toast.renameFail': 'Rename failed: {e}',
   'toast.projDeleted': 'Project moved to Trash',
+  'toast.batchProjDeleted': '{n} projects moved to Trash',
   'toast.restored': 'Restored',
   'toast.permDeleted': 'Permanently deleted',
   'toast.trashEmptied': 'Trash emptied',
@@ -343,6 +349,7 @@ export default {
   'settings.section.turnStatus': 'Session status tracking',
   'settings.turnStatus.desc':
     'Uses agent lifecycle signals to mark a turn as running, done, blocked, or failed. Terminal silence is not treated as completion.',
+  'settings.turnStatus.brief': 'Tab turn indicators',
   'settings.turnStatus.installClaude': 'Enable Claude status tracking',
   'settings.turnStatus.installing': 'Enabling…',
   'settings.turnStatus.installed': 'Claude hooks written to: {path}',
@@ -350,6 +357,7 @@ export default {
   'settings.section.codex': 'Codex',
   'settings.codexVisibilityDesc':
     'Controls whether Codex lists include hidden internal review threads and archived threads.',
+  'settings.codex.brief': 'Session visibility',
   'settings.codex.showInternal': 'Show review sessions',
   'settings.codex.showArchived': 'Show archived sessions',
   'settings.clearCache': 'Clear cache',

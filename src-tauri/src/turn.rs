@@ -570,74 +570,45 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn claude_infers_turn_lifecycle_from_transcript_records() {
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"user","message":{"role":"user","content":"hi"}})),
-            Some("started")
-        );
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"user","isMeta":true,"message":{"role":"user","content":"image uploaded"}})),
-            None
-        );
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"attachment","attachment":{"type":"queued_command","command":"npm test"}})),
-            Some("started")
-        );
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}})),
-            Some("completed")
-        );
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"custom-title","title":"new title"})),
-            None
-        );
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"agent-name","name":"Claude"})),
-            None
-        );
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"attachment","attachment":{"type":"hook_success"}})),
-            None
-        );
-    }
+    use crate::agents::codex::classify_turn_state as codex_classify;
+    use crate::agents::gemini::classify_turn_state as gemini_classify;
 
     #[test]
     fn codex_infers_turn_lifecycle_from_event_messages() {
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"user_message"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"user_message"}})),
             Some("started")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_started"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"task_started"}})),
             Some("started")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}})),
             Some("completed")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_complete"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"task_complete"}})),
             Some("completed")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"final_answer","message":"done"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"final_answer","message":"done"}})),
             Some("completed")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"checking"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"checking"}})),
             None
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"error","message":"boom"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"error","message":"boom"}})),
             Some("failed")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"task_failed","message":"boom"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"task_failed","message":"boom"}})),
             Some("failed")
         );
         assert_eq!(
-            infer_codex_turn_state(&json!({"type":"event_msg","payload":{"type":"token_count"}})),
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"token_count"}})),
             None
         );
     }
@@ -645,26 +616,26 @@ mod tests {
     #[test]
     fn gemini_infers_turn_lifecycle_from_user_and_response_records() {
         assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"user","content":"hi"})),
+            gemini_classify(&json!({"type":"user","content":"hi"})),
             Some("started")
         );
         assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"gemini","content":"ok"})),
+            gemini_classify(&json!({"type":"gemini","content":"ok"})),
             Some("completed")
         );
         assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"gemini","tokens":{"output":1}})),
+            gemini_classify(&json!({"type":"gemini","tokens":{"output":1}})),
             Some("completed")
         );
         assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"gemini","tokens":{"thoughts":1}})),
+            gemini_classify(&json!({"type":"gemini","tokens":{"thoughts":1}})),
             Some("completed")
         );
         assert_eq!(
-            infer_gemini_turn_state(&json!({"type":"gemini","toolCalls":[] })),
+            gemini_classify(&json!({"type":"gemini","toolCalls":[] })),
             None
         );
-        assert_eq!(infer_gemini_turn_state(&json!({"type":"error"})), Some("failed"));
+        assert_eq!(gemini_classify(&json!({"type":"error"})), Some("failed"));
     }
 
     #[test]

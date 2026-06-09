@@ -50,6 +50,12 @@ ureq = { version = "2", features = ["json"] }
 # codeburn / 各家 dashboard 保持一致。chrono 提供 Local::now + 日历运算。
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "s"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = [
