@@ -188,11 +188,35 @@ export const ptySpawn = (
   cols: number,
   rows: number,
   extraArgs?: string,
-) => invoke<number>('pty_spawn', { agent, sessionId, cwd, path, cols, rows, extraArgs: extraArgs || '' })
+  colorScheme?: 'light' | 'dark',
+) => invoke<number>('pty_spawn', {
+  agent,
+  sessionId,
+  cwd,
+  path,
+  cols,
+  rows,
+  extraArgs: extraArgs || '',
+  colorScheme: colorScheme || 'light',
+})
 
 /** 启动一个新会话的 PTY（不带 --resume）。 */
-export const ptySpawnNew = (agent: Agent, cwd: string, cols: number, rows: number, extraArgs?: string) =>
-  invoke<number>('pty_spawn_new', { agent, cwd, cols, rows, extraArgs: extraArgs || '' })
+export const ptySpawnNew = (
+  agent: Agent,
+  cwd: string,
+  cols: number,
+  rows: number,
+  extraArgs?: string,
+  colorScheme?: 'light' | 'dark',
+) =>
+  invoke<number>('pty_spawn_new', {
+    agent,
+    cwd,
+    cols,
+    rows,
+    extraArgs: extraArgs || '',
+    colorScheme: colorScheme || 'light',
+  })
 
 /** 把用户的按键 base64 后写进 PTY stdin。 */
 export const ptyWrite = (id: number, base64: string) =>

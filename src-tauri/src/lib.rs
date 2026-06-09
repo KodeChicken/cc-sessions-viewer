@@ -270,6 +270,7 @@ fn pty_spawn(
     cols: u16,
     rows: u16,
     extra_args: String,
+    color_scheme: Option<String>,
 ) -> Result<u64, String> {
     if !Path::new(&cwd).is_dir() {
         return Err("项目目录已不存在，无法恢复".to_string());
@@ -282,7 +283,7 @@ fn pty_spawn(
         return Err("会话 ID 非法".to_string());
     }
     let command = agents::source(&agent)?.resume_command(&session_id, &path).with_extra_args(&extra_args);
-    pty::spawn(app, cwd, command, cols, rows)
+    pty::spawn(app, cwd, command, cols, rows, color_scheme.as_deref())
 }
 
 /// 启动一个 “new session” PTY（不带 --resume）。session_id 不需要 —— 由 CLI 自己生成新 id。
@@ -294,12 +295,13 @@ fn pty_spawn_new(
     cols: u16,
     rows: u16,
     extra_args: String,
+    color_scheme: Option<String>,
 ) -> Result<u64, String> {
     if !Path::new(&cwd).is_dir() {
         return Err("项目目录已不存在，无法创建会话".to_string());
     }
     let command = agents::source(&agent)?.new_session_command().with_extra_args(&extra_args);
-    pty::spawn(app, cwd, command, cols, rows)
+    pty::spawn(app, cwd, command, cols, rows, color_scheme.as_deref())
 }
 
 #[tauri::command]

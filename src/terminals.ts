@@ -65,6 +65,7 @@ export interface TerminalTab {
   turnStateSource: TerminalTurnSignalSource | null
   turnStateUpdatedAt: number
   lastOutputAt: number
+  pendingAnsiBytes: Uint8Array | null
   lastSessionActivityAt: number
   turnWatchPath: string | null
   /** 兼容旧调用点；语义等同于 processState 的旧命名。 */
@@ -137,6 +138,10 @@ function isDarkActive(): boolean {
   return document.documentElement.classList.contains('theme-dark')
 }
 
+function terminalColorScheme(): 'light' | 'dark' {
+  return isDarkActive() ? 'dark' : 'light'
+}
+
 function terminalTheme(tab: TerminalTab) {
   const base = xtermTheme(isDarkActive())
   if (!tab.quietCursor) return base
@@ -194,6 +199,144 @@ function base64ToBytes(b64: string): Uint8Array {
   const out = new Uint8Array(bin.length)
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
   return out
+}
+
+function asciiFromBytes(bytes: Uint8Array, start: number, end: number): string {
+  let out = ''
+  for (let i = start; i < end; i++) out += String.fromCharCode(bytes[i])
+  return out
+}
+
+function isDarkAnsiColor(value: string): boolean {
+  const n = Number(value)
+  if (!Number.isInteger(n)) return false
+  return n === 0 || n === 8 || (n >= 232 && n <= 244)
+}
+
+function isDarkRgb(r: string, g: string, b: string): boolean {
+  const rv = Number(r)
+  const gv = Number(g)
+  const bv = Number(b)
+  if (![rv, gv, bv].every((v) => Number.isInteger(v) && v >= 0 && v <= 255)) return false
+  return rv * 0.299 + gv * 0.587 + bv * 0.114 < 96
+}
+
+function normalizeLightSgrSemicolon(params: string): string {
+  const parts = params === '' ? ['0'] : params.split(';')
+  const out: string[] = []
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i] === '' ? '0' : parts[i]
+
+    if (part === '7') {
+      out.push('30', '48', '2', '245', '245', '245')
+      continue
+    }
+    if (part === '40' || part === '47' || part === '100' || part === '107') {
+      out.push('49')
+      continue
+    }
+    if (part === '48' && parts[i + 1] === '5' && isDarkAnsiColor(parts[i + 2] ?? '')) {
+      out.push('49')
+      i += 2
+      continue
+    }
+    if (
+      part === '48' &&
+      parts[i + 1] === '2' &&
+      isDarkRgb(parts[i + 2] ?? '', parts[i + 3] ?? '', parts[i + 4] ?? '')
+    ) {
+      out.push('49')
+      i += 4
+      continue
+    }
+
+    out.push(part)
+  }
+
+  return out.join(';')
+}
+
+function normalizeLightSgrColon(params: string): string {
+  return params
+    .replace(/(^|;)48:5:(\d+)(?=;|$)/g, (match, sep: string, color: string) =>
+      isDarkAnsiColor(color) ? `${sep}49` : match,
+    )
+    .replace(
+      /(^|;)48:2:(\d+):(\d+):(\d+)(?=;|$)/g,
+      (match, sep: string, r: string, g: string, b: string) =>
+        isDarkRgb(r, g, b) ? `${sep}49` : match,
+    )
+}
+
+function normalizeLightSgr(params: string): string | null {
+  const normalized = normalizeLightSgrColon(normalizeLightSgrSemicolon(params))
+  return normalized === params ? null : normalized
+}
+
+function findIncompleteCsiStart(bytes: Uint8Array): number {
+  if (bytes.length > 0 && bytes[bytes.length - 1] === 0x1b) return bytes.length - 1
+  for (let i = Math.max(0, bytes.length - 32); i < bytes.length - 1; i++) {
+    if (bytes[i] !== 0x1b || bytes[i + 1] !== 0x5b) continue
+    let complete = false
+    for (let j = i + 2; j < bytes.length; j++) {
+      if (bytes[j] >= 0x40 && bytes[j] <= 0x7e) {
+        complete = true
+        break
+      }
+    }
+    if (!complete) return i
+  }
+  return -1
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length)
+  out.set(a)
+  out.set(b, a.length)
+  return out
+}
+
+function normalizeLightAnsiBackground(
+  bytes: Uint8Array,
+  pending: Uint8Array | null,
+): { bytes: Uint8Array; pending: Uint8Array | null } {
+  bytes = pending ? concatBytes(pending, bytes) : bytes
+  const incompleteStart = findIncompleteCsiStart(bytes)
+  const source = incompleteStart >= 0 ? bytes.subarray(0, incompleteStart) : bytes
+  const nextPending = incompleteStart >= 0 ? bytes.subarray(incompleteStart) : null
+  let out: number[] | null = null
+  let copiedUntil = 0
+
+  for (let i = 0; i < source.length - 2; i++) {
+    if (source[i] !== 0x1b || source[i + 1] !== 0x5b) continue
+
+    let end = i + 2
+    while (end < source.length && !(source[end] >= 0x40 && source[end] <= 0x7e)) end++
+    if (end >= source.length) break
+    if (source[end] !== 0x6d) {
+      i = end
+      continue
+    }
+
+    const normalized = normalizeLightSgr(asciiFromBytes(source, i + 2, end))
+    if (normalized === null) {
+      i = end
+      continue
+    }
+
+    if (out === null) out = []
+    for (let j = copiedUntil; j < i; j++) out.push(source[j])
+    out.push(0x1b, 0x5b)
+    for (let j = 0; j < normalized.length; j++) out.push(normalized.charCodeAt(j))
+    out.push(0x6d)
+    copiedUntil = end + 1
+    i = end
+  }
+
+  if (out === null) return { bytes: source, pending: nextPending }
+  for (let i = copiedUntil; i < source.length; i++) out.push(source[i])
+  return { bytes: new Uint8Array(out), pending: nextPending }
 }
 
 // ============================ 查询 ============================
@@ -499,6 +642,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     turnStateUpdatedAt: Date.now(),
     lastOutputAt: 0,
     lastSessionActivityAt: 0,
+    pendingAnsiBytes: null,
     turnWatchPath: null,
     status: 'spawning',
   }) as TerminalTab
@@ -552,8 +696,9 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   let ptyId: number
   try {
     const extra = launchArgs.value[opts.agent as keyof typeof launchArgs.value] || ''
+    const colorScheme = terminalColorScheme()
     ptyId = isNew
-      ? await api.ptySpawnNew(opts.agent, opts.cwd, cols, rows, extra)
+      ? await api.ptySpawnNew(opts.agent, opts.cwd, cols, rows, extra, colorScheme)
       : await api.ptySpawn(
           opts.agent,
           opts.sessionId,
@@ -562,6 +707,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
           cols,
           rows,
           extra,
+          colorScheme,
         )
   } catch (e) {
     setProcessState(tab, 'error')
@@ -579,7 +725,15 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     if (e.payload.id !== ptyId) return
     tab.lastOutputAt = Date.now()
     markTerminalOutputBusy(tab)
-    term.write(base64ToBytes(e.payload.base64))
+    const bytes = base64ToBytes(e.payload.base64)
+    if (tab.agent === 'codex' && terminalColorScheme() === 'light') {
+      const normalized = normalizeLightAnsiBackground(bytes, tab.pendingAnsiBytes)
+      tab.pendingAnsiBytes = normalized.pending
+      term.write(normalized.bytes)
+    } else {
+      tab.pendingAnsiBytes = null
+      term.write(bytes)
+    }
   })
   tab.unlistenExit = await listen<{ id: number; code: number }>('pty://exit', (e) => {
     if (e.payload.id !== ptyId) return
