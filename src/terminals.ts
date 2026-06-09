@@ -26,10 +26,25 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { Agent } from './types'
 import { theme, launchArgs } from './settings'
 import * as api from './api'
+import {
+  applyPendingTurnState,
+  applyTurnSignal,
+  clearLocalWorkingTurn,
+  markSessionActivity,
+  rememberPendingTurnState,
+  setProcessState,
+  setTurnState,
+  type TerminalProcessState,
+  type TerminalTurnSignalSource,
+  type TerminalTurnState,
+} from './tabStatus'
 
-export type TerminalProcessState = 'spawning' | 'alive' | 'exited' | 'error'
-export type TerminalTurnState = 'idle' | 'working' | 'blocked' | 'review' | 'error' | 'unknown'
-export type TerminalTurnSignalSource = 'pty' | 'session' | 'agent'
+export type {
+  TerminalProcessState,
+  TerminalTurnEventState,
+  TerminalTurnSignalSource,
+  TerminalTurnState,
+} from './tabStatus'
 
 export interface TerminalTab {
   /** 本地稳定 id，供 v-for 用；和后端 pty id 是两套号 */
@@ -65,6 +80,7 @@ export interface TerminalTab {
   turnStateSource: TerminalTurnSignalSource | null
   turnStateUpdatedAt: number
   lastOutputAt: number
+  pendingAnsiBytes: Uint8Array | null
   lastSessionActivityAt: number
   turnWatchPath: string | null
   /** 兼容旧调用点；语义等同于 processState 的旧命名。 */
@@ -76,10 +92,6 @@ export interface TerminalTab {
 export const tabs = ref<TerminalTab[]>([])
 export const activeUiId = ref<number | null>(null)
 let nextUiId = 1
-const pendingTurnStates = new Map<
-  string,
-  { state: TerminalTurnState; source: TerminalTurnSignalSource; updatedAt: number }
->()
 
 // ============================ 主题 ============================
 
@@ -135,6 +147,10 @@ function xtermTheme(isDark: boolean) {
 
 function isDarkActive(): boolean {
   return document.documentElement.classList.contains('theme-dark')
+}
+
+function terminalColorScheme(): 'light' | 'dark' {
+  return isDarkActive() ? 'dark' : 'light'
 }
 
 function terminalTheme(tab: TerminalTab) {
@@ -196,6 +212,144 @@ function base64ToBytes(b64: string): Uint8Array {
   return out
 }
 
+function asciiFromBytes(bytes: Uint8Array, start: number, end: number): string {
+  let out = ''
+  for (let i = start; i < end; i++) out += String.fromCharCode(bytes[i])
+  return out
+}
+
+function isDarkAnsiColor(value: string): boolean {
+  const n = Number(value)
+  if (!Number.isInteger(n)) return false
+  return n === 0 || n === 8 || (n >= 232 && n <= 244)
+}
+
+function isDarkRgb(r: string, g: string, b: string): boolean {
+  const rv = Number(r)
+  const gv = Number(g)
+  const bv = Number(b)
+  if (![rv, gv, bv].every((v) => Number.isInteger(v) && v >= 0 && v <= 255)) return false
+  return rv * 0.299 + gv * 0.587 + bv * 0.114 < 96
+}
+
+function normalizeLightSgrSemicolon(params: string): string {
+  const parts = params === '' ? ['0'] : params.split(';')
+  const out: string[] = []
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i] === '' ? '0' : parts[i]
+
+    if (part === '7') {
+      out.push('30', '48', '2', '245', '245', '245')
+      continue
+    }
+    if (part === '40' || part === '47' || part === '100' || part === '107') {
+      out.push('49')
+      continue
+    }
+    if (part === '48' && parts[i + 1] === '5' && isDarkAnsiColor(parts[i + 2] ?? '')) {
+      out.push('49')
+      i += 2
+      continue
+    }
+    if (
+      part === '48' &&
+      parts[i + 1] === '2' &&
+      isDarkRgb(parts[i + 2] ?? '', parts[i + 3] ?? '', parts[i + 4] ?? '')
+    ) {
+      out.push('49')
+      i += 4
+      continue
+    }
+
+    out.push(part)
+  }
+
+  return out.join(';')
+}
+
+function normalizeLightSgrColon(params: string): string {
+  return params
+    .replace(/(^|;)48:5:(\d+)(?=;|$)/g, (match, sep: string, color: string) =>
+      isDarkAnsiColor(color) ? `${sep}49` : match,
+    )
+    .replace(
+      /(^|;)48:2:(\d+):(\d+):(\d+)(?=;|$)/g,
+      (match, sep: string, r: string, g: string, b: string) =>
+        isDarkRgb(r, g, b) ? `${sep}49` : match,
+    )
+}
+
+function normalizeLightSgr(params: string): string | null {
+  const normalized = normalizeLightSgrColon(normalizeLightSgrSemicolon(params))
+  return normalized === params ? null : normalized
+}
+
+function findIncompleteCsiStart(bytes: Uint8Array): number {
+  if (bytes.length > 0 && bytes[bytes.length - 1] === 0x1b) return bytes.length - 1
+  for (let i = Math.max(0, bytes.length - 32); i < bytes.length - 1; i++) {
+    if (bytes[i] !== 0x1b || bytes[i + 1] !== 0x5b) continue
+    let complete = false
+    for (let j = i + 2; j < bytes.length; j++) {
+      if (bytes[j] >= 0x40 && bytes[j] <= 0x7e) {
+        complete = true
+        break
+      }
+    }
+    if (!complete) return i
+  }
+  return -1
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length)
+  out.set(a)
+  out.set(b, a.length)
+  return out
+}
+
+function normalizeLightAnsiBackground(
+  bytes: Uint8Array,
+  pending: Uint8Array | null,
+): { bytes: Uint8Array; pending: Uint8Array | null } {
+  bytes = pending ? concatBytes(pending, bytes) : bytes
+  const incompleteStart = findIncompleteCsiStart(bytes)
+  const source = incompleteStart >= 0 ? bytes.subarray(0, incompleteStart) : bytes
+  const nextPending = incompleteStart >= 0 ? bytes.subarray(incompleteStart) : null
+  let out: number[] | null = null
+  let copiedUntil = 0
+
+  for (let i = 0; i < source.length - 2; i++) {
+    if (source[i] !== 0x1b || source[i + 1] !== 0x5b) continue
+
+    let end = i + 2
+    while (end < source.length && !(source[end] >= 0x40 && source[end] <= 0x7e)) end++
+    if (end >= source.length) break
+    if (source[end] !== 0x6d) {
+      i = end
+      continue
+    }
+
+    const normalized = normalizeLightSgr(asciiFromBytes(source, i + 2, end))
+    if (normalized === null) {
+      i = end
+      continue
+    }
+
+    if (out === null) out = []
+    for (let j = copiedUntil; j < i; j++) out.push(source[j])
+    out.push(0x1b, 0x5b)
+    for (let j = 0; j < normalized.length; j++) out.push(normalized.charCodeAt(j))
+    out.push(0x6d)
+    copiedUntil = end + 1
+    i = end
+  }
+
+  if (out === null) return { bytes: source, pending: nextPending }
+  for (let i = copiedUntil; i < source.length; i++) out.push(source[i])
+  return { bytes: new Uint8Array(out), pending: nextPending }
+}
+
 // ============================ 查询 ============================
 
 const findTab = (uiId: number) => tabs.value.find((t) => t.uiId === uiId)
@@ -218,7 +372,7 @@ function applySessionToTab(tab: TerminalTab, session: SessionForTabSync) {
     tab.title = session.title
   }
   ensureSessionTurnWatch(tab, true)
-  applyPendingTurnState(tab)
+  applyPendingTurnState(tab, activeUiId.value === tab.uiId)
 }
 
 /**
@@ -282,26 +436,6 @@ export function syncTabTitleBySessionPath(agent: Agent, sessionPath: string, tit
   }
 }
 
-function setProcessState(tab: TerminalTab, state: TerminalProcessState) {
-  tab.processState = state
-  tab.status = state === 'alive' ? 'running' : state
-}
-
-function setTurnState(
-  tab: TerminalTab,
-  state: TerminalTurnState,
-  source: TerminalTurnSignalSource,
-) {
-  tab.turnState = state
-  tab.turnStateSource = source
-  tab.turnStateUpdatedAt = Date.now()
-}
-
-function clearLocalWorkingTurn(tab: TerminalTab) {
-  if (tab.turnState !== 'working') return
-  setTurnState(tab, activeUiId.value === tab.uiId ? 'idle' : 'review', 'pty')
-}
-
 function isTerminalCancelInput(data: string) {
   return data === '\x1b' || data === '\x03'
 }
@@ -313,89 +447,55 @@ function tabsBySession(agent: Agent, sessionPath: string) {
   )
 }
 
-function turnStateKey(agent: Agent, sessionPath: string) {
-  return `${agent}\0${sessionPath}`
-}
-
-function rememberTurnState(agent: Agent, sessionPath: string, state: TerminalTurnState) {
-  if (!sessionPath) return
-  pendingTurnStates.set(turnStateKey(agent, sessionPath), {
-    state,
-    source: 'agent',
-    updatedAt: Date.now(),
-  })
-  if (pendingTurnStates.size > 200) {
-    const first = pendingTurnStates.keys().next().value
-    if (first) pendingTurnStates.delete(first)
-  }
-}
-
-function applyPendingTurnState(tab: TerminalTab) {
-  if (!tab.sessionPath) return
-  const key = turnStateKey(tab.agent, tab.sessionPath)
-  const pending = pendingTurnStates.get(key)
-  if (!pending) return
-  const state =
-    pending.state === 'idle' || pending.state === 'review'
-      ? activeUiId.value === tab.uiId
-        ? 'idle'
-        : 'review'
-      : pending.state
-  setTurnState(tab, state, pending.source)
-  tab.turnStateUpdatedAt = pending.updatedAt
-  pendingTurnStates.delete(key)
-}
-
 export function markTabSessionActivity(agent: Agent, sessionPath: string) {
   const now = Date.now()
   for (const tab of tabsBySession(agent, sessionPath)) {
     tab.lastSessionActivityAt = now
-    if (
-      tab.turnState !== 'blocked' &&
-      tab.turnState !== 'error' &&
-      !(tab.turnStateSource === 'agent' && (tab.turnState === 'idle' || tab.turnState === 'review'))
-    ) {
-      setTurnState(tab, 'working', 'session')
-    }
+    markSessionActivity(tab)
   }
 }
 
 export function markTabTurnStarted(agent: Agent, sessionPath: string) {
   const targets = tabsBySession(agent, sessionPath)
-  if (!targets.length) rememberTurnState(agent, sessionPath, 'working')
+  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'started', 'session-jsonl')
   for (const tab of targets) {
-    if (tab.turnState !== 'blocked' && tab.turnState !== 'error') {
-      setTurnState(tab, 'working', 'agent')
-    }
+    applyTurnSignal(tab, 'started', 'session-jsonl', activeUiId.value === tab.uiId)
   }
 }
 
 export function markTabTurnCompleted(agent: Agent, sessionPath: string) {
   const targets = tabsBySession(agent, sessionPath)
-  if (!targets.length) rememberTurnState(agent, sessionPath, 'review')
+  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'completed', 'session-jsonl')
   for (const tab of targets) {
-    setTurnState(tab, activeUiId.value === tab.uiId ? 'idle' : 'review', 'agent')
+    applyTurnSignal(tab, 'completed', 'session-jsonl', activeUiId.value === tab.uiId)
   }
 }
 
 export function markTabTurnBlocked(agent: Agent, sessionPath: string) {
   const targets = tabsBySession(agent, sessionPath)
-  if (!targets.length) rememberTurnState(agent, sessionPath, 'blocked')
+  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'blocked', 'session-jsonl')
   for (const tab of targets) {
-    setTurnState(tab, 'blocked', 'agent')
+    applyTurnSignal(tab, 'blocked', 'session-jsonl', activeUiId.value === tab.uiId)
   }
 }
 
 export function markTabTurnFailed(agent: Agent, sessionPath: string) {
   const targets = tabsBySession(agent, sessionPath)
-  if (!targets.length) rememberTurnState(agent, sessionPath, 'error')
+  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'failed', 'session-jsonl')
   for (const tab of targets) {
-    setTurnState(tab, 'error', 'agent')
+    applyTurnSignal(tab, 'failed', 'session-jsonl', activeUiId.value === tab.uiId)
+  }
+}
+
+export function markTabViewed(uiId: number) {
+  const tab = findTab(uiId)
+  if (tab?.turnState === 'review') {
+    setTurnState(tab, 'idle', 'session-jsonl')
   }
 }
 
 function shouldWatchSessionTurns(tab: TerminalTab) {
-  return (tab.agent === 'codex' || tab.agent === 'gemini') && !!tab.sessionPath
+  return (tab.agent === 'claude' || tab.agent === 'codex' || tab.agent === 'gemini') && !!tab.sessionPath
 }
 
 function ensureSessionTurnWatch(tab: TerminalTab, catchUp: boolean) {
@@ -452,7 +552,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
       fontSize: 13,
       fontFamily:
         '"SF Mono", "Menlo", "Consolas", "Liberation Mono", "Courier New", monospace',
-      cursorBlink: false,
+      cursorBlink: true,
       convertEol: false,
       allowProposedApi: true,
       scrollback: 5000,
@@ -499,6 +599,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     turnStateUpdatedAt: Date.now(),
     lastOutputAt: 0,
     lastSessionActivityAt: 0,
+    pendingAnsiBytes: null,
     turnWatchPath: null,
     status: 'spawning',
   }) as TerminalTab
@@ -552,8 +653,9 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   let ptyId: number
   try {
     const extra = launchArgs.value[opts.agent as keyof typeof launchArgs.value] || ''
+    const colorScheme = terminalColorScheme()
     ptyId = isNew
-      ? await api.ptySpawnNew(opts.agent, opts.cwd, cols, rows, extra)
+      ? await api.ptySpawnNew(opts.agent, opts.cwd, cols, rows, extra, colorScheme)
       : await api.ptySpawn(
           opts.agent,
           opts.sessionId,
@@ -562,10 +664,11 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
           cols,
           rows,
           extra,
+          colorScheme,
         )
   } catch (e) {
     setProcessState(tab, 'error')
-    setTurnState(tab, 'error', 'pty')
+    setTurnState(tab, 'error', 'pty-exit')
     tab.errorMessage = String(e)
     term.write(`\r\n\x1b[31m[error] ${e}\x1b[0m\r\n`)
     return
@@ -579,13 +682,21 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     if (e.payload.id !== ptyId) return
     tab.lastOutputAt = Date.now()
     markTerminalOutputBusy(tab)
-    term.write(base64ToBytes(e.payload.base64))
+    const bytes = base64ToBytes(e.payload.base64)
+    if (tab.agent === 'codex' && terminalColorScheme() === 'light') {
+      const normalized = normalizeLightAnsiBackground(bytes, tab.pendingAnsiBytes)
+      tab.pendingAnsiBytes = normalized.pending
+      term.write(normalized.bytes)
+    } else {
+      tab.pendingAnsiBytes = null
+      term.write(bytes)
+    }
   })
   tab.unlistenExit = await listen<{ id: number; code: number }>('pty://exit', (e) => {
     if (e.payload.id !== ptyId) return
     setProcessState(tab, 'exited')
     if (tab.turnState === 'working') {
-      setTurnState(tab, e.payload.code === 0 ? 'unknown' : 'error', 'pty')
+      setTurnState(tab, e.payload.code === 0 ? 'unknown' : 'error', 'pty-exit')
     }
     tab.exitCode = e.payload.code
     term.write(`\r\n\x1b[2m[process exited: ${e.payload.code}]\x1b[0m\r\n`)
@@ -596,9 +707,9 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     if (tab.ptyId === null || tab.processState !== 'alive') return
     tab.lastUserInputAt = Date.now()
     if (isTerminalCancelInput(data)) {
-      clearLocalWorkingTurn(tab)
+      clearLocalWorkingTurn(tab, activeUiId.value === tab.uiId)
     } else if ((data.includes('\r') || data.includes('\n')) && tab.turnState !== 'blocked') {
-      setTurnState(tab, 'working', 'pty')
+      setTurnState(tab, 'working', 'pty-input')
     }
     setQuietCursor(tab, false)
     const bytes = new TextEncoder().encode(data)
@@ -611,6 +722,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
 /** 切换激活 tab。`null` = 隐藏 TUI 层，露出 view（聊天/列表/统计/...）。 */
 export function setActive(uiId: number | null) {
   activeUiId.value = uiId
+  if (uiId !== null) markTabViewed(uiId)
 }
 
 /** 书签合并到真实项目时，把旧 projectKey 的 tab 迁移到新 key，避免 strip 过滤丢失。 */

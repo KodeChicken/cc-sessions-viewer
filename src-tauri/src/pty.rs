@@ -40,6 +40,28 @@ use tauri::{AppHandle, Emitter};
 
 use crate::agent_command::AgentCommand;
 
+#[derive(Clone, Copy)]
+enum PtyColorScheme {
+    Light,
+    Dark,
+}
+
+impl PtyColorScheme {
+    fn parse(value: Option<&str>) -> Self {
+        match value {
+            Some("dark") => Self::Dark,
+            _ => Self::Light,
+        }
+    }
+
+    fn colorfgbg(self) -> &'static str {
+        match self {
+            Self::Light => "0;15",
+            Self::Dark => "15;0",
+        }
+    }
+}
+
 struct PtyHandle {
     /// 保留 master 主要为了 resize（reader / writer 都已克隆出去）。
     master: Mutex<Box<dyn MasterPty + Send>>,
@@ -82,7 +104,11 @@ struct ExitPayload {
 ///
 /// `cwd` 已在 lib.rs 校验过是真实目录；`command` 已由 agent 构造并负责平台渲染。
 #[cfg(unix)]
-fn build_shell_command(cwd: &str, command: &AgentCommand) -> CommandBuilder {
+fn build_shell_command(
+    cwd: &str,
+    command: &AgentCommand,
+    color_scheme: PtyColorScheme,
+) -> CommandBuilder {
     #[cfg(target_os = "macos")]
     const DEFAULT_SHELL: &str = "/bin/zsh";
     #[cfg(not(target_os = "macos"))]
@@ -99,12 +125,18 @@ fn build_shell_command(cwd: &str, command: &AgentCommand) -> CommandBuilder {
     cmd.arg(&inner);
     cmd.env("TERM", "xterm-256color");
     cmd.env_remove("npm_config_prefix");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("COLORFGBG", color_scheme.colorfgbg());
     cmd.cwd(cwd);
     cmd
 }
 
 #[cfg(windows)]
-fn build_shell_command(cwd: &str, command: &AgentCommand) -> CommandBuilder {
+fn build_shell_command(
+    cwd: &str,
+    command: &AgentCommand,
+    color_scheme: PtyColorScheme,
+) -> CommandBuilder {
     // PowerShell 单引号字面串里 ' 用 '' 转义。
     let mut cmd = CommandBuilder::new("powershell.exe");
     cmd.arg("-NoLogo");
@@ -112,6 +144,8 @@ fn build_shell_command(cwd: &str, command: &AgentCommand) -> CommandBuilder {
     cmd.arg(crate::agent_command::powershell_set_location_and_run(cwd, command));
     // ConPTY 自己处理 VT 序列；TERM 对 Win 上的 Node CLI（claude / codex / gemini）也无害。
     cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("COLORFGBG", color_scheme.colorfgbg());
     cmd.cwd(cwd);
     cmd
 }
@@ -125,6 +159,7 @@ pub fn spawn(
     command: AgentCommand,
     cols: u16,
     rows: u16,
+    color_scheme: Option<&str>,
 ) -> Result<u64, String> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err("项目目录已不存在，无法启动终端".into());
@@ -141,7 +176,7 @@ pub fn spawn(
 
     // 按操作系统装配 shell 调用 —— 把 PATH 注入 + cwd 切换合并到一条命令里。
     // 见模块顶端注释，POSIX / Windows 各自的取舍都在那里。
-    let cmd = build_shell_command(&cwd, &command);
+    let cmd = build_shell_command(&cwd, &command, PtyColorScheme::parse(color_scheme));
 
     let child = pair
         .slave

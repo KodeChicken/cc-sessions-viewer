@@ -10,7 +10,8 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { Agent } from '../types'
 import type { TerminalTab } from '../terminals'
-import { tabs, activeUiId, setActive, closeTab } from '../terminals'
+import { tabs, activeUiId, setActive, closeTab, markTabViewed } from '../terminals'
+import { statusKind } from '../tabStatus'
 import { IconClose, IconChat, IconList, IconPlus, agentIcons } from './icons'
 import { t } from '../i18n'
 
@@ -62,16 +63,8 @@ function shortTitle(title: string): string {
   return title
 }
 
-function tabStatusKind(tab: TerminalTab) {
-  if (tab.turnState === 'error' || tab.processState === 'error') return 'error'
-  if (tab.processState === 'exited') return 'exited'
-  if (tab.turnState === 'blocked') return 'blocked'
-  if (tab.processState === 'spawning' || tab.turnState === 'working') return 'working'
-  if (tab.turnState === 'review' || tab.turnState === 'idle') return 'done'
-  return 'unknown'
-}
-
 function onTabClick(uiId: number) {
+  markTabViewed(uiId)
   // 点已激活的 tab 不做切换 —— 避免和"× 关闭"的视觉位置混淆。要回 view 用左侧的 meta tab。
   if (activeUiId.value === uiId) return
   setActive(uiId)
@@ -339,12 +332,12 @@ onUnmounted(() => {
       class="term-tab"
       :class="{
         active: activeUiId === tab.uiId,
-        'state-working': tabStatusKind(tab) === 'working',
-        'state-done': tabStatusKind(tab) === 'done',
-        'state-blocked': tabStatusKind(tab) === 'blocked',
-        'state-error': tabStatusKind(tab) === 'error',
-        'state-exited': tabStatusKind(tab) === 'exited',
-        'state-unknown': tabStatusKind(tab) === 'unknown',
+        'state-working': statusKind(tab) === 'working',
+        'state-done': statusKind(tab) === 'done',
+        'state-blocked': statusKind(tab) === 'blocked',
+        'state-error': statusKind(tab) === 'error',
+        'state-exited': statusKind(tab) === 'exited',
+        'state-unknown': statusKind(tab) === 'unknown',
       }"
       v-tooltip:bottom="tab.title"
       role="button"
@@ -357,7 +350,7 @@ onUnmounted(() => {
       <component :is="agentIcons[tab.agent]" class="term-tab-agent" :class="tab.agent" />
       <span class="term-tab-title">{{ shortTitle(tab.title) }}</span>
       <span
-        v-if="tabStatusKind(tab) === 'working'"
+        v-if="statusKind(tab) === 'working'"
         class="term-tab-status term-tab-status-working"
         aria-hidden="true"
       >
@@ -366,9 +359,9 @@ onUnmounted(() => {
         <i />
       </span>
       <span
-        v-else
+        v-else-if="statusKind(tab) !== 'none'"
         class="term-tab-status"
-        :class="'term-tab-status-' + tabStatusKind(tab)"
+        :class="'term-tab-status-' + statusKind(tab)"
         aria-hidden="true"
       />
       <span

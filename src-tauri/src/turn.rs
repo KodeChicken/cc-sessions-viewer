@@ -119,7 +119,7 @@ pub fn watch_session_turn(
     path: String,
     catch_up: bool,
 ) -> Result<(), String> {
-    if agent != "codex" && agent != "gemini" {
+    if agent != "claude" && agent != "codex" && agent != "gemini" {
         return Ok(());
     }
     let p = PathBuf::from(&path);
@@ -273,8 +273,87 @@ fn complete_jsonl_prefix_len(buf: &str) -> usize {
 fn infer_turn_state(agent: &str, line: &str) -> Option<&'static str> {
     let value: Value = serde_json::from_str(line.trim()).ok()?;
     match agent {
-        "codex" => crate::agents::codex::classify_turn_state(&value),
-        "gemini" => crate::agents::gemini::classify_turn_state(&value),
+        "claude" => infer_claude_turn_state(&value),
+        "codex" => infer_codex_turn_state(&value),
+        "gemini" => infer_gemini_turn_state(&value),
+        _ => None,
+    }
+}
+
+fn infer_claude_turn_state(value: &Value) -> Option<&'static str> {
+    match value.get("type").and_then(Value::as_str)? {
+        "user" => {
+            if value.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
+                None
+            } else {
+                Some("started")
+            }
+        }
+        "attachment" => {
+            if value
+                .get("attachment")
+                .and_then(|attachment| attachment.get("type"))
+                .and_then(Value::as_str)
+                == Some("queued_command")
+            {
+                Some("started")
+            } else {
+                None
+            }
+        }
+        "assistant" => {
+            if value.get("message").is_some() {
+                Some("completed")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn infer_codex_turn_state(value: &Value) -> Option<&'static str> {
+    if value.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    match payload.get("type").and_then(Value::as_str)? {
+        "task_started" => Some("started"),
+        "user_message" => Some("started"),
+        "task_complete" => Some("completed"),
+        "agent_message" => {
+            if payload.get("phase").and_then(Value::as_str) == Some("commentary") {
+                None
+            } else {
+                Some("completed")
+            }
+        }
+        "task_failed" => Some("failed"),
+        "error" => Some("failed"),
+        _ => None,
+    }
+}
+
+fn infer_gemini_turn_state(value: &Value) -> Option<&'static str> {
+    match value.get("type").and_then(Value::as_str)? {
+        "user" => Some("started"),
+        "gemini" => {
+            let content_done = value
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|content| !content.trim().is_empty());
+            let token_done = value.get("tokens").is_some_and(|tokens| {
+                let output = tokens.get("output").and_then(Value::as_u64).unwrap_or(0);
+                let thoughts = tokens.get("thoughts").and_then(Value::as_u64).unwrap_or(0);
+                output > 0 || thoughts > 0
+            });
+            if content_done || token_done {
+                Some("completed")
+            } else {
+                None
+            }
+        }
+        "error" => Some("failed"),
         _ => None,
     }
 }
