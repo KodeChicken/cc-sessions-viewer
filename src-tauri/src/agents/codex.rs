@@ -280,7 +280,7 @@ fn app_server_response(
     loop {
         let line = rx
             .recv_timeout(timeout)
-            .map_err(|_| format!("等待 app-server 响应超时: {id}"))?;
+            .map_err(|_| format!("Timed out waiting for app-server response: {id}"))?;
         let value: Value = match serde_json::from_str(&line) {
             Ok(value) => value,
             Err(_) => continue,
@@ -289,7 +289,7 @@ fn app_server_response(
             continue;
         }
         if let Some(error) = value.get("error") {
-            return Err(format!("app-server 错误: {error}"));
+            return Err(format!("app-server error: {error}"));
         }
         return Ok(value.get("result").cloned().unwrap_or(Value::Null));
     }
@@ -304,7 +304,7 @@ fn query_codex_app_thread_list() -> CodexAppListSnapshot {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("启动 codex app-server 失败: {e}"))?;
+            .map_err(|e| format!("Failed to launch codex app-server: {e}"))?;
 
         let scan = (|| -> Result<CodexAppListSnapshot, String> {
             if let Some(stderr) = child.stderr.take() {
@@ -318,11 +318,11 @@ fn query_codex_app_thread_list() -> CodexAppListSnapshot {
             let stdout = child
                 .stdout
                 .take()
-                .ok_or_else(|| "app-server stdout 不可用".to_string())?;
+                .ok_or_else(|| "app-server stdout not available".to_string())?;
             let mut stdin = child
                 .stdin
                 .take()
-                .ok_or_else(|| "app-server stdin 不可用".to_string())?;
+                .ok_or_else(|| "app-server stdin not available".to_string())?;
 
             let (tx, rx) = mpsc::channel();
             thread::spawn(move || {
@@ -348,10 +348,10 @@ fn query_codex_app_thread_list() -> CodexAppListSnapshot {
                     },
                 })
             )
-            .map_err(|e| format!("写入 initialize 失败: {e}"))?;
+            .map_err(|e| format!("Failed to write initialize: {e}"))?;
             stdin
                 .flush()
-                .map_err(|e| format!("flush initialize 失败: {e}"))?;
+                .map_err(|e| format!("Failed to flush initialize: {e}"))?;
             let _ = app_server_response(&rx, 1, Duration::from_secs(5))?;
 
             let mut threads = HashMap::new();
@@ -384,10 +384,10 @@ fn query_codex_app_thread_list() -> CodexAppListSnapshot {
                         "params": Value::Object(params),
                     })
                 )
-                .map_err(|e| format!("写入 thread/list 失败: {e}"))?;
+                .map_err(|e| format!("Failed to write thread/list: {e}"))?;
                 stdin
                     .flush()
-                    .map_err(|e| format!("flush thread/list 失败: {e}"))?;
+                    .map_err(|e| format!("Failed to flush thread/list: {e}"))?;
                 let response = app_server_response(&rx, request_id, Duration::from_secs(8))?;
                 request_id += 1;
 
@@ -534,7 +534,7 @@ fn first_user_text(fp: &Path) -> String {
             }
         }
     }
-    "(无标题会话)".to_string()
+    "(untitled session)".to_string()
 }
 
 /// Codex: `{"type":"input_image","image_url":"data:...|http..."}`
@@ -795,7 +795,7 @@ fn scan(
         .or(thread_name)
         .unwrap_or_else(|| {
             if first_user_title.is_empty() {
-                "(无标题会话)".to_string()
+                "(untitled session)".to_string()
             } else {
                 first_user_title
             }
@@ -833,7 +833,7 @@ fn read_with_title_index(
     path: &str,
     title_index: &HashMap<String, TitleIndexEntry>,
 ) -> Result<Vec<Msg>, String> {
-    let file = fs::File::open(path).map_err(|e| format!("打开会话失败: {e}"))?;
+    let file = fs::File::open(path).map_err(|e| format!("Failed to open session: {e}"))?;
     let mut msgs = Vec::new();
     let mut pending_user_images: Vec<Block> = Vec::new();
     let mut apply_patch_by_call_id: HashMap<String, usize> = HashMap::new();
@@ -1243,21 +1243,21 @@ impl SessionSource for CodexSource {
         // 原子替换：先写到同目录下的临时文件，再 rename 覆盖
         let parent = idx_path
             .parent()
-            .ok_or_else(|| "session_index 父目录不存在".to_string())?;
-        fs::create_dir_all(parent).map_err(|e| format!("创建 .codex 目录失败: {e}"))?;
+            .ok_or_else(|| "session_index parent directory does not exist".to_string())?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create .codex directory: {e}"))?;
         let tmp_path = parent.join(format!(".session_index.{}.tmp", now_ms));
         {
             let mut tmp = fs::File::create(&tmp_path)
-                .map_err(|e| format!("打开 session_index 临时文件失败: {e}"))?;
+                .map_err(|e| format!("Failed to open session_index temp file: {e}"))?;
             for line in &retained {
                 tmp.write_all(line.as_bytes())
-                    .map_err(|e| format!("写入 session_index 行失败: {e}"))?;
+                    .map_err(|e| format!("Failed to write session_index entry: {e}"))?;
                 tmp.write_all(b"\n")
-                    .map_err(|e| format!("写入 session_index 换行失败: {e}"))?;
+                    .map_err(|e| format!("Failed to write session_index newline: {e}"))?;
             }
-            tmp.flush().map_err(|e| format!("flush 失败: {e}"))?;
+            tmp.flush().map_err(|e| format!("flush failed: {e}"))?;
         }
-        fs::rename(&tmp_path, &idx_path).map_err(|e| format!("替换 session_index 失败: {e}"))?;
+        fs::rename(&tmp_path, &idx_path).map_err(|e| format!("Failed to replace session_index: {e}"))?;
 
         // 3) 真正权威：~/.codex/state_<N>.sqlite 的 threads.title 列。
         // 如果只改 session_index.jsonl 不改 sqlite，picker 仍会显示旧 title。
@@ -1265,12 +1265,12 @@ impl SessionSource for CodexSource {
         if let Some(db_path) = find_state_db() {
             let now_secs = (now_ms / 1000) as i64;
             let conn = rusqlite::Connection::open(&db_path)
-                .map_err(|e| format!("打开 codex sqlite 失败: {e}"))?;
+                .map_err(|e| format!("Failed to open codex sqlite: {e}"))?;
             conn.execute(
                 "UPDATE threads SET title = ?1, updated_at = ?2 WHERE id = ?3",
                 rusqlite::params![trimmed, now_secs, &codex_id],
             )
-            .map_err(|e| format!("更新 threads.title 失败: {e}"))?;
+            .map_err(|e| format!("Failed to update threads.title: {e}"))?;
         }
         Ok(())
     }

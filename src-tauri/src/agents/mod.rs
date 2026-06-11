@@ -557,13 +557,13 @@ fn match_snippet(hay: &str, q: &str) -> Option<String> {
     )
 }
 
-/// 按 agent 名拿到一个具体的会话源。未知 agent 返回错误，调用方应直接透传给前端。
+/// 按 agent 名拿到一个具体的会话源。Unknown agent 返回错误，调用方应直接透传给前端。
 pub fn source(agent: &str) -> Result<Box<dyn SessionSource>, String> {
     match agent {
         "claude" => Ok(Box::new(claude::ClaudeSource)),
         "codex" => Ok(Box::new(codex::CodexSource)),
         "gemini" => Ok(Box::new(gemini::GeminiSource)),
-        other => Err(format!("未知 agent: {other}")),
+        other => Err(format!("Unknown agent: {other}")),
     }
 }
 

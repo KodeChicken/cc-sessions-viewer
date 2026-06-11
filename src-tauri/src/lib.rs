@@ -223,10 +223,10 @@ fn cancel_search() {
 fn rename_session(agent: String, path: String, name: String) -> Result<(), String> {
     let fp = PathBuf::from(&path);
     if !fp.exists() {
-        return Err("会话文件不存在".to_string());
+        return Err("Session file does not exist".to_string());
     }
     if !is_jsonl(&fp) {
-        return Err("不是 JSONL 文件".to_string());
+        return Err("Not a JSONL file".to_string());
     }
     agents::source(&agent)?.rename_session(&fp, &name)
 }
@@ -273,14 +273,14 @@ fn pty_spawn(
     color_scheme: Option<String>,
 ) -> Result<u64, String> {
     if !Path::new(&cwd).is_dir() {
-        return Err("项目目录已不存在，无法恢复".to_string());
+        return Err("Project directory no longer exists".to_string());
     }
     if session_id.is_empty()
         || !session_id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-')
     {
-        return Err("会话 ID 非法".to_string());
+        return Err("Invalid session ID".to_string());
     }
     let command = agents::source(&agent)?.resume_command(&session_id, &path).with_extra_args(&extra_args);
     pty::spawn(app, cwd, command, cols, rows, color_scheme.as_deref())
@@ -298,7 +298,7 @@ fn pty_spawn_new(
     color_scheme: Option<String>,
 ) -> Result<u64, String> {
     if !Path::new(&cwd).is_dir() {
-        return Err("项目目录已不存在，无法创建会话".to_string());
+        return Err("Project directory no longer exists".to_string());
     }
     let command = agents::source(&agent)?.new_session_command().with_extra_args(&extra_args);
     pty::spawn(app, cwd, command, cols, rows, color_scheme.as_deref())
@@ -330,7 +330,7 @@ fn resume_session(
     terminal_app: String,
 ) -> Result<(), String> {
     if !Path::new(&cwd).is_dir() {
-        return Err("项目目录已不存在，无法恢复".to_string());
+        return Err("Project directory no longer exists".to_string());
     }
     // id 校验：Claude/Codex 为 UUID，Gemini 为 session-<startTime>-<id8>
     if session_id.is_empty()
@@ -338,7 +338,7 @@ fn resume_session(
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-')
     {
-        return Err("会话 ID 非法".to_string());
+        return Err("Invalid session ID".to_string());
     }
     let command = agents::source(&agent)?.resume_command(&session_id, &path).with_extra_args(&extra_args);
     spawn_terminal(&command, &cwd, &terminal_app)
@@ -348,7 +348,7 @@ fn resume_session(
 #[tauri::command]
 fn new_session(agent: String, cwd: String, extra_args: String, terminal_app: String) -> Result<(), String> {
     if !Path::new(&cwd).is_dir() {
-        return Err("项目目录已不存在，无法创建会话".to_string());
+        return Err("Project directory no longer exists".to_string());
     }
     let command = agents::source(&agent)?.new_session_command().with_extra_args(&extra_args);
     spawn_terminal(&command, &cwd, &terminal_app)
@@ -363,7 +363,7 @@ fn resolve_bin(name: &str) -> Result<PathBuf, String> {
     let output = std::process::Command::new(&shell)
         .args(["-l", "-c", &format!("which {name}")])
         .output()
-        .map_err(|e| format!("无法通过 shell 解析 {name}: {e}"))?;
+        .map_err(|e| format!("Failed to resolve {name} via shell: {e}"))?;
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if output.status.success() && !path.is_empty() {
         return Ok(PathBuf::from(path));
@@ -379,23 +379,23 @@ fn resolve_bin(name: &str) -> Result<PathBuf, String> {
             return Ok(pb);
         }
     }
-    Err(format!("未找到 {name}，请确认已安装并在 PATH 中"))
+    Err(format!("{name} not found — make sure it is installed and in your PATH"))
 }
 
 #[cfg(target_os = "macos")]
 fn create_terminal_script(tab_name: &str, shell_cmd: &str) -> Result<String, String> {
     use std::os::unix::fs::PermissionsExt;
     let dir = std::env::temp_dir().join("cc-sessions-viewer");
-    fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create temp dir: {e}"))?;
     let path = dir.join(format!("resume-{}.command", std::process::id()));
     let content = format!(
         "#!/bin/zsh\n\
          printf '\\033]0;{tab_name}\\007'\n\
          {shell_cmd}\n"
     );
-    fs::write(&path, &content).map_err(|e| format!("写入脚本失败: {e}"))?;
+    fs::write(&path, &content).map_err(|e| format!("Failed to write script: {e}"))?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
-        .map_err(|e| format!("设置权限失败: {e}"))?;
+        .map_err(|e| format!("Failed to set permissions: {e}"))?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -434,7 +434,7 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                     ])
                     .arg(&cli)
                     .spawn()
-                    .map_err(|e| format!("启动 Ghostty 失败: {e}"))?;
+                    .map_err(|e| format!("Failed to launch Ghostty: {e}"))?;
             }
             "cmux" => {
                 let cmux_bin = resolve_bin("cmux")?;
@@ -519,7 +519,7 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                         std::process::Command::new(&cmux_bin)
                             .args(["send-key", "--workspace", &ws_ref, "enter"])
                             .spawn()
-                            .map_err(|e| format!("启动 cmux 失败: {e}"))?;
+                            .map_err(|e| format!("Failed to launch cmux: {e}"))?;
                     }
                 } else {
                     let ws_name = Path::new(cwd)
@@ -542,7 +542,7 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                     std::process::Command::new(&cmux_bin)
                         .args(&args)
                         .spawn()
-                        .map_err(|e| format!("启动 cmux 失败: {e}"))?;
+                        .map_err(|e| format!("Failed to launch cmux: {e}"))?;
                 }
             }
             // iTerm2 / Warp / Terminal.app: 写临时脚本 + open -a，不需要辅助功能权限
@@ -560,7 +560,7 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                 std::process::Command::new("open")
                     .args(["-a", app_name, &script_path])
                     .spawn()
-                    .map_err(|e| format!("启动 {app_name} 失败: {e}"))?;
+                    .map_err(|e| format!("Failed to launch {app_name}: {e}"))?;
             }
         }
     }
@@ -571,7 +571,7 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
         std::process::Command::new("cmd")
             .args(["/c", "start", "", "powershell.exe", "-NoExit", "-Command", &ps_cmd])
             .spawn()
-            .map_err(|e| format!("启动终端失败: {e}"))?;
+            .map_err(|e| format!("Failed to launch terminal: {e}"))?;
     }
 
     #[cfg(target_os = "linux")]
@@ -595,7 +595,7 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
             }
         }
         if !launched {
-            return Err("未找到可用的终端程序".to_string());
+            return Err("No terminal emulator found".to_string());
         }
     }
 
@@ -641,7 +641,7 @@ fn detect_terminals() -> Vec<String> {
 #[tauri::command]
 fn add_bookmark(agent: String, path: String) -> Result<(), String> {
     if !Path::new(&path).is_dir() {
-        return Err("目录不存在".to_string());
+        return Err("Directory does not exist".to_string());
     }
     bookmarks::add(&agent, &path)
 }
@@ -667,10 +667,10 @@ fn write_file(path: String, content: String) -> Result<String, String> {
     let p = PathBuf::from(&path);
     if let Some(parent) = p.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+            fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;
         }
     }
-    fs::write(&p, content).map_err(|e| format!("写入文件失败: {e}"))?;
+    fs::write(&p, content).map_err(|e| format!("Failed to write file: {e}"))?;
     Ok(p.to_string_lossy().to_string())
 }
 
@@ -683,14 +683,14 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
             .arg("-R")
             .arg(&path)
             .spawn()
-            .map_err(|e| format!("打开访达失败: {e}"))?;
+            .map_err(|e| format!("Failed to open Finder: {e}"))?;
     }
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("explorer")
             .arg(format!("/select,{}", path.replace('/', "\\")))
             .spawn()
-            .map_err(|e| format!("打开资源管理器失败: {e}"))?;
+            .map_err(|e| format!("Failed to open Explorer: {e}"))?;
     }
     #[cfg(target_os = "linux")]
     {
@@ -701,7 +701,7 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
         std::process::Command::new("xdg-open")
             .arg(&parent)
             .spawn()
-            .map_err(|e| format!("打开文件管理器失败: {e}"))?;
+            .map_err(|e| format!("Failed to open file manager: {e}"))?;
     }
     Ok(())
 }
@@ -711,28 +711,28 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
-        return Err("仅支持 http(s) 链接".to_string());
+        return Err("Only http(s) URLs are supported".to_string());
     }
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
             .arg(&url)
             .spawn()
-            .map_err(|e| format!("打开链接失败: {e}"))?;
+            .map_err(|e| format!("Failed to open URL: {e}"))?;
     }
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("cmd")
             .args(["/c", "start", "", &url])
             .spawn()
-            .map_err(|e| format!("打开链接失败: {e}"))?;
+            .map_err(|e| format!("Failed to open URL: {e}"))?;
     }
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
             .arg(&url)
             .spawn()
-            .map_err(|e| format!("打开链接失败: {e}"))?;
+            .map_err(|e| format!("Failed to open URL: {e}"))?;
     }
     Ok(())
 }
@@ -839,7 +839,7 @@ fn open_with_editor(path: &str, line: Option<u32>, column: Option<u32>) -> Resul
         }
         match cmd.spawn() {
             Ok(_) => return Ok(true),
-            Err(err) => return Err(format!("调用编辑器失败: {err}")),
+            Err(err) => return Err(format!("Failed to launch editor: {err}")),
         }
     }
     Ok(false)
@@ -852,7 +852,7 @@ fn open_local_path(path: String) -> Result<(), String> {
     let target = PathBuf::from(&file_path);
 
     if !target.is_absolute() {
-        return Err("仅支持绝对路径".to_string());
+        return Err("Only absolute paths are supported".to_string());
     }
 
     if open_with_editor(&file_path, line, column)? {
@@ -864,21 +864,21 @@ fn open_local_path(path: String) -> Result<(), String> {
         std::process::Command::new("open")
             .arg(&file_path)
             .spawn()
-            .map_err(|e| format!("打开本地文件失败: {e}"))?;
+            .map_err(|e| format!("Failed to open local file: {e}"))?;
     }
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("cmd")
             .args(["/c", "start", "", &file_path])
             .spawn()
-            .map_err(|e| format!("打开本地文件失败: {e}"))?;
+            .map_err(|e| format!("Failed to open local file: {e}"))?;
     }
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
             .arg(&file_path)
             .spawn()
-            .map_err(|e| format!("打开本地文件失败: {e}"))?;
+            .map_err(|e| format!("Failed to open local file: {e}"))?;
     }
     Ok(())
 }
@@ -967,9 +967,10 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init());
 
     // 开发期注入 MCP Bridge —— 让 AI 助手经 WebSocket 直接看/控这个 app（截图 /
-    // DOM 快照 / 执行 JS / 监控 IPC）。仅 debug：release 构建里这段被 cfg 去掉。
+    // DOM 快照 / 执行 JS / 监控 IPC）。feature "dev-mcp"（default 但 release
+    // 构建通过 --no-default-features 排除）控制是否编译链接。
     // 绑 127.0.0.1（默认是 0.0.0.0），避免把调试端口 9223 暴露到局域网。
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "dev-mcp")]
     let builder = builder.plugin(
         tauri_plugin_mcp_bridge::Builder::new()
             .bind_address("127.0.0.1")

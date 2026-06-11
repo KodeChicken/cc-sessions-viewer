@@ -8,7 +8,7 @@
 // 输入 = 一个 `Turn`（用户消息 + N 个 assistant call），输出 = TaskCategory。
 
 use once_cell::sync::Lazy;
-use regex::Regex;
+use regex_lite::Regex;
 
 use crate::stats::types::Turn;
 

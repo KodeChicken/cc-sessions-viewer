@@ -39,7 +39,7 @@ impl SessionSource for ClaudeSource {
     ) -> Result<Vec<ProjectInfo>, String> {
         let dir = projects_dir();
         let mut out = Vec::new();
-        let entries = fs::read_dir(&dir).map_err(|e| format!("读取项目目录失败: {e}"))?;
+        let entries = fs::read_dir(&dir).map_err(|e| format!("Failed to read project directory: {e}"))?;
         for e in entries.flatten() {
             let path = e.path();
             if !path.is_dir() {
@@ -92,7 +92,7 @@ impl SessionSource for ClaudeSource {
     ) -> Result<SessionPage, String> {
         let pdir = projects_dir().join(project_key);
         let mut files: Vec<(PathBuf, u64)> = Vec::new();
-        let entries = fs::read_dir(&pdir).map_err(|e| format!("读取会话目录失败: {e}"))?;
+        let entries = fs::read_dir(&pdir).map_err(|e| format!("Failed to read session directory: {e}"))?;
         for f in entries.flatten() {
             let fp = f.path();
             if is_jsonl(&fp) {
@@ -118,7 +118,7 @@ impl SessionSource for ClaudeSource {
     fn discover_stats_sessions(&self, project_key: &str) -> Result<Vec<SessionMeta>, String> {
         let pdir = projects_dir().join(project_key);
         let mut out: Vec<SessionMeta> = Vec::new();
-        let entries = fs::read_dir(&pdir).map_err(|e| format!("读取会话目录失败: {e}"))?;
+        let entries = fs::read_dir(&pdir).map_err(|e| format!("Failed to read session directory: {e}"))?;
         for f in entries.flatten() {
             let path = f.path();
             if is_jsonl(&path) {
@@ -397,7 +397,7 @@ fn stringify_tool_result(c: Option<&Value>) -> String {
                             parts.push(s.to_string());
                         }
                     }
-                    Some("image") => parts.push("[图片]".to_string()),
+                    Some("image") => parts.push("[image]".to_string()),
                     _ => {}
                 }
             }
@@ -592,7 +592,7 @@ fn scan(fp: &Path) -> SessionMeta {
     }
     let title = custom_title.unwrap_or_else(|| {
         if first_user_title.is_empty() {
-            "(无标题会话)".to_string()
+            "(untitled session)".to_string()
         } else {
             first_user_title
         }
@@ -617,7 +617,7 @@ fn scan(fp: &Path) -> SessionMeta {
 }
 
 fn read(path: &str) -> Result<Vec<Msg>, String> {
-    let file = fs::File::open(path).map_err(|e| format!("打开会话失败: {e}"))?;
+    let file = fs::File::open(path).map_err(|e| format!("Failed to open session: {e}"))?;
     let mut msgs = Vec::new();
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         if line.trim().is_empty() {
@@ -753,7 +753,7 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
                                         ..Default::default()
                                     });
                                 } else {
-                                    blocks.push(text_block("text", "[图片]"));
+                                    blocks.push(text_block("text", "[image]"));
                                 }
                             }
                             _ => {}

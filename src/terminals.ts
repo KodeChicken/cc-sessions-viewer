@@ -93,6 +93,87 @@ export const tabs = ref<TerminalTab[]>([])
 export const activeUiId = ref<number | null>(null)
 let nextUiId = 1
 
+// ============================ 持久化（懒恢复） ============================
+// 关窗 / 隐藏时把所有活跃 tab 的元数据存进 localStorage；重启后以 "saved"
+// 状态恢复到 strip 上（仅画 pill，不创建 xterm / PTY）。用户点击时才水合。
+
+const SAVED_TABS_KEY = 'savedTabs:v1'
+const SAVED_NAV_KEY = 'savedNav:v1'
+
+export interface SavedTab {
+  agent: Agent
+  projectKey: string
+  sessionId: string
+  sessionPath: string
+  title: string
+  cwd: string
+}
+
+export interface SavedNav {
+  agent: Agent
+  activeDir: string | null
+  /** 退出时如果在终端 tab 上，记录它的 sessionPath 以便重启时自动水合 */
+  activeSessionPath: string | null
+  /** 退出时的视图状态：'list' | 'tui' | 'welcome'（没选项目） */
+  view: 'list' | 'tui' | 'welcome'
+}
+
+export const savedTabs = ref<SavedTab[]>(loadSavedTabs())
+
+function loadSavedTabs(): SavedTab[] {
+  try {
+    const raw = localStorage.getItem(SAVED_TABS_KEY)
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr.filter(
+      (t: any) => t && t.agent && t.sessionId && t.sessionPath && t.cwd,
+    )
+  } catch {
+    return []
+  }
+}
+
+export function loadSavedNav(): SavedNav | null {
+  try {
+    const raw = localStorage.getItem(SAVED_NAV_KEY)
+    if (!raw) return null
+    const v = JSON.parse(raw)
+    if (!v || !v.agent) return null
+    return v
+  } catch {
+    return null
+  }
+}
+
+export function persistTabState(nav: SavedNav) {
+  const live: SavedTab[] = tabs.value
+    .filter((t) => t.sessionId && t.sessionPath)
+    .map((t) => ({
+      agent: t.agent,
+      projectKey: t.projectKey,
+      sessionId: t.sessionId,
+      sessionPath: t.sessionPath,
+      title: t.title,
+      cwd: t.cwd,
+    }))
+  // 合并：live tabs + 还没被水合的 saved tabs（避免切项目后丢掉未点过的恢复 tab）
+  const livePaths = new Set(live.map((t) => t.sessionPath))
+  const kept = savedTabs.value.filter((s) => !livePaths.has(s.sessionPath))
+  const all = [...live, ...kept]
+  localStorage.setItem(SAVED_TABS_KEY, JSON.stringify(all))
+  localStorage.setItem(SAVED_NAV_KEY, JSON.stringify(nav))
+}
+
+export function removeSavedTab(sessionPath: string) {
+  savedTabs.value = savedTabs.value.filter((t) => t.sessionPath !== sessionPath)
+}
+
+export function clearSavedTabs() {
+  savedTabs.value = []
+  localStorage.removeItem(SAVED_TABS_KEY)
+}
+
 // ============================ 主题 ============================
 
 function xtermTheme(isDark: boolean) {

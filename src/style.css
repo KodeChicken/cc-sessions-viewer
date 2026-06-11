@@ -2820,6 +2820,17 @@ details[open] > .block-summary > .chev {
   background: color-mix(in srgb, currentColor 16%, transparent);
   opacity: 1;
 }
+/* Saved (lazy-restore) tabs: dimmed + italic to distinguish from live tabs */
+.term-tab-saved {
+  opacity: 0.5;
+  border-style: dashed;
+}
+.term-tab-saved .term-tab-title {
+  font-style: italic;
+}
+.term-tab-saved:hover {
+  opacity: 0.8;
+}
 .term-tab-new {
   display: flex;
   align-items: center;

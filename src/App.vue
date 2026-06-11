@@ -85,7 +85,12 @@ import {
   markTabTurnFailed,
   migrateTabsProjectKey,
   tabs as tuiTabs,
+  persistTabState,
+  loadSavedNav,
+  savedTabs,
+  removeSavedTab,
   type TerminalTab,
+  type SavedTab,
 } from './terminals'
 
 // ---------- 状态 ----------
@@ -1586,6 +1591,21 @@ async function resumeHere(s: SessionMeta) {
   }
 }
 
+async function hydrateSavedTab(saved: SavedTab) {
+  try {
+    await openOrFocusTui({
+      agent: saved.agent,
+      projectKey: saved.projectKey,
+      sessionId: saved.sessionId,
+      sessionPath: saved.sessionPath,
+      title: saved.title,
+      cwd: saved.cwd,
+    })
+  } catch (e) {
+    notify(`${e}`, true)
+  }
+}
+
 /** 开一个全新会话 —— 根据设置决定走窗口内 TUI 还是外部终端。 */
 async function newSession() {
   const cwd = activeProject.value?.displayPath || ''
@@ -1643,14 +1663,70 @@ function appVisible() {
 }
 function onVisibilityChange() {
   if (document.visibilityState === 'visible') clearPendingLiveNotification()
+  if (document.visibilityState === 'hidden') saveTabState()
+}
+
+function saveTabState() {
+  const cur = currentActiveTab()
+  const view: 'list' | 'tui' | 'welcome' = cur
+    ? 'tui'
+    : activeDir.value
+      ? 'list'
+      : 'welcome'
+  persistTabState({
+    agent: agent.value,
+    activeDir: activeDir.value,
+    activeSessionPath: cur?.sessionPath ?? null,
+    view,
+  })
 }
 
 onMounted(() => {
-  loadProjects()
+  // 恢复上次退出时的侧栏导航状态
+  const nav = loadSavedNav()
+  if (nav) {
+    agent.value = nav.agent
+    activeDir.value = nav.activeDir
+  }
+
+  loadProjects().then(async () => {
+    // 退出时在终端 tab 上 → 自动水合那个 tab；同时把侧栏切到 tab 所属的项目
+    // （退出时可能在 A 项目看 tab，但 savedNav.activeDir 因旧格式或竞态存了 B）。
+    // 兼容旧格式：没有 view 字段时，有 activeSessionPath 就视为 'tui'。
+    const shouldHydrate = nav?.activeSessionPath &&
+      (nav.view === 'tui' || nav.view === undefined)
+    if (shouldHydrate) {
+      const target = savedTabs.value.find(
+        (s) => s.sessionPath === nav!.activeSessionPath,
+      )
+      if (target) {
+        activeDir.value = target.projectKey
+        await refreshSessions()
+        removeSavedTab(target.sessionPath)
+        await hydrateSavedTab(target)
+        return
+      }
+    }
+    if (activeDir.value) await refreshSessions()
+  })
   // 启动时拉一次回收站，让顶栏红点从一开始就准确（不必先打开回收站视图）
   api.listTrash().then((items) => { trash.value = items }).catch(() => {})
   // 检测可用终端，首次启动时自动选默认（有 cmux 就默认 cmux）
   api.detectTerminals().then(applyTerminalDefault).catch(() => {})
+
+  // 关窗 / 隐藏 / 退出时保存 tab 状态
+  window.addEventListener('beforeunload', saveTabState)
+
+  // 实时防抖存：状态变化时 500ms 后自动持久化，进程被 kill 也不丢状态。
+  // 只 watch 影响恢复的信号（agent / 项目 / 激活的 tab / tab 数量），
+  // 不 deep watch tuiTabs 内部高频字段（lastOutputAt / turnState 等）。
+  let saveTimer: number | null = null
+  const debouncedSave = () => {
+    if (saveTimer !== null) clearTimeout(saveTimer)
+    saveTimer = window.setTimeout(saveTabState, 500)
+  }
+  const tabCount = computed(() => tuiTabs.value.length)
+  watch([agent, activeDir, activeUiId, tabCount], debouncedSave)
   // 后台检查 GitHub release —— 缓存 24h，失败完全静默；结果驱动侧边栏 Settings
   // 按钮上的"有新版本"小红点。
   runBackgroundCheck()
@@ -1994,6 +2070,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
         @tab-closed="onTuiTabClosed"
         @tab-rename="openRenameFromTuiTab"
         @new-session="newSession"
+        @hydrate-saved="hydrateSavedTab"
       />
 
       <!-- view 层 / TUI 层 同时存在；activeUiId === null 时只显示 view，

@@ -27,8 +27,8 @@ fn write_all(map: &BookmarksMap) -> Result<(), String> {
     if let Some(parent) = p.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let json = serde_json::to_string_pretty(map).map_err(|e| format!("序列化失败: {e}"))?;
-    fs::write(&p, json).map_err(|e| format!("写入书签失败: {e}"))
+    let json = serde_json::to_string_pretty(map).map_err(|e| format!("Failed to serialize: {e}"))?;
+    fs::write(&p, json).map_err(|e| format!("Failed to write bookmarks: {e}"))
 }
 
 pub fn load(agent: &str) -> Vec<String> {

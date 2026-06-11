@@ -126,7 +126,7 @@ fn first_user_text(path: &Path) -> String {
             }
         }
     }
-    "(无标题会话)".to_string()
+    "(untitled session)".to_string()
 }
 
 /// 扫一个会话文件，构造 SessionMeta（廉价阶段：只算消息数、找标题、抓 sessionId）。
@@ -203,7 +203,7 @@ fn scan(fp: &Path) -> SessionMeta {
     };
     let title = renamed.unwrap_or_else(|| {
         if first_user.is_empty() {
-            "(无标题会话)".to_string()
+            "(untitled session)".to_string()
         } else {
             first_user
         }
@@ -323,7 +323,7 @@ pub fn classify_turn_state(value: &Value) -> Option<&'static str> {
 }
 
 fn read(path: &str) -> Result<Vec<Msg>, String> {
-    let file = fs::File::open(path).map_err(|e| format!("打开会话失败: {e}"))?;
+    let file = fs::File::open(path).map_err(|e| format!("Failed to open session: {e}"))?;
 
     // 按出现顺序收集 user / gemini 记录，同 id 出现时**替换原位置**为最新版本
     // —— Gemini 会渐进式追加 thoughts。无 id 的行按到达顺序追加。

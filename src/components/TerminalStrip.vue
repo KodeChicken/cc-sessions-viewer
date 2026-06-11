@@ -9,8 +9,8 @@
 
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { Agent } from '../types'
-import type { TerminalTab } from '../terminals'
-import { tabs, activeUiId, setActive, closeTab, markTabViewed } from '../terminals'
+import type { TerminalTab, SavedTab } from '../terminals'
+import { tabs, activeUiId, setActive, closeTab, markTabViewed, savedTabs, removeSavedTab } from '../terminals'
 import { statusKind } from '../tabStatus'
 import { IconClose, IconChat, IconList, IconPlus, agentIcons } from './icons'
 import { t } from '../i18n'
@@ -37,6 +37,7 @@ const emit = defineEmits<{
   tabRename: [tab: TerminalTab]
   /** 双击 tab 条空白处 —— 复用列表页加号的新建会话能力 */
   newSession: []
+  hydrateSaved: [saved: SavedTab]
 }>()
 
 const visibleTabs = computed(() =>
@@ -44,9 +45,22 @@ const visibleTabs = computed(() =>
     (t) => t.agent === props.agent && t.projectKey === (props.projectKey ?? ''),
   ),
 )
-// strip 只在有可见 PTY tab 时出现 —— 没 TUI 的时候这条只剩个孤零零的 List 按钮没意义
-// （此时主区已经显示列表 / 聊天，按钮的语义和现状重复）。
-const visible = computed(() => visibleTabs.value.length > 0)
+const visibleSaved = computed(() =>
+  savedTabs.value.filter(
+    (t) => t.agent === props.agent && t.projectKey === (props.projectKey ?? ''),
+  ),
+)
+const visible = computed(() => visibleTabs.value.length > 0 || visibleSaved.value.length > 0)
+
+function onSavedClick(saved: SavedTab) {
+  removeSavedTab(saved.sessionPath)
+  emit('hydrateSaved', saved)
+}
+
+function onSavedClose(saved: SavedTab, ev: Event) {
+  ev.stopPropagation()
+  removeSavedTab(saved.sessionPath)
+}
 const listActive = computed(
   () => activeUiId.value === null && !props.hasOpenSession,
 )
@@ -374,6 +388,30 @@ onUnmounted(() => {
       >
         <IconClose />
       </span>
+      </div>
+
+      <!-- Saved (lazy-restore) tabs: pill only, no xterm/PTY until clicked -->
+      <div
+        v-for="saved in visibleSaved"
+        :key="'saved:' + saved.sessionPath"
+        class="term-tab term-tab-saved"
+        v-tooltip:bottom="saved.title"
+        role="button"
+        tabindex="0"
+        @click="onSavedClick(saved)"
+      >
+        <component :is="agentIcons[saved.agent]" class="term-tab-agent" :class="saved.agent" />
+        <span class="term-tab-title">{{ shortTitle(saved.title) }}</span>
+        <span
+          class="term-tab-close"
+          v-tooltip:bottom="t('chat.tui.tabClose')"
+          role="button"
+          tabindex="0"
+          @click="onSavedClose(saved, $event)"
+          @keydown.enter.prevent="onSavedClose(saved, $event)"
+        >
+          <IconClose />
+        </span>
       </div>
     </div>
 

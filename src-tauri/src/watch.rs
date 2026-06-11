@@ -77,7 +77,7 @@ fn debounce_seq_map() -> &'static Mutex<std::collections::HashMap<String, u64>> 
 fn watch_root_for(path: &Path) -> Result<PathBuf, String> {
     path.parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| format!("无法确定父目录: {}", path.to_string_lossy()))
+        .ok_or_else(|| format!("Cannot determine parent directory: {}", path.to_string_lossy()))
 }
 
 /// debounce 窗口：notify 一次写入可能拆成多条事件，攒一拨再 emit。
@@ -104,7 +104,7 @@ struct PathPayload {
 pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
     if !p.exists() {
-        return Err(format!("文件不存在: {path}"));
+        return Err(format!("File does not exist: {path}"));
     }
     let watch_root = watch_root_for(&p)?;
 
@@ -153,11 +153,11 @@ pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), 
             });
         },
     )
-    .map_err(|e| format!("notify init 失败: {e}"))?;
+    .map_err(|e| format!("notify init failed: {e}"))?;
 
     watcher
         .watch(&watch_root, RecursiveMode::NonRecursive)
-        .map_err(|e| format!("watch 失败: {e}"))?;
+        .map_err(|e| format!("watch failed: {e}"))?;
 
     // notify 事件偶发漏报时，轮询兜底仍能把新消息补进来。process_change 内部会按
     // active watcher 校验 path/agent，并且只在 Msg 数增长时 emit 尾段，所以这里

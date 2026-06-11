@@ -22,7 +22,7 @@ pub fn trash_dir() -> PathBuf {
 pub fn soft_delete(agent: &str, path: &str, project_label: &str) -> Result<(), String> {
     let src = PathBuf::from(path);
     if !src.exists() {
-        return Err("会话文件不存在".to_string());
+        return Err("Session file does not exist".to_string());
     }
     let base = src
         .file_name()
@@ -38,7 +38,7 @@ pub fn soft_delete(agent: &str, path: &str, project_label: &str) -> Result<(), S
                 .and_then(|_| fs::remove_file(&src))
                 .map(|_| ())
         })
-        .map_err(|e| format!("移入回收站失败: {e}"))?;
+        .map_err(|e| format!("Failed to move to trash: {e}"))?;
     let meta = serde_json::json!({
         "agent": agent,
         "originalPath": path,
@@ -46,14 +46,14 @@ pub fn soft_delete(agent: &str, path: &str, project_label: &str) -> Result<(), S
         "deletedAt": now,
     });
     fs::write(td.join(format!("{trash_name}.meta")), meta.to_string())
-        .map_err(|e| format!("写入回收站元数据失败: {e}"))?;
+        .map_err(|e| format!("Failed to write trash metadata: {e}"))?;
     Ok(())
 }
 
 pub fn list() -> Result<Vec<TrashItem>, String> {
     let td = trash_dir();
     let mut out = Vec::new();
-    let entries = fs::read_dir(&td).map_err(|e| format!("读取回收站失败: {e}"))?;
+    let entries = fs::read_dir(&td).map_err(|e| format!("Failed to read trash: {e}"))?;
     for f in entries.flatten() {
         let fp = f.path();
         if !is_jsonl(&fp) {
@@ -104,31 +104,31 @@ pub fn restore(trash_file: &str) -> Result<(), String> {
     let src = td.join(trash_file);
     let meta_path = td.join(format!("{trash_file}.meta"));
     let s = fs::read_to_string(&meta_path)
-        .map_err(|_| "缺少元数据，无法确定恢复位置".to_string())?;
-    let v: Value = serde_json::from_str(&s).map_err(|e| format!("元数据损坏: {e}"))?;
+        .map_err(|_| "Missing metadata — cannot determine restore location".to_string())?;
+    let v: Value = serde_json::from_str(&s).map_err(|e| format!("Corrupted metadata: {e}"))?;
     let original_path = v
         .get("originalPath")
         .and_then(|x| x.as_str())
-        .ok_or("元数据缺少原始路径")?;
+        .ok_or("Metadata missing original path")?;
     let dest = PathBuf::from(original_path);
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;
     }
-    fs::rename(&src, &dest).map_err(|e| format!("恢复失败: {e}"))?;
+    fs::rename(&src, &dest).map_err(|e| format!("Failed to restore: {e}"))?;
     let _ = fs::remove_file(&meta_path);
     Ok(())
 }
 
 pub fn permanent_delete(trash_file: &str) -> Result<(), String> {
     let td = trash_dir();
-    fs::remove_file(td.join(trash_file)).map_err(|e| format!("永久删除失败: {e}"))?;
+    fs::remove_file(td.join(trash_file)).map_err(|e| format!("Failed to delete permanently: {e}"))?;
     let _ = fs::remove_file(td.join(format!("{trash_file}.meta")));
     Ok(())
 }
 
 pub fn empty() -> Result<(), String> {
     let td = trash_dir();
-    let entries = fs::read_dir(&td).map_err(|e| format!("读取回收站失败: {e}"))?;
+    let entries = fs::read_dir(&td).map_err(|e| format!("Failed to read trash: {e}"))?;
     for f in entries.flatten() {
         let _ = fs::remove_file(f.path());
     }

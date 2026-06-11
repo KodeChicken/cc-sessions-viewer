@@ -6,6 +6,24 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.1.9]
+
+### Features
+
+- **Terminal tab state persistence** — tabs are saved on exit and restored on next launch with lazy hydration (rendered as dashed pills, hydrated on click), avoiding N×xterm+PTY startup cost (fix #18)
+
+### Performance
+
+- **Replace `regex` with `regex-lite`** — binary size reduced by ~856KB; `regex-lite` drops Unicode tables and DFA engine, sufficient for the simple keyword patterns used in activity classification
+- **Remove `staticlib` crate-type** — eliminates redundant static library output from release builds
+- **Make `mcp-bridge` optional** — moved to an opt-in feature gate (`dev-mcp`), no longer linked in release builds
+- **Compress cmux icons** — resized from 843×844 to 128×128 (179K+100K → 17K+13K)
+
+### Bug Fixes
+
+- Fix topbar border 1px misalignment with sidebar
+- Replace all hardcoded Chinese error strings in Rust backend with English
+
 ## [v0.1.8]
 
 ### Features

@@ -44,7 +44,7 @@ fn session_turn_watches() -> &'static Mutex<HashMap<String, SessionTurnWatch>> {
 fn data_dir() -> Result<PathBuf, String> {
     let base = dirs::data_local_dir()
         .or_else(dirs::data_dir)
-        .ok_or_else(|| "无法定位本地数据目录".to_string())?;
+        .ok_or_else(|| "Cannot locate local data directory".to_string())?;
     Ok(base.join("cc-sessions-viewer"))
 }
 
@@ -60,16 +60,16 @@ const SESSION_TURN_POLL_MS: u64 = 1500;
 
 pub fn emit_turn_signal(app: &AppHandle, payload: TerminalTurnPayload) -> Result<(), String> {
     if payload.agent != "claude" && payload.agent != "codex" && payload.agent != "gemini" {
-        return Err("未知 agent".to_string());
+        return Err("Unknown agent".to_string());
     }
     if payload.path.trim().is_empty() {
-        return Err("缺少会话路径".to_string());
+        return Err("Missing session path".to_string());
     }
     if !matches!(
         payload.state.as_str(),
         "started" | "completed" | "blocked" | "failed"
     ) {
-        return Err("未知会话状态".to_string());
+        return Err("Unknown session state".to_string());
     }
     app.emit("terminal-turn://state", payload)
         .map_err(|e| e.to_string())
@@ -78,13 +78,13 @@ pub fn emit_turn_signal(app: &AppHandle, payload: TerminalTurnPayload) -> Result
 pub fn start_signal_watcher(app: AppHandle) -> Result<(), String> {
     let signal_path = signal_file_path()?;
     if let Some(parent) = signal_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建状态目录失败: {e}"))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create state directory: {e}"))?;
     }
     OpenOptions::new()
         .create(true)
         .append(true)
         .open(&signal_path)
-        .map_err(|e| format!("初始化状态文件失败: {e}"))?;
+        .map_err(|e| format!("Failed to initialize state file: {e}"))?;
 
     let offset = fs::metadata(&signal_path).map(|m| m.len()).unwrap_or(0);
     let app_for_cb = app.clone();
@@ -98,11 +98,11 @@ pub fn start_signal_watcher(app: AppHandle) -> Result<(), String> {
             process_signal_file(&app_for_cb, &path_for_cb);
         },
     )
-    .map_err(|e| format!("turn signal watcher 初始化失败: {e}"))?;
+    .map_err(|e| format!("Failed to initialize turn signal watcher: {e}"))?;
 
     watcher
         .watch(&signal_path, RecursiveMode::NonRecursive)
-        .map_err(|e| format!("监听状态文件失败: {e}"))?;
+        .map_err(|e| format!("Failed to watch state file: {e}"))?;
 
     let mut slot = signal_state().lock().map_err(|e| e.to_string())?;
     *slot = Some(SignalState {
@@ -124,7 +124,7 @@ pub fn watch_session_turn(
     }
     let p = PathBuf::from(&path);
     if !p.exists() {
-        return Err(format!("文件不存在: {path}"));
+        return Err(format!("File does not exist: {path}"));
     }
     let offset = if catch_up {
         0
@@ -134,7 +134,7 @@ pub fn watch_session_turn(
     let watch_root = p
         .parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| format!("无法确定父目录: {path}"))?;
+        .ok_or_else(|| format!("Cannot determine parent directory: {path}"))?;
     let app_for_cb = app.clone();
     let agent_for_cb = agent.clone();
     let agent_for_catchup = agent.clone();
@@ -149,11 +149,11 @@ pub fn watch_session_turn(
             process_session_turn_file(&app_for_cb, &agent_for_cb, &path_for_cb, &path_buf_for_cb);
         },
     )
-    .map_err(|e| format!("turn session watcher 初始化失败: {e}"))?;
+    .map_err(|e| format!("Failed to initialize turn session watcher: {e}"))?;
 
     watcher
         .watch(&watch_root, RecursiveMode::NonRecursive)
-        .map_err(|e| format!("监听会话状态失败: {e}"))?;
+        .map_err(|e| format!("Failed to watch session state: {e}"))?;
 
     let mut watches = session_turn_watches().lock().map_err(|e| e.to_string())?;
     watches.insert(
@@ -412,20 +412,20 @@ fn process_signal_file(app: &AppHandle, path: &Path) {
 pub fn install_claude_hooks() -> Result<String, String> {
     let signal_path = signal_file_path()?;
     if let Some(parent) = signal_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建状态目录失败: {e}"))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create state directory: {e}"))?;
     }
     OpenOptions::new()
         .create(true)
         .append(true)
         .open(&signal_path)
-        .map_err(|e| format!("初始化状态文件失败: {e}"))?;
+        .map_err(|e| format!("Failed to initialize state file: {e}"))?;
 
     let script_path = hook_script_path()?;
     write_hook_script(&script_path)?;
 
-    let home = dirs::home_dir().ok_or_else(|| "无法定位用户目录".to_string())?;
+    let home = dirs::home_dir().ok_or_else(|| "Cannot locate home directory".to_string())?;
     let claude_dir = home.join(".claude");
-    fs::create_dir_all(&claude_dir).map_err(|e| format!("创建 Claude 配置目录失败: {e}"))?;
+    fs::create_dir_all(&claude_dir).map_err(|e| format!("Failed to create Claude config directory: {e}"))?;
     let settings_path = claude_dir.join("settings.json");
 
     let mut settings = read_json_object(&settings_path)?;
@@ -437,7 +437,7 @@ pub fn install_claude_hooks() -> Result<String, String> {
 
     let formatted = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     fs::write(&settings_path, format!("{formatted}\n"))
-        .map_err(|e| format!("写入 Claude 配置失败: {e}"))?;
+        .map_err(|e| format!("Failed to write Claude config: {e}"))?;
 
     Ok(settings_path.to_string_lossy().to_string())
 }
@@ -446,16 +446,16 @@ fn read_json_object(path: &Path) -> Result<Value, String> {
     if !path.exists() {
         return Ok(json!({}));
     }
-    let raw = fs::read_to_string(path).map_err(|e| format!("读取 Claude 配置失败: {e}"))?;
+    let raw = fs::read_to_string(path).map_err(|e| format!("Failed to read Claude config: {e}"))?;
     if raw.trim().is_empty() {
         return Ok(json!({}));
     }
     let parsed: Value =
-        serde_json::from_str(&raw).map_err(|e| format!("Claude settings.json 不是合法 JSON: {e}"))?;
+        serde_json::from_str(&raw).map_err(|e| format!("Claude settings.json is not valid JSON: {e}"))?;
     if parsed.is_object() {
         Ok(parsed)
     } else {
-        Err("Claude settings.json 顶层必须是对象".to_string())
+        Err("Claude settings.json top level must be an object".to_string())
     }
 }
 
@@ -522,17 +522,17 @@ fn shell_string_arg(raw: &str) -> String {
 
 fn write_hook_script(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建 hook 脚本目录失败: {e}"))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create hook script directory: {e}"))?;
     }
-    fs::write(path, HOOK_SCRIPT).map_err(|e| format!("写入 hook 脚本失败: {e}"))?;
+    fs::write(path, HOOK_SCRIPT).map_err(|e| format!("Failed to write hook script: {e}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mut perms = fs::metadata(path)
-            .map_err(|e| format!("读取 hook 脚本权限失败: {e}"))?
+            .map_err(|e| format!("Failed to read hook script permissions: {e}"))?
             .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(path, perms).map_err(|e| format!("设置 hook 脚本权限失败: {e}"))?;
+        fs::set_permissions(path, perms).map_err(|e| format!("Failed to set hook script permissions: {e}"))?;
     }
     Ok(())
 }

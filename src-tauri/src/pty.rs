@@ -172,7 +172,7 @@ pub fn spawn(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| format!("openpty 失败: {e}"))?;
+        .map_err(|e| format!("openpty failed: {e}"))?;
 
     // 按操作系统装配 shell 调用 —— 把 PATH 注入 + cwd 切换合并到一条命令里。
     // 见模块顶端注释，POSIX / Windows 各自的取舍都在那里。
@@ -181,18 +181,18 @@ pub fn spawn(
     let child = pair
         .slave
         .spawn_command(cmd)
-        .map_err(|e| format!("spawn 失败: {e}"))?;
+        .map_err(|e| format!("spawn failed: {e}"))?;
     // slave 端在父进程留着的话，PTY 永远不会 EOF；spawn 完立刻 drop。
     drop(pair.slave);
 
     let reader = pair
         .master
         .try_clone_reader()
-        .map_err(|e| format!("clone reader 失败: {e}"))?;
+        .map_err(|e| format!("clone reader failed: {e}"))?;
     let writer = pair
         .master
         .take_writer()
-        .map_err(|e| format!("take writer 失败: {e}"))?;
+        .map_err(|e| format!("take writer failed: {e}"))?;
 
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
     let handle = Arc::new(PtyHandle {
@@ -280,11 +280,11 @@ fn waiter_loop(app: AppHandle, id: u64) {
 pub fn write(id: u64, base64_data: &str) -> Result<(), String> {
     let arc = {
         let m = map().lock().map_err(|e| e.to_string())?;
-        m.get(&id).cloned().ok_or_else(|| "pty 不存在".to_string())?
+        m.get(&id).cloned().ok_or_else(|| "PTY not found".to_string())?
     };
     let bytes = B64
         .decode(base64_data)
-        .map_err(|e| format!("base64 解码失败: {e}"))?;
+        .map_err(|e| format!("base64 decode failed: {e}"))?;
     let mut w = arc.writer.lock().map_err(|e| e.to_string())?;
     w.write_all(&bytes).map_err(|e| e.to_string())?;
     w.flush().map_err(|e| e.to_string())?;
@@ -294,7 +294,7 @@ pub fn write(id: u64, base64_data: &str) -> Result<(), String> {
 pub fn resize(id: u64, cols: u16, rows: u16) -> Result<(), String> {
     let arc = {
         let m = map().lock().map_err(|e| e.to_string())?;
-        m.get(&id).cloned().ok_or_else(|| "pty 不存在".to_string())?
+        m.get(&id).cloned().ok_or_else(|| "PTY not found".to_string())?
     };
     let master = arc.master.lock().map_err(|e| e.to_string())?;
     master
@@ -304,7 +304,7 @@ pub fn resize(id: u64, cols: u16, rows: u16) -> Result<(), String> {
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| format!("resize 失败: {e}"))
+        .map_err(|e| format!("resize failed: {e}"))
 }
 
 pub fn kill(id: u64) -> Result<(), String> {

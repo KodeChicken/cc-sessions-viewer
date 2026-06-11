@@ -175,10 +175,10 @@ pub fn parse_iso8601_ms(s: &str) -> Option<i64> {
 pub fn validate_rename_name(name: &str) -> Result<&str, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
-        return Err("名称不能为空".to_string());
+        return Err("Name cannot be empty".to_string());
     }
     if trimmed.chars().count() > 200 {
-        return Err("名称过长".to_string());
+        return Err("Name too long".to_string());
     }
     Ok(trimmed)
 }
@@ -204,13 +204,13 @@ pub fn append_jsonl_line(path: &Path, line: &str) -> Result<(), String> {
     let mut f = fs::OpenOptions::new()
         .append(true)
         .open(path)
-        .map_err(|e| format!("打开会话文件失败: {e}"))?;
+        .map_err(|e| format!("Failed to open session file: {e}"))?;
     if needs_nl {
-        f.write_all(b"\n").map_err(|e| format!("追加换行失败: {e}"))?;
+        f.write_all(b"\n").map_err(|e| format!("Failed to append newline: {e}"))?;
     }
     f.write_all(line.as_bytes())
-        .map_err(|e| format!("写入 rename 行失败: {e}"))?;
-    f.write_all(b"\n").map_err(|e| format!("写入换行失败: {e}"))?;
+        .map_err(|e| format!("Failed to write rename entry: {e}"))?;
+    f.write_all(b"\n").map_err(|e| format!("Failed to write newline: {e}"))?;
     Ok(())
 }
 
