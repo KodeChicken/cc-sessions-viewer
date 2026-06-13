@@ -41,10 +41,15 @@ import {
 } from './icons'
 import * as api from '../api'
 import {
+  checkAppUpdate,
+  downloadAndInstallUpdate,
   latestVersion,
   openReleasePage,
-  syncFromManualCheck,
+  relaunchApp,
+  updateDownloaded,
+  updateProgress,
   updateAvailable,
+  updaterUpdate,
 } from '../updateCheck'
 
 type SettingsTab = 'general' | 'advanced' | 'shortcuts'
@@ -82,6 +87,7 @@ const cacheLabel = computed(() =>
 const version = ref('—')
 const updateMsg = ref('')
 const checking = ref(false)
+const installingUpdate = ref(false)
 const installingClaudeHooks = ref(false)
 const claudeHooksMsg = ref('')
 
@@ -195,15 +201,28 @@ async function doCheck() {
   checking.value = true
   updateMsg.value = t('settings.checking')
   try {
-    const r = await api.checkUpdate()
+    const r = await checkAppUpdate()
     updateMsg.value = r.hasUpdate
       ? t('settings.updateAvailable', { v: r.latest, cur: r.current })
       : t('settings.upToDate', { v: r.current })
-    syncFromManualCheck(r)
   } catch (e) {
     updateMsg.value = t('settings.updateFail', { e: String(e) })
   } finally {
     checking.value = false
+  }
+}
+
+async function installUpdate() {
+  if (installingUpdate.value) return
+  installingUpdate.value = true
+  updateMsg.value = t('settings.updateDownloading')
+  try {
+    await downloadAndInstallUpdate()
+    updateMsg.value = t('settings.updateReady')
+  } catch (e) {
+    updateMsg.value = t('settings.updateInstallFail', { e: String(e) })
+  } finally {
+    installingUpdate.value = false
   }
 }
 
@@ -368,10 +387,30 @@ async function installClaudeHooks() {
               <span class="set-section-tail mono">v{{ version }}</span>
             </header>
             <p v-if="updateMsg" class="set-section-desc">{{ updateMsg }}</p>
+            <p v-if="installingUpdate && updateProgress !== null" class="set-section-desc">
+              {{ t('settings.updateDownloadingProgress', { pct: updateProgress }) }}
+            </p>
             <div class="set-update-actions">
-              <button class="btn" :disabled="checking" @click="doCheck">
+              <button class="btn" :disabled="checking || installingUpdate" @click="doCheck">
                 <IconRefresh v-if="!checking" />
                 {{ checking ? t('settings.checking') : t('settings.checkUpdate') }}
+              </button>
+              <button
+                v-if="updaterUpdate && !updateDownloaded"
+                class="btn primary"
+                :disabled="installingUpdate"
+                @click="installUpdate"
+              >
+                <IconRefresh v-if="installingUpdate" />
+                {{ installingUpdate ? t('settings.updateDownloading') : t('settings.installUpdate') }}
+              </button>
+              <button
+                v-if="updateDownloaded"
+                class="btn primary"
+                @click="relaunchApp()"
+              >
+                <IconCheck />
+                {{ t('settings.relaunch') }}
               </button>
               <button
                 v-if="updateAvailable"

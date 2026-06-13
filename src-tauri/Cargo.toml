@@ -51,6 +51,8 @@ ureq = { version = "2", features = ["json"] }
 # Today / 7d / 30d 统计窗口要按本地日历日切，而非滚动 24h —— 和
 # codeburn / 各家 dashboard 保持一致。chrono 提供 Local::now + 日历运算。
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [features]
 default = ["dev-mcp"]
