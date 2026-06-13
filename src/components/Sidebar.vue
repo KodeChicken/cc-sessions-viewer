@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import type { Agent, ProjectInfo } from '../types'
 import { shortName } from '../format'
 import { t } from '../i18n'
-import { IconExternalLink, IconRefresh, IconSettings, IconClose, IconCheck, IconTrash, IconSelect, agentIcons } from './icons'
+import { IconExternalLink, IconRefresh, IconSettings, IconClose, IconCheck, IconTrash, IconSelect, IconGitBranch, agentIcons } from './icons'
 import { latestVersion, openReleasePage, updateAvailable } from '../updateCheck'
 
 type ProjState = 'pinned' | 'sunk'
@@ -43,6 +43,56 @@ const sortedProjects = computed(() => {
   const rank = (p: ProjectInfo) =>
     projStateOf(p) === 'pinned' ? 0 : p.bookmarked && !p.sessionCount ? 1 : projStateOf(p) === 'sunk' ? 3 : 2
   return [...props.projects].sort((a, b) => rank(a) - rank(b))
+})
+
+type SidebarEntry =
+  | { kind: 'solo'; project: ProjectInfo }
+  | { kind: 'parent'; project: ProjectInfo; children: ProjectInfo[] }
+  | { kind: 'child'; project: ProjectInfo; parentDirName: string }
+
+const collapsedWorktrees = ref(new Set<string>())
+
+function toggleWorktreeCollapse(parentDir: string) {
+  const next = new Set(collapsedWorktrees.value)
+  if (next.has(parentDir)) next.delete(parentDir)
+  else next.add(parentDir)
+  collapsedWorktrees.value = next
+}
+
+const groupedEntries = computed<SidebarEntry[]>(() => {
+  const list = sortedProjects.value
+  const childrenMap = new Map<string, ProjectInfo[]>()
+  const parentDirs = new Set<string>()
+  for (const p of list) {
+    if (p.parentDirName) {
+      parentDirs.add(p.parentDirName)
+      const arr = childrenMap.get(p.parentDirName) || []
+      arr.push(p)
+      childrenMap.set(p.parentDirName, arr)
+    }
+  }
+  const entries: SidebarEntry[] = []
+  for (const p of list) {
+    if (p.parentDirName) continue
+    const children = childrenMap.get(p.dirName)
+    if (children?.length) {
+      entries.push({ kind: 'parent', project: p, children })
+      if (!collapsedWorktrees.value.has(p.dirName)) {
+        for (const c of children) {
+          entries.push({ kind: 'child', project: c, parentDirName: p.dirName })
+        }
+      }
+    } else {
+      entries.push({ kind: 'solo', project: p })
+    }
+  }
+  // orphan worktrees whose parent isn't in the list
+  for (const p of list) {
+    if (p.parentDirName && !list.some(x => x.dirName === p.parentDirName)) {
+      entries.push({ kind: 'solo', project: p })
+    }
+  }
+  return entries
 })
 
 function pinColor(p: ProjectInfo): string {
@@ -187,35 +237,50 @@ defineExpose({ exitSelect })
     </div>
 
     <div class="proj-list">
-      <div
-        v-for="p in sortedProjects"
-        :key="p.dirName"
-        class="proj-item"
-        :data-path="p.displayPath"
-        :class="{
-          active: activeDir === p.dirName && !showTrash && !selecting,
-          missing: !p.exists,
-          pinned: projStateOf(p) === 'pinned',
-          sunk: projStateOf(p) === 'sunk',
-          selected: selecting && selectedDirs.has(p.dirName),
-        }"
-        v-tooltip:right="p.exists ? p.displayPath : p.displayPath + t('proj.missing')"
-        @click="onProjClick(p)"
-        @contextmenu="onProjContextMenu($event, p)"
-      >
-        <span v-if="selecting" class="proj-check" :class="{ checked: selectedDirs.has(p.dirName) }">
-          <IconCheck v-if="selectedDirs.has(p.dirName)" />
-        </span>
-        <!-- 置顶项目前的小圆点：颜色按项目名稳定哈希，不同项目互不相同 -->
-        <span
-          v-if="!selecting && projStateOf(p) === 'pinned'"
-          class="pin-dot"
-          :style="{ background: pinColor(p) }"
-          :aria-label="t('proj.pin')"
-        />
-        <span class="proj-name">{{ shortName(p.displayPath) }}</span>
-        <span class="proj-count">{{ p.sessionCount }}</span>
-      </div>
+      <template v-for="entry in groupedEntries" :key="entry.project.dirName">
+        <div
+          class="proj-item"
+          :class="{
+            active: activeDir === entry.project.dirName && !showTrash && !selecting,
+            missing: !entry.project.exists,
+            pinned: projStateOf(entry.project) === 'pinned',
+            sunk: projStateOf(entry.project) === 'sunk',
+            selected: selecting && selectedDirs.has(entry.project.dirName),
+            'wt-child': entry.kind === 'child',
+          }"
+          :data-path="entry.project.displayPath"
+          v-tooltip:right="entry.project.exists ? entry.project.displayPath : entry.project.displayPath + t('proj.missing')"
+          @click="onProjClick(entry.project)"
+          @contextmenu="onProjContextMenu($event, entry.project)"
+        >
+          <span v-if="selecting" class="proj-check" :class="{ checked: selectedDirs.has(entry.project.dirName) }">
+            <IconCheck v-if="selectedDirs.has(entry.project.dirName)" />
+          </span>
+          <span
+            v-if="!selecting && projStateOf(entry.project) === 'pinned'"
+            class="pin-dot"
+            :style="{ background: pinColor(entry.project) }"
+            :aria-label="t('proj.pin')"
+          />
+          <span
+            v-if="entry.kind === 'parent' && !selecting"
+            class="wt-toggle"
+            @click.stop="toggleWorktreeCollapse(entry.project.dirName)"
+          >
+            <svg
+              viewBox="0 0 16 16" width="12" height="12" fill="currentColor"
+              :class="{ collapsed: collapsedWorktrees.has(entry.project.dirName) }"
+            >
+              <path d="M5.5 3.5L10.5 8 5.5 12.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          <IconGitBranch v-if="entry.kind === 'child'" class="wt-icon" />
+          <span class="proj-name">{{
+            entry.kind === 'child' ? entry.project.worktreeName ?? shortName(entry.project.displayPath) : shortName(entry.project.displayPath)
+          }}</span>
+          <span class="proj-count">{{ entry.project.sessionCount }}</span>
+        </div>
+      </template>
       <div v-if="!projects.length" class="sidebar-sub" style="padding: 12px">
         {{ t('sidebar.noSessions', { agent: agentName }) }}
       </div>

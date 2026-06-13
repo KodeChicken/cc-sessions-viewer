@@ -6,6 +6,17 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.1.10]
+
+### Features
+
+- **Worktree grouping in sidebar** — Claude Code worktree sessions are now nested under their parent project with an indented layout, git-branch icon, and collapsible toggle (fix #20)
+- **Global search optimization** — dedicated 4-thread rayon pool for cross-project parallel scanning, cache-aware hot path to skip disk I/O, and CJK query optimization to avoid unnecessary `to_lowercase` allocation
+
+### UI
+
+- **Search UX** — increased debounce from 450ms to 900ms, show loading state immediately, clear previous results on new input, and improved IME composition handling
+
 ## [v0.1.9]
 
 ### Features

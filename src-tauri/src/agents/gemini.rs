@@ -527,6 +527,8 @@ impl SessionSource for GeminiSource {
                 last_modified: last_mod,
                 exists,
                 bookmarked: false,
+                parent_dir_name: None,
+                worktree_name: None,
             });
         }
         out.sort_by_key(|p| std::cmp::Reverse(p.last_modified));

@@ -23,6 +23,12 @@ pub struct ProjectInfo {
     /// 是否为用户手动添加的书签目录。
     #[serde(default)]
     pub bookmarked: bool,
+    /// worktree 所属父项目的 dir_name（非 worktree 则为 None）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_dir_name: Option<String>,
+    /// worktree 分支名（如 "test-aaa"）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_name: Option<String>,
 }
 
 #[derive(Serialize)]

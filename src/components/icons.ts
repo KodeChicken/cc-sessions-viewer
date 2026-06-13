@@ -64,6 +64,7 @@ import IconShieldCheckRaw from '~icons/lucide/shield-check'
 import IconTerminalRaw from '~icons/lucide/terminal'
 import IconEyeOffRaw from '~icons/lucide/eye-off'
 import IconEyeRaw from '~icons/lucide/eye'
+import IconGitBranchRaw from '~icons/lucide/git-branch'
 import IconClaudeRaw from '~icons/material-icon-theme/claude'
 import IconGeminiRaw from '~icons/material-icon-theme/gemini-ai'
 
@@ -128,6 +129,7 @@ export const IconShieldCheck = IconShieldCheckRaw
 export const IconTerminal = IconTerminalRaw
 export const IconEyeOff = IconEyeOffRaw
 export const IconEye = IconEyeRaw
+export const IconGitBranch = IconGitBranchRaw
 // 「已 pin」状态的小圆点指示器；6×6 实心圆，自己拼比拉一整个集合便宜。
 import { defineComponent, h, type Component } from 'vue'
 import type { Agent } from '../types'

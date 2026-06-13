@@ -8,6 +8,8 @@ export interface ProjectInfo {
   /** 项目目录当前是否仍存在于磁盘上 */
   exists: boolean
   bookmarked?: boolean
+  parentDirName?: string
+  worktreeName?: string
 }
 
 export interface SessionMeta {

@@ -71,6 +71,8 @@ fn list_projects(
             last_modified: last,
             exists,
             bookmarked: true,
+            parent_dir_name: None,
+            worktree_name: None,
         });
     }
     Ok(out)

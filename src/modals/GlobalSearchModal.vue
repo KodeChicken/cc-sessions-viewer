@@ -58,7 +58,6 @@ const MIN_QUERY_LEN = 2
 const RENDER_CAP = 80
 
 let debounceTimer = 0
-let loadingTimer = 0
 let reqSeq = 0
 // 当前有没有正在 round-trip 的 search_sessions —— 用来决定是否需要先 cancel_search。
 // 单纯的标志位即可，因为 reqSeq 已经能在前端层把过期结果丢掉，这个只用来省 RPC。
@@ -83,7 +82,7 @@ watch(
       loading.value = false
       composing.value = false
       window.clearTimeout(debounceTimer)
-      window.clearTimeout(loadingTimer)
+    
       nextTick(() => {
         inputEl.value?.focus()
       })
@@ -94,7 +93,7 @@ watch(
 function scheduleSearch(q: string) {
   selectedIdx.value = 0
   window.clearTimeout(debounceTimer)
-  window.clearTimeout(loadingTimer)
+
   // 进入「新输入」状态 —— 把可能还在跑的旧搜索掐掉（React Fiber 式可中断）。
   abortInFlight()
   const trimmed = q.trim()
@@ -103,9 +102,9 @@ function scheduleSearch(q: string) {
     loading.value = false
     return
   }
-  hits.value = []
-  loading.value = true
   debounceTimer = window.setTimeout(async () => {
+    hits.value = []
+    loading.value = true
     const seq = ++reqSeq
     const reqId = nextSearchRequestId()
     inFlight = true
@@ -120,7 +119,7 @@ function scheduleSearch(q: string) {
       // 只有「最后一次发起的搜索」才把状态归位；旧搜索的 finally 不要踩到。
       if (seq === reqSeq) {
         inFlight = false
-        window.clearTimeout(loadingTimer)
+      
         loading.value = false
       }
     }
@@ -146,7 +145,7 @@ function onInput(e: Event) {
 function onCompositionStart() {
   composing.value = true
   window.clearTimeout(debounceTimer)
-  window.clearTimeout(loadingTimer)
+
   abortInFlight()
 }
 function onCompositionEnd(e: Event) {
@@ -261,7 +260,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
   window.clearTimeout(debounceTimer)
-  window.clearTimeout(loadingTimer)
+
   // 组件卸载也算「输入释放」—— 把后端循环放出来。
   abortInFlight()
 })

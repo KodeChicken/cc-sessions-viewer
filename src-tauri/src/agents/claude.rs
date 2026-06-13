@@ -69,6 +69,14 @@ impl SessionSource for ClaudeSource {
             }
             let display_path = cwd.unwrap_or_else(|| dir_name.replace('-', "/"));
             let exists = Path::new(&display_path).is_dir();
+            let (parent_dir_name, worktree_name) =
+                if let Some(pos) = dir_name.find("--claude-worktrees-") {
+                    let parent = dir_name[..pos].to_string();
+                    let wt = dir_name[pos + "--claude-worktrees-".len()..].to_string();
+                    (Some(parent), Some(wt))
+                } else {
+                    (None, None)
+                };
             out.push(ProjectInfo {
                 dir_name,
                 display_path,
@@ -76,6 +84,8 @@ impl SessionSource for ClaudeSource {
                 last_modified: last,
                 exists,
                 bookmarked: false,
+                parent_dir_name,
+                worktree_name,
             });
         }
         out.sort_by_key(|p| std::cmp::Reverse(p.last_modified));

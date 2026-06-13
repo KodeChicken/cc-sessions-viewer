@@ -1105,6 +1105,8 @@ impl SessionSource for CodexSource {
                     last_modified: last,
                     exists,
                     bookmarked: false,
+                    parent_dir_name: None,
+                    worktree_name: None,
                 }
             })
             .collect();

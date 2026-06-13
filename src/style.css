@@ -970,6 +970,44 @@ body.is-sidebar-resizing {
   background: var(--accent-soft);
 }
 
+/* ---------- Worktree child items ---------- */
+.proj-item.wt-child {
+  padding-left: 30px;
+  font-size: 12px;
+}
+.wt-icon {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  color: var(--text-mute);
+}
+.proj-item.wt-child .proj-name {
+  opacity: 0.85;
+}
+.wt-toggle {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  border-radius: 4px;
+  color: var(--text-mute);
+  transition: background 0.1s;
+}
+.wt-toggle:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.wt-toggle svg {
+  transition: transform 0.15s ease;
+  transform: rotate(90deg);
+}
+.wt-toggle svg.collapsed {
+  transform: rotate(0deg);
+}
+
 /* ---------- Pin/sink actions ---------- */
 .proj-actions {
   display: flex;
