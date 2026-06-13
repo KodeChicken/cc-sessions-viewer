@@ -86,7 +86,7 @@ describe('GlobalSearchModal', () => {
     const wrapper = factory()
     await wrapper.find('.gs-input').setValue('hello')
     // 450ms debounce —— 等到 500ms 再 flush 异步队列。
-    await new Promise((r) => setTimeout(r, 500))
+    await new Promise((r) => setTimeout(r, 950))
     await flushPromises()
     // 第 3 个参数是单调 request id，每次调用递增；这里只比对前两个。
     expect(searchMock).toHaveBeenCalledWith('claude', 'hello', expect.any(Number))
@@ -98,7 +98,7 @@ describe('GlobalSearchModal', () => {
   it('skips searches shorter than the min query length', async () => {
     const wrapper = factory()
     await wrapper.find('.gs-input').setValue('a')
-    await new Promise((r) => setTimeout(r, 500))
+    await new Promise((r) => setTimeout(r, 950))
     await flushPromises()
     expect(searchMock).not.toHaveBeenCalled()
     wrapper.unmount()
@@ -108,7 +108,7 @@ describe('GlobalSearchModal', () => {
     searchMock.mockResolvedValue([hit()])
     const wrapper = factory()
     await wrapper.find('.gs-input').setValue('hello')
-    await new Promise((r) => setTimeout(r, 500))
+    await new Promise((r) => setTimeout(r, 950))
     await flushPromises()
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
     await nextTick()
@@ -137,7 +137,7 @@ describe('GlobalSearchModal', () => {
     const input = wrapper.find('.gs-input')
 
     await input.setValue('ab')
-    await new Promise((r) => setTimeout(r, 500))
+    await new Promise((r) => setTimeout(r, 950))
     // 第一次搜索已经发出去（promise 挂着），开始下一次输入应该立即调 cancelSearch
     expect(searchMock).toHaveBeenCalledTimes(1)
     expect(cancelMock).not.toHaveBeenCalled()
@@ -148,7 +148,7 @@ describe('GlobalSearchModal', () => {
 
     // 释放卡住的第一次（这条结果会被前端的 reqSeq 守卫丢弃）
     resolveFirst([])
-    await new Promise((r) => setTimeout(r, 500))
+    await new Promise((r) => setTimeout(r, 950))
     expect(searchMock).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
@@ -161,7 +161,7 @@ describe('GlobalSearchModal', () => {
     const wrapper = factory()
     // 至少 2 字符才会触发搜索
     await wrapper.find('.gs-input').setValue('se')
-    await new Promise((r) => setTimeout(r, 500))
+    await new Promise((r) => setTimeout(r, 950))
     await flushPromises()
     let rows = wrapper.findAll('.gs-row')
     expect(rows[0].classes()).toContain('active')

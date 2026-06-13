@@ -18,6 +18,16 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use once_cell::sync::Lazy;
+
+static SEARCH_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .thread_name(|i| format!("search-{i}"))
+        .build()
+        .expect("failed to build search thread pool")
+});
+
 use crate::agent_command::AgentCommand;
 use crate::stats::types::Turn;
 use crate::types::{
@@ -331,45 +341,43 @@ pub fn search(
         Some(key) => projects.into_iter().filter(|p| p.dir_name == key).collect(),
         None => projects,
     };
-    let mut hits: Vec<SearchHit> = Vec::new();
+    // 先收集所有项目的会话列表（顺序，但很快——只是目录 stat）
+    let mut all_sessions: Vec<(String, String, Vec<SessionMeta>)> = Vec::new();
     for proj in projects {
         if cancel.cancelled() {
             return Ok(Vec::new());
-        }
-        if hits.len() >= SEARCH_MAX_HITS {
-            break;
         }
         let page = match src.list_sessions(&proj.dir_name, 0, usize::MAX, false, false) {
             Ok(p) => p,
             Err(_) => continue,
         };
-        let q_ref = q.as_str();
-        let project_display = proj.display_path.clone();
-        let project_key = proj.dir_name.clone();
-        let mut scanned: Vec<SearchHit> = page
-            .sessions
-            .into_par_iter()
-            // 每条 session 入口检查一次取消标志 —— rayon 里其他 worker 还会继续
-            // 跑到这个检查点，但 work-steal 的尾巴很短，CPU 让位非常及时。
-            .filter_map(|session| {
+        if !page.sessions.is_empty() {
+            all_sessions.push((proj.dir_name.clone(), proj.display_path.clone(), page.sessions));
+        }
+    }
+    // 把所有项目的会话展平，跨项目并行扫描
+    let flat: Vec<(String, String, SessionMeta)> = all_sessions
+        .into_iter()
+        .flat_map(|(key, display, sessions)| {
+            sessions.into_iter().map(move |s| (key.clone(), display.clone(), s))
+        })
+        .collect();
+    let hits: Vec<SearchHit> = SEARCH_POOL.install(|| {
+        flat.into_par_iter()
+            .filter_map(|(project_key, project_display, session)| {
                 if cancel.cancelled() {
                     return None;
                 }
-                classify_hit(src, &project_key, &project_display, session, q_ref, cancel)
+                classify_hit(src, &project_key, &project_display, session, &q, cancel)
             })
-            .collect();
-        // collect 后顺序被 rayon 打乱；按 session.modified 倒序还原。
-        scanned.sort_by_key(|h| std::cmp::Reverse(h.session.modified));
-        for h in scanned {
-            if hits.len() >= SEARCH_MAX_HITS {
-                break;
-            }
-            hits.push(h);
-        }
-    }
+            .collect()
+    });
     if cancel.cancelled() {
         return Ok(Vec::new());
     }
+    let mut hits = hits;
+    hits.sort_by_key(|h| std::cmp::Reverse(h.session.modified));
+    hits.truncate(SEARCH_MAX_HITS);
     Ok(hits)
 }
 
@@ -392,25 +400,37 @@ fn classify_hit(
     let (field, snippet) = if title_l.contains(q) {
         ("title", session.title.clone())
     } else {
-        // 走「用户消息」全文：先字节层粗筛（避开几十 MB JSON 的解析开销），
-        // 再 JSON 精确定位仅在 user 消息的 text 块里匹配。
-        // 取消令牌在 read_session 之前再 check 一次 —— 这是单条会话里最重的一步。
         if cancel.cancelled() {
             return None;
         }
-        if !file_contains_ci(&session.path, q) {
-            return None;
-        }
-        if cancel.cancelled() {
-            return None;
-        }
-        match find_text_hit(|p| src.read_session(p), &session.path, q) {
-            Some(hit) => {
-                match_msg_index = Some(hit.msg_index);
-                match_msg_uuid = hit.msg_uuid;
-                ("text", hit.snippet)
+        // 缓存热时直接内存扫描，跳过磁盘 I/O
+        let mtime = mtime_of(&session.path);
+        let cached = cached_user_text(&session.path, mtime);
+        if let Some(ref texts) = cached {
+            match scan_user_text(texts, q) {
+                Some(hit) => {
+                    match_msg_index = Some(hit.msg_index);
+                    match_msg_uuid = hit.msg_uuid;
+                    ("text", hit.snippet)
+                }
+                None => return None,
             }
-            None => return None,
+        } else {
+            // 冷路径：字节层粗筛 → JSON 解析
+            if !file_contains_ci(&session.path, q) {
+                return None;
+            }
+            if cancel.cancelled() {
+                return None;
+            }
+            match find_text_hit(|p| src.read_session(p), &session.path, q) {
+                Some(hit) => {
+                    match_msg_index = Some(hit.msg_index);
+                    match_msg_uuid = hit.msg_uuid;
+                    ("text", hit.snippet)
+                }
+                None => return None,
+            }
         }
     };
     Some(SearchHit {
@@ -519,7 +539,15 @@ fn file_contains_ci(path: &str, q_lower: &str) -> bool {
         bytes.windows(q.len()).any(|w| w.eq_ignore_ascii_case(q))
     } else {
         match std::str::from_utf8(&bytes) {
-            Ok(s) => s.to_lowercase().contains(q_lower),
+            Ok(s) => {
+                // CJK / 非拉丁字符没有大小写变体，跳过整文件 to_lowercase 的分配
+                let has_ascii_letter = q_lower.bytes().any(|b| b.is_ascii_alphabetic());
+                if has_ascii_letter {
+                    s.to_lowercase().contains(q_lower)
+                } else {
+                    s.contains(q_lower)
+                }
+            }
             Err(_) => false,
         }
     }

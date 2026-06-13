@@ -51,8 +51,7 @@ const composing = ref(false)
 //   - 输入到正式 fire 之间至少 450ms 静止
 //   - 单字符不打（命中量大噪声多，也省得每个键都跑一次）
 //   - "Searching…" 状态也防抖 220ms 才显示，避免每个键都闪烁
-const DEBOUNCE_MS = 450
-const LOADING_DELAY_MS = 220
+const DEBOUNCE_MS = 900
 const MIN_QUERY_LEN = 2
 // 命中很多时只渲染前 RENDER_CAP 条（后端最多返 200）—— 渲染 100+ 行的高亮 + 分组
 // 在低端机上是几十 ms 的开销，会让输入框感知到「卡」。
@@ -104,10 +103,8 @@ function scheduleSearch(q: string) {
     loading.value = false
     return
   }
-  // 推迟显示「Searching…」—— 大多数查询能在 200ms 内 round-trip 完成，没必要闪个 loading
-  loadingTimer = window.setTimeout(() => {
-    loading.value = true
-  }, LOADING_DELAY_MS)
+  hits.value = []
+  loading.value = true
   debounceTimer = window.setTimeout(async () => {
     const seq = ++reqSeq
     const reqId = nextSearchRequestId()
@@ -148,7 +145,8 @@ function onInput(e: Event) {
 }
 function onCompositionStart() {
   composing.value = true
-  // 开始一段 IME 输入 = 新的输入信号 → 掐掉任何在跑的搜索。
+  window.clearTimeout(debounceTimer)
+  window.clearTimeout(loadingTimer)
   abortInFlight()
 }
 function onCompositionEnd(e: Event) {
