@@ -18,7 +18,7 @@ import {
   applyTerminalDefault,
 } from './settings'
 import { focusSearchBox, navigate as chatNavigate, resetChatToolbar } from './chatToolbar'
-import { emitMenuSync, installMenuRouter } from './menu'
+import { emitMenuSync, installMenuRouter, type MenuHandlers } from './menu'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { resetTrashToolbar, exitSelectMode, selectedTrash } from './trashToolbar'
 import {
@@ -46,6 +46,8 @@ import { runBackgroundCheck } from './updateCheck'
 import type { SearchHit } from './types'
 import ChatView from './views/ChatView.vue'
 import SettingsModal from './components/SettingsModal.vue'
+import { IconSearch } from './components/icons'
+import WindowsTitlebar, { type WindowMenuGroup } from './components/WindowsTitlebar.vue'
 import ChatTopbar from './components/topbar/ChatTopbar.vue'
 import TrashTopbar from './components/topbar/TrashTopbar.vue'
 import SessionsTopbar from './components/topbar/SessionsTopbar.vue'
@@ -105,6 +107,7 @@ const showSettings = ref(false)
 const settingsTab = ref<'general' | 'advanced' | 'shortcuts'>('general')
 const sidebarOpen = ref(true)
 const refreshing = ref(false)
+const isWindows = /Win/i.test(navigator.platform)
 function toggleSidebar() {
   sidebarOpen.value = !sidebarOpen.value
 }
@@ -307,6 +310,24 @@ watch(openSession, (val, old) => {
 const activeProject = computed(() =>
   projects.value.find((p) => p.dirName === activeDir.value),
 )
+const activeAgentLabel = computed(() =>
+  agent.value === 'codex' ? 'Codex' : agent.value === 'gemini' ? 'Gemini' : 'Claude',
+)
+const topbarContextTitle = computed(() => {
+  if (showStats.value) return t('sidebar.stats')
+  if (showTrash.value) return t('sidebar.trash')
+  if (showExportHistory.value) return t('sidebar.history')
+  if (showPricing.value) return t('sidebar.pricing')
+  return activeProject.value ? shortName(activeProject.value.displayPath) : activeAgentLabel.value
+})
+const topbarContextMeta = computed(() => {
+  if (showStats.value || showTrash.value || showExportHistory.value || showPricing.value) {
+    return activeAgentLabel.value
+  }
+  if (openSession.value) return t('chat.tui.viewTab')
+  if (activeProject.value) return t('chat.tui.listTab')
+  return ''
+})
 // 从「导出历史」列表打开会话时所属的 agent —— 可能与侧栏当前 agent 不同，
 // 且不该切换整个侧栏。打开普通 / 回收站会话时清空。
 const importedAgent = ref<Agent | null>(null)
@@ -573,6 +594,7 @@ function runConfirm() {
   confirm.value.show = false
   fn()
 }
+
 function runAlt() {
   const fn = confirm.value.onAlt
   confirm.value.show = false
@@ -1634,6 +1656,134 @@ function openRepo() {
   api.openUrl(REPO_URL).catch((e) => notify(`${e}`, true))
 }
 
+function runEditCommand(command: 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'selectAll') {
+  document.execCommand(command)
+}
+
+const menuHandlers: MenuHandlers = {
+  'open-global-search': () => openGlobalSearch(),
+  'find-in-session': () => focusSearchBox(),
+  'find-next': () => chatNavigate(1),
+  'find-prev': () => chatNavigate(-1),
+  'toggle-sidebar': toggleSidebar,
+  'new-session': () => newSession(),
+  'add-folder': () => addBookmark(),
+  'open-settings': () => {
+    showSettings.value = true
+  },
+  'export-session': () => {
+    if (!openSession.value) {
+      notify(t('toast.exportNoSession'))
+      return
+    }
+    exportSession('md')
+  },
+  'open-trash': () => loadTrash(),
+  'open-stats': openStats,
+  'check-update': () => {
+    showSettings.value = true
+  },
+  'theme:light': () => setTheme('light'),
+  'theme:dark': () => setTheme('dark'),
+  'theme:system': () => setTheme('system'),
+  'theme:codex': () => setTheme('codex'),
+  'theme:dracula': () => setTheme('dracula'),
+  'lang:en': () => setLang('en'),
+  'lang:zh': () => setLang('zh'),
+  'lang:zh-TW': () => setLang('zh-TW'),
+  'lang:ja': () => setLang('ja'),
+  'help-docs': () => api.openUrl(`${REPO_URL}#readme`).catch((e) => notify(`${e}`, true)),
+  'help-repo': () => openRepo(),
+  'help-issue': () => api.openUrl(`${REPO_URL}/issues`).catch((e) => notify(`${e}`, true)),
+  'edit:undo': () => runEditCommand('undo'),
+  'edit:redo': () => runEditCommand('redo'),
+  'edit:cut': () => runEditCommand('cut'),
+  'edit:copy': () => runEditCommand('copy'),
+  'edit:paste': () => runEditCommand('paste'),
+  'edit:select-all': () => runEditCommand('selectAll'),
+}
+
+const windowMenus = computed<WindowMenuGroup[]>(() => [
+  {
+    label: 'File',
+    items: [
+      { type: 'item', id: 'new-session', label: 'New Session in Current Project', shortcut: 'Ctrl+N', disabled: !activeProject.value },
+      { type: 'item', id: 'add-folder', label: 'Add Folder...', shortcut: 'Ctrl+O' },
+      { type: 'separator' },
+      { type: 'item', id: 'export-session', label: 'Export Session...', shortcut: 'Ctrl+E', disabled: !openSession.value },
+    ],
+  },
+  {
+    label: 'Edit',
+    items: [
+      { type: 'item', id: 'edit:undo', label: 'Undo', shortcut: 'Ctrl+Z' },
+      { type: 'item', id: 'edit:redo', label: 'Redo', shortcut: 'Ctrl+Y' },
+      { type: 'separator' },
+      { type: 'item', id: 'edit:cut', label: 'Cut', shortcut: 'Ctrl+X' },
+      { type: 'item', id: 'edit:copy', label: 'Copy', shortcut: 'Ctrl+C' },
+      { type: 'item', id: 'edit:paste', label: 'Paste', shortcut: 'Ctrl+V' },
+      { type: 'item', id: 'edit:select-all', label: 'Select All', shortcut: 'Ctrl+A' },
+    ],
+  },
+  {
+    label: 'View',
+    items: [
+      { type: 'item', id: 'toggle-sidebar', label: 'Toggle Sidebar', shortcut: 'Ctrl+B' },
+      { type: 'item', id: 'open-stats', label: 'Statistics', shortcut: 'Ctrl+Shift+S' },
+      { type: 'separator' },
+      {
+        type: 'submenu',
+        label: 'Theme',
+        items: [
+          { type: 'item', id: 'theme:light', label: 'Light', checked: theme.value === 'light' },
+          { type: 'item', id: 'theme:dark', label: 'Dark', checked: theme.value === 'dark' },
+          { type: 'item', id: 'theme:system', label: 'System', checked: theme.value === 'system' },
+          { type: 'item', id: 'theme:codex', label: 'Codex', checked: theme.value === 'codex' },
+          { type: 'item', id: 'theme:dracula', label: 'Dracula', checked: theme.value === 'dracula' },
+        ],
+      },
+      {
+        type: 'submenu',
+        label: 'Language',
+        items: [
+          { type: 'item', id: 'lang:en', label: 'English', checked: lang.value === 'en' },
+          { type: 'item', id: 'lang:zh', label: '简体中文', checked: lang.value === 'zh' },
+          { type: 'item', id: 'lang:zh-TW', label: '繁體中文', checked: lang.value === 'zh-TW' },
+          { type: 'item', id: 'lang:ja', label: '日本語', checked: lang.value === 'ja' },
+        ],
+      },
+    ],
+  },
+  {
+    label: 'Find',
+    items: [
+      { type: 'item', id: 'find-in-session', label: 'Find in Session...', shortcut: 'Ctrl+F' },
+      { type: 'item', id: 'find-next', label: 'Find Next', shortcut: 'Ctrl+G' },
+      { type: 'item', id: 'find-prev', label: 'Find Previous', shortcut: 'Ctrl+Shift+G' },
+      { type: 'separator' },
+      { type: 'item', id: 'open-global-search', label: 'Find in All Sessions...', shortcut: 'Ctrl+Shift+F' },
+    ],
+  },
+  {
+    label: 'Window',
+    items: [
+      { type: 'item', id: 'window:minimize', label: 'Minimize' },
+      { type: 'item', id: 'window:maximize', label: 'Maximize' },
+      { type: 'separator' },
+      { type: 'item', id: 'open-trash', label: 'Trash', shortcut: 'Ctrl+Shift+T' },
+      { type: 'item', id: 'window:fullscreen', label: 'Toggle Full Screen' },
+    ],
+  },
+  {
+    label: 'Help',
+    items: [
+      { type: 'item', id: 'help-docs', label: 'Documentation' },
+      { type: 'item', id: 'help-repo', label: 'GitHub Repository' },
+      { type: 'item', id: 'help-issue', label: 'Report an Issue' },
+    ],
+  },
+])
+
 function onClearCache() {
   ask({
     title: t('dialog.clearCache.title'),
@@ -1793,43 +1943,7 @@ onMounted(() => {
   )
 
   // 原生菜单 → 前端动作路由。菜单项的 id 在 src-tauri/src/menu.rs 里定义。
-  installMenuRouter({
-    'open-global-search': () => openGlobalSearch(),
-    'find-in-session': () => focusSearchBox(),
-    'find-next': () => chatNavigate(1),
-    'find-prev': () => chatNavigate(-1),
-    'toggle-sidebar': toggleSidebar,
-    'new-session': () => newSession(),
-    'add-folder': () => addBookmark(),
-    'open-settings': () => {
-      showSettings.value = true
-    },
-    'export-session': () => {
-      if (!openSession.value) {
-        notify(t('toast.exportNoSession'))
-        return
-      }
-      // 没法在原生菜单里二选一 —— 默认走 Markdown；HTML 仍可在卡片导出菜单里选。
-      exportSession('md')
-    },
-    'open-trash': () => loadTrash(),
-    'open-stats': openStats,
-    'check-update': () => {
-      showSettings.value = true
-    },
-    'theme:light': () => setTheme('light'),
-    'theme:dark': () => setTheme('dark'),
-    'theme:system': () => setTheme('system'),
-    'theme:codex': () => setTheme('codex'),
-    'theme:dracula': () => setTheme('dracula'),
-    'lang:en': () => setLang('en'),
-    'lang:zh': () => setLang('zh'),
-    'lang:zh-TW': () => setLang('zh-TW'),
-    'lang:ja': () => setLang('ja'),
-    'help-docs': () => api.openUrl(`${REPO_URL}#readme`).catch((e) => notify(`${e}`, true)),
-    'help-repo': () => openRepo(),
-    'help-issue': () => api.openUrl(`${REPO_URL}/issues`).catch((e) => notify(`${e}`, true)),
-  }).then((fn) => {
+  installMenuRouter(menuHandlers).then((fn) => {
     menuUnlisten = fn
   })
 
@@ -1992,11 +2106,16 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       { 'is-blurred': !windowFocused },
     ]"
   >
+    <WindowsTitlebar
+      v-if="isWindows"
+      :menus="windowMenus"
+      :handlers="menuHandlers"
+    />
     <!-- 顶栏：normal flow，整条都是 macOS 拖动区。
          data-tauri-drag-region="deep" 让整个子树（除按钮等可点击元素外）
          都触发原生 startDragging；button/A/INPUT 等会自动 block 拖动，
          不需要手动 no-drag。同时保留 -webkit-app-region: drag 做 OS 层兜底。 -->
-    <div class="app-topbar" data-tauri-drag-region="deep">
+    <div class="app-topbar" :data-tauri-drag-region="isWindows ? undefined : 'deep'">
       <SidebarTopbar
         :show-trash="showTrash"
         :show-stats="showStats"
@@ -2012,6 +2131,15 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       <!-- 顶栏右侧分发：每个页面把自己的工具栏组件挂这里。
            本身仍是 macOS 拖动区域，组件内部的可交互元素由 CSS 单独标 no-drag。 -->
       <div class="topbar-drag">
+        <div class="topbar-context">
+          <span class="topbar-agent-mark" aria-hidden="true">{{ activeAgentLabel.charAt(0) }}</span>
+          <span class="topbar-context-text">
+            <span class="topbar-context-title">{{ topbarContextTitle }}</span>
+            <span v-if="topbarContextMeta" class="topbar-context-meta">
+              / {{ topbarContextMeta }}
+            </span>
+          </span>
+        </div>
         <!-- StatsView 自带顶部控制条，这里就让出空间（保持拖动区域）。
              showStats 优先级要高于 openSession，否则进入会话统计模式时
              还会渲染 ChatTopbar 的「会话统计」按钮，造成视觉重复。 -->
@@ -2025,7 +2153,17 @@ async function onGlobalSearchOpen(hit: SearchHit) {
           v-else-if="activeProject"
           :sessions="sessions"
         />
-        <div v-else />
+        <div v-else class="chat-topbar">
+          <button
+            type="button"
+            class="ct-search topbar-global-search"
+            v-tooltip="t('search.global.placeholder')"
+            @click="openGlobalSearch"
+          >
+            <IconSearch class="ct-search-ic" />
+            <span>{{ t('search.global.placeholder') }}</span>
+          </button>
+        </div>
       </div>
     </div>
 

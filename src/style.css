@@ -271,16 +271,18 @@ button {
   flex-shrink: 0;
   display: flex;
   align-items: stretch;
-  -webkit-app-region: drag;
   background: linear-gradient(
     to right,
     var(--sidebar-bg) 0 var(--sidebar-w),
     var(--bg) var(--sidebar-w) 100%
   );
-  border-bottom: 1px solid transparent;
+  border-bottom: 1px solid var(--border);
+}
+:root.is-macos .app-topbar {
+  -webkit-app-region: drag;
 }
 .app.sidebar-closed .app-topbar {
-  background: var(--bg);
+  background: var(--surface);
 }
 /* Sidebar zone (left side of topbar). Hosts toggle+refresh on the left
    (hugging the traffic lights) and the trash button on the right (at the
@@ -306,7 +308,7 @@ button {
 .topbar-icons {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
 }
 .topbar-sidebar-zone > *,
 .topbar-icons > * {
@@ -314,11 +316,15 @@ button {
 }
 .topbar-drag {
   flex: 1;
-  -webkit-app-region: drag;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(320px, 560px) minmax(120px, 1fr);
   align-items: center;
-  padding: 0 16px;
+  gap: 12px;
+  padding: 0 14px;
   min-width: 0;
+}
+:root.is-macos .topbar-drag {
+  -webkit-app-region: drag;
 }
 /* 顶栏子组件里的可交互元素需要解除 macOS 拖动区，否则点击会被吞成「拖窗口」。 */
 .topbar-drag button,
@@ -326,6 +332,71 @@ button {
 .topbar-drag select,
 .topbar-drag a {
   -webkit-app-region: no-drag;
+}
+
+.topbar-context {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text-mute);
+  font-size: 12px;
+  line-height: 1;
+}
+.topbar-agent-mark {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.topbar-context-text {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.topbar-context-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  font-weight: 600;
+}
+.topbar-context-meta {
+  flex-shrink: 0;
+  color: var(--text-mute);
+}
+.topbar-global-search {
+  max-width: 420px;
+  justify-self: start;
+}
+
+@media (max-width: 980px) {
+  .topbar-drag {
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 480px);
+  }
+  .topbar-context-meta {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .topbar-drag {
+    grid-template-columns: minmax(0, 1fr);
+    padding-right: 10px;
+  }
+  .topbar-context {
+    display: none;
+  }
 }
 
 

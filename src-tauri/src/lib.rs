@@ -15,6 +15,7 @@
 pub mod agents;
 mod agent_command;
 mod bookmarks;
+#[cfg(target_os = "macos")]
 mod menu;
 mod pty;
 pub mod stats;
@@ -34,6 +35,8 @@ use crate::agent_command::AgentCommand;
 use crate::types::{
     AgentStats, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, TrayStats, UsageSummary,
 };
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use tauri::Manager;
 use crate::util::is_jsonl;
 
 /// 全局搜索的取消代际 —— 每次新搜索把自己的 `request_id` 写进来，正在跑的搜索循环
@@ -1029,14 +1032,18 @@ pub fn run() {
                 eprintln!("turn signal watcher failed: {e}");
             }
 
-            // 原生应用菜单 —— 主要价值在 macOS 顶部菜单栏。
-            // Windows / Linux 也会挂菜单，但视觉上不那么重要。
-            menu::build(app.handle())?;
-            menu::install_bridges(app.handle());
+            #[cfg(target_os = "windows")]
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_decorations(false);
+            }
 
             #[cfg(target_os = "macos")]
             {
-                use tauri::Manager;
+                // 原生应用菜单只保留给 macOS。Windows 的窗口内菜单栏会挤占
+                // 自定义顶栏，视觉上和 WebView command bar 重复。
+                menu::build(app.handle())?;
+                menu::install_bridges(app.handle());
+
                 // 菜单栏托盘图标 + 菜单（Show / Settings / Quit）。
                 tray::build(app.handle())?;
 
@@ -1070,7 +1077,6 @@ pub fn run() {
             // 图标应能唤回它，否则只能从托盘菜单 "Show"。
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = _event {
-                use tauri::Manager;
                 if let Some(win) = _app.get_webview_window("main") {
                     let _ = win.show();
                     let _ = win.set_focus();
