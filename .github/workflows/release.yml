@@ -69,6 +69,9 @@ jobs:
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: ${{ matrix.args }}
 
@@ -98,6 +101,8 @@ jobs:
             src-tauri/target/**/release/bundle/**/*-setup.exe
             src-tauri/target/**/release/bundle/**/*.deb
             src-tauri/target/**/release/bundle/**/*.AppImage
+            src-tauri/target/**/release/bundle/**/*.sig
+            src-tauri/target/**/release/bundle/**/latest.json
           if-no-files-found: error
 
   publish:
@@ -120,6 +125,68 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Merge updater manifests
+        run: |
+          node <<'NODE'
+          const fs = require('fs')
+          const path = require('path')
+
+          const root = 'dist'
+          const manifests = []
+
+          function walk(dir) {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name)
+              if (entry.isDirectory()) {
+                walk(full)
+              } else if (entry.name === 'latest.json') {
+                manifests.push(full)
+              }
+            }
+          }
+
+          walk(root)
+          if (!manifests.length) {
+            throw new Error('No updater latest.json files found in downloaded artifacts')
+          }
+
+          let merged = null
+          for (const file of manifests) {
+            const json = JSON.parse(fs.readFileSync(file, 'utf8'))
+            if (!json.version || !json.platforms || typeof json.platforms !== 'object') {
+              throw new Error(`Invalid updater manifest: ${file}`)
+            }
+            if (!merged) {
+              merged = {
+                version: json.version,
+                notes: json.notes,
+                pub_date: json.pub_date,
+                platforms: {},
+              }
+            } else if (merged.version !== json.version) {
+              throw new Error(`Updater manifest version mismatch: ${merged.version} vs ${json.version} in ${file}`)
+            }
+            Object.assign(merged.platforms, json.platforms)
+          }
+
+          const required = ['windows-x86_64', 'linux-x86_64']
+          for (const platform of required) {
+            if (!merged.platforms[platform]) {
+              throw new Error(`Merged updater manifest is missing ${platform}`)
+            }
+          }
+          if (!merged.platforms['darwin-x86_64'] && !merged.platforms['darwin-aarch64']) {
+            throw new Error('Merged updater manifest is missing macOS platforms')
+          }
+
+          for (const file of manifests) {
+            fs.rmSync(file, { force: true })
+          }
+          fs.writeFileSync(path.join(root, 'latest.json'), `${JSON.stringify(merged, null, 2)}\n`)
+          console.log(`Merged ${manifests.length} updater manifests into dist/latest.json`)
+          console.log(`Platforms: ${Object.keys(merged.platforms).sort().join(', ')}`)
+          NODE
 
       - name: Generate release notes
         run: npx changelogithub

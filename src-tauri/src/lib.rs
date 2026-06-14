@@ -969,7 +969,9 @@ fn pin_traffic_lights(window: &tauri::WebviewWindow) {
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init());
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build());
 
     // 开发期注入 MCP Bridge —— 让 AI 助手经 WebSocket 直接看/控这个 app（截图 /
     // DOM 快照 / 执行 JS / 监控 IPC）。feature "dev-mcp"（default 但 release

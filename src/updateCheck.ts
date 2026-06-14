@@ -6,7 +6,9 @@
 // 负责"什么时候检查、结果存哪、UI 据此渲染什么"。SettingsModal 手动检查
 // 完成后也会回调 syncFromManualCheck，让红点与手动结果保持一致。
 
-import { ref } from 'vue'
+import { markRaw, ref, shallowRef } from 'vue'
+import { relaunch } from '@tauri-apps/plugin-process'
+import { check as checkTauriUpdate, type Update } from '@tauri-apps/plugin-updater'
 import { appVersion, checkUpdate, openUrl, type UpdateInfo } from './api'
 
 // 没拿到具体 release 的 html_url 时的兜底地址。和 App.vue 的 REPO_URL 同源；
@@ -29,6 +31,9 @@ export const updateAvailable = ref(false)
 export const latestVersion = ref<string | null>(null)
 /** 对应 GitHub release 页 URL，后续可以做"点击直达"。 */
 export const releaseUrl = ref<string | null>(null)
+export const updaterUpdate = shallowRef<Update | null>(null)
+export const updateDownloaded = ref(false)
+export const updateProgress = ref<number | null>(null)
 
 function loadCache(): Cached | null {
   try {
@@ -100,6 +105,66 @@ export async function runBackgroundCheck(): Promise<void> {
   } catch {
     /* 后台检查的网络/HTTP 错误静默吞掉 —— 手动检查会把真实错误展示给用户 */
   }
+}
+
+export async function checkAppUpdate(): Promise<UpdateInfo> {
+  const current = await appVersion()
+  updaterUpdate.value?.close().catch(() => {})
+  updaterUpdate.value = null
+  updateDownloaded.value = false
+  updateProgress.value = null
+
+  try {
+    const update = await checkTauriUpdate()
+    if (update) {
+      updaterUpdate.value = markRaw(update)
+      const info = {
+        current: update.currentVersion || current,
+        latest: update.version,
+        hasUpdate: true,
+        htmlUrl: releaseUrl.value ?? undefined,
+      }
+      syncFromManualCheck(info)
+      return info
+    }
+    const info = { current, latest: current, hasUpdate: false }
+    syncFromManualCheck(info)
+    return info
+  } catch (e) {
+    // 兼容旧 release：如果远端还没有 latest.json，至少保留原来的 GitHub
+    // Releases 版本检查和“查看 release”降级路径。
+    console.warn('[updateCheck] tauri updater check failed, falling back to GitHub release check', e)
+    const info = await checkUpdate()
+    syncFromManualCheck(info)
+    return info
+  }
+}
+
+export async function downloadAndInstallUpdate(): Promise<void> {
+  if (!updaterUpdate.value) throw new Error('No update available')
+  updateDownloaded.value = false
+  updateProgress.value = 0
+  let downloaded = 0
+  let total: number | undefined
+
+  await updaterUpdate.value.downloadAndInstall((event) => {
+    if (event.event === 'Started') {
+      downloaded = 0
+      total = event.data.contentLength
+      updateProgress.value = total ? 0 : null
+    } else if (event.event === 'Progress') {
+      downloaded += event.data.chunkLength
+      updateProgress.value = total ? Math.min(100, Math.round((downloaded / total) * 100)) : null
+    } else if (event.event === 'Finished') {
+      updateProgress.value = 100
+    }
+  })
+
+  updateDownloaded.value = true
+}
+
+export async function relaunchApp(): Promise<void> {
+  await relaunch()
 }
 
 /**
