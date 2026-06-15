@@ -760,7 +760,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   }
   tab.ptyId = ptyId
   setProcessState(tab, 'alive')
-  ensureSessionTurnWatch(tab, false)
+  ensureSessionTurnWatch(tab, true)
 
   // 后端 → xterm（按 id 过滤多 tab）
   tab.unlistenData = await listen<{ id: number; base64: string }>('pty://data', (e) => {
