@@ -42,6 +42,37 @@ function completedState(isActive: boolean): TerminalTurnState {
   return isActive ? 'idle' : 'review'
 }
 
+export function isSlashCommandInput(line: string): boolean {
+  return line.trimStart().startsWith('/')
+}
+
+export function shouldTerminalInputStartTurn(agent: Agent, line: string): boolean {
+  void agent
+  if (isSlashCommandInput(line)) return false
+  return line.trim().length > 0
+}
+
+export function applyTerminalInputLineState(
+  current: string,
+  data: string,
+): { nextLine: string; submittedLines: string[] } {
+  let line = current
+  const submittedLines: string[] = []
+  for (const ch of data) {
+    if (ch === '\r' || ch === '\n') {
+      submittedLines.push(line)
+      line = ''
+    } else if (ch === '\b' || ch === '\x7f') {
+      line = line.slice(0, -1)
+    } else if (ch === '\x15') {
+      line = ''
+    } else if (ch >= ' ') {
+      line += ch
+    }
+  }
+  return { nextLine: line, submittedLines }
+}
+
 export function statusKind(tab: StatusTab): TabStatusKind {
   if (tab.turnState === 'error' || tab.processState === 'error') return 'error'
   if (tab.processState === 'exited') return 'exited'

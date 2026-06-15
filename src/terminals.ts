@@ -29,11 +29,13 @@ import * as api from './api'
 import {
   applyPendingTurnState,
   applyTurnSignal,
+  applyTerminalInputLineState,
   clearLocalWorkingTurn,
   markSessionActivity,
   rememberPendingTurnState,
   setProcessState,
   setTurnState,
+  shouldTerminalInputStartTurn,
   type TerminalProcessState,
   type TerminalTurnSignalSource,
   type TerminalTurnState,
@@ -73,6 +75,7 @@ export interface TerminalTab {
   quietCursor: boolean
   quietCursorTimer: number | null
   lastUserInputAt: number
+  currentInputLine: string
   /** 进程生命周期：只描述 PTY/CLI 进程本身，不代表本轮回答是否完成。 */
   processState: TerminalProcessState
   /** 本轮问答状态：完成/阻塞/错误只能由 agent/session 的明确信号推进。 */
@@ -674,6 +677,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     quietCursor: false,
     quietCursorTimer: null,
     lastUserInputAt: 0,
+    currentInputLine: '',
     processState: 'spawning',
     turnState: 'unknown',
     turnStateSource: null,
@@ -789,8 +793,15 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     tab.lastUserInputAt = Date.now()
     if (isTerminalCancelInput(data)) {
       clearLocalWorkingTurn(tab, activeUiId.value === tab.uiId)
-    } else if ((data.includes('\r') || data.includes('\n')) && tab.turnState !== 'blocked') {
-      setTurnState(tab, 'working', 'pty-input')
+    } else {
+      const input = applyTerminalInputLineState(tab.currentInputLine, data)
+      if (
+        tab.turnState !== 'blocked' &&
+        input.submittedLines.some((line) => shouldTerminalInputStartTurn(tab.agent, line))
+      ) {
+        setTurnState(tab, 'working', 'pty-input')
+      }
+      tab.currentInputLine = input.nextLine
     }
     setQuietCursor(tab, false)
     const bytes = new TextEncoder().encode(data)
