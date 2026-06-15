@@ -45,7 +45,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY0RUIwRjRBOTkyODYwRTgKUldUb1lDaVpTZy9yWkIwbDhNZHBNbER4TWlnSXZKejExVENPZVFVQXhvZysvdit2Njc2cXFZQngK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRDQjAyNzg1NDkyREM2QjcKUldTM3hpMUpoU2V3VFBJMmVOYnl4S1BwMUIxNWFIbEZWQTBqODZrTnRtOVh4NXl1SDgxd1pORzQK",
       "endpoints": [
         "https://github.com/jerrywu001/cc-sessions-viewer/releases/latest/download/latest.json"
       ],

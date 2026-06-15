@@ -6,6 +6,14 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.1.11]
+
+### Features
+
+- **In-app auto update** — integrated Tauri updater and process plugins; check for updates, download, install, and relaunch directly from the Settings page
+- **Session replay fix** — prevent terminal from getting stuck in "running" state during session replay
+- **Slash command fix** — avoid slash commands falsely triggering terminal running state
+
 ## [v0.1.10]
 
 ### Features
