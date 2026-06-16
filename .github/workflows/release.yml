@@ -75,6 +75,67 @@ jobs:
         with:
           args: ${{ matrix.args }}
 
+      - name: Generate updater latest.json
+        shell: bash
+        run: |
+          node <<'SCRIPT'
+          const fs = require('fs')
+          const path = require('path')
+          const pkg = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'))
+          const version = pkg.version
+
+          function walk(dir) {
+            let files = []
+            for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, e.name)
+              if (e.isDirectory()) files.push(...walk(full))
+              else files.push(full)
+            }
+            return files
+          }
+
+          const bundleDir = 'src-tauri/target'
+          const allFiles = walk(bundleDir)
+          const platforms = {}
+
+          const mapping = [
+            { ext: '.app.tar.gz', sig: '.app.tar.gz.sig', key: ['darwin-x86_64', 'darwin-aarch64'] },
+            { ext: '.msi', sig: '.msi.sig', key: ['windows-x86_64'] },
+            { ext: '.AppImage', sig: '.AppImage.sig', key: ['linux-x86_64'] },
+          ]
+
+          for (const m of mapping) {
+            const bundle = allFiles.find(f => f.endsWith(m.ext) && !f.endsWith('.sig'))
+            const sigFile = allFiles.find(f => f.endsWith(m.sig))
+            if (bundle && sigFile) {
+              const sig = fs.readFileSync(sigFile, 'utf8').trim()
+              const url = path.basename(bundle)
+              for (const k of m.key) {
+                platforms[k] = { signature: sig, url }
+              }
+            }
+          }
+
+          if (Object.keys(platforms).length === 0) {
+            console.log('No updater platforms found, skipping latest.json')
+            process.exit(0)
+          }
+
+          const bundleDirForJson = path.dirname(
+            allFiles.find(f => f.endsWith('.sig')) || ''
+          )
+          const outDir = bundleDirForJson || bundleDir
+          const manifest = {
+            version,
+            notes: '',
+            pub_date: new Date().toISOString(),
+            platforms,
+          }
+          const outPath = path.join(outDir, 'latest.json')
+          fs.writeFileSync(outPath, JSON.stringify(manifest, null, 2) + '\n')
+          console.log(`Generated ${outPath} with platforms: ${Object.keys(platforms).join(', ')}`)
+          SCRIPT
+
       - name: Strip bundled libwayland-client from AppImage
         if: matrix.platform == 'ubuntu-22.04'
         run: |
