@@ -285,16 +285,14 @@ fn infer_claude_turn_state(value: &Value) -> Option<&'static str> {
         "user" => {
             if value.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
                 None
-            } else {
+            } else if claude_user_message_has_content(value) {
                 Some("started")
+            } else {
+                None
             }
         }
         "attachment" => {
-            if value
-                .get("attachment")
-                .and_then(|attachment| attachment.get("type"))
-                .and_then(Value::as_str)
-                == Some("queued_command")
+            if claude_queued_command_has_content(value)
             {
                 Some("started")
             } else {
@@ -312,50 +310,51 @@ fn infer_claude_turn_state(value: &Value) -> Option<&'static str> {
     }
 }
 
-fn infer_codex_turn_state(value: &Value) -> Option<&'static str> {
-    if value.get("type").and_then(Value::as_str) != Some("event_msg") {
-        return None;
-    }
-    let payload = value.get("payload")?;
-    match payload.get("type").and_then(Value::as_str)? {
-        "task_started" => Some("started"),
-        "user_message" => Some("started"),
-        "task_complete" => Some("completed"),
-        "agent_message" => {
-            if payload.get("phase").and_then(Value::as_str) == Some("commentary") {
-                None
-            } else {
-                Some("completed")
-            }
-        }
-        "task_failed" => Some("failed"),
-        "error" => Some("failed"),
-        _ => None,
+fn claude_user_message_has_content(value: &Value) -> bool {
+    let Some(content) = value.get("message").and_then(|message| message.get("content")) else {
+        return false;
+    };
+    match content {
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => items.iter().any(|item| match item.get("type").and_then(Value::as_str) {
+            Some("text") => item
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.trim().is_empty()),
+            Some("image") => true,
+            _ => false,
+        }),
+        _ => false,
     }
 }
 
-fn infer_gemini_turn_state(value: &Value) -> Option<&'static str> {
-    match value.get("type").and_then(Value::as_str)? {
-        "user" => Some("started"),
-        "gemini" => {
-            let content_done = value
-                .get("content")
-                .and_then(Value::as_str)
-                .is_some_and(|content| !content.trim().is_empty());
-            let token_done = value.get("tokens").is_some_and(|tokens| {
-                let output = tokens.get("output").and_then(Value::as_u64).unwrap_or(0);
-                let thoughts = tokens.get("thoughts").and_then(Value::as_u64).unwrap_or(0);
-                output > 0 || thoughts > 0
-            });
-            if content_done || token_done {
-                Some("completed")
-            } else {
-                None
-            }
-        }
-        "error" => Some("failed"),
-        _ => None,
+fn claude_queued_command_has_content(value: &Value) -> bool {
+    let Some(attachment) = value.get("attachment") else {
+        return false;
+    };
+    if attachment.get("type").and_then(Value::as_str) != Some("queued_command") {
+        return false;
     }
+    match attachment.get("prompt") {
+        Some(Value::String(text)) => !text.trim().is_empty(),
+        Some(Value::Array(items)) => items.iter().any(|item| match item.get("type").and_then(Value::as_str) {
+            Some("text") => item
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.trim().is_empty()),
+            Some("image") => true,
+            _ => false,
+        }),
+        _ => false,
+    }
+}
+
+fn infer_codex_turn_state(value: &Value) -> Option<&'static str> {
+    crate::agents::codex::classify_turn_state(value)
+}
+
+fn infer_gemini_turn_state(value: &Value) -> Option<&'static str> {
+    crate::agents::gemini::classify_turn_state(value)
 }
 
 fn process_signal_file(app: &AppHandle, path: &Path) {
@@ -541,6 +540,27 @@ const HOOK_SCRIPT: &str = r#"#!/usr/bin/env node
 const fs = require('fs');
 const path = require('path');
 
+function hasPromptContent(value) {
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.some((item) => {
+    if (typeof item === 'string') return item.trim().length > 0;
+    if (!item || typeof item !== 'object') return false;
+    if (item.type === 'text') return hasPromptContent(item.text || item.content || '');
+    if (item.type === 'image') return true;
+    return hasPromptContent(item.text || item.content || item.prompt || '');
+  });
+  if (value && typeof value === 'object') {
+    if (value.type === 'image') return true;
+    return hasPromptContent(value.text || value.content || value.prompt || '');
+  }
+  return false;
+}
+
+function shouldSkipStarted(data) {
+  const candidates = [data.prompt, data.message, data.user_prompt, data.userPrompt];
+  return candidates.some((value) => value !== undefined) && !candidates.some(hasPromptContent);
+}
+
 const state = process.argv[2];
 const signalPath = process.argv[3];
 let input = '';
@@ -552,6 +572,7 @@ process.stdin.on('end', () => {
     const data = input.trim() ? JSON.parse(input) : {};
     const transcriptPath = data.transcript_path || data.transcriptPath || '';
     if (!transcriptPath) process.exit(0);
+    if (state === 'started' && shouldSkipStarted(data)) process.exit(0);
     const payload = {
       agent: 'claude',
       path: transcriptPath,
@@ -574,14 +595,62 @@ mod tests {
     use crate::agents::gemini::classify_turn_state as gemini_classify;
 
     #[test]
-    fn codex_infers_turn_lifecycle_from_event_messages() {
+    fn claude_infers_turn_lifecycle_only_from_real_user_input() {
         assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"user_message"}})),
+            infer_claude_turn_state(&json!({"type":"user","message":{"content":"hi"}})),
             Some("started")
         );
         assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"task_started"}})),
+            infer_claude_turn_state(&json!({"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","data":"AAAA"}}]}})),
             Some("started")
+        );
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"user","message":{"content":"   "}})),
+            None
+        );
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}})),
+            None
+        );
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"user","isMeta":true,"message":{"content":"hi"}})),
+            None
+        );
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"attachment","attachment":{"type":"queued_command","prompt":"run tests"}})),
+            Some("started")
+        );
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"attachment","attachment":{"type":"queued_command","prompt":"   "}})),
+            None
+        );
+        assert_eq!(
+            infer_claude_turn_state(&json!({"type":"assistant","message":{"content":"done"}})),
+            Some("completed")
+        );
+    }
+
+    #[test]
+    fn codex_infers_turn_lifecycle_from_event_messages() {
+        assert_eq!(
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"user_message","message":"hi"}})),
+            Some("started")
+        );
+        assert_eq!(
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"user_message","message":" ","images":["data:image/png;base64,abc"]}})),
+            Some("started")
+        );
+        assert_eq!(
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"user_message"}})),
+            None
+        );
+        assert_eq!(
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"user_message","message":"   ","images":[],"local_images":[],"text_elements":[]}})),
+            None
+        );
+        assert_eq!(
+            codex_classify(&json!({"type":"event_msg","payload":{"type":"task_started"}})),
+            None
         );
         assert_eq!(
             codex_classify(&json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}})),
@@ -618,6 +687,22 @@ mod tests {
         assert_eq!(
             gemini_classify(&json!({"type":"user","content":"hi"})),
             Some("started")
+        );
+        assert_eq!(
+            gemini_classify(&json!({"type":"user","content":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]})),
+            Some("started")
+        );
+        assert_eq!(
+            gemini_classify(&json!({"type":"user","content":""})),
+            None
+        );
+        assert_eq!(
+            gemini_classify(&json!({"type":"user","content":"   "})),
+            None
+        );
+        assert_eq!(
+            gemini_classify(&json!({"type":"user","content":[]})),
+            None
         );
         assert_eq!(
             gemini_classify(&json!({"type":"gemini","content":"ok"})),

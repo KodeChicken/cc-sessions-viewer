@@ -92,6 +92,19 @@ fn user_text_from_content(v: &Value) -> String {
     }
 }
 
+fn user_content_has_content(v: &Value) -> bool {
+    match v {
+        Value::String(s) => !s.trim().is_empty(),
+        Value::Array(arr) => arr.iter().any(|el| {
+            el.get("text")
+                .and_then(|x| x.as_str())
+                .is_some_and(|s| !s.trim().is_empty())
+                || image_src(el).is_some()
+        }),
+        _ => false,
+    }
+}
+
 /// Gemini image: `inlineData {mimeType, data}` → data URL；外链 `imageUrl` 直接透传。
 fn image_src(el: &Value) -> Option<String> {
     if let Some(obj) = el.get("inlineData").and_then(|x| x.as_object()) {
@@ -300,7 +313,7 @@ fn tool_call_blocks(tc: &Value) -> Vec<Block> {
 /// Returns "started" / "completed" / "failed" / None.
 pub fn classify_turn_state(value: &Value) -> Option<&'static str> {
     match value.get("type").and_then(Value::as_str)? {
-        "user" => Some("started"),
+        "user" if value.get("content").is_some_and(user_content_has_content) => Some("started"),
         "gemini" => {
             let content_done = value
                 .get("content")
@@ -887,6 +900,30 @@ mod tests {
     #[test]
     fn image_src_returns_none_for_plain_text() {
         assert_eq!(image_src(&json!({"text":"hi"})), None);
+    }
+
+    #[test]
+    fn classify_turn_state_requires_real_user_content() {
+        assert_eq!(
+            classify_turn_state(&json!({"type":"user","content":"hi"})),
+            Some("started")
+        );
+        assert_eq!(
+            classify_turn_state(&json!({"type":"user","content":[{"text":"hi"}]})),
+            Some("started")
+        );
+        assert_eq!(
+            classify_turn_state(&json!({"type":"user","content":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]})),
+            Some("started")
+        );
+        assert_eq!(
+            classify_turn_state(&json!({"type":"user","content":"   "})),
+            None
+        );
+        assert_eq!(
+            classify_turn_state(&json!({"type":"user","content":[]})),
+            None
+        );
     }
 
     #[test]

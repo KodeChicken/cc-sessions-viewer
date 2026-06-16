@@ -665,6 +665,19 @@ fn agent_message_phase(payload: &Value) -> Option<&str> {
     payload.get("phase").and_then(Value::as_str)
 }
 
+fn user_message_has_content(payload: &Value) -> bool {
+    payload
+        .get("message")
+        .and_then(Value::as_str)
+        .is_some_and(|message| !message.trim().is_empty())
+        || ["images", "local_images", "text_elements"].iter().any(|key| {
+            payload
+                .get(key)
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty())
+        })
+}
+
 /// Classify a Codex JSONL entry for turn-state inference.
 /// Returns "started" / "completed" / "failed" / None.
 pub fn classify_turn_state(value: &Value) -> Option<&'static str> {
@@ -673,7 +686,7 @@ pub fn classify_turn_state(value: &Value) -> Option<&'static str> {
     }
     let payload = value.get("payload")?;
     match payload.get("type").and_then(Value::as_str)? {
-        "task_started" | "user_message" => Some("started"),
+        "user_message" if user_message_has_content(payload) => Some("started"),
         "task_complete" => Some("completed"),
         "agent_message" => {
             if agent_message_phase(payload) == Some("commentary") {
