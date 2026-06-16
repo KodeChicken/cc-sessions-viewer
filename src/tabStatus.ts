@@ -52,13 +52,58 @@ export function shouldTerminalInputStartTurn(agent: Agent, line: string): boolea
   return line.trim().length > 0
 }
 
+function stripTerminalControlSequences(data: string): string {
+  let out = ''
+  for (let i = 0; i < data.length; i++) {
+    const ch = data[i]
+    if (ch !== '\x1b' && ch !== '\x9b') {
+      out += ch
+      continue
+    }
+
+    if (ch === '\x9b') {
+      i += 1
+      while (i < data.length && !/[\x40-\x7e]/.test(data[i])) i += 1
+      continue
+    }
+
+    const next = data[i + 1]
+    if (next === '[') {
+      i += 2
+      while (i < data.length && !/[\x40-\x7e]/.test(data[i])) i += 1
+    } else if (next === ']') {
+      i += 2
+      while (i < data.length) {
+        if (data[i] === '\x07') break
+        if (data[i] === '\x1b' && data[i + 1] === '\\') {
+          i += 1
+          break
+        }
+        i += 1
+      }
+    } else if (next && /[PX^_]/.test(next)) {
+      i += 2
+      while (i < data.length) {
+        if (data[i] === '\x1b' && data[i + 1] === '\\') {
+          i += 1
+          break
+        }
+        i += 1
+      }
+    } else if (next) {
+      i += 1
+    }
+  }
+  return out
+}
+
 export function applyTerminalInputLineState(
   current: string,
   data: string,
 ): { nextLine: string; submittedLines: string[] } {
   let line = current
   const submittedLines: string[] = []
-  for (const ch of data) {
+  for (const ch of stripTerminalControlSequences(data)) {
     if (ch === '\r' || ch === '\n') {
       submittedLines.push(line)
       line = ''
@@ -123,14 +168,7 @@ export function applyTurnSignal(
 }
 
 export function markSessionActivity(tab: StatusTab) {
-  if (
-    tab.turnState !== 'blocked' &&
-    tab.turnState !== 'error' &&
-    !(tab.turnStateSource === 'session-jsonl' && (tab.turnState === 'idle' || tab.turnState === 'review')) &&
-    !(tab.turnStateSource === 'hook' && (tab.turnState === 'idle' || tab.turnState === 'review'))
-  ) {
-    setTurnState(tab, 'working', 'session-live-tail')
-  }
+  void tab
 }
 
 export function clearLocalWorkingTurn(tab: StatusTab, isActive: boolean) {

@@ -63,4 +63,19 @@ describe('terminal input status inference', () => {
       submittedLines: ['/status'],
     })
   })
+
+  it('ignores terminal control sequences before an empty submit', () => {
+    expect(applyTerminalInputLineState('', '\x1b[I\r')).toEqual({
+      nextLine: '',
+      submittedLines: [''],
+    })
+    expect(applyTerminalInputLineState('', '\x1b[200~\x1b[201~\r')).toEqual({
+      nextLine: '',
+      submittedLines: [''],
+    })
+    expect(applyTerminalInputLineState('', '\x1b[A\r')).toEqual({
+      nextLine: '',
+      submittedLines: [''],
+    })
+  })
 })
