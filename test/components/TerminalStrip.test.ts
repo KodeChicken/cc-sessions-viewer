@@ -217,6 +217,22 @@ describe('TerminalStrip', () => {
     expect(t.turnStateSource).toBe('session-jsonl')
   })
 
+  it('does not infer working state from session append alone', () => {
+    const t = tab({
+      sessionPath: '/repo/session.jsonl',
+      sessionId: 'session-1',
+      turnState: 'unknown',
+    })
+    tabs.value = [t]
+
+    markTabSessionActivity('codex', '/repo/session.jsonl')
+    expect(t.turnState).toBe('unknown')
+
+    markTabTurnStarted('codex', '/repo/session.jsonl')
+    expect(t.turnState).toBe('working')
+    expect(t.turnStateSource).toBe('session-jsonl')
+  })
+
   it('keeps process exit separate from turn completion', () => {
     const t = tab({
       sessionPath: '/repo/session.jsonl',
