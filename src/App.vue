@@ -2163,6 +2163,11 @@ onUnmounted(() => {
 // 先刷一次项目列表再跳。
 async function onGlobalSearchOpen(hit: SearchHit) {
   setActiveTui(null)
+  showStats.value = false
+  showTrash.value = false
+  showExportHistory.value = false
+  showPricing.value = false
+  sessionStatsTarget.value = null
   if (activeDir.value !== hit.projectKey) {
     if (!projects.value.some((p) => p.dirName === hit.projectKey)) {
       await loadProjects()
@@ -2170,11 +2175,11 @@ async function onGlobalSearchOpen(hit: SearchHit) {
     await selectProject(hit.projectKey)
   }
   await openChat(hit.session)
-  // 文本命中带上消息坐标 —— 等 ChatView 挂载并把 messages 渲染出来后再跳。
-  // 这里走 2 次 nextTick：一次让 ChatView 拿到 ref，一次让长列表渲染稳定后再 query 节点。
   if (hit.matchedField === 'text' && typeof hit.matchMsgIndex === 'number') {
-    await nextTick()
-    await nextTick()
+    for (let i = 0; i < 10; i++) {
+      await nextTick()
+      if (chatViewRef.value) break
+    }
     chatViewRef.value?.flashMessage(hit.matchMsgIndex, hit.matchMsgUuid ?? undefined)
   }
 }

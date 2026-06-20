@@ -168,8 +168,8 @@ function close() {
 
 function chooseHit(hit: SearchHit) {
   pushRecent(query.value)
-  emit('open', hit)
   close()
+  emit('open', hit)
 }
 
 function onSelect() {
