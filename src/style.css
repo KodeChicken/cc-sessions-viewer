@@ -1308,6 +1308,52 @@ body.is-sidebar-resizing {
   background: var(--border);
 }
 
+/* ---- 新建会话下拉菜单（Sessions list / TerminalStrip 的 + 按钮） ---- */
+.new-menu-wrap {
+  position: relative;
+}
+.new-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 50;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.new-menu-item {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+.new-menu-item:hover {
+  background: var(--surface-hover);
+}
+.new-menu-ic {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
 /* ---------- Session list ---------- */
 .scroll-area {
   flex: 1;
@@ -3132,288 +3178,6 @@ details[open] > .block-summary > .chev {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
-}
-
-/* ---------- Global search (Algolia-style overlay) ---------- */
-/* 顶部居中、固定宽度；背景 backdrop 复用 .overlay 但单独提一档 z-index。 */
-.gs-overlay {
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 14vh;
-  z-index: 80;
-}
-.gs-modal {
-  width: min(620px, calc(100vw - 32px));
-  max-height: 70vh;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  box-shadow: var(--shadow-lg);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.gs-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
-}
-.gs-head-ic {
-  display: inline-flex;
-  align-items: center;
-  color: var(--text-mute);
-}
-.gs-head-ic svg {
-  width: 18px;
-  height: 18px;
-}
-.gs-input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  font-size: 15px;
-  color: var(--text);
-}
-.gs-input::placeholder {
-  color: var(--text-mute);
-}
-.gs-clear {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
-  color: var(--text-mute);
-  transition: background 0.12s, color 0.12s;
-}
-.gs-clear:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-.gs-clear svg {
-  width: 14px;
-  height: 14px;
-}
-.gs-body {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  padding: 6px 0;
-}
-.gs-empty {
-  text-align: center;
-  padding: 32px 18px;
-  color: var(--text-mute);
-}
-.gs-empty-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-dim);
-}
-.gs-empty-hint {
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--text-mute);
-}
-.gs-status {
-  padding: 24px 18px;
-  text-align: center;
-  font-size: 12.5px;
-  color: var(--text-mute);
-}
-.gs-section {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 16px 4px;
-}
-.gs-section-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-mute);
-}
-.gs-section-label svg {
-  width: 12px;
-  height: 12px;
-}
-.gs-section-clear {
-  font-size: 11px;
-  color: var(--text-mute);
-  padding: 2px 6px;
-  border-radius: 4px;
-  transition: background 0.12s, color 0.12s;
-}
-.gs-section-clear:hover {
-  background: var(--surface-hover);
-  color: var(--text-dim);
-}
-.gs-recent-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 16px;
-  font-size: 13px;
-  color: var(--text-dim);
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.1s;
-}
-.gs-recent-row:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-.gs-recent-row:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
-}
-.gs-recent-ic {
-  width: 14px;
-  height: 14px;
-  color: var(--text-mute);
-  flex-shrink: 0;
-}
-.gs-recent-text {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* hover 时才浮出来的小 × ，单条删除入口。focus-visible 兜底键盘可达。 */
-.gs-recent-remove {
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  color: var(--text-mute);
-  opacity: 0;
-  transition: opacity 0.1s, background 0.1s, color 0.1s;
-  flex-shrink: 0;
-}
-.gs-recent-remove svg {
-  width: 12px;
-  height: 12px;
-}
-.gs-recent-row:hover .gs-recent-remove,
-.gs-recent-remove:focus-visible {
-  opacity: 1;
-}
-.gs-recent-remove:hover {
-  background: var(--surface-active);
-  color: var(--text);
-}
-.gs-results {
-  padding-bottom: 6px;
-}
-.gs-more {
-  padding: 8px 16px 4px;
-  text-align: center;
-  font-size: 11px;
-  color: var(--text-mute);
-  border-top: 1px dashed var(--border);
-  margin-top: 6px;
-}
-.gs-group + .gs-group {
-  margin-top: 4px;
-}
-.gs-group-head {
-  padding: 10px 16px 4px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-mute);
-}
-.gs-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 16px;
-  text-align: left;
-  transition: background 0.1s;
-  cursor: pointer;
-}
-.gs-row.active {
-  background: var(--surface-hover);
-}
-.gs-row-main {
-  flex: 1;
-  min-width: 0;
-}
-.gs-row-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.gs-row-snippet {
-  margin-top: 2px;
-  font-size: 12px;
-  color: var(--text-mute);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.gs-row-field {
-  flex-shrink: 0;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-mute);
-  background: var(--surface-2);
-  padding: 2px 6px;
-  border-radius: 4px;
-  align-self: center;
-}
-.gs-foot {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 8px 14px;
-  border-top: 1px solid var(--border);
-  background: var(--surface-2);
-  font-size: 11.5px;
-  color: var(--text-mute);
-}
-.gs-foot-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.gs-kbd {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--text-dim);
-  font-size: 10.5px;
-  font-family: inherit;
-}
-.gs-kbd svg {
-  width: 11px;
-  height: 11px;
-}
-.gs-kbd-esc {
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 10px;
-  letter-spacing: 0.02em;
 }
 
 /* ---------- Settings ---------- */

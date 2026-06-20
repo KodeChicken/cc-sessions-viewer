@@ -72,6 +72,7 @@ import {
 import {
   activeUiId,
   openOrFocusTui,
+  openShellTab,
   setActive as setActiveTui,
   activeTab as currentActiveTab,
   closeTabsByProject,
@@ -79,6 +80,7 @@ import {
   reconcileNewTabs,
   syncTabTitlesFromSessions,
   syncTabTitleBySessionPath,
+  setTabTitleByUiId,
   isTabProcessAlive,
   markTabSessionActivity,
   markTabTurnStarted,
@@ -91,6 +93,7 @@ import {
   loadSavedNav,
   savedTabs,
   removeSavedTab,
+  clearAllTabs,
   type TerminalTab,
   type SavedTab,
 } from './terminals'
@@ -612,6 +615,8 @@ interface RenameState {
   id: string
   value: string
   defaultTitle: string
+  /** shell tab 重命名不走后端，直接改内存中的 tab title。 */
+  shellTabUiId?: number
 }
 const renameModal = ref<RenameState>({
   show: false,
@@ -652,10 +657,16 @@ async function confirmRename() {
     m.show = false
     return
   }
+  if (m.shellTabUiId != null) {
+    setTabTitleByUiId(m.shellTabUiId, name)
+    m.show = false
+    notify(t('toast.renamed'))
+    saveTabState()
+    return
+  }
   renaming.value = true
   try {
     await api.renameSession(m.agent, m.path, name)
-    // 立刻把内存里这条 session 的 title 更新成新名字，避免等下次刷新
     const patch = (s: SessionMeta) =>
       s.path === m.path ? { ...s, title: name } : s
     sessions.value = sessions.value.map(patch)
@@ -665,6 +676,7 @@ async function confirmRename() {
     syncTabTitleBySessionPath(m.agent, m.path, name)
     m.show = false
     notify(t('toast.renamed'))
+    saveTabState()
   } catch (e) {
     notify(t('toast.renameFail', { e: String(e) }), true)
   } finally {
@@ -1578,11 +1590,31 @@ async function onTuiTabClosed(closedSessionPath: string) {
 }
 
 async function openRenameFromTuiTab(tab: TerminalTab) {
+  if (tab.isShell) {
+    renameModal.value = {
+      show: true,
+      agent: tab.agent,
+      path: '',
+      id: '',
+      value: tab.title,
+      defaultTitle: tab.title,
+      shellTabUiId: tab.uiId,
+    }
+    return
+  }
   if (!tab.sessionPath) {
     await syncTuiTitlesNow()
   }
   if (!tab.sessionPath) {
-    notify(t('toast.sessionStillStarting'), true)
+    renameModal.value = {
+      show: true,
+      agent: tab.agent,
+      path: '',
+      id: '',
+      value: tab.title,
+      defaultTitle: tab.title,
+      shellTabUiId: tab.uiId,
+    }
     return
   }
   openRenameState(tab.agent, tab.sessionPath, tab.sessionId, tab.title)
@@ -1615,14 +1647,25 @@ async function resumeHere(s: SessionMeta) {
 
 async function hydrateSavedTab(saved: SavedTab) {
   try {
-    await openOrFocusTui({
-      agent: saved.agent,
-      projectKey: saved.projectKey,
-      sessionId: saved.sessionId,
-      sessionPath: saved.sessionPath,
-      title: saved.title,
-      cwd: saved.cwd,
-    })
+    if (saved.isShell) {
+      await openShellTab({
+        agent: saved.agent,
+        projectKey: saved.projectKey,
+        title: saved.title,
+        cwd: saved.cwd,
+      })
+    } else {
+      await openOrFocusTui({
+        agent: saved.agent,
+        projectKey: saved.projectKey,
+        sessionId: saved.sessionId,
+        sessionPath: saved.sessionPath,
+        title: saved.title,
+        cwd: saved.cwd,
+        ...(!saved.sessionId ? { knownSessionPaths: sessions.value.map((s) => s.path) } : {}),
+        ...(saved.userRenamed ? { userRenamed: true } : {}),
+      })
+    }
   } catch (e) {
     notify(`${e}`, true)
   }
@@ -1643,8 +1686,25 @@ async function newSession() {
         sessionPath: '',
         title: t('chat.tui.newSessionTitle'),
         cwd,
+        knownSessionPaths: sessions.value.map((s) => s.path),
       })
     }
+  } catch (e) {
+    notify(`${e}`, true)
+  }
+}
+
+/** 开一个纯 shell tab —— 不跑任何 agent CLI，用于执行任意 shell 命令。 */
+async function newShellSession() {
+  const cwd = activeProject.value?.displayPath || ''
+  if (!cwd) return
+  try {
+    await openShellTab({
+      agent: agent.value,
+      projectKey: activeProject.value?.dirName ?? activeDir.value ?? '',
+      title: t('list.action.newTerminal'),
+      cwd,
+    })
   } catch (e) {
     notify(`${e}`, true)
   }
@@ -1799,6 +1859,19 @@ function onClearCache() {
   })
 }
 
+function onClearTabs() {
+  ask({
+    title: t('dialog.clearTabs.title'),
+    message: t('dialog.clearTabs.body'),
+    okText: t('dialog.clearTabs.ok'),
+    danger: true,
+    onOk: () => {
+      clearAllTabs()
+      notify(t('toast.tabsCleared'))
+    },
+  })
+}
+
 // ---------- 窗口聚焦 / 失焦：与 Codex 一致的弱化态 ----------
 const windowFocused = ref(document.hasFocus())
 function onFocus() {
@@ -1823,11 +1896,16 @@ function saveTabState() {
     : activeDir.value
       ? 'list'
       : 'welcome'
+  // sessionPath 为空的 tab（shell / 未匹配新会话）用在 live 列表中的索引定位
+  const noPathIdx = cur && !cur.sessionPath
+    ? tuiTabs.value.filter((t) => !t.sessionPath).indexOf(cur)
+    : undefined
   persistTabState({
     agent: agent.value,
     activeDir: activeDir.value,
     activeSessionPath: cur?.sessionPath ?? null,
     view,
+    ...(noPathIdx != null && noPathIdx >= 0 ? { activeSavedIndex: noPathIdx } : {}),
   })
 }
 
@@ -1843,16 +1921,22 @@ onMounted(() => {
     // 退出时在终端 tab 上 → 自动水合那个 tab；同时把侧栏切到 tab 所属的项目
     // （退出时可能在 A 项目看 tab，但 savedNav.activeDir 因旧格式或竞态存了 B）。
     // 兼容旧格式：没有 view 字段时，有 activeSessionPath 就视为 'tui'。
-    const shouldHydrate = nav?.activeSessionPath &&
+    const shouldHydrate = (nav?.activeSessionPath || nav?.activeSavedIndex != null) &&
       (nav.view === 'tui' || nav.view === undefined)
     if (shouldHydrate) {
-      const target = savedTabs.value.find(
-        (s) => s.sessionPath === nav!.activeSessionPath,
-      )
+      let target: SavedTab | undefined
+      if (nav!.activeSavedIndex != null) {
+        const noPath = savedTabs.value.filter((s) => !s.sessionPath)
+        target = noPath[nav!.activeSavedIndex] ?? noPath[0]
+      } else {
+        target = savedTabs.value.find(
+          (s) => s.sessionPath === nav!.activeSessionPath,
+        )
+      }
       if (target) {
         activeDir.value = target.projectKey
         await refreshSessions()
-        removeSavedTab(target.sessionPath)
+        removeSavedTab(target.sessionPath ? target.sessionPath : target)
         await hydrateSavedTab(target)
         return
       }
@@ -1876,7 +1960,8 @@ onMounted(() => {
     saveTimer = window.setTimeout(saveTabState, 500)
   }
   const tabCount = computed(() => tuiTabs.value.length)
-  watch([agent, activeDir, activeUiId, tabCount], debouncedSave)
+  const savedCount = computed(() => savedTabs.value.length)
+  watch([agent, activeDir, activeUiId, tabCount, savedCount], debouncedSave)
   // 后台检查 GitHub release —— 缓存 24h，失败完全静默；结果驱动侧边栏 Settings
   // 按钮上的"有新版本"小红点。
   runBackgroundCheck()
@@ -2208,6 +2293,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
         @tab-closed="onTuiTabClosed"
         @tab-rename="openRenameFromTuiTab"
         @new-session="newSession"
+        @new-shell="newShellSession"
         @hydrate-saved="hydrateSavedTab"
       />
 
@@ -2288,6 +2374,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
             @export="exportFromList"
             @refresh="refreshSessions"
             @new-session="newSession"
+            @new-shell="newShellSession"
             @delete-project="deleteActiveProject"
             @load-more="loadMore"
             @scroll="onListScroll"
@@ -2336,6 +2423,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
         :initial-tab="settingsTab"
         @close="showSettings = false; settingsTab = 'general'"
         @clear-cache="onClearCache"
+        @clear-tabs="onClearTabs"
       />
     </Transition>
 

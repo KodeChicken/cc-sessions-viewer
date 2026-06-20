@@ -137,7 +137,7 @@ describe('TerminalStrip', () => {
     })
 
     expect(wrapper.find('.term-strip-ctx-menu').exists()).toBe(true)
-    await wrapper.find('[data-menu-action="strip-new-session"]').trigger('click')
+    await wrapper.find('[data-menu-action="strip-new-agent"]').trigger('click')
 
     expect(wrapper.emitted('newSession')).toHaveLength(1)
   })

@@ -150,6 +150,37 @@ fn build_shell_command(
     cmd
 }
 
+/// 纯交互式 shell（不带 -c），用于"新建终端"场景。
+#[cfg(unix)]
+fn build_interactive_shell(cwd: &str, color_scheme: PtyColorScheme) -> CommandBuilder {
+    #[cfg(target_os = "macos")]
+    const DEFAULT_SHELL: &str = "/bin/zsh";
+    #[cfg(not(target_os = "macos"))]
+    const DEFAULT_SHELL: &str = "/bin/bash";
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string());
+    let mut cmd = CommandBuilder::new(&shell);
+    cmd.arg("-l");
+    cmd.arg("-i");
+    cmd.env("TERM", "xterm-256color");
+    cmd.env_remove("npm_config_prefix");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("COLORFGBG", color_scheme.colorfgbg());
+    cmd.cwd(cwd);
+    cmd
+}
+
+#[cfg(windows)]
+fn build_interactive_shell(cwd: &str, color_scheme: PtyColorScheme) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new("powershell.exe");
+    cmd.arg("-NoLogo");
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("COLORFGBG", color_scheme.colorfgbg());
+    cmd.cwd(cwd);
+    cmd
+}
+
 /// 拉起 PTY 跑 OS 对应的 shell 调用（详见 [`build_shell_command`]）。
 ///
 /// `command` 已由 agent 构造；`cwd` 已在 lib.rs 里校验是真实目录。返回新 PTY 的内部 id。
@@ -161,7 +192,30 @@ pub fn spawn(
     rows: u16,
     color_scheme: Option<&str>,
 ) -> Result<u64, String> {
-    if !std::path::Path::new(&cwd).is_dir() {
+    let cmd = build_shell_command(&cwd, &command, PtyColorScheme::parse(color_scheme));
+    spawn_raw(app, &cwd, cmd, cols, rows)
+}
+
+/// 启动一个纯 shell PTY（不跑任何 agent CLI），用于在项目目录里执行任意命令。
+pub fn spawn_shell(
+    app: AppHandle,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+    color_scheme: Option<&str>,
+) -> Result<u64, String> {
+    let cmd = build_interactive_shell(&cwd, PtyColorScheme::parse(color_scheme));
+    spawn_raw(app, &cwd, cmd, cols, rows)
+}
+
+fn spawn_raw(
+    app: AppHandle,
+    cwd: &str,
+    cmd: CommandBuilder,
+    cols: u16,
+    rows: u16,
+) -> Result<u64, String> {
+    if !std::path::Path::new(cwd).is_dir() {
         return Err("项目目录已不存在，无法启动终端".into());
     }
     let pty_system = native_pty_system();
@@ -173,10 +227,6 @@ pub fn spawn(
             pixel_height: 0,
         })
         .map_err(|e| format!("openpty failed: {e}"))?;
-
-    // 按操作系统装配 shell 调用 —— 把 PATH 注入 + cwd 切换合并到一条命令里。
-    // 见模块顶端注释，POSIX / Windows 各自的取舍都在那里。
-    let cmd = build_shell_command(&cwd, &command, PtyColorScheme::parse(color_scheme));
 
     let child = pair
         .slave

@@ -6,6 +6,26 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.1.12]
+
+### Features
+
+- **Shell terminal tabs** — new "New terminal" option opens a pure interactive shell (no agent CLI) in the project directory, useful for running arbitrary commands alongside agent sessions
+- **New session dropdown menu** — the "+" button in both the session list and terminal strip now shows a dropdown with "New agent session" and "New terminal" options
+- **Shell tab persistence** — shell tabs are saved on exit and restored on next launch, same as agent tabs
+- **Tab rename for shell & unmatched tabs** — shell tabs and newly created tabs that haven't matched a session yet can now be renamed directly via the tab context menu
+
+### Bug Fixes
+
+- **Fix Chinese IME input in global search** — remove `:value` binding that caused Vue re-renders to clobber the IME composition buffer, losing characters mid-input
+- **Fix search blocking the main thread** — `search_sessions` now runs on `spawn_blocking` so the Tauri async runtime stays responsive during heavy searches
+- **Fix new tab binding to wrong session** — snapshot known session paths at tab creation time so `reconcileNewTabs` only matches genuinely new sessions, not old ones with updated mtime
+
+### Performance
+
+- **Global search debounce reduced** — lowered from 900ms to 350ms for snappier results while still protecting against excessive searches
+- **Removed ~280 lines of dead global search CSS** — styles are now scoped inside `GlobalSearchModal.vue`
+
 ## [v0.1.11]
 
 ### Features

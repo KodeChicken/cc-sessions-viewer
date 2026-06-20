@@ -30,6 +30,8 @@ import {
   IconPlus,
   IconSelect,
   IconClose,
+  IconTerminal,
+  agentIcons,
 } from '../components/icons'
 
 const props = defineProps<{
@@ -51,6 +53,7 @@ const emit = defineEmits<{
   (e: 'export', s: SessionMeta, kind: 'md' | 'html' | 'json'): void
   (e: 'refresh'): void
   (e: 'new-session'): void
+  (e: 'new-shell'): void
   (e: 'delete-project'): void
   (e: 'load-more'): void
   (e: 'scroll', scrollTop: number): void
@@ -401,6 +404,29 @@ function onListMouseLeave() {
   hoverPath.value = null
 }
 
+// ---- 新建会话下拉菜单 ----
+const newMenuOpen = ref(false)
+const newMenuEl = ref<HTMLElement>()
+function toggleNewMenu(e: Event) {
+  e.stopPropagation()
+  newMenuOpen.value = !newMenuOpen.value
+}
+function pickNewAgent() {
+  newMenuOpen.value = false
+  emit('new-session')
+}
+function pickNewShell() {
+  newMenuOpen.value = false
+  emit('new-shell')
+}
+function onNewMenuDocClick(e: MouseEvent) {
+  if (!newMenuOpen.value) return
+  if (newMenuEl.value?.contains(e.target as Node)) return
+  newMenuOpen.value = false
+}
+onMounted(() => document.addEventListener('click', onNewMenuDocClick))
+onUnmounted(() => document.removeEventListener('click', onNewMenuDocClick))
+
 defineExpose({ scrollEl })
 </script>
 
@@ -501,14 +527,26 @@ defineExpose({ scrollEl })
         >
           <IconSelect />
         </button>
-        <button
-          v-if="project.exists"
-          class="icon-btn"
-          v-tooltip="t('list.action.newSession')"
-          @click="emit('new-session')"
-        >
-          <IconPlus />
-        </button>
+        <div v-if="project.exists" ref="newMenuEl" class="new-menu-wrap">
+          <button
+            class="icon-btn"
+            :class="{ active: newMenuOpen }"
+            v-tooltip="t('list.action.newSession')"
+            @click="toggleNewMenu"
+          >
+            <IconPlus />
+          </button>
+          <div v-if="newMenuOpen" class="new-menu" role="menu">
+            <button type="button" class="new-menu-item" role="menuitem" @click="pickNewAgent">
+              <component :is="agentIcons[agent]" class="new-menu-ic" />
+              <span>{{ t('list.action.newAgentSession') }}</span>
+            </button>
+            <button type="button" class="new-menu-item" role="menuitem" @click="pickNewShell">
+              <IconTerminal class="new-menu-ic" />
+              <span>{{ t('list.action.newTerminal') }}</span>
+            </button>
+          </div>
+        </div>
         <button
           v-if="project.exists"
           class="icon-btn"

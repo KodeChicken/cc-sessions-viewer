@@ -218,6 +218,20 @@ export const ptySpawnNew = (
     colorScheme: colorScheme || 'light',
   })
 
+/** 启动一个纯 shell PTY（不跑任何 agent CLI）。 */
+export const ptySpawnShell = (
+  cwd: string,
+  cols: number,
+  rows: number,
+  colorScheme?: 'light' | 'dark',
+) =>
+  invoke<number>('pty_spawn_shell', {
+    cwd,
+    cols,
+    rows,
+    colorScheme: colorScheme || 'light',
+  })
+
 /** 把用户的按键 base64 后写进 PTY stdin。 */
 export const ptyWrite = (id: number, base64: string) =>
   invoke<void>('pty_write', { id, data: base64 })

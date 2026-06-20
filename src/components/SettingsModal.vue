@@ -76,7 +76,7 @@ const shortcuts = [
 ]
 
 const props = defineProps<{ cacheBytes: number; initialTab?: SettingsTab }>()
-const emit = defineEmits<{ close: []; clearCache: [] }>()
+const emit = defineEmits<{ close: []; clearCache: []; clearTabs: [] }>()
 
 const activeTab = ref<SettingsTab>(props.initialTab ?? 'general')
 
@@ -379,6 +379,21 @@ async function installClaudeHooks() {
             </button>
           </section>
 
+          <!-- 终端标签 -->
+          <section class="set-section">
+            <header class="set-section-head">
+              <IconTerminal />
+              <span class="set-section-title">{{ t('settings.section.tabs') }}</span>
+              <IconInfo class="set-hint-icon" v-tooltip="t('settings.clearTabsDesc')" />
+            </header>
+            <button
+              class="btn danger"
+              @click="emit('clearTabs')"
+            >
+              {{ t('settings.clearTabs') }}
+            </button>
+          </section>
+
           <!-- 关于 -->
           <section class="set-section">
             <header class="set-section-head">
@@ -527,6 +542,7 @@ async function installClaudeHooks() {
               </span>
             </label>
           </section>
+
         </template>
 
         <template v-else>

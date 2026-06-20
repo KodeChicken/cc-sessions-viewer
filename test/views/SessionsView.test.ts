@@ -207,10 +207,23 @@ describe('SessionsView', () => {
         b.attributes('aria-label')?.startsWith(label),
       )!
 
-    it('emits "new-session" when the new-session button is clicked', async () => {
+    it('emits "new-session" when the agent session menu item is clicked', async () => {
+      const wrapper = factory()
+      // Click the "+" button to open the dropdown
+      await findByLabel(wrapper, 'New session').trigger('click')
+      // Click the "New agent session" menu item
+      const items = wrapper.findAll('.new-menu-item')
+      expect(items.length).toBe(2)
+      await items[0].trigger('click')
+      expect(wrapper.emitted('new-session')).toHaveLength(1)
+    })
+
+    it('emits "new-shell" when the terminal menu item is clicked', async () => {
       const wrapper = factory()
       await findByLabel(wrapper, 'New session').trigger('click')
-      expect(wrapper.emitted('new-session')).toHaveLength(1)
+      const items = wrapper.findAll('.new-menu-item')
+      await items[1].trigger('click')
+      expect(wrapper.emitted('new-shell')).toHaveLength(1)
     })
 
     it('hides new-session and refresh when the project directory is missing', () => {
@@ -228,9 +241,7 @@ describe('SessionsView', () => {
       // 目录已不存在 → 新建会话 / 刷新都没意义，只剩删除项目。
       // 没有会话 (sessions=[]) → 「批量选择」入口也不渲染。
       expect(wrapper.findAll('.list-head-actions .icon-btn')).toHaveLength(1)
-      expect(wrapper.find('.list-head-actions .icon-btn[aria-label^="New session"]').exists()).toBe(
-        false,
-      )
+      expect(wrapper.find('.list-head-actions .new-menu-wrap').exists()).toBe(false)
       expect(wrapper.find('.list-head-actions .icon-btn[aria-label^="Reload"]').exists()).toBe(
         false,
       )

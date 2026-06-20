@@ -79,6 +79,8 @@ export default {
   'list.action.reveal': 'Show in folder',
   'list.action.refresh': 'Reload sessions',
   'list.action.newSession': 'New session in window',
+  'list.action.newAgentSession': 'New agent session',
+  'list.action.newTerminal': 'New terminal',
   'list.action.rename': 'Rename',
   'list.action.trash': 'Move to Trash',
   'list.footer.loading': 'Loading more…',
@@ -175,6 +177,7 @@ export default {
   'chat.action.resumeHere': 'Open in window',
   'chat.action.resumeUnavailable': 'Cannot resume — missing working directory',
   'chat.tui.tabRename': 'Rename session',
+  'chat.tui.tabRenameShell': 'Rename terminal',
   'chat.tui.tabClose': 'Close terminal',
   'chat.tui.tabCloseOthers': 'Close other terminals',
   'chat.tui.tabCloseProject': 'Close project terminals',
@@ -271,9 +274,14 @@ export default {
   'dialog.clearCache.body':
     'This clears pin / sink preferences. Sessions and Trash are not affected.',
   'dialog.clearCache.ok': 'Clear',
+  'dialog.clearTabs.title': 'Clear all tabs',
+  'dialog.clearTabs.body':
+    'This will close all running terminals and clear saved tab state. Session files are not affected.',
+  'dialog.clearTabs.ok': 'Clear all',
 
   'toast.moved': 'Moved to Trash',
   'toast.renamed': 'Renamed',
+  'toast.tabsCleared': 'All tabs cleared',
   'toast.renameFail': 'Rename failed: {e}',
   'toast.projDeleted': 'Project moved to Trash',
   'toast.batchProjDeleted': '{n} projects moved to Trash',
@@ -365,6 +373,10 @@ export default {
   'settings.codex.brief': 'Session visibility',
   'settings.codex.showInternal': 'Show review sessions',
   'settings.codex.showArchived': 'Show archived sessions',
+  'settings.section.tabs': 'Terminal Tabs',
+  'settings.clearTabs': 'Clear all tabs',
+  'settings.clearTabsDesc':
+    'Closes all running terminal tabs and clears saved tab state. Session files are not affected.',
   'settings.clearCache': 'Clear cache',
   'settings.clearCacheDesc':
     'Clears pin / sink preferences. Sessions and Trash are not affected.',

@@ -90,6 +90,10 @@ export interface TerminalTab {
   status: 'spawning' | 'running' | 'exited' | 'error'
   errorMessage?: string
   exitCode?: number
+  /** true = 纯 shell tab（不跑 agent CLI），不需要 turn watch 等 agent 逻辑。 */
+  isShell?: boolean
+  /** 用户手动重命名过 —— reconcile 时保留此标题，不被 session 标题覆盖。 */
+  userRenamed?: boolean
 }
 
 export const tabs = ref<TerminalTab[]>([])
@@ -110,6 +114,8 @@ export interface SavedTab {
   sessionPath: string
   title: string
   cwd: string
+  isShell?: boolean
+  userRenamed?: boolean
 }
 
 export interface SavedNav {
@@ -119,6 +125,8 @@ export interface SavedNav {
   activeSessionPath: string | null
   /** 退出时的视图状态：'list' | 'tui' | 'welcome'（没选项目） */
   view: 'list' | 'tui' | 'welcome'
+  /** 退出时活跃 tab 没有 sessionPath（shell / 未匹配新会话），记录它在 savedTabs 中的索引 */
+  activeSavedIndex?: number
 }
 
 export const savedTabs = ref<SavedTab[]>(loadSavedTabs())
@@ -130,7 +138,7 @@ function loadSavedTabs(): SavedTab[] {
     const arr = JSON.parse(raw)
     if (!Array.isArray(arr)) return []
     return arr.filter(
-      (t: any) => t && t.agent && t.sessionId && t.sessionPath && t.cwd,
+      (t: any) => t && t.agent && t.cwd,
     )
   } catch {
     return []
@@ -151,7 +159,7 @@ export function loadSavedNav(): SavedNav | null {
 
 export function persistTabState(nav: SavedNav) {
   const live: SavedTab[] = tabs.value
-    .filter((t) => t.sessionId && t.sessionPath)
+    .filter((t) => t.isShell || (t.sessionId && t.sessionPath) || isTabProcessAlive(t))
     .map((t) => ({
       agent: t.agent,
       projectKey: t.projectKey,
@@ -159,22 +167,44 @@ export function persistTabState(nav: SavedNav) {
       sessionPath: t.sessionPath,
       title: t.title,
       cwd: t.cwd,
+      ...(t.isShell ? { isShell: true } : {}),
+      ...(t.userRenamed ? { userRenamed: true } : {}),
     }))
   // 合并：live tabs + 还没被水合的 saved tabs（避免切项目后丢掉未点过的恢复 tab）
-  const livePaths = new Set(live.map((t) => t.sessionPath))
-  const kept = savedTabs.value.filter((s) => !livePaths.has(s.sessionPath))
+  // 有 sessionPath 的按 path 去重；没有 sessionPath 的（shell / 未匹配新会话）
+  // 需要检查是否已经在 live 中（按引用比较 savedTabs 条目是否仍存在）。
+  const livePaths = new Set(live.filter((t) => t.sessionPath).map((t) => t.sessionPath))
+  // 有 path 的按 path 去重；无 path 的（shell / 未匹配新会话）保留在 kept，
+  // 水合过的已由 removeSavedTab 从 savedTabs 移除，不会重复。
+  const kept = savedTabs.value.filter((s) =>
+    s.sessionPath ? !livePaths.has(s.sessionPath) : true,
+  )
   const all = [...live, ...kept]
   localStorage.setItem(SAVED_TABS_KEY, JSON.stringify(all))
   localStorage.setItem(SAVED_NAV_KEY, JSON.stringify(nav))
 }
 
-export function removeSavedTab(sessionPath: string) {
-  savedTabs.value = savedTabs.value.filter((t) => t.sessionPath !== sessionPath)
+export function removeSavedTab(target: string | SavedTab) {
+  if (typeof target === 'string') {
+    savedTabs.value = savedTabs.value.filter((t) => t.sessionPath !== target)
+  } else {
+    const idx = savedTabs.value.indexOf(target)
+    if (idx >= 0) savedTabs.value.splice(idx, 1)
+  }
 }
 
 export function clearSavedTabs() {
   savedTabs.value = []
   localStorage.removeItem(SAVED_TABS_KEY)
+}
+
+export function clearAllTabs() {
+  const ids = tabs.value.map((t) => t.uiId)
+  for (const id of ids) closeTab(id)
+  savedTabs.value = []
+  localStorage.removeItem(SAVED_TABS_KEY)
+  localStorage.removeItem(SAVED_NAV_KEY)
+  activeUiId.value = null
 }
 
 // ============================ 主题 ============================
@@ -440,7 +470,7 @@ const findTab = (uiId: number) => tabs.value.find((t) => t.uiId === uiId)
 export const isTabProcessAlive = (tab: TerminalTab) =>
   tab.processState === 'spawning' || tab.processState === 'alive'
 const findTabBySession = (path: string) =>
-  tabs.value.find((t) => t.sessionPath === path && isTabProcessAlive(t))
+  path ? tabs.value.find((t) => t.sessionPath === path && !t.isShell && isTabProcessAlive(t)) : undefined
 
 type SessionForTabSync = {
   path: string
@@ -452,7 +482,9 @@ type SessionForTabSync = {
 function applySessionToTab(tab: TerminalTab, session: SessionForTabSync) {
   tab.sessionPath = session.path
   tab.sessionId = session.id
-  if (session.title?.trim()) {
+  if (tab.userRenamed) {
+    api.renameSession(tab.agent, session.path, tab.title).catch(() => {})
+  } else if (session.title?.trim()) {
     tab.title = session.title
   }
   ensureSessionTurnWatch(tab, true)
@@ -460,10 +492,22 @@ function applySessionToTab(tab: TerminalTab, session: SessionForTabSync) {
 }
 
 /**
+ * 创建 tab 时调用：快照当前已知 session paths，用于后续 reconcile 排除旧 session。
+ */
+const knownPathsAtTabCreation = new Map<number, Set<string>>()
+
+export function snapshotKnownSessions(tabUiId: number, paths: string[]) {
+  knownPathsAtTabCreation.set(tabUiId, new Set(paths))
+}
+
+/**
  * 新会话 tab 的 sessionPath/sessionId 在创建时都是空的（CLI 自己生成 id），
  * 等用户从 TUI 回到列表后，刷新出的 sessions 里会包含刚才创建的会话。
  * 此函数把空路径的 tab 与最新出现的 session 匹配上，后续 closeTabBySessionPath
  * 才能正确找到 tab 并关闭。
+ *
+ * 只匹配在 tab 创建之后新出现的 session（不在快照内），
+ * 避免把一个正在运行的旧 session（mtime 持续更新）错误地绑到新 tab 上。
  */
 export function reconcileNewTabs(
   projectKey: string,
@@ -472,6 +516,7 @@ export function reconcileNewTabs(
 ) {
   const unmatched = tabs.value.filter(
     (t) =>
+      !t.isShell &&
       t.sessionPath === '' &&
       t.projectKey === projectKey &&
       (!agent || t.agent === agent) &&
@@ -482,14 +527,18 @@ export function reconcileNewTabs(
   const takenPaths = new Set(
     tabs.value.filter((t) => t.sessionPath !== '').map((t) => t.sessionPath),
   )
-  const available = sessions
-    .filter((s) => !takenPaths.has(s.path))
-    .sort((a, b) => (b.modified ?? 0) - (a.modified ?? 0))
 
   for (const tab of unmatched) {
+    const known = knownPathsAtTabCreation.get(tab.uiId)
+    const available = sessions
+      .filter((s) => !takenPaths.has(s.path) && (!known || !known.has(s.path)))
+      .sort((a, b) => (b.modified ?? 0) - (a.modified ?? 0))
+
     const matchIdx = available.findIndex((s) => (s.modified ?? 0) >= tab.createdAt - 5000)
-    const match = matchIdx >= 0 ? available.splice(matchIdx, 1)[0] : undefined
+    const match = matchIdx >= 0 ? available[matchIdx] : undefined
     if (match) {
+      takenPaths.add(match.path)
+      knownPathsAtTabCreation.delete(tab.uiId)
       applySessionToTab(tab, match)
     }
   }
@@ -503,10 +552,19 @@ export function syncTabTitlesFromSessions(
   const byPath = new Map(sessions.map((s) => [s.path, s]))
   for (const tab of tabs.value) {
     if (tab.agent !== agent || tab.projectKey !== projectKey || !tab.sessionPath) continue
+    if (tab.userRenamed) continue
     const session = byPath.get(tab.sessionPath)
     if (session?.title?.trim() && tab.title !== session.title) {
       tab.title = session.title
     }
+  }
+}
+
+export function setTabTitleByUiId(uiId: number, title: string) {
+  const tab = tabs.value.find((t) => t.uiId === uiId)
+  if (tab) {
+    tab.title = title.trim()
+    tab.userRenamed = true
   }
 }
 
@@ -612,6 +670,10 @@ export interface OpenTuiOptions {
   sessionPath: string
   title: string
   cwd: string
+  /** new-session 模式：当前已知 session paths，用于 reconcile 排除旧 session。 */
+  knownSessionPaths?: string[]
+  /** 用户手动重命名过 —— reconcile 时保留此标题。 */
+  userRenamed?: boolean
 }
 
 /**
@@ -653,6 +715,9 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   term.open(container)
 
   const uiId = nextUiId++
+  if (isNew && opts.knownSessionPaths) {
+    snapshotKnownSessions(uiId, opts.knownSessionPaths)
+  }
   // ⚠️ 必须用 reactive() 包一层 —— 否则后面 `tab.status = 'running'` 改的是
   // raw 对象，Vue Proxy 收不到 set 通知，TerminalStrip 里 v-if="tab.status === 'spawning'"
   // 永远卡在转圈。markRaw 过的 term/fitAddon/container 会被 reactive() 跳过，不会被代理。
@@ -688,6 +753,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     turnWatchPath: null,
     status: 'spawning',
   }) as TerminalTab
+  if (opts.userRenamed) tab.userRenamed = true
   tabs.value.push(tab)
   activeUiId.value = uiId
   term.attachCustomKeyEventHandler((ev) => {
@@ -811,6 +877,143 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   term.focus()
 }
 
+/** 开一个纯 shell tab（不跑任何 agent CLI），用于在项目目录里执行任意命令。 */
+export async function openShellTab(opts: {
+  agent: Agent
+  projectKey: string
+  title: string
+  cwd: string
+}): Promise<void> {
+  if (!opts.cwd) return
+
+  const term = markRaw(
+    new Terminal({
+      fontSize: 13,
+      fontFamily:
+        '"SF Mono", "Menlo", "Consolas", "Liberation Mono", "Courier New", monospace',
+      cursorBlink: true,
+      convertEol: false,
+      allowProposedApi: true,
+      scrollback: 5000,
+      theme: xtermTheme(isDarkActive()),
+    }),
+  )
+  const fitAddon = markRaw(new FitAddon())
+  term.loadAddon(fitAddon)
+
+  const container = markRaw(document.createElement('div'))
+  container.className = 'terminal-host'
+  term.open(container)
+
+  const uiId = nextUiId++
+  const tab = reactive<TerminalTab>({
+    uiId,
+    ptyId: null,
+    agent: opts.agent,
+    projectKey: opts.projectKey,
+    sessionId: '',
+    sessionPath: '',
+    title: opts.title,
+    cwd: opts.cwd,
+    createdAt: Date.now(),
+    term,
+    fitAddon,
+    container,
+    unlistenData: null,
+    unlistenExit: null,
+    onDataDisp: null,
+    lastSyncedCols: 0,
+    lastSyncedRows: 0,
+    quietCursor: false,
+    quietCursorTimer: null,
+    lastUserInputAt: 0,
+    currentInputLine: '',
+    processState: 'spawning',
+    turnState: 'unknown',
+    turnStateSource: null,
+    turnStateUpdatedAt: Date.now(),
+    lastOutputAt: 0,
+    lastSessionActivityAt: 0,
+    pendingAnsiBytes: null,
+    turnWatchPath: null,
+    status: 'spawning',
+    isShell: true,
+  }) as TerminalTab
+  tabs.value.push(tab)
+  activeUiId.value = uiId
+  term.attachCustomKeyEventHandler((ev) => {
+    const isCtrl =
+      ev.type === 'keydown' &&
+      ev.ctrlKey &&
+      !ev.altKey &&
+      !ev.metaKey
+    if (!isCtrl) return true
+
+    const key = ev.key.toLowerCase()
+    if (key === 'c' && term.hasSelection()) {
+      ev.preventDefault()
+      void navigator.clipboard.writeText(term.getSelection()).catch(() => {})
+      return false
+    }
+    if (key === 'v') {
+      ev.preventDefault()
+      void navigator.clipboard.readText().then((text) => {
+        if (text) term.paste(text)
+      }).catch(() => {})
+      return false
+    }
+    return true
+  })
+
+  await nextTick()
+  await new Promise((r) => requestAnimationFrame(() => r(null)))
+  await new Promise((r) => requestAnimationFrame(() => r(null)))
+
+  try {
+    fitAddon.fit()
+  } catch { /* */ }
+  const cols = term.cols || 80
+  const rows = term.rows || 24
+  tab.lastSyncedCols = cols
+  tab.lastSyncedRows = rows
+
+  let ptyId: number
+  try {
+    ptyId = await api.ptySpawnShell(opts.cwd, cols, rows, terminalColorScheme())
+  } catch (e) {
+    setProcessState(tab, 'error')
+    setTurnState(tab, 'error', 'pty-exit')
+    tab.errorMessage = String(e)
+    term.write(`\r\n\x1b[31m[error] ${e}\x1b[0m\r\n`)
+    return
+  }
+  tab.ptyId = ptyId
+  setProcessState(tab, 'alive')
+
+  tab.unlistenData = await listen<{ id: number; base64: string }>('pty://data', (e) => {
+    if (e.payload.id !== ptyId) return
+    tab.lastOutputAt = Date.now()
+    tab.pendingAnsiBytes = null
+    term.write(base64ToBytes(e.payload.base64))
+  })
+  tab.unlistenExit = await listen<{ id: number; code: number }>('pty://exit', (e) => {
+    if (e.payload.id !== ptyId) return
+    setProcessState(tab, 'exited')
+    tab.exitCode = e.payload.code
+    term.write(`\r\n\x1b[2m[process exited: ${e.payload.code}]\x1b[0m\r\n`)
+  })
+
+  tab.onDataDisp = term.onData((data) => {
+    if (tab.ptyId === null || tab.processState !== 'alive') return
+    tab.lastUserInputAt = Date.now()
+    setQuietCursor(tab, false)
+    const bytes = new TextEncoder().encode(data)
+    api.ptyWrite(tab.ptyId, bytesToBase64(bytes)).catch(() => {})
+  })
+
+  term.focus()
+}
+
 /** 切换激活 tab。`null` = 隐藏 TUI 层，露出 view（聊天/列表/统计/...）。 */
 export function setActive(uiId: number | null) {
   activeUiId.value = uiId
@@ -866,6 +1069,7 @@ export function closeTab(uiId: number) {
   }
 
   tabs.value.splice(idx, 1)
+  knownPathsAtTabCreation.delete(uiId)
 
   // active fallback：只在同 agent + 同 project 里找邻居，跨 agent 的 tab 不能 fallback 过去。
   if (activeUiId.value === uiId) {

@@ -1,12 +1,4 @@
 <script setup lang="ts">
-// 全局搜索模态 —— Algolia 风格的浮层：输入 / 结果分组 / 底部快捷键提示。
-//
-// 数据流：
-//   - 父级（App.vue）通过 v-model:show / @open 控制显隐和打开命中
-//   - 本组件自己管 input + debounce + api 调用 + 键盘导航
-//   - 命中按 projectDisplay 分组，组内按 session.modified 倒序
-//   - 通过 globalSearch.ts 的 pushRecent 在每次「成功打开」后写最近搜索
-
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Agent, SearchField, SearchHit, SessionMeta } from '../types'
 import { searchSessions, cancelSearch, nextSearchRequestId } from '../api'
@@ -41,70 +33,62 @@ const inputEl = ref<HTMLInputElement>()
 const listEl = ref<HTMLElement>()
 const query = ref('')
 const hits = ref<SearchHit[]>([])
-const loading = ref(false)
+const searching = ref(false)
 const selectedIdx = ref(0)
-// IME 组合中 —— `compositionstart..end` 之间不要触发搜索；Vue v-model 对原生 input
-// 已经会跳过 input 事件，但我们用的是 `:value + @input + @composition*`，需要手动盯。
-const composing = ref(false)
 
-// 全局搜索是「重操作」（跨项目 / 跨会话 / 全文）—— 防抖给得保守一点：
-//   - 输入到正式 fire 之间至少 450ms 静止
-//   - 单字符不打（命中量大噪声多，也省得每个键都跑一次）
-//   - "Searching…" 状态也防抖 220ms 才显示，避免每个键都闪烁
-const DEBOUNCE_MS = 900
+const DEBOUNCE_MS = 350
 const MIN_QUERY_LEN = 2
-// 命中很多时只渲染前 RENDER_CAP 条（后端最多返 200）—— 渲染 100+ 行的高亮 + 分组
-// 在低端机上是几十 ms 的开销，会让输入框感知到「卡」。
 const RENDER_CAP = 80
 
 let debounceTimer = 0
 let reqSeq = 0
-// 当前有没有正在 round-trip 的 search_sessions —— 用来决定是否需要先 cancel_search。
-// 单纯的标志位即可，因为 reqSeq 已经能在前端层把过期结果丢掉，这个只用来省 RPC。
 let inFlight = false
+let composing = false
 
-/** 输入打断在跑的搜索：通过 Tauri 调用 cancel_search 让后端循环 bail，
- *  释放 CPU / 磁盘给打字。失败也无所谓 —— reqSeq 守卫保证结果不会污染 UI。 */
-function abortInFlight() {
-  if (!inFlight) return
-  inFlight = false
-  cancelSearch().catch(() => {})
+function setInputValue(val: string) {
+  query.value = val
+  if (inputEl.value) inputEl.value.value = val
 }
 
 watch(
   () => props.show,
   (v) => {
     if (v) {
-      // 打开时清空上次的状态，把焦点抢到 input 上。
       query.value = ''
       hits.value = []
       selectedIdx.value = 0
-      loading.value = false
-      composing.value = false
+      searching.value = false
+      composing = false
       window.clearTimeout(debounceTimer)
-    
       nextTick(() => {
+        if (inputEl.value) inputEl.value.value = ''
         inputEl.value?.focus()
       })
     }
   },
 )
 
-function scheduleSearch(q: string) {
-  selectedIdx.value = 0
+function scheduleSearch() {
   window.clearTimeout(debounceTimer)
 
-  // 进入「新输入」状态 —— 把可能还在跑的旧搜索掐掉（React Fiber 式可中断）。
-  abortInFlight()
-  const trimmed = q.trim()
+  const trimmed = query.value.trim()
   if (trimmed.length < MIN_QUERY_LEN) {
     hits.value = []
-    loading.value = false
+    searching.value = false
+    reqSeq++
     return
   }
+
+  // Immediately: show spinner + invalidate any in-flight result
+  searching.value = true
+  reqSeq++
+
   debounceTimer = window.setTimeout(async () => {
-    hits.value = []
-    loading.value = true
+    if (inFlight) {
+      inFlight = false
+      cancelSearch().catch(() => {})
+    }
+
     const seq = ++reqSeq
     const reqId = nextSearchRequestId()
     inFlight = true
@@ -116,59 +100,44 @@ function scheduleSearch(q: string) {
       if (seq !== reqSeq) return
       hits.value = []
     } finally {
-      // 只有「最后一次发起的搜索」才把状态归位；旧搜索的 finally 不要踩到。
       if (seq === reqSeq) {
         inFlight = false
-      
-        loading.value = false
+        searching.value = false
       }
     }
   }, DEBOUNCE_MS)
 }
 
-// 直接监听 `query` —— composition 中我们不会写 query，所以 watch 不会误触发；
-// commit/clear 也是写 query，watch 自然接住。
-watch(query, (q) => {
-  if (composing.value) return
-  scheduleSearch(q)
-})
-
 function onInput(e: Event) {
-  const v = (e.target as HTMLInputElement).value
-  if (composing.value) {
-    // 组合中：让原生 input 自己维护显示的中间态，但不要把它写进 query —— 否则
-    // watch 会触发一次「半成品」搜索。组合结束时再统一同步。
-    return
-  }
-  query.value = v
-}
-function onCompositionStart() {
-  composing.value = true
-  window.clearTimeout(debounceTimer)
-
-  abortInFlight()
-}
-function onCompositionEnd(e: Event) {
-  composing.value = false
-  // 组合刚结束 —— 把最终值写进 query，让防抖正常排队。
+  if (composing) return
   query.value = (e.target as HTMLInputElement).value
+  selectedIdx.value = 0
+  scheduleSearch()
 }
 
-// 命中分组：保留出现顺序（后端已经按项目 last_modified → 会话 modified 排序）。
-// 渲染时切 RENDER_CAP 条，余量做计数提示——避免一次性渲染上百行卡输入框。
-const renderedHits = computed<SearchHit[]>(() => hits.value.slice(0, RENDER_CAP))
-const moreHidden = computed<number>(() =>
-  Math.max(0, hits.value.length - renderedHits.value.length),
-)
+function onCompositionStart() {
+  composing = true
+}
+
+function onCompositionEnd(e: Event) {
+  composing = false
+  query.value = (e.target as HTMLInputElement).value
+  selectedIdx.value = 0
+  scheduleSearch()
+}
+
+const renderedHits = computed(() => hits.value.slice(0, RENDER_CAP))
+const moreHidden = computed(() => Math.max(0, hits.value.length - RENDER_CAP))
+
 type Group = { project: string; items: SearchHit[] }
 const groups = computed<Group[]>(() => {
   const out: Group[] = []
-  const byProject = new Map<string, Group>()
+  const map = new Map<string, Group>()
   for (const h of renderedHits.value) {
-    let g = byProject.get(h.projectDisplay)
+    let g = map.get(h.projectDisplay)
     if (!g) {
       g = { project: h.projectDisplay, items: [] }
-      byProject.set(h.projectDisplay, g)
+      map.set(h.projectDisplay, g)
       out.push(g)
     }
     g.items.push(h)
@@ -176,12 +145,24 @@ const groups = computed<Group[]>(() => {
   return out
 })
 
-// 扁平索引 —— 上下键导航只看扁平顺序，与 groups 渲染顺序一致。
-const flatHits = computed<SearchHit[]>(() => groups.value.flatMap((g) => g.items))
+const flatHits = computed(() => groups.value.flatMap((g) => g.items))
+
+const hasQuery = computed(() => query.value.trim().length >= MIN_QUERY_LEN)
+const showEmpty = computed(() => hasQuery.value && !searching.value && !hits.value.length)
+const showResults = computed(() => hasQuery.value && hits.value.length > 0)
+const showRecent = computed(() => !hasQuery.value && recentSearches.value.length > 0)
+const showNoRecent = computed(() => !hasQuery.value && !recentSearches.value.length)
+
+function stopSearch() {
+  window.clearTimeout(debounceTimer)
+  if (inFlight) {
+    inFlight = false
+    cancelSearch().catch(() => {})
+  }
+}
 
 function close() {
-  // 关闭也算「输入释放」—— 如果还有搜索在跑，让它退出。
-  abortInFlight()
+  stopSearch()
   emit('update:show', false)
 }
 
@@ -192,7 +173,7 @@ function chooseHit(hit: SearchHit) {
 }
 
 function onSelect() {
-  if (loading.value) return
+  if (searching.value && !hits.value.length) return
   const hit = flatHits.value[selectedIdx.value]
   if (hit) chooseHit(hit)
 }
@@ -201,81 +182,87 @@ function moveSelection(delta: number) {
   const n = flatHits.value.length
   if (!n) return
   selectedIdx.value = (selectedIdx.value + delta + n) % n
-  nextTick(() => scrollSelectedIntoView())
-}
-
-function scrollSelectedIntoView() {
-  const list = listEl.value
-  if (!list) return
-  const el = list.querySelector<HTMLElement>(`.gs-row[data-idx="${selectedIdx.value}"]`)
-  // 测试环境下的 jsdom 没有 scrollIntoView；判一下避免 unhandled rejection。
-  el?.scrollIntoView?.({ block: 'nearest' })
+  nextTick(() => {
+    const el = listEl.value?.querySelector<HTMLElement>(`.gs-row[data-idx="${selectedIdx.value}"]`)
+    el?.scrollIntoView?.({ block: 'nearest' })
+  })
 }
 
 function onKeydown(e: KeyboardEvent) {
   if (!props.show) return
-  if (e.key === 'Escape') {
-    e.preventDefault()
-    close()
-  } else if (e.key === 'ArrowDown') {
-    e.preventDefault()
-    moveSelection(1)
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault()
-    moveSelection(-1)
-  } else if (e.key === 'Enter') {
-    e.preventDefault()
-    onSelect()
+  switch (e.key) {
+    case 'Escape':
+      e.preventDefault()
+      close()
+      break
+    case 'ArrowDown':
+      e.preventDefault()
+      moveSelection(1)
+      break
+    case 'ArrowUp':
+      e.preventDefault()
+      moveSelection(-1)
+      break
+    case 'Enter':
+      e.preventDefault()
+      onSelect()
+      break
   }
 }
 
 function pickRecent(r: string) {
-  query.value = r
+  setInputValue(r)
+  selectedIdx.value = 0
+  scheduleSearch()
   nextTick(() => inputEl.value?.focus())
 }
 
-// 字段标签 —— 跟随 i18n，给结果行右上角的小 chip 用。
 function fieldLabel(f: SearchField): string {
   return t(`search.global.field.${f}`)
 }
 
-// 当前组内每一项的扁平索引（用于 selectedIdx 关联）。
 function indexOf(hit: SearchHit): number {
   return flatHits.value.indexOf(hit)
 }
 
-// 标题 / snippet 上的关键词高亮 —— 复用列表里的 highlightSegments。
 function segs(text: string) {
   return highlightSegments(text, query.value)
 }
 
-// 显示用：会话标题 & 项目短名。
 function sessionLabel(s: SessionMeta): string {
   return s.title || (s.id ? s.id.slice(0, 8) : '—')
 }
 
-onMounted(() => {
-  window.addEventListener('keydown', onKeydown)
-})
+function clearInput() {
+  setInputValue('')
+  hits.value = []
+  searching.value = false
+  stopSearch()
+  nextTick(() => inputEl.value?.focus())
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
-  window.clearTimeout(debounceTimer)
-
-  // 组件卸载也算「输入释放」—— 把后端循环放出来。
-  abortInFlight()
+  stopSearch()
 })
 </script>
 
 <template>
-  <Transition name="fade">
-    <div v-if="show" class="overlay gs-overlay" @click.self="close">
+  <Transition name="gs-fade">
+    <div v-if="show" class="gs-backdrop" @click.self="close">
       <div class="gs-modal" role="dialog" aria-modal="true">
-        <!-- 顶部：放大镜 + 输入框 -->
-        <div class="gs-head">
-          <span class="gs-head-ic"><IconSearch /></span>
+        <!-- Search input -->
+        <div class="gs-header">
+          <div class="gs-search-icon">
+            <svg v-if="searching" class="gs-spinner" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2.5" opacity="0.2" />
+              <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
+            </svg>
+            <IconSearch v-else />
+          </div>
           <input
             ref="inputEl"
-            :value="query"
             type="text"
             class="gs-input"
             :placeholder="t('search.global.placeholder')"
@@ -285,103 +272,115 @@ onUnmounted(() => {
             @compositionstart="onCompositionStart"
             @compositionend="onCompositionEnd"
           />
-          <button class="gs-clear" v-tooltip="t('chat.tb.search.clear')" @click="close">
+          <button v-if="query" class="gs-clear-btn" @click="clearInput">
             <IconClose />
           </button>
         </div>
 
-        <!-- 中部：结果 / 最近搜索 / 空态 -->
+        <!-- Body -->
         <div ref="listEl" class="gs-body">
-          <template v-if="!query.trim()">
-            <div v-if="recentSearches.length" class="gs-recent">
-              <div class="gs-section">
-                <span class="gs-section-label">
-                  <IconHistory />
-                  <span>{{ t('search.global.recent') }}</span>
-                </span>
-                <button class="gs-section-clear" @click="clearRecents">
-                  {{ t('search.global.clearRecent') }}
-                </button>
-              </div>
-              <div
-                v-for="r in recentSearches"
-                :key="r"
-                class="gs-recent-row"
-                role="button"
-                tabindex="0"
-                @click="pickRecent(r)"
-                @keydown.enter.prevent="pickRecent(r)"
-              >
-                <IconHistory class="gs-recent-ic" />
-                <span class="gs-recent-text">{{ r }}</span>
-                <button
-                  class="gs-recent-remove"
-                  v-tooltip="t('search.global.removeRecent')"
-                  :aria-label="t('search.global.removeRecent')"
-                  @click.stop="removeRecent(r)"
-                >
-                  <IconClose />
-                </button>
-              </div>
-            </div>
-            <div v-else class="gs-empty">
-              <div class="gs-empty-title">{{ t('search.global.empty') }}</div>
-              <div class="gs-empty-hint">{{ t('search.global.emptyHint') }}</div>
+          <!-- No query: recent searches -->
+          <template v-if="showNoRecent">
+            <div class="gs-placeholder">
+              <p class="gs-placeholder-text">{{ t('search.global.empty') }}</p>
+              <p class="gs-placeholder-hint">{{ t('search.global.emptyHint') }}</p>
             </div>
           </template>
 
-          <template v-else>
-            <div v-if="loading && !hits.length" class="gs-status">
-              {{ t('search.global.searching') }}
+          <template v-else-if="showRecent">
+            <div class="gs-section-header">
+              <span>{{ t('search.global.recent') }}</span>
+              <button class="gs-section-action" @click="clearRecents">
+                {{ t('search.global.clearRecent') }}
+              </button>
             </div>
-            <div v-else-if="!hits.length" class="gs-empty">
-              <div class="gs-empty-title">{{ t('search.global.noMatch') }}</div>
-            </div>
-            <div v-else class="gs-results">
-              <div v-for="g in groups" :key="g.project" class="gs-group">
-                <div class="gs-group-head">{{ shortName(g.project) }}</div>
-                <button
-                  v-for="h in g.items"
-                  :key="h.session.path"
-                  class="gs-row"
-                  :class="{ active: selectedIdx === indexOf(h) }"
-                  :data-idx="indexOf(h)"
-                  @click="chooseHit(h)"
-                  @mouseenter="selectedIdx = indexOf(h)"
-                >
-                  <div class="gs-row-main">
-                    <div class="gs-row-title">
-                      <span v-for="(seg, i) in segs(sessionLabel(h.session))" :key="i" :class="{ 'kw-hit': seg.hit }">{{ seg.text }}</span>
-                    </div>
-                    <div v-if="h.matchedField === 'text' || h.matchedField === 'path'" class="gs-row-snippet">
-                      <span v-for="(seg, i) in segs(h.snippet)" :key="i" :class="{ 'kw-hit': seg.hit }">{{ seg.text }}</span>
-                    </div>
-                  </div>
-                  <span class="gs-row-field">{{ fieldLabel(h.matchedField) }}</span>
-                </button>
-              </div>
-              <!-- 后端最多返 200 条，前端为了让列表保持流畅只渲染前 80 条；
-                   余下的提示用户继续打字以缩窄搜索。 -->
-              <div v-if="moreHidden > 0" class="gs-more">
-                {{ t('search.global.moreHidden', { n: moreHidden }) }}
-              </div>
+            <div
+              v-for="r in recentSearches"
+              :key="r"
+              class="gs-recent-item"
+              role="button"
+              tabindex="0"
+              @click="pickRecent(r)"
+              @keydown.enter.prevent="pickRecent(r)"
+            >
+              <IconHistory class="gs-recent-icon" />
+              <span class="gs-recent-label">{{ r }}</span>
+              <button
+                class="gs-recent-del"
+                v-tooltip="t('search.global.removeRecent')"
+                :aria-label="t('search.global.removeRecent')"
+                @click.stop="removeRecent(r)"
+              >
+                <IconClose />
+              </button>
             </div>
           </template>
+
+          <!-- Has query: results / empty -->
+          <template v-else-if="showEmpty">
+            <div class="gs-placeholder">
+              <svg class="gs-no-results-icon" viewBox="0 0 40 40" fill="none">
+                <circle cx="20" cy="20" r="16" stroke="currentColor" stroke-width="2" />
+                <path d="M12 28 28 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+              <p class="gs-placeholder-text">
+                {{ t('search.global.noMatch') }}
+                "<strong>{{ query.trim() }}</strong>"
+              </p>
+            </div>
+          </template>
+
+          <template v-else-if="showResults">
+            <div v-for="g in groups" :key="g.project" class="gs-group">
+              <div class="gs-group-label">{{ shortName(g.project) }}</div>
+              <button
+                v-for="h in g.items"
+                :key="h.session.path"
+                class="gs-row"
+                :class="{ active: selectedIdx === indexOf(h) }"
+                :data-idx="indexOf(h)"
+                @click="chooseHit(h)"
+                @mouseenter="selectedIdx = indexOf(h)"
+              >
+                <svg class="gs-row-icon" viewBox="0 0 20 20" fill="none">
+                  <path v-if="h.matchedField === 'text'" d="M4 6h12M4 10h8M4 14h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  <path v-else d="M4 3h8l4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V3z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <div class="gs-row-content">
+                  <span class="gs-row-title">
+                    <span v-for="(seg, i) in segs(sessionLabel(h.session))" :key="i" :class="{ 'gs-hl': seg.hit }">{{ seg.text }}</span>
+                  </span>
+                  <span v-if="h.matchedField === 'text' || h.matchedField === 'path'" class="gs-row-snippet">
+                    <span v-for="(seg, i) in segs(h.snippet)" :key="i" :class="{ 'gs-hl': seg.hit }">{{ seg.text }}</span>
+                  </span>
+                </div>
+                <span class="gs-row-badge">{{ fieldLabel(h.matchedField) }}</span>
+                <svg v-if="selectedIdx === indexOf(h)" class="gs-row-enter" viewBox="0 0 20 20" fill="none">
+                  <path d="M15 4v6a2 2 0 0 1-2 2H5m0 0 3-3m-3 3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
+            <div v-if="moreHidden > 0" class="gs-more-hint">
+              {{ t('search.global.moreHidden', { n: moreHidden }) }}
+            </div>
+          </template>
+
+          <!-- Searching with no results yet: just the spinner in the header is enough -->
         </div>
 
-        <!-- 底部：键盘提示 -->
-        <div class="gs-foot">
-          <span class="gs-foot-item">
+        <!-- Footer keyboard hints -->
+        <div class="gs-footer">
+          <span class="gs-hint">
             <kbd class="gs-kbd"><IconCornerDownLeft /></kbd>
             {{ t('search.global.hint.select') }}
           </span>
-          <span class="gs-foot-item">
+          <span class="gs-hint">
             <kbd class="gs-kbd"><IconArrowDown /></kbd>
             <kbd class="gs-kbd"><IconArrowUp /></kbd>
             {{ t('search.global.hint.navigate') }}
           </span>
-          <span class="gs-foot-item">
-            <kbd class="gs-kbd gs-kbd-esc">esc</kbd>
+          <span class="gs-hint">
+            <kbd class="gs-kbd gs-kbd-text">esc</kbd>
             {{ t('search.global.hint.close') }}
           </span>
         </div>
@@ -389,3 +388,390 @@ onUnmounted(() => {
     </div>
   </Transition>
 </template>
+
+<style scoped>
+/* ---- Backdrop ---- */
+.gs-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: rgba(0, 0, 0, 0.35);
+}
+:root.theme-dark .gs-backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+/* ---- Modal ---- */
+.gs-modal {
+  width: min(620px, calc(100vw - 32px));
+  max-height: 70vh;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---- Header (input) ---- */
+.gs-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  height: 56px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.gs-search-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: var(--text-mute);
+  flex-shrink: 0;
+}
+.gs-search-icon :deep(svg) {
+  width: 18px;
+  height: 18px;
+}
+
+.gs-spinner {
+  width: 18px;
+  height: 18px;
+  animation: gs-spin 0.7s linear infinite;
+}
+@keyframes gs-spin {
+  to { transform: rotate(360deg); }
+}
+
+.gs-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 16px;
+  color: var(--text);
+  height: 100%;
+  min-width: 0;
+}
+.gs-input::placeholder {
+  color: var(--text-mute);
+}
+
+.gs-clear-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--text-mute);
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+.gs-clear-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.gs-clear-btn :deep(svg) {
+  width: 14px;
+  height: 14px;
+}
+
+/* ---- Body ---- */
+.gs-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 0;
+  min-height: 80px;
+}
+
+/* ---- Placeholder (empty state) ---- */
+.gs-placeholder {
+  padding: 36px 20px;
+  text-align: center;
+}
+.gs-no-results-icon {
+  width: 40px;
+  height: 40px;
+  color: var(--text-mute);
+  margin-bottom: 12px;
+  opacity: 0.6;
+}
+.gs-placeholder-text {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-dim);
+}
+.gs-placeholder-text strong {
+  font-weight: 600;
+  color: var(--text);
+}
+.gs-placeholder-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+
+/* ---- Section header (recent) ---- */
+.gs-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-mute);
+}
+.gs-section-action {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-mute);
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: none;
+  letter-spacing: normal;
+  transition: background 0.12s, color 0.12s;
+}
+.gs-section-action:hover {
+  background: var(--surface-hover);
+  color: var(--text-dim);
+}
+
+/* ---- Recent items ---- */
+.gs-recent-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.gs-recent-item:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.gs-recent-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-mute);
+  flex-shrink: 0;
+}
+.gs-recent-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gs-recent-del {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--text-mute);
+  opacity: 0;
+  flex-shrink: 0;
+  transition: opacity 0.1s, background 0.1s, color 0.1s;
+}
+.gs-recent-del :deep(svg) {
+  width: 12px;
+  height: 12px;
+}
+.gs-recent-item:hover .gs-recent-del {
+  opacity: 1;
+}
+.gs-recent-del:hover {
+  background: var(--surface-active);
+  color: var(--text);
+}
+
+/* ---- Results ---- */
+.gs-group + .gs-group {
+  margin-top: 4px;
+}
+.gs-group-label {
+  padding: 10px 16px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-mute);
+}
+.gs-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 16px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 0;
+  transition: none;
+}
+.gs-row.active {
+  background: var(--surface-hover);
+}
+.gs-row:not(.active):hover {
+  background: var(--surface-hover);
+}
+
+.gs-row-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--text-mute);
+}
+.gs-row.active .gs-row-icon {
+  color: var(--text-dim);
+}
+
+.gs-row-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.gs-row-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gs-row.active .gs-row-title {
+  color: var(--text);
+}
+
+.gs-row-snippet {
+  font-size: 12px;
+  color: var(--text-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gs-row.active .gs-row-snippet {
+  color: var(--text-mute);
+}
+
+/* Highlight */
+.gs-hl {
+  font-weight: 600;
+  color: var(--text);
+}
+.gs-row.active .gs-hl {
+  color: var(--text);
+}
+
+.gs-row-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-mute);
+  background: var(--surface-2);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.gs-row.active .gs-row-badge {
+  background: var(--surface-active, var(--surface-2));
+  color: var(--text-mute);
+}
+
+.gs-row-enter {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-mute);
+}
+
+.gs-more-hint {
+  padding: 8px 16px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-mute);
+  border-top: 1px dashed var(--border);
+  margin-top: 6px;
+}
+
+/* ---- Footer ---- */
+.gs-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+.gs-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+.gs-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-dim);
+}
+.gs-kbd :deep(svg) {
+  width: 11px;
+  height: 11px;
+}
+.gs-kbd-text {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+/* ---- Transition ---- */
+.gs-fade-enter-active,
+.gs-fade-leave-active {
+  transition: opacity 0.15s ease;
+}
+.gs-fade-enter-active .gs-modal {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.gs-fade-leave-active .gs-modal {
+  transition: opacity 0.1s ease, transform 0.1s ease;
+}
+.gs-fade-enter-from,
+.gs-fade-leave-to {
+  opacity: 0;
+}
+.gs-fade-enter-from .gs-modal {
+  opacity: 0;
+  transform: scale(0.98) translateY(-8px);
+}
+.gs-fade-leave-to .gs-modal {
+  opacity: 0;
+  transform: scale(0.98) translateY(-4px);
+}
+</style>

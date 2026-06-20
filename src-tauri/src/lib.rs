@@ -198,19 +198,23 @@ fn cancel_stats() {
 /// 或更大 id 的 `search_sessions` 都会让旧的搜索循环立刻 bail（返回空数组）。前端的
 /// reqSeq 守卫负责丢掉过期结果，所以即使后端返回了一堆结果也不会污染 UI。
 #[tauri::command]
-fn search_sessions(
+async fn search_sessions(
     agent: String,
     query: String,
     request_id: u64,
     project_key: Option<String>,
 ) -> Result<Vec<SearchHit>, String> {
-    SEARCH_GEN.store(request_id, std::sync::atomic::Ordering::SeqCst);
-    let src = agents::source(&agent)?;
-    let cancel = agents::Cancel {
-        request_id,
-        gen: &SEARCH_GEN,
-    };
-    agents::search(&*src, &query, project_key.as_deref(), cancel)
+    tauri::async_runtime::spawn_blocking(move || {
+        SEARCH_GEN.store(request_id, std::sync::atomic::Ordering::SeqCst);
+        let src = agents::source(&agent)?;
+        let cancel = agents::Cancel {
+            request_id,
+            gen: &SEARCH_GEN,
+        };
+        agents::search(&*src, &query, project_key.as_deref(), cancel)
+    })
+    .await
+    .map_err(|e| format!("search task panicked: {e}"))?
 }
 
 /// 显式取消正在跑的全局搜索 —— 前端每次新输入立即调一次，让 CPU 让位给打字。
@@ -307,6 +311,21 @@ fn pty_spawn_new(
     }
     let command = agents::source(&agent)?.new_session_command().with_extra_args(&extra_args);
     pty::spawn(app, cwd, command, cols, rows, color_scheme.as_deref())
+}
+
+/// 启动一个纯 shell PTY（不跑任何 agent CLI），用于在项目目录里执行任意命令。
+#[tauri::command]
+fn pty_spawn_shell(
+    app: tauri::AppHandle,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+    color_scheme: Option<String>,
+) -> Result<u64, String> {
+    if !Path::new(&cwd).is_dir() {
+        return Err("Project directory no longer exists".to_string());
+    }
+    pty::spawn_shell(app, cwd, cols, rows, color_scheme.as_deref())
 }
 
 #[tauri::command]
@@ -1012,6 +1031,7 @@ pub fn run() {
             detect_terminals,
             pty_spawn,
             pty_spawn_new,
+            pty_spawn_shell,
             pty_write,
             pty_resize,
             pty_kill,

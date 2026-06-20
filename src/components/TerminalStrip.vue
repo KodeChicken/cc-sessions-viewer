@@ -12,7 +12,7 @@ import type { Agent } from '../types'
 import type { TerminalTab, SavedTab } from '../terminals'
 import { tabs, activeUiId, setActive, closeTab, markTabViewed, savedTabs, removeSavedTab } from '../terminals'
 import { statusKind } from '../tabStatus'
-import { IconClose, IconChat, IconList, IconPlus, agentIcons } from './icons'
+import { IconClose, IconChat, IconList, IconPlus, IconTerminal, agentIcons } from './icons'
 import { t } from '../i18n'
 
 const props = defineProps<{
@@ -35,8 +35,9 @@ const emit = defineEmits<{
   tabClosed: [sessionPath: string]
   /** TUI tab 操作菜单 —— 复用会话重命名弹窗 */
   tabRename: [tab: TerminalTab]
-  /** 双击 tab 条空白处 —— 复用列表页加号的新建会话能力 */
+  /** 双击 tab 条空白处 —— 开一个纯 shell tab */
   newSession: []
+  newShell: []
   hydrateSaved: [saved: SavedTab]
 }>()
 
@@ -53,13 +54,13 @@ const visibleSaved = computed(() =>
 const visible = computed(() => visibleTabs.value.length > 0 || visibleSaved.value.length > 0)
 
 function onSavedClick(saved: SavedTab) {
-  removeSavedTab(saved.sessionPath)
+  removeSavedTab(saved.sessionPath ? saved.sessionPath : saved)
   emit('hydrateSaved', saved)
 }
 
 function onSavedClose(saved: SavedTab, ev: Event) {
   ev.stopPropagation()
-  removeSavedTab(saved.sessionPath)
+  removeSavedTab(saved.sessionPath ? saved.sessionPath : saved)
 }
 const listActive = computed(
   () => activeUiId.value === null && !props.hasOpenSession,
@@ -70,6 +71,29 @@ const viewActive = computed(
 const tabCtx = ref<{ x: number; y: number; tab: TerminalTab } | null>(null)
 const stripCtx = ref<{ x: number; y: number } | null>(null)
 const nativeMenuSupported = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+// ---- 新建会话下拉菜单（+ 按钮） ----
+const newMenuOpen = ref(false)
+const newMenuEl = ref<HTMLElement>()
+function toggleNewMenu(ev?: Event) {
+  ev?.stopPropagation()
+  newMenuOpen.value = !newMenuOpen.value
+}
+function pickNewAgent() {
+  newMenuOpen.value = false
+  emit('newSession')
+}
+function pickNewShell() {
+  newMenuOpen.value = false
+  emit('newShell')
+}
+function onNewMenuDocClick(e: MouseEvent) {
+  if (!newMenuOpen.value) return
+  if (newMenuEl.value?.contains(e.target as Node)) return
+  newMenuOpen.value = false
+}
+onMounted(() => document.addEventListener('click', onNewMenuDocClick))
+onUnmounted(() => document.removeEventListener('click', onNewMenuDocClick))
 
 function shortTitle(title: string): string {
   if (!title) return t('chat.tui.untitled')
@@ -134,7 +158,7 @@ async function openNativeTabContextMenu(tab: TerminalTab, ev: MouseEvent): Promi
       items: [
         {
           id: 'tab-rename',
-          text: t('chat.tui.tabRename'),
+          text: t(tab.isShell ? 'chat.tui.tabRenameShell' : 'chat.tui.tabRename'),
           action: () => emit('tabRename', tab),
         },
         { item: 'Separator' },
@@ -173,9 +197,14 @@ async function openNativeStripContextMenu(ev: MouseEvent): Promise<boolean> {
     const menu = await Menu.new({
       items: [
         {
-          id: 'strip-new-session',
-          text: t('list.action.newSession'),
+          id: 'strip-new-agent',
+          text: t('list.action.newAgentSession'),
           action: () => emit('newSession'),
+        },
+        {
+          id: 'strip-new-shell',
+          text: t('list.action.newTerminal'),
+          action: () => emit('newShell'),
         },
       ],
     })
@@ -199,7 +228,7 @@ function openFallbackTabContextMenu(tab: TerminalTab, ev: MouseEvent) {
 
 function openFallbackStripContextMenu(ev: MouseEvent) {
   const menuW = 220
-  const menuH = 44
+  const menuH = 80
   stripCtx.value = {
     x: Math.max(8, Math.min(ev.clientX, window.innerWidth - menuW - 8)),
     y: Math.max(8, Math.min(ev.clientY, window.innerHeight - menuH - 8)),
@@ -214,6 +243,10 @@ function closeTabCtx() {
 function newSessionFromStripCtx() {
   closeTabCtx()
   emit('newSession')
+}
+function newShellFromStripCtx() {
+  closeTabCtx()
+  emit('newShell')
 }
 
 function renameCtxTab() {
@@ -346,12 +379,12 @@ onUnmounted(() => {
       class="term-tab"
       :class="{
         active: activeUiId === tab.uiId,
-        'state-working': statusKind(tab) === 'working',
-        'state-done': statusKind(tab) === 'done',
-        'state-blocked': statusKind(tab) === 'blocked',
-        'state-error': statusKind(tab) === 'error',
-        'state-exited': statusKind(tab) === 'exited',
-        'state-unknown': statusKind(tab) === 'unknown',
+        'state-working': !tab.isShell && statusKind(tab) === 'working',
+        'state-done': !tab.isShell && statusKind(tab) === 'done',
+        'state-blocked': !tab.isShell && statusKind(tab) === 'blocked',
+        'state-error': !tab.isShell && statusKind(tab) === 'error',
+        'state-exited': !tab.isShell && statusKind(tab) === 'exited',
+        'state-unknown': !tab.isShell && statusKind(tab) === 'unknown',
       }"
       v-tooltip:bottom="tab.title"
       role="button"
@@ -361,10 +394,11 @@ onUnmounted(() => {
       @keydown.enter.prevent="onTabClick(tab.uiId)"
       @keydown.space.prevent="onTabClick(tab.uiId)"
     >
-      <component :is="agentIcons[tab.agent]" class="term-tab-agent" :class="tab.agent" />
+      <IconTerminal v-if="tab.isShell" class="term-tab-agent" />
+      <component v-else :is="agentIcons[tab.agent]" class="term-tab-agent" :class="tab.agent" />
       <span class="term-tab-title">{{ shortTitle(tab.title) }}</span>
       <span
-        v-if="statusKind(tab) === 'working'"
+        v-if="!tab.isShell && statusKind(tab) === 'working'"
         class="term-tab-status term-tab-status-working"
         aria-hidden="true"
       >
@@ -373,7 +407,7 @@ onUnmounted(() => {
         <i />
       </span>
       <span
-        v-else-if="statusKind(tab) !== 'none'"
+        v-else-if="!tab.isShell && statusKind(tab) !== 'none'"
         class="term-tab-status"
         :class="'term-tab-status-' + statusKind(tab)"
         aria-hidden="true"
@@ -392,15 +426,16 @@ onUnmounted(() => {
 
       <!-- Saved (lazy-restore) tabs: pill only, no xterm/PTY until clicked -->
       <div
-        v-for="saved in visibleSaved"
-        :key="'saved:' + saved.sessionPath"
+        v-for="(saved, si) in visibleSaved"
+        :key="'saved:' + (saved.sessionPath || `shell-${si}`)"
         class="term-tab term-tab-saved"
         v-tooltip:bottom="saved.title"
         role="button"
         tabindex="0"
         @click="onSavedClick(saved)"
       >
-        <component :is="agentIcons[saved.agent]" class="term-tab-agent" :class="saved.agent" />
+        <IconTerminal v-if="saved.isShell" class="term-tab-agent" />
+        <component v-else :is="agentIcons[saved.agent]" class="term-tab-agent" :class="saved.agent" />
         <span class="term-tab-title">{{ shortTitle(saved.title) }}</span>
         <span
           class="term-tab-close"
@@ -415,15 +450,28 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div
-      class="term-tab-new"
-      v-tooltip:bottom="t('chat.tui.newSessionTitle')"
-      role="button"
-      tabindex="0"
-      @click="emit('newSession')"
-      @keydown.enter.prevent="emit('newSession')"
-    >
-      <IconPlus />
+    <div ref="newMenuEl" class="new-menu-wrap" style="flex-shrink:0">
+      <div
+        class="term-tab-new"
+        :class="{ active: newMenuOpen }"
+        v-tooltip:bottom="t('list.action.newSession')"
+        role="button"
+        tabindex="0"
+        @click.stop="toggleNewMenu"
+        @keydown.enter.prevent="toggleNewMenu"
+      >
+        <IconPlus />
+      </div>
+      <div v-if="newMenuOpen" class="new-menu" role="menu">
+        <button type="button" class="new-menu-item" role="menuitem" @click="pickNewAgent">
+          <component :is="agentIcons[agent]" class="new-menu-ic" />
+          <span>{{ t('list.action.newAgentSession') }}</span>
+        </button>
+        <button type="button" class="new-menu-item" role="menuitem" @click="pickNewShell">
+          <IconTerminal class="new-menu-ic" />
+          <span>{{ t('list.action.newTerminal') }}</span>
+        </button>
+      </div>
     </div>
 
     <div
@@ -436,10 +484,18 @@ onUnmounted(() => {
       <button
         type="button"
         class="ctx-item"
-        data-menu-action="strip-new-session"
+        data-menu-action="strip-new-agent"
         @click="newSessionFromStripCtx"
       >
-        <span>{{ t('list.action.newSession') }}</span>
+        <span>{{ t('list.action.newAgentSession') }}</span>
+      </button>
+      <button
+        type="button"
+        class="ctx-item"
+        data-menu-action="strip-new-shell"
+        @click="newShellFromStripCtx"
+      >
+        <span>{{ t('list.action.newTerminal') }}</span>
       </button>
     </div>
 
@@ -451,7 +507,7 @@ onUnmounted(() => {
       @contextmenu.prevent.stop
     >
       <button type="button" class="ctx-item" data-menu-action="tab-rename" @click="renameCtxTab">
-        <span>{{ t('chat.tui.tabRename') }}</span>
+        <span>{{ t(tabCtx?.tab?.isShell ? 'chat.tui.tabRenameShell' : 'chat.tui.tabRename') }}</span>
       </button>
       <div class="ctx-sep" />
       <button type="button" class="ctx-item" data-menu-action="tab-close" @click="closeCtxTab">

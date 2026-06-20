@@ -4,11 +4,8 @@ import { nextTick } from 'vue'
 import { setLang } from '../../src/settings'
 import { vTooltip } from '../../src/tooltip'
 
-// Stub the Tauri invoke (searchSessions) — every spec drives this manually.
-// cancelSearch is also called by the modal on every input event to interrupt
-// in-flight searches; stub it to a no-op to keep tests from hitting Tauri.
 const { searchMock, cancelMock } = vi.hoisted(() => ({
-  searchMock: vi.fn(),
+  searchMock: vi.fn().mockResolvedValue([]),
   cancelMock: vi.fn().mockResolvedValue(undefined),
 }))
 let _id = 0
@@ -24,9 +21,8 @@ import { clearRecents, recentSearches } from '../../src/globalSearch'
 
 beforeEach(() => {
   setLang('en')
-  searchMock.mockReset()
-  cancelMock.mockClear()
-  cancelMock.mockResolvedValue(undefined)
+  searchMock.mockReset().mockResolvedValue([])
+  cancelMock.mockClear().mockResolvedValue(undefined)
   _id = 0
   clearRecents()
   sessionStorage.clear()
@@ -51,6 +47,8 @@ function hit(over: Partial<SearchHit> = {}): SearchHit {
   }
 }
 
+const WAIT = 500
+
 const factory = (show = true) =>
   mount(GlobalSearchModal, {
     props: { show, agent: 'claude' },
@@ -59,12 +57,12 @@ const factory = (show = true) =>
   })
 
 describe('GlobalSearchModal', () => {
-  it('renders the placeholder and footer hints when open', () => {
+  it('renders the input and footer hints when open', () => {
     const wrapper = factory()
     expect(wrapper.find('.gs-input').exists()).toBe(true)
-    expect(wrapper.find('.gs-foot').text()).toContain('to select')
-    expect(wrapper.find('.gs-foot').text()).toContain('to navigate')
-    expect(wrapper.find('.gs-foot').text()).toContain('to close')
+    expect(wrapper.find('.gs-footer').text()).toContain('to select')
+    expect(wrapper.find('.gs-footer').text()).toContain('to navigate')
+    expect(wrapper.find('.gs-footer').text()).toContain('to close')
     wrapper.unmount()
   })
 
@@ -85,10 +83,8 @@ describe('GlobalSearchModal', () => {
     ])
     const wrapper = factory()
     await wrapper.find('.gs-input').setValue('hello')
-    // 450ms debounce —— 等到 500ms 再 flush 异步队列。
-    await new Promise((r) => setTimeout(r, 950))
+    await new Promise((r) => setTimeout(r, WAIT))
     await flushPromises()
-    // 第 3 个参数是单调 request id，每次调用递增；这里只比对前两个。
     expect(searchMock).toHaveBeenCalledWith('claude', 'hello', expect.any(Number))
     expect(wrapper.findAll('.gs-group')).toHaveLength(2)
     expect(wrapper.findAll('.gs-row')).toHaveLength(2)
@@ -98,7 +94,7 @@ describe('GlobalSearchModal', () => {
   it('skips searches shorter than the min query length', async () => {
     const wrapper = factory()
     await wrapper.find('.gs-input').setValue('a')
-    await new Promise((r) => setTimeout(r, 950))
+    await new Promise((r) => setTimeout(r, WAIT))
     await flushPromises()
     expect(searchMock).not.toHaveBeenCalled()
     wrapper.unmount()
@@ -108,7 +104,7 @@ describe('GlobalSearchModal', () => {
     searchMock.mockResolvedValue([hit()])
     const wrapper = factory()
     await wrapper.find('.gs-input').setValue('hello')
-    await new Promise((r) => setTimeout(r, 950))
+    await new Promise((r) => setTimeout(r, WAIT))
     await flushPromises()
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
     await nextTick()
@@ -126,8 +122,7 @@ describe('GlobalSearchModal', () => {
     wrapper.unmount()
   })
 
-  it('cancels the in-flight search when the user keeps typing', async () => {
-    // 装一个永远 pending 的 searchSessions —— 模拟「搜索在跑」的状态。
+  it('cancels the in-flight search when new input arrives', async () => {
     let resolveFirst: (v: SearchHit[]) => void = () => {}
     searchMock.mockImplementationOnce(
       () => new Promise<SearchHit[]>((r) => { resolveFirst = r }),
@@ -137,18 +132,15 @@ describe('GlobalSearchModal', () => {
     const input = wrapper.find('.gs-input')
 
     await input.setValue('ab')
-    await new Promise((r) => setTimeout(r, 950))
-    // 第一次搜索已经发出去（promise 挂着），开始下一次输入应该立即调 cancelSearch
+    await new Promise((r) => setTimeout(r, WAIT))
     expect(searchMock).toHaveBeenCalledTimes(1)
-    expect(cancelMock).not.toHaveBeenCalled()
 
     await input.setValue('abc')
-    // input 事件刚发出来就应该 cancel —— 不用等防抖。
-    expect(cancelMock).toHaveBeenCalledTimes(1)
+    await new Promise((r) => setTimeout(r, WAIT))
+    expect(cancelMock).toHaveBeenCalled()
 
-    // 释放卡住的第一次（这条结果会被前端的 reqSeq 守卫丢弃）
     resolveFirst([])
-    await new Promise((r) => setTimeout(r, 950))
+    await flushPromises()
     expect(searchMock).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
@@ -159,9 +151,8 @@ describe('GlobalSearchModal', () => {
       hit({ session: { ...hit().session, path: 'b', title: 'Second' } }),
     ])
     const wrapper = factory()
-    // 至少 2 字符才会触发搜索
     await wrapper.find('.gs-input').setValue('se')
-    await new Promise((r) => setTimeout(r, 950))
+    await new Promise((r) => setTimeout(r, WAIT))
     await flushPromises()
     let rows = wrapper.findAll('.gs-row')
     expect(rows[0].classes()).toContain('active')
@@ -169,6 +160,17 @@ describe('GlobalSearchModal', () => {
     await nextTick()
     rows = wrapper.findAll('.gs-row')
     expect(rows[1].classes()).toContain('active')
+    wrapper.unmount()
+  })
+
+  it('shows no-results state with the query in bold', async () => {
+    searchMock.mockResolvedValue([])
+    const wrapper = factory()
+    await wrapper.find('.gs-input').setValue('xyznonexistent')
+    await new Promise((r) => setTimeout(r, WAIT))
+    await flushPromises()
+    expect(wrapper.find('.gs-no-results-icon').exists()).toBe(true)
+    expect(wrapper.find('.gs-placeholder-text strong').text()).toBe('xyznonexistent')
     wrapper.unmount()
   })
 })

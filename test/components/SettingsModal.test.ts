@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
-const { appVersionMock, checkUpdateMock } = vi.hoisted(() => ({
+const { appVersionMock, checkAppUpdateMock } = vi.hoisted(() => ({
   appVersionMock: vi.fn(),
-  checkUpdateMock: vi.fn(),
+  checkAppUpdateMock: vi.fn(),
 }))
 vi.mock('../../src/api', () => ({
   appVersion: appVersionMock,
-  checkUpdate: checkUpdateMock,
 }))
+vi.mock('../../src/updateCheck', async (importOriginal) => {
+  const orig: any = await importOriginal()
+  return { ...orig, checkAppUpdate: checkAppUpdateMock }
+})
 
 import SettingsModal from '../../src/components/SettingsModal.vue'
 import { vTooltip } from '../../src/tooltip'
@@ -18,7 +21,7 @@ beforeEach(() => {
   setLang('en')
   setTheme('system')
   appVersionMock.mockReset().mockResolvedValue('9.9.9')
-  checkUpdateMock.mockReset()
+  checkAppUpdateMock.mockReset()
 })
 afterEach(() => {
   setLang('en')
@@ -87,7 +90,7 @@ describe('SettingsModal', () => {
   })
 
   it('reports when an update is available', async () => {
-    checkUpdateMock.mockResolvedValue({ hasUpdate: true, latest: '2.0.0', current: '1.0.0' })
+    checkAppUpdateMock.mockResolvedValue({ hasUpdate: true, latest: '2.0.0', current: '1.0.0' })
     const wrapper = factory()
     await flushPromises()
 
@@ -95,12 +98,12 @@ describe('SettingsModal', () => {
     await checkBtn.trigger('click')
     await flushPromises()
 
-    expect(checkUpdateMock).toHaveBeenCalled()
+    expect(checkAppUpdateMock).toHaveBeenCalled()
     expect(wrapper.text()).toContain('2.0.0')
   })
 
   it('reports when the app is up to date', async () => {
-    checkUpdateMock.mockResolvedValue({ hasUpdate: false, latest: '1.0.0', current: '1.0.0' })
+    checkAppUpdateMock.mockResolvedValue({ hasUpdate: false, latest: '1.0.0', current: '1.0.0' })
     const wrapper = factory()
     await flushPromises()
 
@@ -112,7 +115,7 @@ describe('SettingsModal', () => {
   })
 
   it('surfaces a failed update check', async () => {
-    checkUpdateMock.mockRejectedValue(new Error('offline'))
+    checkAppUpdateMock.mockRejectedValue(new Error('offline'))
     const wrapper = factory()
     await flushPromises()
 

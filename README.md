@@ -26,6 +26,7 @@
 - **Faithful replay** — thinking chains, tool-call pairings, structured diffs, and inline screenshots
 - **Global search** — cross-project instant search (⌘⇧F) jumps to the exact message
 - **One-click resume** — resume or start a session in an embedded terminal or external app — supports **Terminal.app**, **cmux**, **iTerm2**, **Ghostty**, and **Warp**
+- **Shell terminal tabs** — open pure shell tabs alongside agent sessions for running arbitrary commands in the project directory; tabs persist across restarts
 - **cmux deep integration** — auto-reuses existing workspace by cwd, locates running sessions with blue flash, smart split direction, and directory-named tabs
 - **Launch arguments** — per-agent CLI flags (e.g. `--dangerously-skip-permissions`) appended on resume / new session
 - **Jump to prompt** — locate button lists all user prompts; click to scroll and flash the target message
