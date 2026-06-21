@@ -75,6 +75,7 @@ import {
   openShellTab,
   setActive as setActiveTui,
   activeTab as currentActiveTab,
+  closeTab,
   closeTabsByProject,
   closeTabBySessionPath,
   reconcileNewTabs,
@@ -1589,6 +1590,25 @@ async function onTuiTabClosed(closedSessionPath: string) {
   await refreshSessions()
 }
 
+function closeActiveTab() {
+  const tab = currentActiveTab()
+  if (tab) {
+    const sessionPath = tab.sessionPath ?? ''
+    closeTab(tab.uiId)
+    onTuiTabClosed(sessionPath)
+  } else if (openSession.value) {
+    openSession.value = null
+    clearLive()
+  }
+}
+
+function renameActiveTab() {
+  const tab = currentActiveTab()
+  if (tab) {
+    openRenameFromTuiTab(tab)
+  }
+}
+
 async function openRenameFromTuiTab(tab: TerminalTab) {
   if (tab.isShell) {
     renameModal.value = {
@@ -1727,6 +1747,9 @@ const menuHandlers: MenuHandlers = {
   'find-prev': () => chatNavigate(-1),
   'toggle-sidebar': toggleSidebar,
   'new-session': () => newSession(),
+  'new-tab': () => newSession(),
+  'close-tab': () => closeActiveTab(),
+  'rename-tab': () => renameActiveTab(),
   'add-folder': () => addBookmark(),
   'open-settings': () => {
     showSettings.value = true
@@ -1768,6 +1791,9 @@ const windowMenus = computed<WindowMenuGroup[]>(() => [
     label: 'File',
     items: [
       { type: 'item', id: 'new-session', label: 'New Session in Current Project', shortcut: 'Ctrl+N', disabled: !activeProject.value },
+      { type: 'item', id: 'new-tab', label: 'New Tab', shortcut: 'Ctrl+T', disabled: !activeProject.value },
+      { type: 'item', id: 'close-tab', label: 'Close Tab', shortcut: 'Ctrl+W', disabled: !activeUiId.value && !openSession.value },
+      { type: 'item', id: 'rename-tab', label: 'Rename Tab', shortcut: 'Ctrl+R', disabled: !activeUiId.value },
       { type: 'item', id: 'add-folder', label: 'Add Folder...', shortcut: 'Ctrl+O' },
       { type: 'separator' },
       { type: 'item', id: 'export-session', label: 'Export Session...', shortcut: 'Ctrl+E', disabled: !openSession.value },
@@ -1995,7 +2021,13 @@ onMounted(() => {
       if (!mod || otherMod || e.altKey) return
 
       const key = e.key.toLowerCase()
-      if (key === 'f' && e.shiftKey) {
+      if (key === 'w' && !e.shiftKey) {
+        e.preventDefault(); closeActiveTab()
+      } else if (key === 't' && !e.shiftKey) {
+        e.preventDefault(); newSession()
+      } else if (key === 'r' && !e.shiftKey) {
+        e.preventDefault(); renameActiveTab()
+      } else if (key === 'f' && e.shiftKey) {
         e.preventDefault(); openGlobalSearch()
       } else if (key === 'f' && !e.shiftKey) {
         e.preventDefault(); focusSearchBox()

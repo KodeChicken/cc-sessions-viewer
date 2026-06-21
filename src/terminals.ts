@@ -18,6 +18,8 @@
 // 不持久化：刷新 webview = 全部 tabs 没了（PTY 进程被 kill）。这是预期 —— 应用
 // 重启相当于关掉所有"窗口"，跟系统终端语义一致。
 
+const _isMac = /Mac/i.test(navigator.platform)
+
 import { markRaw, nextTick, reactive, ref, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -757,28 +759,27 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   tabs.value.push(tab)
   activeUiId.value = uiId
   term.attachCustomKeyEventHandler((ev) => {
-    const isCtrl =
-      ev.type === 'keydown' &&
-      ev.ctrlKey &&
-      !ev.altKey &&
-      !ev.metaKey
-    if (!isCtrl) return true
-
+    if (ev.type !== 'keydown' || ev.altKey) return true
     const key = ev.key.toLowerCase()
-    const isCtrlC = key === 'c'
-    const isCtrlV = key === 'v'
 
-    if (isCtrlC && term.hasSelection()) {
-      ev.preventDefault()
-      void navigator.clipboard.writeText(term.getSelection()).catch(() => {})
-      return false
+    if (ev.ctrlKey && !ev.metaKey) {
+      if (key === 'c' && term.hasSelection()) {
+        ev.preventDefault()
+        void navigator.clipboard.writeText(term.getSelection()).catch(() => {})
+        return false
+      }
+      if (key === 'v') {
+        ev.preventDefault()
+        void navigator.clipboard.readText().then((text) => {
+          if (text) term.paste(text)
+        }).catch(() => {})
+        return false
+      }
     }
 
-    if (isCtrlV) {
-      ev.preventDefault()
-      void navigator.clipboard.readText().then((text) => {
-        if (text) term.paste(text)
-      }).catch(() => {})
+    const mod = _isMac ? ev.metaKey : ev.ctrlKey
+    const otherMod = _isMac ? ev.ctrlKey : ev.metaKey
+    if (mod && !otherMod && !ev.shiftKey && (key === 'w' || key === 't' || key === 'r')) {
       return false
     }
 
@@ -942,26 +943,30 @@ export async function openShellTab(opts: {
   tabs.value.push(tab)
   activeUiId.value = uiId
   term.attachCustomKeyEventHandler((ev) => {
-    const isCtrl =
-      ev.type === 'keydown' &&
-      ev.ctrlKey &&
-      !ev.altKey &&
-      !ev.metaKey
-    if (!isCtrl) return true
-
+    if (ev.type !== 'keydown' || ev.altKey) return true
     const key = ev.key.toLowerCase()
-    if (key === 'c' && term.hasSelection()) {
-      ev.preventDefault()
-      void navigator.clipboard.writeText(term.getSelection()).catch(() => {})
+
+    if (ev.ctrlKey && !ev.metaKey) {
+      if (key === 'c' && term.hasSelection()) {
+        ev.preventDefault()
+        void navigator.clipboard.writeText(term.getSelection()).catch(() => {})
+        return false
+      }
+      if (key === 'v') {
+        ev.preventDefault()
+        void navigator.clipboard.readText().then((text) => {
+          if (text) term.paste(text)
+        }).catch(() => {})
+        return false
+      }
+    }
+
+    const mod = _isMac ? ev.metaKey : ev.ctrlKey
+    const otherMod = _isMac ? ev.ctrlKey : ev.metaKey
+    if (mod && !otherMod && !ev.shiftKey && (key === 'w' || key === 't' || key === 'r')) {
       return false
     }
-    if (key === 'v') {
-      ev.preventDefault()
-      void navigator.clipboard.readText().then((text) => {
-        if (text) term.paste(text)
-      }).catch(() => {})
-      return false
-    }
+
     return true
   })
 
@@ -1044,6 +1049,19 @@ export function closeTab(uiId: number) {
   const idx = tabs.value.findIndex((t) => t.uiId === uiId)
   if (idx < 0) return
   const tab = tabs.value[idx]
+
+  // splice + active fallback first → UI updates immediately
+  tabs.value.splice(idx, 1)
+  knownPathsAtTabCreation.delete(uiId)
+  if (activeUiId.value === uiId) {
+    const sameCtx = tabs.value.filter(
+      (t) => t.agent === tab.agent && t.projectKey === tab.projectKey,
+    )
+    const next = sameCtx[0] ?? null
+    activeUiId.value = next?.uiId ?? null
+  }
+
+  // heavy cleanup after reactive state is settled
   if (tab.quietCursorTimer !== null) {
     window.clearTimeout(tab.quietCursorTimer)
     tab.quietCursorTimer = null
@@ -1063,21 +1081,8 @@ export function closeTab(uiId: number) {
   } catch {
     /* 已经 dispose 过 */
   }
-  // 从父节点摘掉 container（如果 slot 还挂着它）
   if (tab.container.parentElement) {
     tab.container.parentElement.removeChild(tab.container)
-  }
-
-  tabs.value.splice(idx, 1)
-  knownPathsAtTabCreation.delete(uiId)
-
-  // active fallback：只在同 agent + 同 project 里找邻居，跨 agent 的 tab 不能 fallback 过去。
-  if (activeUiId.value === uiId) {
-    const sameCtx = tabs.value.filter(
-      (t) => t.agent === tab.agent && t.projectKey === tab.projectKey,
-    )
-    const next = sameCtx[0] ?? null
-    activeUiId.value = next?.uiId ?? null
   }
 }
 

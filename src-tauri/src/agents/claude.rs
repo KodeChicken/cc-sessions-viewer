@@ -957,15 +957,45 @@ fn read_turns(fp: &Path) -> Vec<Turn> {
             has_agent_spawn,
         };
         if let Some(turn) = cur.as_mut() {
-            // 把 ExitPlanMode 工具识别为 plan-mode 标记
-            if call.tools.iter().any(|t| t == "ExitPlanMode") {
-                turn.calls.push(CallRecord {
+            let mut call = if call.tools.iter().any(|t| t == "ExitPlanMode") {
+                CallRecord {
                     has_plan_mode: true,
                     ..call
-                });
+                }
             } else {
-                turn.calls.push(call);
+                call
+            };
+            // Streaming: Claude Code writes multiple assistant lines per API call
+            // with the same message.id — intermediates carry 0 usage, only the final
+            // entry has the real token counts. Coalesce by replacing the earlier
+            // (0-usage) entry so the aggregator's cross-file dedup keeps the real one.
+            if let Some(ref id) = call.message_id {
+                if let Some(existing) = turn.calls.iter_mut().find(|c| {
+                    c.message_id.as_deref() == Some(id)
+                }) {
+                    // Merge: keep whichever side has more data.
+                    if call.usage.total >= existing.usage.total {
+                        existing.usage = call.usage;
+                        existing.cost_usd = call.cost_usd;
+                    }
+                    if !call.model.is_empty() && call.model != "<synthetic>" {
+                        existing.model = call.model;
+                    }
+                    if !call.tools.is_empty() {
+                        existing.tools.append(&mut call.tools);
+                    }
+                    if !call.bash_commands.is_empty() {
+                        existing.bash_commands.append(&mut call.bash_commands);
+                    }
+                    if !call.mcp_servers.is_empty() {
+                        existing.mcp_servers.append(&mut call.mcp_servers);
+                    }
+                    existing.has_plan_mode |= call.has_plan_mode;
+                    existing.has_agent_spawn |= call.has_agent_spawn;
+                    continue;
+                }
             }
+            turn.calls.push(call);
         } else {
             // 孤儿 assistant（合法但少见）：起一个空 user_message 的占位 turn
             cur = Some(Turn {
@@ -980,6 +1010,40 @@ fn read_turns(fp: &Path) -> Vec<Turn> {
     if let Some(t) = cur {
         turns.push(t);
     }
+
+    // Third-party models (e.g. mimo-v2.5-pro) report cache_read but not
+    // cache_creation. Infer it from the growth of cache_read between consecutive
+    // calls: the delta is tokens newly added to cache. Split the API's cache_read
+    // into actual cache_read (previously cached) + cache_creation (delta), keeping
+    // per-call totals unchanged.
+    let has_any_creation = turns
+        .iter()
+        .flat_map(|t| &t.calls)
+        .any(|c| c.usage.cache_creation_input_tokens > 0);
+    let has_any_read = turns
+        .iter()
+        .flat_map(|t| &t.calls)
+        .any(|c| c.usage.cache_read_input_tokens > 0);
+    if !has_any_creation && has_any_read {
+        let mut max_cr: u64 = 0;
+        for turn in &mut turns {
+            for call in &mut turn.calls {
+                let cr = call.usage.cache_read_input_tokens;
+                if cr > max_cr {
+                    call.usage.cache_creation_input_tokens = cr - max_cr;
+                    call.usage.cache_read_input_tokens = max_cr;
+                    call.usage = call.usage.finalize();
+                    call.cost_usd = if call.usage.total == 0 {
+                        0.0
+                    } else {
+                        pricing::cost_usd(&call.model, &call.usage)
+                    };
+                    max_cr = cr;
+                }
+            }
+        }
+    }
+
     turns
 }
 
@@ -1182,6 +1246,77 @@ mod tests {
         assert!(is_subagent_path(&p));
         let meta = scan(&p);
         assert_eq!(meta.id, "abc123-uuid", "subagent session id should be parent uuid");
+    }
+
+    #[test]
+    fn read_turns_coalesces_streaming_duplicates_by_message_id() {
+        // Third-party models (e.g. mimo-v2.5-pro) write multiple assistant lines
+        // per API call sharing the same message.id — streaming intermediates have
+        // input_tokens=0/output_tokens=0, only the final entry has real usage.
+        // read_turns must coalesce them so the aggregator's cross-file dedup
+        // keeps the real token counts, not the 0 placeholders.
+        let dir = std::env::temp_dir().join("csv-claude-coalesce-tests");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("coalesce.jsonl");
+        let lines = [
+            r#"{"type":"user","message":{"content":"hello"},"timestamp":"2025-01-01T00:00:00.000Z"}"#,
+            // streaming intermediate — 0 usage, same id
+            r#"{"type":"assistant","message":{"id":"msg_dup","model":"mimo-v2.5-pro","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":0,"output_tokens":0}},"timestamp":"2025-01-01T00:00:01.000Z"}"#,
+            // final entry — real usage, same id, has tool_use
+            r#"{"type":"assistant","message":{"id":"msg_dup","model":"mimo-v2.5-pro","content":[{"type":"text","text":"done"},{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":500,"output_tokens":200,"cache_creation_input_tokens":2000,"cache_read_input_tokens":10000}},"timestamp":"2025-01-01T00:00:02.000Z"}"#,
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        let turns = read_turns(&p);
+        assert_eq!(turns.len(), 1, "one user message = one turn");
+        assert_eq!(turns[0].calls.len(), 1, "same message_id must coalesce into 1 call");
+        let call = &turns[0].calls[0];
+        assert_eq!(call.usage.input_tokens, 500);
+        assert_eq!(call.usage.output_tokens, 200);
+        assert_eq!(call.usage.cache_read_input_tokens, 10000);
+        assert!(call.usage.total > 0, "total must be non-zero after coalescing");
+        assert!(call.tools.contains(&"Bash".to_string()), "tools from later entry must be merged");
+    }
+
+    #[test]
+    fn read_turns_infers_cache_creation_from_cache_read_growth() {
+        // Third-party models report cache_creation=0 but cache_read grows between
+        // calls. read_turns should split cache_read into actual read (previously
+        // existing) + inferred creation (delta), preserving per-call totals.
+        let dir = std::env::temp_dir().join("csv-claude-infer-tests");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("infer-cc.jsonl");
+        let lines = [
+            r#"{"type":"user","message":{"content":"q1"},"timestamp":"2025-01-01T00:00:00.000Z"}"#,
+            r#"{"type":"assistant","message":{"id":"msg_a","model":"mimo-v2.5-pro","content":[{"type":"text","text":"a1"}],"usage":{"input_tokens":76524,"output_tokens":136,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2025-01-01T00:00:01.000Z"}"#,
+            r#"{"type":"user","message":{"content":"q2"},"timestamp":"2025-01-01T00:00:02.000Z"}"#,
+            r#"{"type":"assistant","message":{"id":"msg_b","model":"mimo-v2.5-pro","content":[{"type":"text","text":"a2"}],"usage":{"input_tokens":275,"output_tokens":171,"cache_creation_input_tokens":0,"cache_read_input_tokens":76480}},"timestamp":"2025-01-01T00:00:03.000Z"}"#,
+            r#"{"type":"user","message":{"content":"q3"},"timestamp":"2025-01-01T00:00:04.000Z"}"#,
+            r#"{"type":"assistant","message":{"id":"msg_c","model":"mimo-v2.5-pro","content":[{"type":"text","text":"a3"}],"usage":{"input_tokens":3319,"output_tokens":150,"cache_creation_input_tokens":0,"cache_read_input_tokens":78144}},"timestamp":"2025-01-01T00:00:05.000Z"}"#,
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        let turns = read_turns(&p);
+        assert_eq!(turns.len(), 3);
+
+        // Call 0: cache_read=0, no inference (nothing grew)
+        let c0 = &turns[0].calls[0];
+        assert_eq!(c0.usage.cache_creation_input_tokens, 0);
+        assert_eq!(c0.usage.cache_read_input_tokens, 0);
+        assert_eq!(c0.usage.input_tokens, 76524);
+
+        // Call 1: cache_read grew 0→76480; split: creation=76480, read=0
+        let c1 = &turns[1].calls[0];
+        assert_eq!(c1.usage.cache_creation_input_tokens, 76480);
+        assert_eq!(c1.usage.cache_read_input_tokens, 0);
+        assert_eq!(c1.usage.input_tokens, 275, "input_tokens unchanged");
+        // Per-call total preserved: 275+171+76480+0 = 76926
+        assert_eq!(c1.usage.total, 275 + 171 + 76480);
+
+        // Call 2: cache_read grew 76480→78144; split: creation=1664, read=76480
+        let c2 = &turns[2].calls[0];
+        assert_eq!(c2.usage.cache_creation_input_tokens, 1664);
+        assert_eq!(c2.usage.cache_read_input_tokens, 76480);
+        assert_eq!(c2.usage.input_tokens, 3319);
+        assert_eq!(c2.usage.total, 3319 + 150 + 1664 + 76480);
     }
 
     #[test]

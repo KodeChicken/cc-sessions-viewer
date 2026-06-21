@@ -76,10 +76,17 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     // ---------- File ----------
     let new_session = MenuItem::with_id(app, "new-session", "New Session in Current Project", true, Some("CmdOrCtrl+N"))?;
+    let new_tab = MenuItem::with_id(app, "new-tab", "New Tab", true, Some("CmdOrCtrl+T"))?;
+    let close_tab = MenuItem::with_id(app, "close-tab", "Close Tab", true, Some("CmdOrCtrl+W"))?;
+    let rename_tab = MenuItem::with_id(app, "rename-tab", "Rename Tab", true, Some("CmdOrCtrl+R"))?;
     let add_folder = MenuItem::with_id(app, "add-folder", "Add Folder…", true, Some("CmdOrCtrl+O"))?;
     let export = MenuItem::with_id(app, "export-session", "Export Session…", true, Some("CmdOrCtrl+E"))?;
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(&new_session)
+        .item(&new_tab)
+        .item(&close_tab)
+        .item(&rename_tab)
+        .separator()
         .item(&add_folder)
         .separator()
         .item(&export)

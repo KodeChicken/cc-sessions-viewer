@@ -82,8 +82,7 @@ pub fn lookup(model: &str) -> Option<ModelCosts> {
     best.map(|(_, v)| v)
 }
 
-/// 按 usage 算这次调用的美元成本。找不到模型按 $0 计 —— 跟 codeburn 一致。
-/// 调用方（aggregator）拿到 $0 不必区分原因；前端通过 `pricing_status` 拿 loading / error 状态。
+/// 按 usage 算这次调用的美元成本。找不到模型时用 Claude 4.6-4.8 均价兜底。
 ///
 /// `reasoning_output_tokens` 按 output 单价计费。OpenAI 的 o-系列 / GPT-5
 /// 把推理 token 单独列出来（hidden chain-of-thought），但仍按 output rate 收钱；
@@ -96,7 +95,7 @@ pub fn lookup(model: &str) -> Option<ModelCosts> {
 /// = `total × cw + 1h × cw × 0.6`，所以这里 total 加一份 0.6× 的 1h 子集即可。
 const ONE_HOUR_CACHE_WRITE_MULTIPLIER_OVER_5MIN: f64 = 1.6;
 pub fn cost_usd(model: &str, usage: &UsageSummary) -> f64 {
-    let Some(c) = lookup(model) else {
+    let Some(c) = lookup(model).or_else(fallback_costs) else {
         return 0.0;
     };
     let safe = |n: u64| n as f64;
@@ -107,6 +106,40 @@ pub fn cost_usd(model: &str, usage: &UsageSummary) -> f64 {
         + safe(usage.cache_creation_input_tokens) * c.cache_write
         + safe(usage.cache_creation_1h_input_tokens) * c.cache_write * one_h_extra
         + safe(usage.cache_read_input_tokens) * c.cache_read
+}
+
+/// Unknown models fall back to the average price of Claude Sonnet 4.6, Opus 4.7,
+/// and Opus 4.8 from the remote table. Returns None only if the table is empty or
+/// none of the three anchors are present.
+fn fallback_costs() -> Option<ModelCosts> {
+    let cell = REMOTE_PRICING.get()?;
+    let table = cell.read().ok()?;
+    const ANCHORS: &[&str] = &["claude-sonnet-4-6", "claude-opus-4-7", "claude-opus-4-8"];
+    let mut sum_in = 0.0_f64;
+    let mut sum_out = 0.0_f64;
+    let mut sum_cw = 0.0_f64;
+    let mut sum_cr = 0.0_f64;
+    let mut count = 0u32;
+    for name in ANCHORS {
+        if let Some(c) = table.get(*name) {
+            sum_in += c.input;
+            sum_out += c.output;
+            sum_cw += c.cache_write;
+            sum_cr += c.cache_read;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    let n = count as f64;
+    Some(ModelCosts {
+        input: sum_in / n,
+        output: sum_out / n,
+        cache_write: sum_cw / n,
+        cache_read: sum_cr / n,
+        context: 0,
+    })
 }
 
 // ---------- 名称归一 ----------
@@ -781,9 +814,11 @@ mod tests {
     }
 
     #[test]
-    fn cost_usd_zero_for_unknown_model() {
+    fn cost_usd_uses_fallback_for_unknown_model() {
+        seed_test_prices();
         let big = u(1_000_000, 1_000_000, 1_000_000, 1_000_000);
-        assert_eq!(cost_usd("ollama/llama-3", &big), 0.0);
+        let c = cost_usd("ollama/llama-3", &big);
+        assert!(c > 0.0, "unknown model should use Claude 4.6-4.8 average as fallback");
     }
 
     #[test]
