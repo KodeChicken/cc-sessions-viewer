@@ -77,12 +77,23 @@ jobs:
 
       - name: Generate updater latest.json
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           node <<'SCRIPT'
           const fs = require('fs')
           const path = require('path')
           const pkg = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'))
           const version = pkg.version
+          const releaseTag = process.env.RELEASE_TAG
+          const repo = process.env.GITHUB_REPOSITORY
+
+          if (!releaseTag) throw new Error('RELEASE_TAG is required')
+          if (!repo) throw new Error('GITHUB_REPOSITORY is required')
+
+          function releaseAssetUrl(file) {
+            return `https://github.com/${repo}/releases/download/${releaseTag}/${encodeURIComponent(file)}`
+          }
 
           function walk(dir) {
             let files = []
@@ -109,7 +120,7 @@ jobs:
             const sigFile = allFiles.find(f => f.endsWith(m.sig))
             if (bundle && sigFile) {
               const sig = fs.readFileSync(sigFile, 'utf8').trim()
-              const url = path.basename(bundle)
+              const url = releaseAssetUrl(path.basename(bundle))
               for (const k of m.key) {
                 platforms[k] = { signature: sig, url }
               }
@@ -188,6 +199,8 @@ jobs:
           node-version: 22
 
       - name: Merge updater manifests
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           node <<'NODE'
           const fs = require('fs')
@@ -195,6 +208,15 @@ jobs:
 
           const root = 'dist'
           const manifests = []
+          const releaseTag = process.env.RELEASE_TAG
+          const repo = process.env.GITHUB_REPOSITORY
+
+          if (!releaseTag) throw new Error('RELEASE_TAG is required')
+          if (!repo) throw new Error('GITHUB_REPOSITORY is required')
+
+          function releaseAssetUrl(file) {
+            return `https://github.com/${repo}/releases/download/${releaseTag}/${encodeURIComponent(file)}`
+          }
 
           function walk(dir) {
             for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -217,6 +239,14 @@ jobs:
             const json = JSON.parse(fs.readFileSync(file, 'utf8'))
             if (!json.version || !json.platforms || typeof json.platforms !== 'object') {
               throw new Error(`Invalid updater manifest: ${file}`)
+            }
+            for (const platform of Object.values(json.platforms)) {
+              if (typeof platform?.url !== 'string' || !platform.url) {
+                throw new Error(`Invalid updater platform URL in ${file}`)
+              }
+              if (!/^https?:\/\//.test(platform.url)) {
+                platform.url = releaseAssetUrl(path.basename(platform.url))
+              }
             }
             if (!merged) {
               merged = {
