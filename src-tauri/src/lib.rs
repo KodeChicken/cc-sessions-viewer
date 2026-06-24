@@ -592,8 +592,10 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
     #[cfg(target_os = "windows")]
     {
         let ps_cmd = crate::agent_command::powershell_set_location_and_run(cwd, command);
+        let encoded = crate::agent_command::powershell_encoded_command(&ps_cmd);
         std::process::Command::new("cmd")
-            .args(["/c", "start", "", "powershell.exe", "-NoExit", "-Command", &ps_cmd])
+            .args(["/c", "start", "", "powershell.exe", "-NoExit", "-EncodedCommand", &encoded])
+            .env("PATH", crate::agent_command::merged_system_path())
             .spawn()
             .map_err(|e| format!("Failed to launch terminal: {e}"))?;
     }

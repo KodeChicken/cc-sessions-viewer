@@ -146,6 +146,8 @@ fn build_shell_command(
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("COLORFGBG", color_scheme.colorfgbg());
+    // 打包后的 .app 可能从安装器继承了不完整的 PATH，合并注册表里的 User + Machine PATH。
+    cmd.env("PATH", crate::agent_command::merged_system_path());
     cmd.cwd(cwd);
     cmd
 }
@@ -177,6 +179,7 @@ fn build_interactive_shell(cwd: &str, color_scheme: PtyColorScheme) -> CommandBu
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("COLORFGBG", color_scheme.colorfgbg());
+    cmd.env("PATH", crate::agent_command::merged_system_path());
     cmd.cwd(cwd);
     cmd
 }

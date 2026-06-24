@@ -79,3 +79,67 @@ fn powershell_refresh_path() -> &'static str {
      $processPath = [Environment]::GetEnvironmentVariable('Path', 'Process'); \
      $env:Path = (@($processPath, $userPath, $machinePath) -ne '') -join ';'"
 }
+
+/// 将 PowerShell 命令编码为 `-EncodedCommand` 所需的 Base64 (UTF-16LE)。
+/// 打包后的 .app 经 `cmd /c start "" powershell.exe -Command "..."` 启动时，
+/// CMD 的引号层会吞掉 `$`、`@`、`&` 等特殊字符，导致 PATH 刷新失败。
+/// `-EncodedCommand` 完全绕过引号解析，是 Windows 上最可靠的传参方式。
+#[cfg(target_os = "windows")]
+pub fn powershell_encoded_command(ps_cmd: &str) -> String {
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
+    let utf16le: Vec<u8> = ps_cmd.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+    B64.encode(utf16le)
+}
+
+/// 从 Windows 注册表读取 User + Machine PATH，与当前进程 PATH 合并。
+/// 打包后的 .app 可能从安装器 / 升级器继承了不完整的 PATH（缺 nvm / volta / fnm 等），
+/// 这里直接读注册表确保子进程拿到最新 PATH。
+#[cfg(target_os = "windows")]
+pub fn merged_system_path() -> String {
+    let current = std::env::var("PATH").unwrap_or_default();
+    let user = read_registry_path("HKCU\\Environment");
+    let machine = read_registry_path("HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment");
+    let mut seen = std::collections::HashSet::new();
+    let mut merged = String::new();
+    for entry in current.split(';').chain(user.split(';')).chain(machine.split(';')) {
+        let trimmed = entry.trim();
+        if !trimmed.is_empty() && seen.insert(trimmed.to_ascii_lowercase()) {
+            if !merged.is_empty() {
+                merged.push(';');
+            }
+            merged.push_str(trimmed);
+        }
+    }
+    merged
+}
+
+#[cfg(target_os = "windows")]
+fn read_registry_path(key: &str) -> String {
+    std::process::Command::new("reg")
+        .args(["query", key, "/v", "Path"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            for line in stdout.lines() {
+                let line = line.trim();
+                if line.to_ascii_lowercase().starts_with("path") {
+                    // 格式: "Path    REG_EXPAND_SZ    C:\Users\..."
+                    // 跳过 "Path" 和类型 ("REG_SZ" / "REG_EXPAND_SZ")，取剩余部分。
+                    if let Some(rest) = line.find("REG_") {
+                        let after_type = &line[rest..];
+                        if let Some(pos) = after_type.find(char::is_whitespace) {
+                            let value = after_type[pos..].trim();
+                            if !value.is_empty() {
+                                return Some(value.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        })
+        .unwrap_or_default()
+}
