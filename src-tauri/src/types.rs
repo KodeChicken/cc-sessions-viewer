@@ -93,7 +93,7 @@ pub struct Block {
     pub image_src: Option<String>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Msg {
     pub uuid: Option<String>,
@@ -102,6 +102,11 @@ pub struct Msg {
     pub model: Option<String>,
     pub sidechain: bool,
     pub blocks: Vec<Block>,
+    /// 系统注入的 `type:"user"` 记录的归类：压缩摘要 / skill 注入 / 任务通知 /
+    /// 命令输出等。这些记录在 JSONL 里是 `role:"user"`，但不是用户手敲的 prose，
+    /// 前端据此把它们渲染成低调的「系统」块而非「Me」气泡。`None` = 真正的用户消息。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta_kind: Option<String>,
 }
 
 #[derive(Serialize)]

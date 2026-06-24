@@ -425,6 +425,7 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
                         model: None,
                         sidechain: false,
                         blocks,
+                        meta_kind: None,
                     });
                 }
             }
@@ -476,6 +477,7 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
                         model,
                         sidechain: false,
                         blocks,
+                        meta_kind: None,
                     });
                 }
             }

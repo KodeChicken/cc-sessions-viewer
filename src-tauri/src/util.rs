@@ -69,6 +69,7 @@ pub fn simple_msg(role: &str, ts: Option<String>, block: Block) -> Msg {
         model: None,
         sidechain: false,
         blocks: vec![block],
+        meta_kind: None,
     }
 }
 

@@ -926,6 +926,7 @@ fn read_with_title_index(
                         model: None,
                         sidechain: false,
                         blocks,
+                        meta_kind: None,
                     });
                 }
             }
@@ -1071,6 +1072,7 @@ fn read_with_title_index(
             model: None,
             sidechain: false,
             blocks: std::mem::take(&mut pending_user_images),
+            meta_kind: None,
         });
     }
     Ok(msgs)

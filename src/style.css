@@ -1988,6 +1988,8 @@ mark.locate-hl {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  /* Labels are short verbs — never wrap them mid-button (e.g. "Move to\nTrash"). */
+  white-space: nowrap;
 }
 .btn:hover {
   background: var(--surface-hover);
@@ -2084,6 +2086,47 @@ mark.locate-hl {
 .msg-row.system {
   justify-content: center;
   margin-bottom: 16px;
+}
+/* System-injected user records (compaction summary, skill injection, task
+   notifications, command output): rendered like an assistant turn — a labeled
+   tag chip + body, NO gray card. Clearly not a "Me" bubble. */
+.msg-row.meta {
+  justify-content: flex-start;
+}
+.bubble.meta-msg {
+  max-width: 100%;
+  background: transparent;
+  padding: 0;
+}
+/* The kind label sits in the collapsible card's summary (like "Tool call · Bash"),
+   uppercased so it reads as a system tag. */
+.block-summary .label.meta-summary-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+}
+/* Notification-style fields parsed from pseudo-XML, shown as a two-column
+   key/value list (no angle-bracket tags). */
+.meta-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 14px;
+  margin: 0;
+  align-items: baseline;
+}
+.meta-field-key {
+  margin: 0;
+  color: var(--text-mute);
+  font-size: 11px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  white-space: nowrap;
+}
+.meta-field-val {
+  margin: 0;
+  color: var(--text);
+  word-break: break-word;
+  white-space: pre-wrap;
+  line-height: 1.55;
 }
 
 /* 全局搜索点击命中后定位 + 闪烁；轻盈的「先放大一点 → 镀一层 accent」两段动画
@@ -3157,7 +3200,7 @@ details[open] > .block-summary > .chev {
   background: var(--surface);
   border-radius: 14px;
   padding: 20px 22px 18px;
-  width: 380px;
+  width: 400px;
   box-shadow: var(--shadow-lg);
   border: 1px solid var(--border);
 }
@@ -3177,7 +3220,12 @@ details[open] > .block-summary > .chev {
 .modal-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 6px;
+}
+/* Action buttons keep their natural width — never shrink so the label wraps. */
+.modal-actions .btn {
+  flex-shrink: 0;
 }
 
 /* ---------- Settings ---------- */

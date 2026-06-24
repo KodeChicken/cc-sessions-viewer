@@ -667,6 +667,7 @@ mod tests {
             model: None,
             sidechain: false,
             blocks,
+            meta_kind: None,
         }
     }
     fn msg(blocks: Vec<crate::types::Block>) -> Msg {

@@ -355,6 +355,39 @@ describe('messagesToHtml', () => {
     expect(html).toContain('class="msg system"')
   })
 
+  it('renders an interrupt marker as a centered system row, not a Me bubble', async () => {
+    const html = await messagesToHtml(
+      session(),
+      [msg('user', [text('[Request interrupted by user]')])],
+      'claude',
+    )
+    expect(html).toContain('class="msg system"')
+    expect(html).toContain('Request interrupted by user')
+    expect(html).not.toContain('class="msg user"')
+  })
+
+  it('renders a teammate-message metaKind as a collapsed labeled card, not a Me bubble', async () => {
+    const raw =
+      'Another Claude session sent a message:\n' +
+      '<teammate-message teammate_id="flow_reader" color="blue">\n' +
+      '{"type":"idle_notification"}\n' +
+      '</teammate-message>\n\n' +
+      'This came from another Claude session — boilerplate that should be dropped.'
+    const html = await messagesToHtml(
+      session(),
+      [msg('user', [text(raw)], { metaKind: 'teammate-message' })],
+      'claude',
+    )
+    // Meta block, not a "Me" bubble, with the agent prefix + collapsed card.
+    expect(html).toContain('class="msg meta"')
+    expect(html).not.toContain('class="msg user"')
+    expect(html).toContain('<details class="meta-details"><summary>Teammate message</summary>')
+    // teammate id → payload rendered as a field row; boilerplate dropped.
+    expect(html).toContain('flow_reader')
+    expect(html).toContain('idle_notification')
+    expect(html).not.toContain('boilerplate that should be dropped')
+  })
+
   it('reflects the active theme in the data-theme attribute', async () => {
     expect(await messagesToHtml(session(), [], 'claude')).toContain('data-theme="light"')
     document.documentElement.classList.add('theme-dark')

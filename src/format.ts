@@ -12,7 +12,9 @@ function escapeHtmlAttr(s: string): string {
   return escapeHtml(s).replace(/"/g, '&quot;')
 }
 
-const URL_RE = /https?:\/\/[^\s<>&)}\]]+/g
+// Backtick is excluded so a bare URL never swallows the closing backtick of an
+// inline-code span (`https://x`) — that used to desync all later code/strong tags.
+const URL_RE = /https?:\/\/[^\s<>&)}\]`]+/g
 const MD_LINK_RE = /\[([^\]\n]+)\]\((<[^>\n]+>|[^)\n]+)\)/g
 
 function isExternalUrl(target: string): boolean {
@@ -47,14 +49,31 @@ function inline(text: string): string {
     const idx = links.push(renderMarkdownLink(label, target)) - 1
     return `\u0001LINK${idx}\u0001`
   })
+  // Pull inline-code spans out to placeholders BEFORE the URL / emphasis passes.
+  // Their contents must stay literal — a URL or `**` inside backticks must not be
+  // linkified/bolded, and (critically) the URL regex must not reach across a code
+  // span and swallow its closing backtick, which would split the emitted tags and
+  // misnest `<code>`/`<strong>` into every following sibling. The \x01 sentinel
+  // (same convention as the link placeholder above) keeps placeholders collision-safe.
+  const SENT = String.fromCharCode(1)
+  const codes: string[] = []
+  s = s.replace(/`([^`\n]+)`/g, (_m, code) => {
+    const idx = codes.push(code) - 1
+    return `${SENT}CODE${idx}${SENT}`
+  })
   s = escapeHtml(s)
   s = s.replace(URL_RE, (url) => `<a href="${url}" target="_blank" rel="noopener">${url}</a>`)
-  s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>')
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
   s = s.replace(/^###\s+(.+)$/gm, '<h4>$1</h4>')
   s = s.replace(/^##\s+(.+)$/gm, '<h3>$1</h3>')
   s = s.replace(/^#\s+(.+)$/gm, '<h3>$1</h3>')
   s = s.replace(/\n/g, '<br>')
+  // Restore code spans (escaped, so contents stay literal) BEFORE links, so a link
+  // placeholder captured inside a code span still gets expanded by the link pass.
+  if (codes.length) {
+    const codeRe = new RegExp(`${SENT}CODE(\\d+)${SENT}`, 'g')
+    s = s.replace(codeRe, (_m, n) => `<code>${escapeHtml(codes[Number(n)] ?? '')}</code>`)
+  }
   if (links.length) {
     s = s.replace(/\u0001LINK(\d+)\u0001/g, (_m, n) => links[Number(n)] ?? '')
   }
@@ -96,11 +115,16 @@ export function isCaveatOnlyMsg(m: { role: string; blocks: Array<{ kind: string;
 // it into a centered, localized system-event line instead.
 const SYSTEM_REMINDER_RE = /<system-reminder>([\s\S]*?)<\/system-reminder>/
 const RENAME_INNER_RE = /The user named this session\s+"([^"]+)"/i
+// Claude Code writes a standalone "[Request interrupted by user]" (optionally
+// "… for tool use") user message when you hit Esc mid-turn. It's a system event,
+// not prose — render it as a centered line like /rename, not a "Me" bubble.
+const INTERRUPT_RE = /^\[Request interrupted by user(?: for tool use)?\]$/
 
-export type SystemEvent = { kind: 'rename'; name: string }
+export type SystemEvent = { kind: 'rename'; name: string } | { kind: 'interrupt' }
 
 /** Parse a user message into a SystemEvent if it consists solely of a
- *  recognized <system-reminder>. Returns null otherwise. */
+ *  recognized marker (rename <system-reminder> or an interrupt line).
+ *  Returns null otherwise. */
 export function parseSystemEvent(m: {
   role: string
   blocks: Array<{ kind: string; text?: string }>
@@ -108,6 +132,7 @@ export function parseSystemEvent(m: {
   if (m.role !== 'user') return null
   if (m.blocks.length !== 1 || m.blocks[0].kind !== 'text') return null
   const text = (m.blocks[0].text ?? '').trim()
+  if (INTERRUPT_RE.test(text)) return { kind: 'interrupt' }
   const sr = SYSTEM_REMINDER_RE.exec(text)
   if (!sr) return null
   // The whole message must be just the reminder — no other prose around it.
@@ -115,6 +140,84 @@ export function parseSystemEvent(m: {
   const rn = RENAME_INNER_RE.exec(sr[1])
   if (rn) return { kind: 'rename', name: rn[1] }
   return null
+}
+
+// ─── 系统注入的 user 记录（metaKind）的展示 ──────────────────────────────
+// 后端 claude 源给压缩摘要 / skill 注入 / 任务通知 / 命令输出这类 `type:"user"`
+// 记录打了 metaKind 标记。这里决定它们怎么渲染：
+//   - compact / meta —— 本身就是 markdown 文本，走 renderText（标题、列表、代码）
+//   - 其余（task-notification / system / command-output）—— 是带伪 XML 包裹 +
+//     可能含 ANSI 控制码的纯文本输出，去壳后以等宽 <pre> 原样呈现更贴近终端观感
+const META_PRE_KINDS = new Set(['task-notification', 'system', 'command-output'])
+
+/** 该 metaKind 是否以等宽 <pre>（而非 markdown）呈现。 */
+export function metaKindIsPre(kind: string): boolean {
+  return META_PRE_KINDS.has(kind)
+}
+
+// 命令输出 / 任务通知外面包着一层 Claude Code 的伪 XML 标签，去掉后正文更干净。
+const META_WRAPPER_RE =
+  /^\s*<(local-command-stdout|local-command-stderr|bash-stdout|bash-stderr|task-notification|system)>([\s\S]*?)<\/\1>\s*$/
+// 终端输出里夹着 ANSI 转义序列（ESC[2m 调暗、ESC[0m 复位）—— 纯噪音，去掉。
+// ESC（0x1B）控制字节用 fromCharCode 构造，避免把不可见控制符写进源码。
+const ESC = String.fromCharCode(27)
+const ANSI_RE = new RegExp(ESC + '\\[[0-9;]*m', 'g')
+
+/** 把 metaKind 记录的正文清理成可读纯文本：剥掉外层伪 XML 包裹标签 + ANSI 控制码。 */
+export function cleanMetaText(text: string): string {
+  const m = META_WRAPPER_RE.exec(text)
+  const inner = m ? m[2] : text
+  return inner.replace(ANSI_RE, '').trim()
+}
+
+// 任务通知正文是一串伪 XML 字段：<task-id>…</task-id>、<summary>…</summary>、
+// <event>…</event> 等。直接展示这些尖括号标签很难读，这里解析成 key/value 对，
+// 前端再格式化成「字段名 + 值」两列。
+const META_FIELD_RE = /<([a-z][a-z0-9-]*)>([\s\S]*?)<\/\1>/gi
+
+export interface MetaField {
+  key: string
+  value: string
+}
+
+/** 把 metaKind 正文解析成有序的字段列表（仅当正文「全是」<tag>value</tag> 字段、
+ *  标签之间只有空白时才算）。命令输出之类的纯文本返回 null（交给 <pre> 渲染）。 */
+export function parseMetaFields(text: string): MetaField[] | null {
+  const cleaned = cleanMetaText(text)
+  const fields: MetaField[] = []
+  let lastEnd = 0
+  let onlyTags = true
+  META_FIELD_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = META_FIELD_RE.exec(cleaned)) !== null) {
+    // 字段之间若夹着非空白文本，说明不是「纯字段」结构，放弃格式化。
+    if (cleaned.slice(lastEnd, m.index).trim() !== '') onlyTags = false
+    fields.push({ key: m[1], value: m[2].trim() })
+    lastEnd = m.index + m[0].length
+  }
+  if (cleaned.slice(lastEnd).trim() !== '') onlyTags = false
+  if (fields.length === 0 || !onlyTags) return null
+  return fields
+}
+
+// 多 agent 协作时，对方 Claude 会话发来的消息被注入成一条 user 记录，形如：
+//   Another Claude session sent a message:
+//   <teammate-message teammate_id="x" color="blue">{payload}</teammate-message>
+//   ...（一段固定的 harness 说明，纯噪音）
+// 这里把每个 <teammate-message> 块抽成「队友 id → payload」字段，丢掉前后的说明文字。
+const TEAMMATE_BLOCK_RE = /<teammate-message\s+([^>]*?)>([\s\S]*?)<\/teammate-message>/g
+const TEAMMATE_ID_RE = /teammate_id\s*=\s*"([^"]*)"/
+
+/** 解析 teammate-message 注入的正文为「队友 → payload」字段；非该结构返回 null。 */
+export function parseTeammateMessage(text: string): MetaField[] | null {
+  const fields: MetaField[] = []
+  TEAMMATE_BLOCK_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = TEAMMATE_BLOCK_RE.exec(text)) !== null) {
+    const id = TEAMMATE_ID_RE.exec(m[1])?.[1] ?? 'teammate'
+    fields.push({ key: id, value: m[2].trim() })
+  }
+  return fields.length ? fields : null
 }
 function extractCommandTags(raw: string): { text: string; codes: string[] } {
   const codes: string[] = []

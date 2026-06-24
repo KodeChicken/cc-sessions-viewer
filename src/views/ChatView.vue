@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Agent, Msg, SessionMeta, Block } from '../types'
-import { renderText, formatTime, isCaveatOnlyMsg, parseSystemEvent } from '../format'
+import { renderText, formatTime, isCaveatOnlyMsg, parseSystemEvent, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage } from '../format'
+import type { MetaField } from '../format'
 import { prettifyAndHighlightJson } from '../jsonHighlight'
 import { renderAllMermaid, resetMermaidForTheme } from '../mermaid'
 import { highlightAllCodeBlocks, rehighlightAllCodeBlocks } from '../shikiHighlight'
@@ -153,6 +154,8 @@ const FILE_MUTATING_TOOLS = new Set([
 function rowScope(m: Msg): string {
   // tool-only 行只在 FILE_MUTATING_TOOLS 的 tool_result 拆出来时出现，所以一定是 edit 类
   if (isToolOnly(m)) return 'tools-edit'
+  // 系统注入块不是用户 prose 也不是助手回复 —— 给个独立 scope，只在「全部」筛选下命中。
+  if (m.metaKind) return 'meta'
   return m.role
 }
 function toolUseScope(b: Block): string {
@@ -312,13 +315,46 @@ function systemEventLabel(m: Msg): string | null {
   const ev = parseSystemEvent(m)
   if (!ev) return null
   if (ev.kind === 'rename') return t('chat.systemEvent.rename', { name: ev.name })
+  if (ev.kind === 'interrupt') return t('chat.systemEvent.interrupted')
   return null
+}
+
+// 系统注入的 user 记录（metaKind）—— 后端 claude 源打的标记。映射到本地化标题，
+// 前端据此把它们渲染成低调的「系统」块而非「Me」气泡。
+const META_KIND_KEY: Record<string, string> = {
+  compact: 'chat.metaKind.compact',
+  meta: 'chat.metaKind.meta',
+  'task-notification': 'chat.metaKind.taskNotification',
+  system: 'chat.metaKind.system',
+  'command-output': 'chat.metaKind.commandOutput',
+  'teammate-message': 'chat.metaKind.teammateMessage',
+}
+function metaKindLabel(kind: string | undefined): string {
+  if (!kind) return ''
+  return t(META_KIND_KEY[kind] ?? 'chat.metaKind.system')
+}
+// 该消息的 metaKind 是否以等宽 <pre> 呈现（undefined-safe 包装，便于模板调用）。
+function metaIsPre(m: Msg): boolean {
+  return !!m.metaKind && metaKindIsPre(m.metaKind)
+}
+// metaKind 块里每个文本块的渲染：command-output / 通知类去壳 + ANSI 后以等宽
+// <pre> 原样呈现；compact / meta 本身是 markdown，走常规 renderText。
+function metaBlockHtml(kind: string | undefined, text: string): string {
+  if (kind && metaKindIsPre(kind)) return cleanMetaText(text)
+  return renderText(text)
+}
+// 把 metaKind 正文解析成 key/value 字段供模板格式化渲染：先试通用 <tag>value</tag>
+// 结构（任务通知），再试 teammate-message 结构（多 agent 协作消息）。都不匹配
+// （命令输出等纯文本）返回 null，交给 <pre> / markdown 分支。
+function metaFieldsOf(text: string): MetaField[] | null {
+  return parseMetaFields(text) ?? parseTeammateMessage(text)
 }
 
 const stats = computed(() => {
   const u = props.messages.filter(
     (m) =>
       m.role === 'user' &&
+      !m.metaKind &&
       !isToolOnly(m) &&
       !isCaveatOnlyMsg(m) &&
       !systemEventLabel(m),
@@ -785,7 +821,7 @@ const promptEntries = computed<PromptEntry[]>(() => {
   const entries: PromptEntry[] = []
   for (let i = 0; i < props.messages.length; i++) {
     const m = props.messages[i]
-    if (m.role !== 'user' || isToolOnly(m) || isCaveatOnlyMsg(m) || systemEventLabel(m)) continue
+    if (m.role !== 'user' || m.metaKind || isToolOnly(m) || isCaveatOnlyMsg(m) || systemEventLabel(m)) continue
     const textBlock = m.blocks.find((b) => b.kind === 'text' && b.text)
     const raw = textBlock?.text ?? ''
     const plain = raw.replace(/<[^>]*>/g, '').trim()
@@ -1047,7 +1083,7 @@ function onDocClick(e: MouseEvent) {
         v-show="rowHasContent(m) && (!isHidden(m, i) || showHidden)"
         class="msg-row"
         :class="[
-          systemEventLabel(m) ? 'system' : isToolOnly(m) ? 'tool-only' : m.role,
+          systemEventLabel(m) ? 'system' : m.metaKind ? 'meta' : isToolOnly(m) ? 'tool-only' : m.role,
           { 'msg-flash': flashIdx === i, 'msg-hidden': isHidden(m, i) && showHidden },
         ]"
         :data-search-scope="rowScope(m)"
@@ -1059,6 +1095,40 @@ function onDocClick(e: MouseEvent) {
              not a "Me" bubble — they're meta facts, not user prose. -->
         <div v-if="systemEventLabel(m)" class="system-event">
           {{ systemEventLabel(m) }}
+        </div>
+
+        <!-- System-injected user records (compaction summary, skill injection,
+             task notifications, command output). Not "Me" prose — render like an
+             assistant turn: a "✳ Claude" header + a collapsed, tool-call-style
+             card holding the body. Notification pseudo-XML → clean key/value rows. -->
+        <div v-else-if="m.metaKind" class="bubble meta-msg">
+          <div class="role-tag">
+            <span class="name">
+              <component :is="agentIcons[agent]" class="agent-icon" :class="agent" />
+              {{ assistantName }}
+            </span>
+            <span>{{ formatTime(m.timestamp) }}</span>
+          </div>
+          <details class="block-card">
+            <summary class="block-summary">
+              <span class="chev"><IconChevronRight /></span>
+              <span class="label meta-summary-label">{{ metaKindLabel(m.metaKind) }}</span>
+            </summary>
+            <div class="block-body">
+              <template v-for="(b, bi) in m.blocks" :key="bi">
+                <template v-if="b.kind === 'text'">
+                  <dl v-if="metaFieldsOf(b.text ?? '')" class="meta-fields">
+                    <template v-for="(f, fi) in metaFieldsOf(b.text ?? '')!" :key="fi">
+                      <dt class="meta-field-key">{{ f.key }}</dt>
+                      <dd class="meta-field-val">{{ f.value }}</dd>
+                    </template>
+                  </dl>
+                  <pre v-else-if="metaIsPre(m)">{{ cleanMetaText(b.text ?? '') }}</pre>
+                  <div v-else class="text-run" v-html="metaBlockHtml(m.metaKind, b.text ?? '')" />
+                </template>
+              </template>
+            </div>
+          </details>
         </div>
 
         <div v-else-if="isToolOnly(m)" style="max-width: 86%; min-width: 0">

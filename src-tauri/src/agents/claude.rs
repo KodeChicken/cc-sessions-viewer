@@ -395,6 +395,97 @@ fn is_image_source_meta(v: &Value, blocks: &[Block]) -> bool {
     })
 }
 
+/// Claude Code 把若干「系统注入」内容也写成 `type:"user"` 记录，但它们并不是用户
+/// 手敲的 prose —— 前端不该渲染成「Me」气泡。这里按 JSONL 上的 flag（新版 CC）+
+/// 内容标签（老版 CC 没有 flag）把它们归一成一个 meta_kind 字符串：
+///   - `compact`         —— 上下文压缩摘要（`isCompactSummary`）
+///   - `meta`            —— skill 注入 / 其它 `isMeta` 元信息
+///   - `task-notification` —— 后台任务通知（`origin.kind` / `<task-notification>`）
+///   - `system`          —— 其它系统来源（`promptSource == "system"`）
+///   - `command-output`  —— slash / bash 命令的输出（`<local-command-stdout>` 等）
+///   - `teammate-message` —— 多 agent 协作时对方会话发来的消息（`<teammate-message>`）
+///
+/// 返回 `None` 表示这是真正的用户消息。`blocks` 是已抽取好的块，用来嗅内容前缀。
+/// 注意：调用点已先行丢弃 `[Image: source:]` 这类 isMeta 图片引用，不会进到这里。
+fn classify_meta_kind(v: &Value, blocks: &[Block]) -> Option<String> {
+    if v.get("isCompactSummary").and_then(Value::as_bool).unwrap_or(false) {
+        return Some("compact".to_string());
+    }
+    if v.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
+        return Some("meta".to_string());
+    }
+    let origin_kind = v.get("origin").and_then(|o| o.get("kind")).and_then(Value::as_str);
+    if origin_kind == Some("task-notification") {
+        return Some("task-notification".to_string());
+    }
+    let prompt_source = v.get("promptSource").and_then(Value::as_str);
+    // 真正的用户输入是 promptSource == "typed"（origin.kind == "human"）。其它 system
+    // 来源（hook / 自动注入）都算系统消息。
+    if prompt_source == Some("system") {
+        return Some("system".to_string());
+    }
+    // 处理过程中到达的通知会被「排队」成 attachment（queued_command），
+    // 用 attachment.commandMode 区分：用户手敲的是 "prompt"，系统通知是
+    // "task-notification"。后者不是用户 prose。
+    let cmd_mode = v
+        .get("attachment")
+        .and_then(|a| a.get("commandMode"))
+        .and_then(Value::as_str);
+    if cmd_mode == Some("task-notification") {
+        return Some("task-notification".to_string());
+    }
+    // 内容标签兜底：老版本 CC 不写 promptSource/origin/commandMode，只能看正文前缀。
+    // `<command-name>` / `<bash-input>` 是用户主动发起的命令调用，保持「Me」不动。
+    let head = blocks
+        .iter()
+        .find(|b| b.kind == "text")
+        .and_then(|b| b.text.as_deref())
+        .unwrap_or("")
+        .trim_start();
+    if head.starts_with("<local-command-stdout>")
+        || head.starts_with("<bash-stdout>")
+        || head.starts_with("<bash-stderr>")
+    {
+        return Some("command-output".to_string());
+    }
+    if head.starts_with("<task-notification>") {
+        return Some("task-notification".to_string());
+    }
+    // 多 agent 协作：对方会话发来的消息被注入成 user 记录（无 flag，只能看正文）。
+    if head.starts_with("Another Claude session sent a message:") || head.contains("<teammate-message") {
+        return Some("teammate-message".to_string());
+    }
+    None
+}
+
+/// 这条 `type:"user"` 记录是否是系统注入（而非用户手敲）。和 [`classify_meta_kind`]
+/// 同源，但只看原始 `v`（不依赖已抽取的 blocks），给 `scan()` 选标题时过滤用。
+/// 返回 true 的记录不该被当成「首条用户消息」拿去当会话标题。
+fn is_injected_user(v: &Value) -> bool {
+    if v.get("isCompactSummary").and_then(Value::as_bool).unwrap_or(false) {
+        return true;
+    }
+    if v.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
+        return true;
+    }
+    if v.get("origin").and_then(|o| o.get("kind")).and_then(Value::as_str)
+        == Some("task-notification")
+    {
+        return true;
+    }
+    if v.get("promptSource").and_then(Value::as_str) == Some("system") {
+        return true;
+    }
+    let head = user_text(v).unwrap_or_default();
+    let head = head.trim_start();
+    head.starts_with("<local-command-stdout>")
+        || head.starts_with("<bash-stdout>")
+        || head.starts_with("<bash-stderr>")
+        || head.starts_with("<task-notification>")
+        || head.starts_with("Another Claude session sent a message:")
+        || head.contains("<teammate-message")
+}
+
 fn stringify_tool_result(c: Option<&Value>) -> String {
     match c {
         Some(Value::String(s)) => s.clone(),
@@ -590,7 +681,10 @@ fn scan(fp: &Path) -> SessionMeta {
             if t == "attachment" && queued_command_blocks(&v).is_some() {
                 message_count += 1;
             }
-            if first_user_title.is_empty() && t == "user" {
+            // 标题回落到首条「真正的」用户消息 —— 跳过系统注入记录（skill 注入 /
+            // 压缩摘要 / 任务通知 / 命令输出），否则 /dm-watch 这类会话的侧栏标题会
+            // 变成 "Base directory for this skill: …" 之类的注入正文。
+            if first_user_title.is_empty() && t == "user" && !is_injected_user(&v) {
                 if let Some(txt) = user_text(&v) {
                     let clean = clean_title(&txt);
                     if !clean.is_empty() {
@@ -643,6 +737,9 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
         // user/assistant，会整条丢掉它 —— 这里单独补成一条 user 气泡。
         if t == "attachment" {
             if let Some(blocks) = queued_command_blocks(&v) {
+                // 排队进来的可能是用户手敲消息（→ Me），也可能是处理中到达的
+                // 任务通知（commandMode == "task-notification" → 系统块）。
+                let meta_kind = classify_meta_kind(&v, &blocks);
                 msgs.push(Msg {
                     uuid: v.get("uuid").and_then(|x| x.as_str()).map(|s| s.to_string()),
                     role: "user".to_string(),
@@ -656,6 +753,7 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
                         .and_then(|x| x.as_bool())
                         .unwrap_or(false),
                     blocks,
+                    meta_kind,
                 });
             }
             continue;
@@ -782,6 +880,13 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
         if t == "user" && is_image_source_meta(&v, &blocks) {
             continue;
         }
+        // 系统注入的 user 记录（压缩摘要 / skill / 任务通知 / 命令输出）归类，
+        // 让前端把它们渲染成低调的系统块而非「Me」气泡。assistant 永远是 None。
+        let meta_kind = if t == "user" {
+            classify_meta_kind(&v, &blocks)
+        } else {
+            None
+        };
         msgs.push(Msg {
             uuid,
             role: t.to_string(),
@@ -789,6 +894,7 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
             model,
             sidechain,
             blocks,
+            meta_kind,
         });
     }
     Ok(msgs)
@@ -1085,6 +1191,134 @@ mod tests {
         );
     }
 
+    // ---- classify_meta_kind --------------------------------------------
+
+    fn text_blocks(s: &str) -> Vec<Block> {
+        vec![text_block("text", s)]
+    }
+
+    #[test]
+    fn meta_kind_flags_compaction_summary() {
+        let v = json!({
+            "type": "user",
+            "isCompactSummary": true,
+            "isVisibleInTranscriptOnly": true,
+            "message": { "content": "This session is being continued..." },
+        });
+        let blocks = text_blocks("This session is being continued...");
+        assert_eq!(classify_meta_kind(&v, &blocks).as_deref(), Some("compact"));
+    }
+
+    #[test]
+    fn meta_kind_flags_skill_injection_ismeta() {
+        let v = json!({ "type": "user", "isMeta": true });
+        let blocks = text_blocks("Base directory for this skill: /x/y");
+        assert_eq!(classify_meta_kind(&v, &blocks).as_deref(), Some("meta"));
+    }
+
+    #[test]
+    fn meta_kind_flags_task_notification_by_origin() {
+        let v = json!({
+            "type": "user",
+            "promptSource": "system",
+            "origin": { "kind": "task-notification" },
+        });
+        let blocks = text_blocks("<task-notification>\n<task-id>x</task-id>\n</task-notification>");
+        assert_eq!(
+            classify_meta_kind(&v, &blocks).as_deref(),
+            Some("task-notification"),
+        );
+    }
+
+    #[test]
+    fn meta_kind_flags_command_output_by_content() {
+        // 老版本 CC：没有 promptSource/origin，只有内容标签兜底。
+        let v = json!({ "type": "user" });
+        let blocks = text_blocks("<local-command-stdout>Terminal setup...</local-command-stdout>");
+        assert_eq!(
+            classify_meta_kind(&v, &blocks).as_deref(),
+            Some("command-output"),
+        );
+        let blocks = text_blocks("<bash-stdout>remote: ...</bash-stdout>");
+        assert_eq!(
+            classify_meta_kind(&v, &blocks).as_deref(),
+            Some("command-output"),
+        );
+    }
+
+    #[test]
+    fn meta_kind_flags_teammate_message_by_content() {
+        // 多 agent 协作：对方会话发来的消息无 flag，只能看正文前缀 / 标签。
+        let v = json!({ "type": "user" });
+        let blocks = text_blocks(
+            "Another Claude session sent a message:\n<teammate-message teammate_id=\"x\" color=\"blue\">\n{\"type\":\"idle_notification\"}\n</teammate-message>",
+        );
+        assert_eq!(
+            classify_meta_kind(&v, &blocks).as_deref(),
+            Some("teammate-message"),
+        );
+    }
+
+    #[test]
+    fn meta_kind_flags_queued_task_notification_attachment() {
+        // 处理过程中到达的通知被「排队」成 attachment（commandMode==task-notification），
+        // 不是常规 type:user 记录 —— 也不能渲染成 Me。
+        let v = json!({
+            "type": "attachment",
+            "attachment": {
+                "type": "queued_command",
+                "commandMode": "task-notification",
+                "prompt": "<task-notification>\n<task-id>bz2lxppsz</task-id>\n<status>completed</status>\n</task-notification>",
+            },
+        });
+        let blocks = text_blocks("<task-notification>\n<task-id>bz2lxppsz</task-id>\n</task-notification>");
+        assert_eq!(
+            classify_meta_kind(&v, &blocks).as_deref(),
+            Some("task-notification"),
+        );
+    }
+
+    #[test]
+    fn meta_kind_keeps_queued_user_prompt_as_me() {
+        // 用户在 Claude 处理时手敲的排队消息 commandMode == "prompt" → 仍是 Me。
+        let v = json!({
+            "type": "attachment",
+            "attachment": {
+                "type": "queued_command",
+                "commandMode": "prompt",
+                "prompt": "这个是app项目",
+            },
+        });
+        let blocks = text_blocks("这个是app项目");
+        assert_eq!(classify_meta_kind(&v, &blocks), None);
+    }
+
+    #[test]
+    fn meta_kind_leaves_real_user_messages_alone() {
+        // 真正手敲的消息 + 用户主动发起的 slash / bash 命令 → None（仍是「Me」）。
+        let typed = json!({
+            "type": "user",
+            "promptSource": "typed",
+            "origin": { "kind": "human" },
+        });
+        assert_eq!(classify_meta_kind(&typed, &text_blocks("pull了；继续")), None);
+
+        let no_markers = json!({ "type": "user" });
+        assert_eq!(classify_meta_kind(&no_markers, &text_blocks("hello there")), None);
+
+        // slash 命令调用是用户主动行为，保持 Me。
+        let slash = json!({ "type": "user" });
+        let blocks = text_blocks("<command-message>dm-watch</command-message>\n<command-name>/dm-watch</command-name>");
+        assert_eq!(classify_meta_kind(&slash, &blocks), None);
+
+        // 用户 `!git push` 的输入侧（输出侧才算 command-output）。
+        let bash_in = json!({ "type": "user" });
+        assert_eq!(
+            classify_meta_kind(&bash_in, &text_blocks("<bash-input>git push</bash-input>")),
+            None,
+        );
+    }
+
     #[test]
     fn ignores_non_queued_attachments() {
         // hook_success / task_reminder / diagnostics 等 attachment 不是用户消息
@@ -1317,6 +1551,22 @@ mod tests {
         assert_eq!(c2.usage.cache_read_input_tokens, 76480);
         assert_eq!(c2.usage.input_tokens, 3319);
         assert_eq!(c2.usage.total, 3319 + 150 + 1664 + 76480);
+    }
+
+    #[test]
+    fn scan_title_skips_injected_user_records() {
+        // /dm-watch 会话开头是 isMeta 的 skill 注入；标题应回落到首条真实用户消息，
+        // 而不是 "Base directory for this skill: …"。
+        let dir = std::env::temp_dir().join("csv-claude-title-tests");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("injected-first.jsonl");
+        let lines = [
+            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /Users/x/.claude/skills/dm-watch"}]},"timestamp":"2025-01-01T00:00:00.000Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"真正的第一句话"},"timestamp":"2025-01-01T00:00:01.000Z"}"#,
+        ];
+        std::fs::write(&p, lines.join("\n")).unwrap();
+        let meta = scan(&p);
+        assert_eq!(meta.title, "真正的第一句话");
     }
 
     #[test]

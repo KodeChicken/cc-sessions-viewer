@@ -69,6 +69,10 @@ export interface Msg {
   model?: string
   sidechain: boolean
   blocks: Block[]
+  /** 系统注入的 `type:"user"` 记录归类（compact / meta / task-notification /
+   *  system / command-output）。后端 claude 源填充；其它 agent 不填 → undefined。
+   *  非空时前端把这条渲染成低调的「系统」块，而非「Me」气泡。 */
+  metaKind?: string
 }
 
 /** 全局搜索的命中条目（与 Rust 端 SearchHit 同形）。 */

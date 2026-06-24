@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  cleanMetaText,
   formatSize,
   formatTime,
   formatTokens,
   highlightSegments,
   isCaveatOnlyMsg,
+  metaKindIsPre,
+  parseMetaFields,
   parseSystemEvent,
+  parseTeammateMessage,
   renderText,
   shortName,
 } from '../src/format'
@@ -37,6 +41,30 @@ describe('renderText', () => {
 
   it('converts newlines inside a text run to <br>', () => {
     expect(renderText('line1\nline2')).toContain('line1<br>line2')
+  })
+
+  it('linkifies a bare URL but keeps a backtick-wrapped URL literal', () => {
+    expect(renderText('see https://x.com here')).toContain(
+      '<a href="https://x.com" target="_blank" rel="noopener">https://x.com</a>',
+    )
+    // A URL inside backticks is a literal code span — not linkified, not split.
+    expect(renderText('see `https://x.com/` here')).toContain('<code>https://x.com/</code>')
+    expect(renderText('see `https://x.com/` here')).not.toContain('<code><a')
+  })
+
+  // Regression: a backtick-wrapped URL used to let the URL regex swallow the
+  // closing backtick, splitting the <a> tag with a <code> and leaving an unclosed
+  // <code>/<strong> that leaked into every following sibling (shrinking all later
+  // messages via `code { font: 0.92em }`). Output must be well-nested.
+  it('produces well-nested tags for a bullet item with a backtick-wrapped URL', () => {
+    const html = renderText('- Self-test address: `https://localhost:1021/`')
+    // balanced code/strong/li tags
+    const open = (re: RegExp) => (html.match(re) ?? []).length
+    expect(open(/<code(?![a-z])/g)).toBe(open(/<\/code>/g))
+    expect(open(/<li(?![a-z])/g)).toBe(open(/<\/li>/g))
+    // the <code> closes before the </li> — no leaked formatting tag
+    expect(html).toContain('<code>https://localhost:1021/</code></li>')
+    expect(html).not.toContain('</code>"')
   })
 
   it('renders a fenced code block with a language line', () => {
@@ -261,6 +289,123 @@ describe('parseSystemEvent', () => {
 
   it('returns null when there is no reminder at all', () => {
     expect(parseSystemEvent(userMsg(block('text', 'plain message')))).toBeNull()
+  })
+
+  it('parses a standalone interrupt marker', () => {
+    expect(parseSystemEvent(userMsg(block('text', '[Request interrupted by user]')))).toEqual({
+      kind: 'interrupt',
+    })
+  })
+
+  it('parses the "for tool use" interrupt variant', () => {
+    expect(
+      parseSystemEvent(userMsg(block('text', '[Request interrupted by user for tool use]'))),
+    ).toEqual({ kind: 'interrupt' })
+  })
+
+  it('does not treat prose mentioning interruption as an event', () => {
+    expect(
+      parseSystemEvent(userMsg(block('text', 'the [Request interrupted by user] earlier was odd'))),
+    ).toBeNull()
+  })
+})
+
+describe('metaKindIsPre', () => {
+  it('treats command output / notifications / system as <pre>', () => {
+    expect(metaKindIsPre('command-output')).toBe(true)
+    expect(metaKindIsPre('task-notification')).toBe(true)
+    expect(metaKindIsPre('system')).toBe(true)
+  })
+
+  it('treats compact / meta as markdown (not <pre>)', () => {
+    expect(metaKindIsPre('compact')).toBe(false)
+    expect(metaKindIsPre('meta')).toBe(false)
+  })
+})
+
+describe('cleanMetaText', () => {
+  it('strips the outer local-command-stdout wrapper', () => {
+    expect(cleanMetaText('<local-command-stdout>hello\nworld</local-command-stdout>')).toBe(
+      'hello\nworld',
+    )
+  })
+
+  it('strips bash-stdout/stderr wrappers', () => {
+    expect(cleanMetaText('<bash-stdout>done</bash-stdout>')).toBe('done')
+    expect(cleanMetaText('<bash-stderr>oops</bash-stderr>')).toBe('oops')
+  })
+
+  it('strips ANSI escape sequences', () => {
+    const esc = String.fromCharCode(27)
+    const raw = `<local-command-stdout>${esc}[2mNote:${esc}[22m keep this</local-command-stdout>`
+    expect(cleanMetaText(raw)).toBe('Note: keep this')
+  })
+
+  it('keeps inner pseudo-XML tags for task notifications (only outer shell removed)', () => {
+    const raw =
+      '<task-notification>\n<task-id>ba1tuv7k4</task-id>\n<event>ready</event>\n</task-notification>'
+    expect(cleanMetaText(raw)).toBe('<task-id>ba1tuv7k4</task-id>\n<event>ready</event>')
+  })
+
+  it('leaves unwrapped text untouched (minus surrounding whitespace)', () => {
+    expect(cleanMetaText('  plain text  ')).toBe('plain text')
+  })
+})
+
+describe('parseMetaFields', () => {
+  it('parses a task-notification into ordered key/value fields', () => {
+    const raw =
+      '<task-notification>\n<task-id>bpqfsy6zo</task-id>\n<summary>Monitor event: "DM-Watch"</summary>\n<event>DM-NEW name=王爱鑫 count=1</event>\n</task-notification>'
+    expect(parseMetaFields(raw)).toEqual([
+      { key: 'task-id', value: 'bpqfsy6zo' },
+      { key: 'summary', value: 'Monitor event: "DM-Watch"' },
+      { key: 'event', value: 'DM-NEW name=王爱鑫 count=1' },
+    ])
+  })
+
+  it('parses the background-command notification shape', () => {
+    const raw =
+      '<task-notification>\n<task-id>bz2lxppsz</task-id>\n<status>completed</status>\n<summary>Background command "x" completed (exit code 0)</summary>\n</task-notification>'
+    expect(parseMetaFields(raw)).toEqual([
+      { key: 'task-id', value: 'bz2lxppsz' },
+      { key: 'status', value: 'completed' },
+      { key: 'summary', value: 'Background command "x" completed (exit code 0)' },
+    ])
+  })
+
+  it('returns null for plain command output (no field tags)', () => {
+    expect(parseMetaFields('<local-command-stdout>Terminal setup...</local-command-stdout>')).toBeNull()
+  })
+
+  it('returns null when prose is mixed in between tags', () => {
+    expect(
+      parseMetaFields('<task-notification><task-id>x</task-id> some stray prose</task-notification>'),
+    ).toBeNull()
+  })
+})
+
+describe('parseTeammateMessage', () => {
+  it('extracts each teammate block as id → payload, dropping boilerplate', () => {
+    const raw = [
+      'Another Claude session sent a message:',
+      '<teammate-message teammate_id="flow_detail_reader" color="blue">',
+      '{"type":"idle_notification","from":"flow_detail_reader"}',
+      '</teammate-message>',
+      '',
+      '<teammate-message teammate_id="records_reader" color="yellow">',
+      'hello there',
+      '</teammate-message>',
+      '',
+      'This came from another Claude session — not typed by your user...',
+    ].join('\n')
+    expect(parseTeammateMessage(raw)).toEqual([
+      { key: 'flow_detail_reader', value: '{"type":"idle_notification","from":"flow_detail_reader"}' },
+      { key: 'records_reader', value: 'hello there' },
+    ])
+  })
+
+  it('returns null when there is no teammate-message block', () => {
+    expect(parseTeammateMessage('just a normal message')).toBeNull()
   })
 })
 

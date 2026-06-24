@@ -9,7 +9,7 @@ import type { Msg, Block, SessionMeta, Agent, DiffHunk } from './types'
 import { writeFile } from './api'
 import { save as saveDialog, open as openDialog } from '@tauri-apps/plugin-dialog'
 import { t } from './i18n'
-import { formatTime, isCaveatOnlyMsg, parseSystemEvent, renderText } from './format'
+import { formatTime, isCaveatOnlyMsg, parseSystemEvent, renderText, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage } from './format'
 import {
   highlightJsonInPlace,
   looksLikeJson,
@@ -72,7 +72,27 @@ function systemEventText(m: Msg): string | null {
   const ev = parseSystemEvent(m)
   if (!ev) return null
   if (ev.kind === 'rename') return t('chat.systemEvent.rename', { name: ev.name })
+  if (ev.kind === 'interrupt') return t('chat.systemEvent.interrupted')
   return null
+}
+
+// 系统注入的 user 记录（metaKind）的本地化标题 —— 与 ChatView 一致，导出时也不
+// 把它们标成「Me」。
+const META_KIND_KEY: Record<string, string> = {
+  compact: 'chat.metaKind.compact',
+  meta: 'chat.metaKind.meta',
+  'task-notification': 'chat.metaKind.taskNotification',
+  system: 'chat.metaKind.system',
+  'command-output': 'chat.metaKind.commandOutput',
+  'teammate-message': 'chat.metaKind.teammateMessage',
+}
+// metaKind 正文 → key/value 字段：通用 <tag>value</tag>（任务通知）优先，
+// 再试 teammate-message（多 agent 消息）；纯文本返回 null。与 ChatView.metaFieldsOf 一致。
+function metaFields(text: string) {
+  return parseMetaFields(text) ?? parseTeammateMessage(text)
+}
+function metaKindLabelText(kind: string): string {
+  return t(META_KIND_KEY[kind] ?? 'chat.metaKind.system')
 }
 
 // 与 ChatView.stats 同步：u = 真正的用户消息条数（排除 tool-only / caveat-only /
@@ -83,6 +103,7 @@ function computeStats(messages: Msg[]): { u: number; a: number } {
   for (const m of messages) {
     if (
       m.role === 'user' &&
+      !m.metaKind &&
       !isToolOnly(m) &&
       !isCaveatOnlyMsg(m) &&
       !systemEventText(m)
@@ -206,6 +227,24 @@ function msgToMd(
   if (sysText) {
     const ts = m.timestamp ? ` · ${formatTime(m.timestamp)}` : ''
     return `_${sysText}${ts}_`
+  }
+  // System-injected user records (compaction summary, skill, command output, …):
+  // labeled by kind, never "Me". Notification-style pseudo-XML → key/value list;
+  // other pre kinds → code fence; markdown kinds → raw markdown.
+  if (m.metaKind) {
+    const ts = m.timestamp ? ` · ${formatTime(m.timestamp)}` : ''
+    const head = `## ${roleLabel('assistant', agent)} · ${metaKindLabelText(m.metaKind)}${ts}`
+    const pre = metaKindIsPre(m.metaKind)
+    const body = m.blocks
+      .filter((b) => b.kind === 'text')
+      .map((b) => {
+        const fields = metaFields(b.text ?? '')
+        if (fields) return fields.map((f) => `- **${f.key}**: ${f.value}`).join('\n')
+        return pre ? '```\n' + cleanMetaText(b.text ?? '') + '\n```' : (b.text ?? '').trim()
+      })
+      .filter(Boolean)
+      .join('\n\n')
+    return body ? `${head}\n\n${body}` : head
   }
   const ts = m.timestamp ? ` · ${formatTime(m.timestamp)}` : ''
   const model = m.model ? ` · ${m.model}` : ''
@@ -375,6 +414,49 @@ h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; flex
   font-size: 12px;
   text-align: center;
   padding: 2px 12px;
+}
+/* System-injected records (compaction summary, skill, command output,
+   task-notification, teammate-message): agent prefix + a collapsed labeled
+   card, clearly not a "Me" bubble. */
+.msg.meta { justify-content: flex-start; }
+.msg.meta .bubble.meta-msg { background: transparent; padding: 0; border: 0; }
+/* Collapsed tool-call-style card; summary is the uppercase kind label. Reuses
+   the shared details chrome (border / chevron / surface-2 bg). */
+.meta-details { margin: 8px 0 0; }
+.meta-details > summary {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-mute);
+}
+.meta-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.meta-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 14px;
+  margin: 0;
+  align-items: baseline;
+}
+.meta-field-key {
+  margin: 0;
+  color: var(--text-mute);
+  font-size: 11px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  white-space: nowrap;
+}
+.meta-field-val {
+  margin: 0;
+  word-break: break-word;
+  white-space: pre-wrap;
+  line-height: 1.55;
 }
 .role-tag {
   font-size: 11px; color: var(--text-mute);
@@ -1104,6 +1186,42 @@ function msgToHtml(
   if (sysText) {
     const ts = m.timestamp ? ` · ${escapeHtml(formatTime(m.timestamp))}` : ''
     return `<div class="msg system" data-msg-key="${escapeHtml(key)}"><div class="system-event">${escapeHtml(sysText)}${ts}</div></div>`
+  }
+  // System-injected user records: labeled tag chip + formatted body, not a "Me"
+  // bubble. Notification-style pseudo-XML is rendered as a key/value list.
+  if (m.metaKind) {
+    const ts = m.timestamp ? escapeHtml(formatTime(m.timestamp)) : ''
+    const label = escapeHtml(metaKindLabelText(m.metaKind))
+    const pre = metaKindIsPre(m.metaKind)
+    const body = m.blocks
+      .filter((b) => b.kind === 'text')
+      .map((b) => {
+        const fields = metaFields(b.text ?? '')
+        if (fields) {
+          const rows = fields
+            .map(
+              (f) =>
+                `<dt class="meta-field-key">${escapeHtml(f.key)}</dt><dd class="meta-field-val">${escapeHtml(f.value)}</dd>`,
+            )
+            .join('')
+          return `<dl class="meta-fields">${rows}</dl>`
+        }
+        return pre
+          ? `<pre class="meta-pre">${escapeHtml(cleanMetaText(b.text ?? ''))}</pre>`
+          : renderText(b.text ?? '')
+      })
+      .join('\n')
+    if (!body) return ''
+    const name = escapeHtml(roleLabel('assistant', agent))
+    // Agent prefix on top, then a collapsed tool-call-style card whose summary
+    // is the uppercase kind label — mirrors ChatView's meta rendering.
+    return `<div class="msg meta" data-msg-key="${escapeHtml(key)}">
+  <div class="avatar">${avatarSvg('assistant', agent)}</div>
+  <div class="bubble meta-msg">
+    <div class="role-tag"><span class="name">${name}</span>${ts ? ` <span>${ts}</span>` : ''}</div>
+    <details class="meta-details"><summary>${label}</summary>${body}</details>
+  </div>
+</div>`
   }
   const displayRole = isToolOnly(m) ? 'tool' : m.role
   const tag = [
