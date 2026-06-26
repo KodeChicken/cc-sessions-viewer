@@ -2337,6 +2337,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
         @view-click="onTuiViewClick"
         @tab-closed="onTuiTabClosed"
         @tab-rename="openRenameFromTuiTab"
+        @tabs-reordered="saveTabState"
         @new-session="newSession"
         @new-shell="newShellSession"
         @hydrate-saved="hydrateSavedTab"
