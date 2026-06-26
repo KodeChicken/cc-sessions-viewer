@@ -1059,8 +1059,11 @@ pub fn run() {
             }
 
             #[cfg(target_os = "windows")]
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_decorations(false);
+            {
+                crate::agent_command::warm_merged_system_path_cache();
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_decorations(false);
+                }
             }
 
             #[cfg(target_os = "macos")]

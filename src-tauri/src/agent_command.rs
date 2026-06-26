@@ -80,6 +80,10 @@ fn powershell_refresh_path() -> &'static str {
      $env:Path = (@($processPath, $userPath, $machinePath) -ne '') -join ';'"
 }
 
+#[cfg(target_os = "windows")]
+static PATH_CACHE_REFRESHING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// 将 PowerShell 命令编码为 `-EncodedCommand` 所需的 Base64 (UTF-16LE)。
 /// 打包后的 .app 经 `cmd /c start "" powershell.exe -Command "..."` 启动时，
 /// CMD 的引号层会吞掉 `$`、`@`、`&` 等特殊字符，导致 PATH 刷新失败。
@@ -92,11 +96,52 @@ pub fn powershell_encoded_command(ps_cmd: &str) -> String {
     B64.encode(utf16le)
 }
 
-/// 从 Windows 注册表读取 User + Machine PATH，与当前进程 PATH 合并。
+/// 返回 User + Machine PATH 与当前进程 PATH 的合并结果。
 /// 打包后的 .app 可能从安装器 / 升级器继承了不完整的 PATH（缺 nvm / volta / fnm 等），
-/// 这里直接读注册表确保子进程拿到最新 PATH。
+/// 这里用后台缓存避免每次启动终端都同步等待 `reg query`。
 #[cfg(target_os = "windows")]
 pub fn merged_system_path() -> String {
+    if let Some(cached) = cached_merged_system_path() {
+        return cached;
+    }
+    warm_merged_system_path_cache();
+    std::env::var("PATH").unwrap_or_default()
+}
+
+#[cfg(target_os = "windows")]
+pub fn warm_merged_system_path_cache() {
+    if PATH_CACHE_REFRESHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    if std::thread::Builder::new()
+        .name("windows-path-cache".to_string())
+        .spawn(|| {
+            let path = build_merged_system_path();
+            if let Ok(mut cached) = path_cache().write() {
+                *cached = Some(path);
+            }
+            PATH_CACHE_REFRESHING.store(false, std::sync::atomic::Ordering::SeqCst);
+        })
+        .is_err()
+    {
+        PATH_CACHE_REFRESHING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn cached_merged_system_path() -> Option<String> {
+    path_cache().read().ok().and_then(|cached| cached.clone())
+}
+
+#[cfg(target_os = "windows")]
+fn path_cache() -> &'static std::sync::RwLock<Option<String>> {
+    static PATH_CACHE: std::sync::OnceLock<std::sync::RwLock<Option<String>>> =
+        std::sync::OnceLock::new();
+    PATH_CACHE.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+#[cfg(target_os = "windows")]
+fn build_merged_system_path() -> String {
     let current = std::env::var("PATH").unwrap_or_default();
     let user = read_registry_path("HKCU\\Environment");
     let machine = read_registry_path("HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment");
