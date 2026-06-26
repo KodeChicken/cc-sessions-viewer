@@ -10,7 +10,16 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { Agent } from '../types'
 import type { TerminalTab, SavedTab } from '../terminals'
-import { tabs, activeUiId, setActive, closeTab, markTabViewed, savedTabs, removeSavedTab } from '../terminals'
+import {
+  tabs,
+  activeUiId,
+  setActive,
+  closeTab,
+  markTabViewed,
+  savedTabs,
+  removeSavedTab,
+  moveTab,
+} from '../terminals'
 import { statusKind } from '../tabStatus'
 import { IconClose, IconChat, IconList, IconPlus, IconTerminal, agentIcons } from './icons'
 import { t } from '../i18n'
@@ -35,6 +44,7 @@ const emit = defineEmits<{
   tabClosed: [sessionPath: string]
   /** TUI tab 操作菜单 —— 复用会话重命名弹窗 */
   tabRename: [tab: TerminalTab]
+  tabsReordered: []
   /** 双击 tab 条空白处 —— 开一个纯 shell tab */
   newSession: []
   newShell: []
@@ -70,7 +80,19 @@ const viewActive = computed(
 )
 const tabCtx = ref<{ x: number; y: number; tab: TerminalTab } | null>(null)
 const stripCtx = ref<{ x: number; y: number } | null>(null)
+const draggingTabUiId = ref<number | null>(null)
+const dropTarget = ref<{ uiId: number; position: 'before' | 'after' } | null>(null)
+const dragPreview = ref<{
+  tab: TerminalTab
+  x: number
+  y: number
+  width: number
+  offsetX: number
+  offsetY: number
+} | null>(null)
 const nativeMenuSupported = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+let pendingDrag: { uiId: number; startX: number; startY: number } | null = null
+let suppressNextTabClick = false
 
 // ---- 新建会话下拉菜单（+ 按钮） ----
 const newMenuOpen = ref(false)
@@ -101,7 +123,13 @@ function shortTitle(title: string): string {
   return title
 }
 
-function onTabClick(uiId: number) {
+function onTabClick(uiId: number, ev?: Event) {
+  if (suppressNextTabClick) {
+    ev?.preventDefault()
+    ev?.stopPropagation()
+    suppressNextTabClick = false
+    return
+  }
   markTabViewed(uiId)
   // 点已激活的 tab 不做切换 —— 避免和"× 关闭"的视觉位置混淆。要回 view 用左侧的 meta tab。
   if (activeUiId.value === uiId) return
@@ -121,6 +149,97 @@ function onClose(uiId: number, ev: Event) {
   const sessionPath = tab?.sessionPath ?? ''
   closeTab(uiId)
   emit('tabClosed', sessionPath)
+}
+
+function renameTab(tab: TerminalTab, ev?: Event) {
+  ev?.stopPropagation()
+  closeTabCtx()
+  emit('tabRename', tab)
+}
+
+function clearDragState() {
+  pendingDrag = null
+  draggingTabUiId.value = null
+  dropTarget.value = null
+  dragPreview.value = null
+  document.body.classList.remove('is-tab-reordering')
+  window.removeEventListener('pointermove', onTabPointerMove)
+  window.removeEventListener('pointerup', onTabPointerUp)
+  window.removeEventListener('pointercancel', onTabPointerUp)
+}
+
+function onTabPointerDown(tab: TerminalTab, ev: PointerEvent) {
+  if (ev.button !== 0 || visibleTabs.value.length < 2) return
+  const target = ev.target as HTMLElement | null
+  if (target?.closest('.term-tab-close')) return
+  pendingDrag = { uiId: tab.uiId, startX: ev.clientX, startY: ev.clientY }
+  window.addEventListener('pointermove', onTabPointerMove)
+  window.addEventListener('pointerup', onTabPointerUp)
+  window.addEventListener('pointercancel', onTabPointerUp)
+}
+
+function onTabPointerMove(ev: PointerEvent) {
+  if (!pendingDrag) return
+  const dx = ev.clientX - pendingDrag.startX
+  const dy = ev.clientY - pendingDrag.startY
+  if (draggingTabUiId.value === null) {
+    if (Math.hypot(dx, dy) < 5) return
+    closeTabCtx()
+    draggingTabUiId.value = pendingDrag.uiId
+    dropTarget.value = null
+    suppressNextTabClick = true
+    const sourceEl = document.querySelector<HTMLElement>(`.term-tab[data-tab-ui-id="${pendingDrag.uiId}"]`)
+    const rect = sourceEl?.getBoundingClientRect()
+    const tab = tabs.value.find((t) => t.uiId === pendingDrag?.uiId)
+    if (rect && tab) {
+      dragPreview.value = {
+        tab,
+        x: rect.left,
+        y: rect.top,
+        width: rect.width,
+        offsetX: pendingDrag.startX - rect.left,
+        offsetY: pendingDrag.startY - rect.top,
+      }
+    }
+    document.body.classList.add('is-tab-reordering')
+  }
+  ev.preventDefault()
+  if (dragPreview.value) {
+    dragPreview.value.x = ev.clientX - dragPreview.value.offsetX
+    dragPreview.value.y = ev.clientY - dragPreview.value.offsetY
+  }
+  updateDropTargetFromPoint(ev.clientX, ev.clientY)
+}
+
+function updateDropTargetFromPoint(x: number, y: number) {
+  const sourceUiId = draggingTabUiId.value
+  if (sourceUiId === null) return
+  const el = document.elementFromPoint(x, y)?.closest<HTMLElement>('.term-tab[data-tab-ui-id]')
+  const targetUiId = Number(el?.dataset.tabUiId)
+  if (!el || !Number.isFinite(targetUiId) || targetUiId === sourceUiId) {
+    dropTarget.value = null
+    return
+  }
+  const rect = el.getBoundingClientRect()
+  dropTarget.value = {
+    uiId: targetUiId,
+    position: x < rect.left + rect.width / 2 ? 'before' : 'after',
+  }
+}
+
+function onTabPointerUp(ev: PointerEvent) {
+  const sourceUiId = draggingTabUiId.value
+  const target = dropTarget.value
+  if (sourceUiId !== null && target && moveTab(sourceUiId, target.uiId, target.position)) {
+    emit('tabsReordered')
+  }
+  clearDragState()
+  if (sourceUiId !== null) {
+    ev.preventDefault()
+    window.setTimeout(() => {
+      suppressNextTabClick = false
+    }, 0)
+  }
 }
 
 function onStripDoubleClick(ev: MouseEvent) {
@@ -319,6 +438,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  clearDragState()
   document.removeEventListener('mousedown', onDocMouseDown)
   document.removeEventListener('keydown', onDocKeydown)
   document.removeEventListener('wheel', closeTabCtx)
@@ -374,54 +494,60 @@ onUnmounted(() => {
       />
 
       <div
-      v-for="tab in visibleTabs"
-      :key="tab.uiId"
-      class="term-tab"
-      :class="{
-        active: activeUiId === tab.uiId,
-        'state-working': !tab.isShell && statusKind(tab) === 'working',
-        'state-done': !tab.isShell && statusKind(tab) === 'done',
-        'state-blocked': !tab.isShell && statusKind(tab) === 'blocked',
-        'state-error': !tab.isShell && statusKind(tab) === 'error',
-        'state-exited': !tab.isShell && statusKind(tab) === 'exited',
-        'state-unknown': !tab.isShell && statusKind(tab) === 'unknown',
-      }"
-      v-tooltip:bottom="tab.title"
-      role="button"
-      tabindex="0"
-      @click="onTabClick(tab.uiId)"
-      @contextmenu="onTabContextMenu(tab, $event)"
-      @keydown.enter.prevent="onTabClick(tab.uiId)"
-      @keydown.space.prevent="onTabClick(tab.uiId)"
-    >
-      <IconTerminal v-if="tab.isShell" class="term-tab-agent" />
-      <component v-else :is="agentIcons[tab.agent]" class="term-tab-agent" :class="tab.agent" />
-      <span class="term-tab-title">{{ shortTitle(tab.title) }}</span>
-      <span
-        v-if="!tab.isShell && statusKind(tab) === 'working'"
-        class="term-tab-status term-tab-status-working"
-        aria-hidden="true"
-      >
-        <i />
-        <i />
-        <i />
-      </span>
-      <span
-        v-else-if="!tab.isShell && statusKind(tab) !== 'none'"
-        class="term-tab-status"
-        :class="'term-tab-status-' + statusKind(tab)"
-        aria-hidden="true"
-      />
-      <span
-        class="term-tab-close"
-        v-tooltip:bottom="t('chat.tui.tabClose')"
+        v-for="tab in visibleTabs"
+        :key="tab.uiId"
+        class="term-tab"
+        :class="{
+          active: activeUiId === tab.uiId,
+          dragging: draggingTabUiId === tab.uiId,
+          'drop-before': dropTarget?.uiId === tab.uiId && dropTarget.position === 'before',
+          'drop-after': dropTarget?.uiId === tab.uiId && dropTarget.position === 'after',
+          'state-working': !tab.isShell && statusKind(tab) === 'working',
+          'state-done': !tab.isShell && statusKind(tab) === 'done',
+          'state-blocked': !tab.isShell && statusKind(tab) === 'blocked',
+          'state-error': !tab.isShell && statusKind(tab) === 'error',
+          'state-exited': !tab.isShell && statusKind(tab) === 'exited',
+          'state-unknown': !tab.isShell && statusKind(tab) === 'unknown',
+        }"
+        v-tooltip:bottom="tab.title"
+        :data-tab-ui-id="tab.uiId"
         role="button"
         tabindex="0"
-        @click="onClose(tab.uiId, $event)"
-        @keydown.enter.prevent="onClose(tab.uiId, $event)"
+        @click="onTabClick(tab.uiId, $event)"
+        @dblclick.stop="renameTab(tab, $event)"
+        @contextmenu="onTabContextMenu(tab, $event)"
+        @pointerdown="onTabPointerDown(tab, $event)"
+        @keydown.enter.prevent="onTabClick(tab.uiId)"
+        @keydown.space.prevent="onTabClick(tab.uiId)"
       >
-        <IconClose />
-      </span>
+        <IconTerminal v-if="tab.isShell" class="term-tab-agent" />
+        <component v-else :is="agentIcons[tab.agent]" class="term-tab-agent" :class="tab.agent" />
+        <span class="term-tab-title">{{ shortTitle(tab.title) }}</span>
+        <span
+          v-if="!tab.isShell && statusKind(tab) === 'working'"
+          class="term-tab-status term-tab-status-working"
+          aria-hidden="true"
+        >
+          <i />
+          <i />
+          <i />
+        </span>
+        <span
+          v-else-if="!tab.isShell && statusKind(tab) !== 'none'"
+          class="term-tab-status"
+          :class="'term-tab-status-' + statusKind(tab)"
+          aria-hidden="true"
+        />
+        <span
+          class="term-tab-close"
+          v-tooltip:bottom="t('chat.tui.tabClose')"
+          role="button"
+          tabindex="0"
+          @click="onClose(tab.uiId, $event)"
+          @keydown.enter.prevent="onClose(tab.uiId, $event)"
+        >
+          <IconClose />
+        </span>
       </div>
 
       <!-- Saved (lazy-restore) tabs: pill only, no xterm/PTY until clicked -->
@@ -530,5 +656,50 @@ onUnmounted(() => {
         <span>{{ t('chat.tui.tabCloseProject') }}</span>
       </button>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="dragPreview"
+        class="term-tab term-tab-drag-preview"
+        :class="{
+          active: activeUiId === dragPreview.tab.uiId,
+          'state-working': !dragPreview.tab.isShell && statusKind(dragPreview.tab) === 'working',
+          'state-done': !dragPreview.tab.isShell && statusKind(dragPreview.tab) === 'done',
+          'state-blocked': !dragPreview.tab.isShell && statusKind(dragPreview.tab) === 'blocked',
+          'state-error': !dragPreview.tab.isShell && statusKind(dragPreview.tab) === 'error',
+          'state-exited': !dragPreview.tab.isShell && statusKind(dragPreview.tab) === 'exited',
+          'state-unknown': !dragPreview.tab.isShell && statusKind(dragPreview.tab) === 'unknown',
+        }"
+        :style="{
+          left: dragPreview.x + 'px',
+          top: dragPreview.y + 'px',
+          width: dragPreview.width + 'px',
+        }"
+      >
+        <IconTerminal v-if="dragPreview.tab.isShell" class="term-tab-agent" />
+        <component
+          v-else
+          :is="agentIcons[dragPreview.tab.agent]"
+          class="term-tab-agent"
+          :class="dragPreview.tab.agent"
+        />
+        <span class="term-tab-title">{{ shortTitle(dragPreview.tab.title) }}</span>
+        <span
+          v-if="!dragPreview.tab.isShell && statusKind(dragPreview.tab) === 'working'"
+          class="term-tab-status term-tab-status-working"
+          aria-hidden="true"
+        >
+          <i />
+          <i />
+          <i />
+        </span>
+        <span
+          v-else-if="!dragPreview.tab.isShell && statusKind(dragPreview.tab) !== 'none'"
+          class="term-tab-status"
+          :class="'term-tab-status-' + statusKind(dragPreview.tab)"
+          aria-hidden="true"
+        />
+      </div>
+    </Teleport>
   </div>
 </template>

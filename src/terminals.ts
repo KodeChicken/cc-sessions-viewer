@@ -1025,6 +1025,24 @@ export function setActive(uiId: number | null) {
   if (uiId !== null) markTabViewed(uiId)
 }
 
+export function moveTab(sourceUiId: number, targetUiId: number, position: 'before' | 'after'): boolean {
+  if (sourceUiId === targetUiId) return false
+  const sourceIndex = tabs.value.findIndex((t) => t.uiId === sourceUiId)
+  const target = tabs.value.find((t) => t.uiId === targetUiId)
+  if (sourceIndex < 0 || !target) return false
+  const source = tabs.value[sourceIndex]
+  if (source.agent !== target.agent || source.projectKey !== target.projectKey) return false
+
+  tabs.value.splice(sourceIndex, 1)
+  const targetIndex = tabs.value.findIndex((t) => t.uiId === targetUiId)
+  if (targetIndex < 0) {
+    tabs.value.splice(sourceIndex, 0, source)
+    return false
+  }
+  tabs.value.splice(position === 'before' ? targetIndex : targetIndex + 1, 0, source)
+  return true
+}
+
 /** 书签合并到真实项目时，把旧 projectKey 的 tab 迁移到新 key，避免 strip 过滤丢失。 */
 export function migrateTabsProjectKey(oldKey: string, newKey: string) {
   for (const tab of tabs.value) {
