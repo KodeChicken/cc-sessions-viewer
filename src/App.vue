@@ -16,6 +16,7 @@ import {
   launchArgs,
   terminalApp,
   applyTerminalDefault,
+  visibleAgents,
 } from './settings'
 import { focusSearchBox, navigate as chatNavigate, resetChatToolbar } from './chatToolbar'
 import { emitMenuSync, installMenuRouter, type MenuHandlers } from './menu'
@@ -100,7 +101,8 @@ import {
 } from './terminals'
 
 // ---------- 状态 ----------
-const agent = ref<Agent>('claude')
+// 默认进首个可见 agent —— 用户若在设置里关掉了 claude，启动时就不该停在隐藏的 agent 上。
+const agent = ref<Agent>(visibleAgents.value[0] ?? 'claude')
 const projects = ref<ProjectInfo[]>([])
 const activeDir = ref<string | null>(null)
 const showTrash = ref(false)
@@ -769,6 +771,12 @@ async function removeBookmark(p: ProjectInfo) {
     notify(`${e}`, true)
   }
 }
+
+// 用户在设置里关掉了当前所处的 agent → 自动切到第一个仍可见的 agent，
+// 否则界面会停在一个已隐藏、且切换栏里再也点不到的 agent 上。
+watch(visibleAgents, (list) => {
+  if (!list.includes(agent.value)) switchAgent(list[0])
+})
 
 function switchAgent(a: Agent) {
   if (agent.value === a) return

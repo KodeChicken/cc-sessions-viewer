@@ -345,6 +345,9 @@ export default {
   'settings.fontSize.small': 'Small',
   'settings.fontSize.normal': 'Normal',
   'settings.fontSize.large': 'Large',
+  'settings.section.agents': 'Agents',
+  'settings.agentsVisibilityDesc':
+    "Hide the agents you don't use to keep the sidebar and home screen tidy. At least one must stay enabled.",
   'settings.section.data': 'Data',
   'settings.section.about': 'About',
   'settings.lang.en': 'English',

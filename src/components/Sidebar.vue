@@ -5,6 +5,7 @@ import { shortName } from '../format'
 import { t } from '../i18n'
 import { IconExternalLink, IconRefresh, IconSettings, IconClose, IconCheck, IconTrash, IconSelect, IconGitBranch, agentIcons } from './icons'
 import { latestVersion, openReleasePage, updateAvailable } from '../updateCheck'
+import { visibleAgents } from '../settings'
 
 type ProjState = 'pinned' | 'sunk'
 
@@ -27,7 +28,6 @@ const emit = defineEmits<{
   (e: 'batch-delete', dirs: string[]): void
 }>()
 
-const agents: Agent[] = ['claude', 'codex', 'gemini']
 const agentLabel = (a: Agent) =>
   a === 'codex' ? 'Codex' : a === 'gemini' ? 'Gemini' : 'Claude'
 const agentName = computed(() => agentLabel(props.agent))
@@ -159,9 +159,9 @@ defineExpose({ exitSelect })
     class="sidebar"
   >
     <div class="sidebar-top">
-      <div class="agent-switch">
+      <div v-if="visibleAgents.length > 1" class="agent-switch">
         <button
-          v-for="a in agents"
+          v-for="a in visibleAgents"
           :key="a"
           :class="{ active: agent === a }"
           @click="emit('switch-agent', a)"

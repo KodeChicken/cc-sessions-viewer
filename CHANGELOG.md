@@ -6,6 +6,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.1.15]
+
+### Features
+
+- **Per-agent visibility toggles** — added Claude / Codex / Gemini on-off switches in Settings → General; disabling an agent hides it from the sidebar and home-screen switcher so users who only use a subset (e.g. CC + Codex, no Gemini) get a cleaner UI. At least one agent must stay enabled, the preference persists across launches, and the app auto-switches away if you disable the agent you're currently viewing (fix #32)
+- **Redesigned Settings modal** — reworked to a left icon-nav + right scrollable content layout (matching the Claude desktop client): wider fixed-height window, the nav lists General / Advanced / Shortcuts with icons and active highlighting, and each setting now shows its description inline beneath the title instead of behind an info-tooltip
+
 ## [v0.1.13]
 
 ### Features

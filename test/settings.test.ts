@@ -190,3 +190,51 @@ describe('stats scope / range persistence', () => {
     expect(localStorage.getItem('statsRange:v1')).toBe('days30')
   })
 })
+
+describe('agent visibility (enabledAgents / visibleAgents / setAgentEnabled)', () => {
+  async function freshAgents(stored?: string) {
+    localStorage.clear()
+    if (stored !== undefined) localStorage.setItem('enabledAgents:v1', stored)
+    vi.resetModules()
+    return import('../src/settings')
+  }
+
+  it('defaults to all agents enabled when nothing is stored', async () => {
+    const mod = await freshAgents()
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'gemini'])
+  })
+
+  it('restores a persisted subset, preserving the canonical order', async () => {
+    const mod = await freshAgents(JSON.stringify({ claude: true, codex: true, gemini: false }))
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex'])
+  })
+
+  it('falls back to all-enabled when stored data has every agent off', async () => {
+    const mod = await freshAgents(JSON.stringify({ claude: false, codex: false, gemini: false }))
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'gemini'])
+  })
+
+  it('falls back to all-enabled on corrupt JSON', async () => {
+    const mod = await freshAgents('{not json')
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'gemini'])
+  })
+
+  it('setAgentEnabled disables an agent and persists', async () => {
+    const mod = await freshAgents()
+    mod.setAgentEnabled('gemini', false)
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex'])
+    expect(JSON.parse(localStorage.getItem('enabledAgents:v1')!).gemini).toBe(false)
+  })
+
+  it('refuses to disable the last remaining agent', async () => {
+    const mod = await freshAgents(JSON.stringify({ claude: true, codex: false, gemini: false }))
+    mod.setAgentEnabled('claude', false)
+    expect(mod.visibleAgents.value).toEqual(['claude'])
+  })
+
+  it('re-enables a previously hidden agent', async () => {
+    const mod = await freshAgents(JSON.stringify({ claude: true, codex: false, gemini: false }))
+    mod.setAgentEnabled('codex', true)
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex'])
+  })
+})

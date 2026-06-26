@@ -1,5 +1,5 @@
-import { ref, watch, watchEffect } from 'vue'
-import type { StatsRange, StatsScope } from './types'
+import { ref, computed, watch, watchEffect } from 'vue'
+import type { Agent, StatsRange, StatsScope } from './types'
 
 export type Lang = 'en' | 'zh' | 'zh-TW' | 'ja'
 export type Theme = 'light' | 'dark' | 'system' | 'codex' | 'dracula'
@@ -15,6 +15,7 @@ const CODEX_SHOW_INTERNAL_KEY = 'codexShowInternalSessions:v1'
 const CODEX_SHOW_ARCHIVED_KEY = 'codexShowArchivedSessions:v1'
 const LAUNCH_ARGS_KEY = 'launchArgs:v1'
 const FONT_SCALE_KEY = 'fontScale:v1'
+const ENABLED_AGENTS_KEY = 'enabledAgents:v1'
 
 /**
  * 根据浏览器/系统语言探测默认语言。
@@ -72,6 +73,39 @@ export const launchArgs = ref<LaunchArgs>(readLaunchArgs())
 export function setLaunchArgs(agent: keyof LaunchArgs, args: string) {
   launchArgs.value = { ...launchArgs.value, [agent]: args }
   localStorage.setItem(LAUNCH_ARGS_KEY, JSON.stringify(launchArgs.value))
+}
+
+// ---------- Agent 显隐开关 ----------
+// 只用 cc + codex 的用户可以把 gemini 关掉，让侧栏/主页的 agent 切换更清爽。
+// 固定顺序 claude → codex → gemini；至少保留一个启用，否则整个 app 无内容可看。
+export const ALL_AGENTS: Agent[] = ['claude', 'codex', 'gemini']
+type EnabledAgents = Record<Agent, boolean>
+
+function readEnabledAgents(): EnabledAgents {
+  const all: EnabledAgents = { claude: true, codex: true, gemini: true }
+  try {
+    const v = localStorage.getItem(ENABLED_AGENTS_KEY)
+    if (v) {
+      const merged = { ...all, ...(JSON.parse(v) as Partial<EnabledAgents>) }
+      // 防御：localStorage 里若三个都是 false（脏数据/手改）就回退到全开。
+      if (ALL_AGENTS.some((a) => merged[a])) return merged
+    }
+  } catch { /* ignore */ }
+  return all
+}
+
+export const enabledAgents = ref<EnabledAgents>(readEnabledAgents())
+
+/** 当前启用（可见）的 agent，按固定顺序；保证非空。 */
+export const visibleAgents = computed<Agent[]>(() =>
+  ALL_AGENTS.filter((a) => enabledAgents.value[a]),
+)
+
+export function setAgentEnabled(a: Agent, enabled: boolean) {
+  // 不允许关掉最后一个启用的 agent。
+  if (!enabled && enabledAgents.value[a] && visibleAgents.value.length === 1) return
+  enabledAgents.value = { ...enabledAgents.value, [a]: enabled }
+  localStorage.setItem(ENABLED_AGENTS_KEY, JSON.stringify(enabledAgents.value))
 }
 
 export type FontScale = 'small' | 'normal' | 'large'

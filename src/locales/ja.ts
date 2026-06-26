@@ -343,6 +343,9 @@ export default {
   'settings.fontSize.small': '小',
   'settings.fontSize.normal': '標準',
   'settings.fontSize.large': '大',
+  'settings.section.agents': 'エージェント',
+  'settings.agentsVisibilityDesc':
+    '使わないエージェントを非表示にして、サイドバーとホーム画面をすっきりさせます。最低 1 つは有効にしてください。',
   'settings.section.data': 'データ',
   'settings.section.about': 'バージョン情報',
   'settings.lang.en': 'English',

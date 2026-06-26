@@ -14,6 +14,7 @@ import {
 } from '../components/icons'
 import appIcon from '../assets/app-icon.png'
 import { openGlobalSearch } from '../globalSearch'
+import { visibleAgents } from '../settings'
 
 const props = defineProps<{
   agent: Agent
@@ -26,7 +27,6 @@ const emit = defineEmits<{
   (e: 'open-repo'): void
 }>()
 
-const agents: Agent[] = ['claude', 'codex', 'gemini']
 const agentLabel = (a: Agent) =>
   a === 'codex' ? 'Codex' : a === 'gemini' ? 'Gemini' : 'Claude'
 
@@ -59,9 +59,9 @@ const modKey = isMac ? '⌘' : 'Ctrl'
       <h1 class="welcome-title">Claude Session Viewer</h1>
 
       <!-- 当前 agent 切换 -->
-      <div class="welcome-agents">
+      <div v-if="visibleAgents.length > 1" class="welcome-agents">
         <button
-          v-for="a in agents"
+          v-for="a in visibleAgents"
           :key="a"
           class="welcome-agent"
           :class="{ active: a === agent }"

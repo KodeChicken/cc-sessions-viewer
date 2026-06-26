@@ -340,6 +340,9 @@ export default {
   'settings.fontSize.small': '小',
   'settings.fontSize.normal': '正常',
   'settings.fontSize.large': '大',
+  'settings.section.agents': 'Agent',
+  'settings.agentsVisibilityDesc':
+    '把不用的 agent 隐藏掉，让侧栏和主页更清爽。至少保留一个启用。',
   'settings.section.data': '数据',
   'settings.section.about': '关于',
   'settings.lang.en': 'English',

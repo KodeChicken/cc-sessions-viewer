@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import type { Agent } from '../types'
 import { t } from '../i18n'
 import {
   codexShowArchivedSessions,
@@ -19,6 +20,10 @@ import {
   fontScale,
   useExternalTerminal,
   terminalApp,
+  enabledAgents,
+  visibleAgents,
+  setAgentEnabled,
+  ALL_AGENTS,
   type Lang,
   type Theme,
   type FontScale,
@@ -27,15 +32,13 @@ import {
 import { formatSize } from '../format'
 import {
   IconClose,
-  IconLanguages,
-  IconPalette,
-  IconTerminal,
-  IconDatabase,
-  IconInfo,
   IconRefresh,
   IconExternalLink,
   IconCheck,
   IconChevronDown,
+  IconSettings,
+  IconSliders,
+  IconKeyboard,
   agentIcons,
   terminalIcons,
 } from './icons'
@@ -53,6 +56,13 @@ import {
 } from '../updateCheck'
 
 type SettingsTab = 'general' | 'advanced' | 'shortcuts'
+
+// 左侧导航：图标 + 文案，激活项高亮（参考 Claude 客户端设置面板）。
+const navItems = [
+  { id: 'general', icon: IconSettings, key: 'settings.tab.general' },
+  { id: 'advanced', icon: IconSliders, key: 'settings.tab.advanced' },
+  { id: 'shortcuts', icon: IconKeyboard, key: 'settings.tab.shortcuts' },
+] as const
 
 const isMac = /Mac/i.test(navigator.platform)
 const mod = isMac ? '⌘' : 'Ctrl'
@@ -78,10 +88,18 @@ const shortcuts = [
   { key: 'Esc', label: 'settings.shortcut.escape' },
 ]
 
+const agentLabel = (a: Agent) =>
+  a === 'codex' ? 'Codex' : a === 'gemini' ? 'Gemini' : 'Claude'
+
 const props = defineProps<{ cacheBytes: number; initialTab?: SettingsTab }>()
 const emit = defineEmits<{ close: []; clearCache: []; clearTabs: [] }>()
 
 const activeTab = ref<SettingsTab>(props.initialTab ?? 'general')
+// 切换左侧导航时，右侧内容回到顶部（否则会沿用上一个 tab 的滚动位置）。
+const bodyEl = ref<HTMLElement>()
+watch(activeTab, () => {
+  if (bodyEl.value) bodyEl.value.scrollTop = 0
+})
 
 const cacheLabel = computed(() =>
   props.cacheBytes > 0 ? formatSize(props.cacheBytes) : '0 B',
@@ -247,46 +265,38 @@ async function installClaudeHooks() {
 <template>
   <div class="overlay" @click.self="emit('close')">
     <div class="modal settings-modal">
-      <div class="modal-head">
-        <h3>{{ t('settings.title') }}</h3>
+      <!-- 左侧导航：分组标题 + 图标项，激活项高亮（参考 Claude 客户端设置面板） -->
+      <nav class="set-nav">
+        <div class="set-nav-group-label">{{ t('settings.title') }}</div>
         <button
-          class="modal-close"
-          v-tooltip="t('common.close')"
-          @click="emit('close')"
+          v-for="n in navItems"
+          :key="n.id"
+          class="set-nav-item"
+          :class="{ active: activeTab === n.id }"
+          @click="activeTab = n.id"
         >
-          <IconClose />
+          <component :is="n.icon" class="set-nav-icon" />
+          <span>{{ t(n.key) }}</span>
         </button>
-      </div>
+      </nav>
 
-      <div class="set-tabs segmented">
-        <button
-          :class="{ active: activeTab === 'general' }"
-          @click="activeTab = 'general'"
-        >
-          {{ t('settings.tab.general') }}
-        </button>
-        <button
-          :class="{ active: activeTab === 'advanced' }"
-          @click="activeTab = 'advanced'"
-        >
-          {{ t('settings.tab.advanced') }}
-        </button>
-        <button
-          :class="{ active: activeTab === 'shortcuts' }"
-          @click="activeTab = 'shortcuts'"
-        >
-          {{ t('settings.tab.shortcuts') }}
-        </button>
-      </div>
+      <button
+        class="modal-close"
+        v-tooltip="t('common.close')"
+        @click="emit('close')"
+      >
+        <IconClose />
+      </button>
 
-      <div class="set-body">
+      <div ref="bodyEl" class="set-body">
         <template v-if="activeTab === 'general'">
-          <!-- 语言 -->
-          <section class="set-section">
-            <header class="set-section-head">
-              <IconLanguages />
-              <span class="set-section-title">{{ t('settings.section.lang') }}</span>
-              <div ref="langWrapEl" class="set-dropdown-wrap">
+          <!-- 外观：语言 / 主题 / 字号 —— 单控件行，标题在左、控件在右 -->
+          <div class="set-group">
+            <div class="set-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.section.lang') }}</div>
+              </div>
+              <div ref="langWrapEl" class="set-dropdown-wrap set-row-control">
                 <button
                   class="set-dropdown-btn"
                   :class="{ active: langMenuOpen }"
@@ -309,15 +319,13 @@ async function installClaudeHooks() {
                   </button>
                 </div>
               </div>
-            </header>
-          </section>
+            </div>
 
-          <!-- 主题 -->
-          <section class="set-section">
-            <header class="set-section-head">
-              <IconPalette />
-              <span class="set-section-title">{{ t('settings.section.theme') }}</span>
-              <div ref="themeWrapEl" class="set-dropdown-wrap">
+            <div class="set-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.section.theme') }}</div>
+              </div>
+              <div ref="themeWrapEl" class="set-dropdown-wrap set-row-control">
                 <button
                   class="set-dropdown-btn"
                   :class="{ active: themeMenuOpen }"
@@ -342,15 +350,13 @@ async function installClaudeHooks() {
                   </button>
                 </div>
               </div>
-            </header>
-          </section>
+            </div>
 
-          <!-- 字体大小 -->
-          <section class="set-section">
-            <header class="set-section-head">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>
-              <span class="set-section-title">{{ t('settings.section.fontSize') }}</span>
-              <div class="set-segment">
+            <div class="set-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.section.fontSize') }}</div>
+              </div>
+              <div class="set-segment set-row-control">
                 <button
                   v-for="o in fontScaleOptions"
                   :key="o.v"
@@ -362,52 +368,72 @@ async function installClaudeHooks() {
                   {{ t(o.key) }}
                 </button>
               </div>
-            </header>
-          </section>
+            </div>
+          </div>
+
+          <!-- Agents 显隐 —— 分组标题 + desc 直接显示，下面是每个 agent 的开关 -->
+          <div class="set-group">
+            <div class="set-group-head">
+              <div class="set-group-title">{{ t('settings.section.agents') }}</div>
+              <p class="set-group-desc">{{ t('settings.agentsVisibilityDesc') }}</p>
+            </div>
+            <label
+              v-for="a in ALL_AGENTS"
+              :key="a"
+              class="set-row set-row-clickable"
+              :class="{ disabled: enabledAgents[a] && visibleAgents.length === 1 }"
+              @click.prevent="setAgentEnabled(a, !enabledAgents[a])"
+            >
+              <div class="set-row-text">
+                <div class="set-row-title set-row-title-icon">
+                  <component :is="agentIcons[a]" class="set-agent-toggle-icon" />
+                  {{ agentLabel(a) }}
+                </div>
+              </div>
+              <span class="set-toggle-track set-row-control" :class="{ on: enabledAgents[a] }">
+                <span class="set-toggle-thumb" />
+              </span>
+            </label>
+          </div>
 
           <!-- 数据 -->
-          <section class="set-section">
-            <header class="set-section-head">
-              <IconDatabase />
-              <span class="set-section-title">{{ t('settings.section.data') }}</span>
-              <IconInfo class="set-hint-icon" v-tooltip="t('settings.clearCacheDesc')" />
-              <span class="set-section-tail">{{ cacheLabel }}</span>
-            </header>
-            <button
-              class="btn danger"
-              :disabled="false"
-              @click="emit('clearCache')"
-            >
-              {{ t('settings.clearCache') }}
-            </button>
-          </section>
+          <div class="set-group">
+            <div class="set-row">
+              <div class="set-row-text">
+                <div class="set-row-title">
+                  {{ t('settings.section.data') }}
+                  <span class="set-section-tail">{{ cacheLabel }}</span>
+                </div>
+                <p class="set-row-desc">{{ t('settings.clearCacheDesc') }}</p>
+              </div>
+              <button class="btn danger set-row-control" :disabled="false" @click="emit('clearCache')">
+                {{ t('settings.clearCache') }}
+              </button>
+            </div>
 
-          <!-- 终端标签 -->
-          <section class="set-section">
-            <header class="set-section-head">
-              <IconTerminal />
-              <span class="set-section-title">{{ t('settings.section.tabs') }}</span>
-              <IconInfo class="set-hint-icon" v-tooltip="t('settings.clearTabsDesc')" />
-            </header>
-            <button
-              class="btn danger"
-              @click="emit('clearTabs')"
-            >
-              {{ t('settings.clearTabs') }}
-            </button>
-          </section>
+            <div class="set-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.section.tabs') }}</div>
+                <p class="set-row-desc">{{ t('settings.clearTabsDesc') }}</p>
+              </div>
+              <button class="btn danger set-row-control" @click="emit('clearTabs')">
+                {{ t('settings.clearTabs') }}
+              </button>
+            </div>
+          </div>
 
           <!-- 关于 -->
-          <section class="set-section">
-            <header class="set-section-head">
-              <IconInfo />
-              <span class="set-section-title">{{ t('settings.section.about') }}</span>
-              <span class="set-section-tail mono">v{{ version }}</span>
-            </header>
-            <p v-if="updateMsg" class="set-section-desc">{{ updateMsg }}</p>
-            <p v-if="installingUpdate && updateProgress !== null" class="set-section-desc">
-              {{ t('settings.updateDownloadingProgress', { pct: updateProgress }) }}
-            </p>
+          <div class="set-group">
+            <div class="set-group-head">
+              <div class="set-group-title">
+                {{ t('settings.section.about') }}
+                <span class="set-section-tail mono">v{{ version }}</span>
+              </div>
+              <p v-if="updateMsg" class="set-group-desc">{{ updateMsg }}</p>
+              <p v-if="installingUpdate && updateProgress !== null" class="set-group-desc">
+                {{ t('settings.updateDownloadingProgress', { pct: updateProgress }) }}
+              </p>
+            </div>
             <div class="set-update-actions">
               <button class="btn" :disabled="checking || installingUpdate" @click="doCheck">
                 <IconRefresh v-if="!checking" />
@@ -439,26 +465,30 @@ async function installClaudeHooks() {
                 {{ t('settings.viewRelease', { v: latestVersion ?? '' }) }}
               </button>
             </div>
-          </section>
+          </div>
         </template>
 
         <template v-else-if="activeTab === 'advanced'">
           <!-- 终端 -->
-          <section class="set-section">
-            <header class="set-section-head">
-              <IconTerminal />
-              <span class="set-section-title">{{ t('settings.section.terminal') }}</span>
-            </header>
-            <label class="set-toggle-row" @click.prevent="setUseExternalTerminal(!useExternalTerminal)">
-              <span class="set-toggle-label">{{ t('settings.useExternalTerminal') }} <IconInfo class="set-hint-icon" v-tooltip="t('settings.terminalDesc')" /></span>
-              <span class="set-toggle-track" :class="{ on: useExternalTerminal }">
+          <div class="set-group">
+            <div class="set-group-head">
+              <div class="set-group-title">{{ t('settings.section.terminal') }}</div>
+            </div>
+            <label class="set-row set-row-clickable" @click.prevent="setUseExternalTerminal(!useExternalTerminal)">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.useExternalTerminal') }}</div>
+                <p class="set-row-desc">{{ t('settings.terminalDesc') }}</p>
+              </div>
+              <span class="set-toggle-track set-row-control" :class="{ on: useExternalTerminal }">
                 <span class="set-toggle-thumb" />
               </span>
             </label>
 
-            <div v-if="useExternalTerminal && isMacOS && terminalOptions.length > 1" class="set-terminal-app-row">
-              <span class="set-toggle-label">{{ t('settings.terminalApp.label') }}</span>
-              <div ref="terminalWrapEl" class="set-dropdown-wrap">
+            <div v-if="useExternalTerminal && isMacOS && terminalOptions.length > 1" class="set-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.terminalApp.label') }}</div>
+              </div>
+              <div ref="terminalWrapEl" class="set-dropdown-wrap set-row-control">
                 <button
                   class="set-dropdown-btn"
                   :class="{ active: terminalMenuOpen }"
@@ -484,9 +514,15 @@ async function installClaudeHooks() {
                 </div>
               </div>
             </div>
+          </div>
 
+          <!-- 启动参数 -->
+          <div class="set-group">
+            <div class="set-group-head">
+              <div class="set-group-title">{{ t('settings.launchArgs') }}</div>
+              <p class="set-group-desc">{{ t('settings.launchArgsDesc') }}</p>
+            </div>
             <div class="set-launch-args">
-              <label class="set-launch-args-label">{{ t('settings.launchArgs') }} <IconInfo class="set-hint-icon" v-tooltip="t('settings.launchArgsDesc')" /></label>
               <div class="set-launch-args-row" v-for="a in (['claude', 'codex', 'gemini'] as const)" :key="a">
                 <component :is="agentIcons[a]" class="set-launch-args-icon" />
                 <input
@@ -504,15 +540,14 @@ async function installClaudeHooks() {
                 >↵</button>
               </div>
             </div>
-          </section>
+          </div>
 
           <!-- 状态跟踪 -->
-          <section class="set-section">
-            <header class="set-section-head">
-              <span class="set-section-title">{{ t('settings.section.turnStatus') }}</span>
-              <span class="set-section-subtitle">{{ t('settings.turnStatus.brief') }}</span>
-              <IconInfo class="set-hint-icon" v-tooltip="t('settings.turnStatus.desc')" />
-            </header>
+          <div class="set-group">
+            <div class="set-group-head">
+              <div class="set-group-title">{{ t('settings.section.turnStatus') }}</div>
+              <p class="set-group-desc">{{ t('settings.turnStatus.desc') }}</p>
+            </div>
             <div class="set-update-actions">
               <button
                 class="btn"
@@ -522,29 +557,32 @@ async function installClaudeHooks() {
                 {{ installingClaudeHooks ? t('settings.turnStatus.installing') : t('settings.turnStatus.installClaude') }}
               </button>
             </div>
-            <p v-if="claudeHooksMsg" class="set-section-desc set-toggle-hint">{{ claudeHooksMsg }}</p>
-          </section>
+            <p v-if="claudeHooksMsg" class="set-group-desc set-toggle-hint">{{ claudeHooksMsg }}</p>
+          </div>
 
           <!-- Codex -->
-          <section class="set-section">
-            <header class="set-section-head">
-              <span class="set-section-title">Codex</span>
-              <span class="set-section-subtitle">{{ t('settings.codex.brief') }}</span>
-              <IconInfo class="set-hint-icon" v-tooltip="t('settings.codexVisibilityDesc')" />
-            </header>
-            <label class="set-toggle-row" @click.prevent="setCodexShowInternalSessions(!codexShowInternalSessions)">
-              <span class="set-toggle-label">{{ t('settings.codex.showInternal') }}</span>
-              <span class="set-toggle-track" :class="{ on: codexShowInternalSessions }">
+          <div class="set-group">
+            <div class="set-group-head">
+              <div class="set-group-title">Codex</div>
+              <p class="set-group-desc">{{ t('settings.codexVisibilityDesc') }}</p>
+            </div>
+            <label class="set-row set-row-clickable" @click.prevent="setCodexShowInternalSessions(!codexShowInternalSessions)">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.codex.showInternal') }}</div>
+              </div>
+              <span class="set-toggle-track set-row-control" :class="{ on: codexShowInternalSessions }">
                 <span class="set-toggle-thumb" />
               </span>
             </label>
-            <label class="set-toggle-row" @click.prevent="setCodexShowArchivedSessions(!codexShowArchivedSessions)">
-              <span class="set-toggle-label">{{ t('settings.codex.showArchived') }}</span>
-              <span class="set-toggle-track" :class="{ on: codexShowArchivedSessions }">
+            <label class="set-row set-row-clickable" @click.prevent="setCodexShowArchivedSessions(!codexShowArchivedSessions)">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.codex.showArchived') }}</div>
+              </div>
+              <span class="set-toggle-track set-row-control" :class="{ on: codexShowArchivedSessions }">
                 <span class="set-toggle-thumb" />
               </span>
             </label>
-          </section>
+          </div>
 
         </template>
 
