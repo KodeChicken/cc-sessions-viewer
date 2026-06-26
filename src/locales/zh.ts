@@ -318,6 +318,7 @@ export default {
   'settings.tab.general': '通用',
   'settings.tab.advanced': '高级',
   'settings.tab.shortcuts': '快捷键',
+  'settings.tab.updates': '更新',
   'settings.shortcut.globalSearch': '全局搜索',
   'settings.shortcut.findInSession': '会话内搜索',
   'settings.shortcut.findNext': '下一个匹配',
@@ -396,6 +397,10 @@ export default {
   'settings.relaunch': '重启应用',
   'settings.updateFail': '检查更新失败：{e}',
   'settings.viewRelease': '查看 release v{v}',
+  'settings.update.upToDateShort': '已是最新版本',
+  'settings.update.current': '当前版本 v{v}',
+  'settings.update.newVersion': '发现新版本 v{v}',
+  'settings.update.fromTo': 'v{cur} → v{next}',
   'settings.version': '版本',
 
   // ---------- 统计概览 ----------

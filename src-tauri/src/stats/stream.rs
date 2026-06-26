@@ -98,7 +98,20 @@ fn run_worker(
             if let Some(rest) = other.strip_prefix("session:") {
                 return run_session_scope(app, rest, request_id);
             }
-            return Err(format!("unknown stats scope: {other}"));
+            // 受「agent 显隐设置」控制的全部口径：scope = "all:claude,codex"
+            // —— 只聚合启用的 agent（隐藏的不计入 All agents 统计）。
+            if let Some(list) = other.strip_prefix("all:") {
+                list.split(',')
+                    .filter_map(|name| match name {
+                        "claude" => Some("claude"),
+                        "codex" => Some("codex"),
+                        "gemini" => Some("gemini"),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                return Err(format!("unknown stats scope: {other}"));
+            }
         }
     };
 

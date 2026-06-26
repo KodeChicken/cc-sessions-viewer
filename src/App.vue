@@ -110,7 +110,7 @@ const showStats = ref(false)
 const showExportHistory = ref(false)
 const showPricing = ref(false)
 const showSettings = ref(false)
-const settingsTab = ref<'general' | 'advanced' | 'shortcuts'>('general')
+const settingsTab = ref<'general' | 'advanced' | 'shortcuts' | 'updates'>('general')
 const sidebarOpen = ref(true)
 const refreshing = ref(false)
 const isWindows = /Win/i.test(navigator.platform)
@@ -1772,6 +1772,7 @@ const menuHandlers: MenuHandlers = {
   'open-trash': () => loadTrash(),
   'open-stats': openStats,
   'check-update': () => {
+    settingsTab.value = 'updates'
     showSettings.value = true
   },
   'theme:light': () => setTheme('light'),
@@ -2310,7 +2311,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       @switch-agent="switchAgent"
       @select-project="selectProject"
       @context-menu="openCtxMenu"
-      @open-settings="showSettings = true"
+      @open-settings="(tab) => { settingsTab = tab ?? 'general'; showSettings = true }"
       @refresh="refreshAll"
       @add-bookmark="addBookmark"
       @batch-delete="batchDeleteProjects"

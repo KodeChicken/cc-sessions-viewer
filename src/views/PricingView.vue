@@ -27,6 +27,8 @@ import {
 } from '../components/icons'
 import StatsLoadingIcon from '../components/StatsLoadingIcon.vue'
 import { openUrl } from '../api'
+import { visibleAgents } from '../settings'
+import type { Agent } from '../types'
 
 // 价格数据源主页 —— 标题旁的外链按钮直接在系统浏览器打开。
 const SOURCE_URL = 'https://models.dev'
@@ -74,6 +76,10 @@ const FAMILIES: { key: Family; icon: Component; label: string }[] = [
   { key: 'codex', icon: IconCodex, label: 'pricing.family.codex' },
   { key: 'gemini', icon: IconGemini, label: 'pricing.family.gemini' },
 ]
+// 价格页同样跟随设置里的 agent 显隐：只展示启用的 family（锚点 chip + 模型分段）。
+const visibleFamilies = computed(() =>
+  FAMILIES.filter((f) => visibleAgents.value.includes(f.key as Agent)),
+)
 
 // 搜索框：用户输入 draft，回车（@change / Enter keydown）才把 draft 同步到 query。
 // 跨 family 全量搜，子串匹配 model name（大小写不敏感）。空 query = 显示全部。
@@ -174,8 +180,10 @@ function onScroll() {
     if (!scroller) return
     // 判定视窗：把"工具栏下沿"作为基准线，刚被它挡住的 section 才算"当前可见"。
     const y = scroller.scrollTop + toolbarOffset() + 8
-    let best: Family = FAMILIES[0].key
-    for (const f of FAMILIES) {
+    const fams = visibleFamilies.value
+    if (!fams.length) return
+    let best: Family = fams[0].key
+    for (const f of fams) {
       const el = sectionEls.value[f.key]
       if (!el) continue
       if (el.offsetTop <= y) best = f.key
@@ -272,7 +280,7 @@ async function settleAfterLoad() {
       </div>
       <nav class="pricing-anchors" role="tablist" :aria-label="t('pricing.title')">
         <button
-          v-for="fam in FAMILIES"
+          v-for="fam in visibleFamilies"
           :key="fam.key"
           type="button"
           class="pricing-anchor"
@@ -299,7 +307,7 @@ async function settleAfterLoad() {
     </div>
 
     <section
-      v-for="fam in FAMILIES"
+      v-for="fam in visibleFamilies"
       :key="fam.key"
       :ref="(el) => setSectionRef(fam.key, el as Element | null)"
       class="pricing-family"

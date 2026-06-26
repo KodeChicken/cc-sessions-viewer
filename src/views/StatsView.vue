@@ -23,7 +23,7 @@ import {
   IconZap,
 } from '../components/icons'
 import { useStatsStream } from '../stats'
-import { statsRange, statsScope } from '../settings'
+import { statsRange, statsScope, visibleAgents } from '../settings'
 import { forceRefresh as forceRefreshPricing, pricingStatus, refreshStatus as refreshPricingStatus, watchUntilReady as watchPricingUntilReady } from '../pricing'
 import StatsDailyChart from '../components/StatsDailyChart.vue'
 import StatsModelChart from '../components/StatsModelChart.vue'
@@ -52,12 +52,35 @@ const emit = defineEmits<{
 const scope = statsScope
 const range = statsRange
 
-const SCOPES: { value: StatsScope; key: string }[] = [
+// Scope 选项跟随设置里的 agent 显隐：'all' 常驻，其余只列出启用的 agent。
+const SCOPES = computed<{ value: StatsScope; key: string }[]>(() => [
   { value: 'all', key: 'stats.scope.all' },
-  { value: 'claude', key: 'stats.scope.claude' },
-  { value: 'codex', key: 'stats.scope.codex' },
-  { value: 'gemini', key: 'stats.scope.gemini' },
-]
+  ...visibleAgents.value.map((a) => ({ value: a as StatsScope, key: `stats.scope.${a}` })),
+])
+
+// 持久化的 scope 可能指向一个之后被隐藏的 agent —— 回退到 'all'。
+// 放在 watch(scope) 注册之前同步纠正，避免挂载时多触发一次 refresh。
+if (scope.value !== 'all' && !visibleAgents.value.includes(scope.value as Agent)) {
+  scope.value = 'all'
+}
+// 设置里改了 agent 显隐时：
+//   - 当前 scope 指向被隐藏的 agent → 回退 'all'（触发 watch(scope) 重扫）；
+//   - 当前已是 'all' → 'all' 的口径变了（少/多算一个 agent），主动重扫。
+watch(visibleAgents, (list) => {
+  if (scope.value !== 'all' && !list.includes(scope.value as Agent)) {
+    scope.value = 'all'
+  } else if (scope.value === 'all' && !isSession.value) {
+    refresh()
+  }
+})
+
+// 'all' 口径跟随设置：全开 → 'all'（沿用旧行为/标签）；子集 → 'all:claude,codex'，
+// 后端据此只聚合启用的 agent。非 'all' 的 scope 原样透传。
+function backendScope(): string {
+  if (scope.value !== 'all') return scope.value
+  const vis = visibleAgents.value
+  return vis.length >= 3 ? 'all' : `all:${vis.join(',')}`
+}
 const RANGES: { value: StatsRange; key: string }[] = [
   { value: 'today', key: 'stats.range.today' },
   { value: 'days7', key: 'stats.range.days7' },
@@ -79,7 +102,7 @@ function refresh() {
   if (isSession.value) {
     stream.start(sessionScope.value, range.value)
   } else {
-    stream.start(scope.value, range.value)
+    stream.start(backendScope(), range.value)
   }
 }
 

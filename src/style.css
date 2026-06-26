@@ -3357,19 +3357,29 @@ body.is-tab-reordering * {
 .set-nav-item.active .set-nav-icon {
   color: var(--text);
 }
+/* 「更新」导航项上的有新版本指示红点 */
+.set-nav-dot {
+  margin-left: auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--brand, #e8643c);
+  flex-shrink: 0;
+}
 .settings-modal .modal-close {
   position: absolute;
   top: 14px;
   right: 16px;
   z-index: 2;
 }
-/* 右侧定高滚动面板（.set-body 只在设置弹窗里出现） */
+/* 右侧定高滚动面板（.set-body 只在设置弹窗里出现）。
+   顶部留够空间，避免首个内容和右上角浮动的关闭按钮（top:14 高 26）重叠。 */
 .set-body {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: 20px 24px 24px;
+  padding: 48px 24px 24px;
   overflow-y: auto;
 }
 
@@ -3456,12 +3466,116 @@ body.is-tab-reordering * {
   width: 13px;
   height: 13px;
 }
-/* About 段：「检查更新」按钮 + （有更新时）「打开 release」按钮，并排显示 */
+/* 状态跟踪段里的操作按钮行 */
 .set-update-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   align-items: center;
+}
+
+/* ---- Updates tab：单卡片状态 + 一个主操作，取代一排按钮 ---- */
+.set-update-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.set-update-card.available {
+  border-color: color-mix(in srgb, var(--brand, #e8643c) 45%, var(--border));
+  background: color-mix(in srgb, var(--brand, #e8643c) 7%, var(--surface-2));
+}
+.set-update-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--surface-hover);
+  color: var(--text-mute);
+}
+.set-update-card.available .set-update-icon {
+  background: color-mix(in srgb, var(--brand, #e8643c) 16%, transparent);
+  color: var(--brand, #e8643c);
+}
+.set-update-icon svg {
+  width: 17px;
+  height: 17px;
+}
+.set-update-info {
+  flex: 1;
+  min-width: 0;
+}
+.set-update-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.set-update-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+.set-update-cta {
+  flex-shrink: 0;
+}
+/* 下载进度条 */
+.set-update-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+.set-update-progress-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-hover);
+  overflow: hidden;
+}
+.set-update-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--brand, #e8643c);
+  transition: width 0.2s ease;
+}
+.set-update-progress-pct {
+  font-size: 11.5px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+/* 检查结果 / 错误信息 */
+.set-update-status {
+  margin: 10px 2px 0;
+  font-size: 12px;
+  color: var(--text-mute);
+  line-height: 1.5;
+}
+/* 次要操作：查看更新日志 */
+.set-update-notes {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 4px 2px;
+  font-size: 12px;
+  color: var(--text-dim);
+  transition: color 0.12s;
+}
+.set-update-notes:hover {
+  color: var(--text);
+}
+.set-update-notes svg {
+  width: 13px;
+  height: 13px;
 }
 
 /* Settings custom dropdown — Geist-style menu, replaces native <select> */

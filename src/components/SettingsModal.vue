@@ -39,6 +39,7 @@ import {
   IconSettings,
   IconSliders,
   IconKeyboard,
+  IconDownload,
   agentIcons,
   terminalIcons,
 } from './icons'
@@ -55,13 +56,14 @@ import {
   updaterUpdate,
 } from '../updateCheck'
 
-type SettingsTab = 'general' | 'advanced' | 'shortcuts'
+type SettingsTab = 'general' | 'advanced' | 'shortcuts' | 'updates'
 
 // 左侧导航：图标 + 文案，激活项高亮（参考 Claude 客户端设置面板）。
 const navItems = [
   { id: 'general', icon: IconSettings, key: 'settings.tab.general' },
   { id: 'advanced', icon: IconSliders, key: 'settings.tab.advanced' },
   { id: 'shortcuts', icon: IconKeyboard, key: 'settings.tab.shortcuts' },
+  { id: 'updates', icon: IconDownload, key: 'settings.tab.updates' },
 ] as const
 
 const isMac = /Mac/i.test(navigator.platform)
@@ -277,6 +279,7 @@ async function installClaudeHooks() {
         >
           <component :is="n.icon" class="set-nav-icon" />
           <span>{{ t(n.key) }}</span>
+          <span v-if="n.id === 'updates' && updateAvailable" class="set-nav-dot" aria-hidden="true" />
         </button>
       </nav>
 
@@ -421,51 +424,6 @@ async function installClaudeHooks() {
               </button>
             </div>
           </div>
-
-          <!-- 关于 -->
-          <div class="set-group">
-            <div class="set-group-head">
-              <div class="set-group-title">
-                {{ t('settings.section.about') }}
-                <span class="set-section-tail mono">v{{ version }}</span>
-              </div>
-              <p v-if="updateMsg" class="set-group-desc">{{ updateMsg }}</p>
-              <p v-if="installingUpdate && updateProgress !== null" class="set-group-desc">
-                {{ t('settings.updateDownloadingProgress', { pct: updateProgress }) }}
-              </p>
-            </div>
-            <div class="set-update-actions">
-              <button class="btn" :disabled="checking || installingUpdate" @click="doCheck">
-                <IconRefresh v-if="!checking" />
-                {{ checking ? t('settings.checking') : t('settings.checkUpdate') }}
-              </button>
-              <button
-                v-if="updaterUpdate && !updateDownloaded"
-                class="btn primary"
-                :disabled="installingUpdate"
-                @click="installUpdate"
-              >
-                <IconRefresh v-if="installingUpdate" />
-                {{ installingUpdate ? t('settings.updateDownloading') : t('settings.installUpdate') }}
-              </button>
-              <button
-                v-if="updateDownloaded"
-                class="btn primary"
-                @click="relaunchApp()"
-              >
-                <IconCheck />
-                {{ t('settings.relaunch') }}
-              </button>
-              <button
-                v-if="updateAvailable"
-                class="btn primary"
-                @click="openReleasePage()"
-              >
-                <IconExternalLink />
-                {{ t('settings.viewRelease', { v: latestVersion ?? '' }) }}
-              </button>
-            </div>
-          </div>
         </template>
 
         <template v-else-if="activeTab === 'advanced'">
@@ -584,6 +542,76 @@ async function installClaudeHooks() {
             </label>
           </div>
 
+        </template>
+
+        <template v-else-if="activeTab === 'updates'">
+          <div class="set-group">
+            <!-- 版本/更新状态卡片：标题 + 副标题 + 单个主操作按钮，不再堆一排按钮 -->
+            <div class="set-update-card" :class="{ available: updateAvailable }">
+              <span class="set-update-icon">
+                <component :is="updateAvailable ? IconDownload : IconCheck" />
+              </span>
+              <div class="set-update-info">
+                <div class="set-update-title">
+                  {{ updateAvailable
+                    ? t('settings.update.newVersion', { v: latestVersion ?? '' })
+                    : t('settings.update.upToDateShort') }}
+                </div>
+                <div class="set-update-sub">
+                  {{ updateAvailable
+                    ? t('settings.update.fromTo', { cur: version, next: latestVersion ?? '' })
+                    : t('settings.update.current', { v: version }) }}
+                </div>
+              </div>
+              <div class="set-update-cta">
+                <button
+                  v-if="updateDownloaded"
+                  class="btn primary"
+                  @click="relaunchApp()"
+                >
+                  <IconCheck />
+                  {{ t('settings.relaunch') }}
+                </button>
+                <button
+                  v-else-if="updaterUpdate"
+                  class="btn primary"
+                  :disabled="installingUpdate"
+                  @click="installUpdate"
+                >
+                  <IconRefresh v-if="installingUpdate" />
+                  {{ installingUpdate ? t('settings.updateDownloading') : t('settings.installUpdate') }}
+                </button>
+                <button
+                  v-else
+                  class="btn"
+                  :disabled="checking"
+                  @click="doCheck"
+                >
+                  <IconRefresh v-if="!checking" />
+                  {{ checking ? t('settings.checking') : t('settings.checkUpdate') }}
+                </button>
+              </div>
+            </div>
+
+            <!-- 下载进度条 -->
+            <div v-if="installingUpdate && updateProgress !== null" class="set-update-progress">
+              <span class="set-update-progress-track">
+                <span class="set-update-progress-fill" :style="{ width: updateProgress + '%' }" />
+              </span>
+              <span class="set-update-progress-pct">{{ updateProgress }}%</span>
+            </div>
+
+            <!-- 检查结果 / 错误信息（无新版本、非下载中时显示，如"已是最新"或失败原因） -->
+            <p v-if="updateMsg && !updateAvailable && !installingUpdate" class="set-update-status">
+              {{ updateMsg }}
+            </p>
+
+            <!-- 次要操作：查看更新日志 -->
+            <button v-if="updateAvailable" class="set-update-notes" @click="openReleasePage()">
+              <IconExternalLink />
+              {{ t('settings.viewRelease', { v: latestVersion ?? '' }) }}
+            </button>
+          </div>
         </template>
 
         <template v-else>

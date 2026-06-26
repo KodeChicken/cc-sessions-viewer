@@ -83,7 +83,8 @@ describe('SettingsModal', () => {
   })
 
   it('loads the app version on mount', async () => {
-    const wrapper = factory()
+    // 版本与更新操作现在住在「Updates」tab 里
+    const wrapper = factory({ initialTab: 'updates' })
     await flushPromises()
     expect(appVersionMock).toHaveBeenCalled()
     expect(wrapper.text()).toContain('v9.9.9')
@@ -91,10 +92,10 @@ describe('SettingsModal', () => {
 
   it('reports when an update is available', async () => {
     checkAppUpdateMock.mockResolvedValue({ hasUpdate: true, latest: '2.0.0', current: '1.0.0' })
-    const wrapper = factory()
+    const wrapper = factory({ initialTab: 'updates' })
     await flushPromises()
 
-    const checkBtn = wrapper.find('.set-update-actions .btn')
+    const checkBtn = wrapper.find('.set-update-cta .btn')
     await checkBtn.trigger('click')
     await flushPromises()
 
@@ -104,10 +105,10 @@ describe('SettingsModal', () => {
 
   it('reports when the app is up to date', async () => {
     checkAppUpdateMock.mockResolvedValue({ hasUpdate: false, latest: '1.0.0', current: '1.0.0' })
-    const wrapper = factory()
+    const wrapper = factory({ initialTab: 'updates' })
     await flushPromises()
 
-    const checkBtn = wrapper.find('.set-update-actions .btn')
+    const checkBtn = wrapper.find('.set-update-cta .btn')
     await checkBtn.trigger('click')
     await flushPromises()
 
@@ -116,10 +117,10 @@ describe('SettingsModal', () => {
 
   it('surfaces a failed update check', async () => {
     checkAppUpdateMock.mockRejectedValue(new Error('offline'))
-    const wrapper = factory()
+    const wrapper = factory({ initialTab: 'updates' })
     await flushPromises()
 
-    const checkBtn = wrapper.find('.set-update-actions .btn')
+    const checkBtn = wrapper.find('.set-update-cta .btn')
     await checkBtn.trigger('click')
     await flushPromises()
 

@@ -3,8 +3,8 @@ import { computed, ref, watch } from 'vue'
 import type { Agent, ProjectInfo } from '../types'
 import { shortName } from '../format'
 import { t } from '../i18n'
-import { IconExternalLink, IconRefresh, IconSettings, IconClose, IconCheck, IconTrash, IconSelect, IconGitBranch, agentIcons } from './icons'
-import { latestVersion, openReleasePage, updateAvailable } from '../updateCheck'
+import { IconDownload, IconRefresh, IconSettings, IconClose, IconCheck, IconTrash, IconSelect, IconGitBranch, agentIcons } from './icons'
+import { latestVersion, updateAvailable } from '../updateCheck'
 import { visibleAgents } from '../settings'
 
 type ProjState = 'pinned' | 'sunk'
@@ -22,7 +22,7 @@ const emit = defineEmits<{
   (e: 'switch-agent', a: Agent): void
   (e: 'select-project', dir: string): void
   (e: 'context-menu', evt: MouseEvent, p: ProjectInfo): void
-  (e: 'open-settings'): void
+  (e: 'open-settings', tab?: 'general' | 'updates'): void
   (e: 'refresh'): void
   (e: 'add-bookmark'): void
   (e: 'batch-delete', dirs: string[]): void
@@ -296,21 +296,20 @@ defineExpose({ exitSelect })
         @click="emit('open-settings')"
       >
         <IconSettings /> {{ t('sidebar.settings') }}
-        <!-- 有新版本时，行尾多挂一个"打开 release 页"按钮（点它直接去 GitHub）+
-             指示红点。@click.stop 防止冒泡到外层 button，否则会顺手把 Settings
-             也打开 —— 用户其实只想去 release 页。 -->
+        <!-- 有新版本时，行尾多挂一个"更新"入口按钮：点它直接跳到设置里的「更新」tab
+             （不再直接跳 GitHub）。@click.stop 防止冒泡到外层 button 打开通用设置。 -->
         <span
           v-if="updateAvailable"
           class="sidebar-release-btn"
           role="button"
           tabindex="0"
-          v-tooltip="t('sidebar.openRelease', { v: latestVersion ?? '' })"
-          :aria-label="t('sidebar.openRelease', { v: latestVersion ?? '' })"
-          @click.stop="openReleasePage()"
-          @keydown.enter.stop.prevent="openReleasePage()"
-          @keydown.space.stop.prevent="openReleasePage()"
+          v-tooltip="t('sidebar.updateAvailable', { v: latestVersion ?? '' })"
+          :aria-label="t('sidebar.updateAvailable', { v: latestVersion ?? '' })"
+          @click.stop="emit('open-settings', 'updates')"
+          @keydown.enter.stop.prevent="emit('open-settings', 'updates')"
+          @keydown.space.stop.prevent="emit('open-settings', 'updates')"
         >
-          <IconExternalLink />
+          <IconDownload />
         </span>
         <span v-if="updateAvailable" class="update-dot" aria-hidden="true" />
       </button>
