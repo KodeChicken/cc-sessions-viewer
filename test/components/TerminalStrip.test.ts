@@ -106,24 +106,24 @@ describe('TerminalStrip', () => {
     expect(wrapper.emitted('tabRename')).toBeUndefined()
   })
 
-  it('emits newSession when double-clicking blank space in the strip', async () => {
+  it('emits newDefault when double-clicking blank space in the strip', async () => {
     const t = tab()
     tabs.value = [t]
     const wrapper = factory()
 
     await wrapper.find('.terminal-strip').trigger('dblclick')
 
-    expect(wrapper.emitted('newSession')).toHaveLength(1)
+    expect(wrapper.emitted('newDefault')).toHaveLength(1)
   })
 
-  it('does not emit newSession when double-clicking an existing tab', async () => {
+  it('does not emit newDefault when double-clicking an existing tab', async () => {
     const t = tab()
     tabs.value = [t]
     const wrapper = factory()
 
     await wrapper.findAll('.term-tab').slice(-1)[0].trigger('dblclick')
 
-    expect(wrapper.emitted('newSession')).toBeUndefined()
+    expect(wrapper.emitted('newDefault')).toBeUndefined()
   })
 
   it('emits newSession from the blank-strip context menu', async () => {

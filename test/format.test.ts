@@ -80,6 +80,24 @@ describe('renderText', () => {
     expect(renderText('```\n<a> & b\n```')).toContain('&lt;a&gt; &amp; b')
   })
 
+  // 回归用户反馈：外层用 4 个反引号包住内含 ```js 围栏的 markdown 时，内层的 ``` 被
+  // 当成围栏拆掉了。围栏长度应由开围栏决定，更短的反引号串只是代码内容。
+  it('keeps inner ``` as content inside a longer 4-backtick fence', () => {
+    const html = renderText('````markdown\n```js\nx()\n```\n````')
+    // 整段是一个 markdown 代码块
+    expect(html).toContain('<pre class="code-block" data-lang="markdown">')
+    // 内层围栏作为文本内容保留（不另起 code-block）
+    expect(html).toContain('```js')
+    // 只有一个 code-block —— 内层没有被错误拆成第二个
+    expect(html.match(/class="code-block"/g)?.length).toBe(1)
+  })
+
+  // 未闭合围栏：从开围栏一直吃到文末，仍算一个代码块（与旧 split 行为一致）。
+  it('treats an unclosed fence as a single code block to end of text', () => {
+    const html = renderText('```js\nconst x = 1')
+    expect(html).toContain('<pre class="code-block" data-lang="js"><code>const x = 1</code></pre>')
+  })
+
   it('wraps plain prose in a text-run div', () => {
     expect(renderText('hello')).toBe('<div class="text-run">hello</div>')
   })
@@ -187,6 +205,40 @@ describe('renderText', () => {
 
   it('returns an empty string for empty input', () => {
     expect(renderText('')).toBe('')
+  })
+
+  // 用户反馈：`---` 被渲染成字面量 "---"，而不是分隔线。
+  it('renders --- as a horizontal rule, not literal dashes', () => {
+    const html = renderText('above\n\n---\n\nbelow')
+    expect(html).toContain('<hr class="md-hr">')
+    expect(html).toContain('<div class="text-run">above</div>')
+    expect(html).toContain('<div class="text-run">below</div>')
+    expect(html).not.toContain('---')
+  })
+
+  it('treats *** and ___ as horizontal rules too', () => {
+    expect(renderText('***')).toContain('<hr class="md-hr">')
+    expect(renderText('___')).toContain('<hr class="md-hr">')
+  })
+
+  it('does not mistake a GFM table separator row for a horizontal rule', () => {
+    const html = renderText('| A | B |\n|---|---|\n| 1 | 2 |')
+    expect(html).toContain('<table class="md-table">')
+    expect(html).not.toContain('<hr')
+  })
+
+  // 用户反馈：标题/代码块前后空行叠成大段空白。空行应被压扁，标题间距交给 CSS。
+  it('collapses stacked blank lines around a heading', () => {
+    const html = renderText('## Heading\n\n\n\nbody')
+    expect(html).toContain('<h3>Heading</h3>')
+    expect(html).not.toContain('<br><h3>')
+    expect(html).not.toContain('</h3><br>')
+  })
+
+  it('trims blank lines between prose and a fenced code block', () => {
+    const html = renderText('intro\n\n\n```js\nx\n```')
+    // the prose run must not carry a trailing run of <br> before the code block
+    expect(html).not.toContain('<br></div>')
   })
 })
 

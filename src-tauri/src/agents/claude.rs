@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::SessionSource;
+use super::{ChatEvent, SessionSource};
 use crate::agent_command::AgentCommand;
 use crate::stats::{pricing, shell as shell_util, types::{CallRecord, Turn}};
 use crate::types::{
-    Block, DiffHunk, DiffLine, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary,
+    Block, ChatDelta, DiffHunk, DiffLine, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary,
 };
 use crate::util::{
     append_jsonl_line, clean_title, home, is_jsonl, mtime_millis, parse_iso8601_ms, text_block,
@@ -27,6 +27,61 @@ fn projects_dir() -> PathBuf {
     home().join(".claude").join("projects")
 }
 
+fn list_projects_in(dir: &Path) -> Result<Vec<ProjectInfo>, String> {
+    let mut out = Vec::new();
+    let entries = fs::read_dir(dir).map_err(|e| format!("Failed to read project directory: {e}"))?;
+    for e in entries.flatten() {
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dir_name = e.file_name().to_string_lossy().to_string();
+        let mut count = 0usize;
+        let mut last = 0u64;
+        let mut cwd: Option<String> = None;
+        if let Ok(files) = fs::read_dir(&path) {
+            for f in files.flatten() {
+                let fp = f.path();
+                if is_jsonl(&fp) {
+                    count += 1;
+                    let m = mtime_millis(&fp);
+                    if m > last {
+                        last = m;
+                    }
+                    if cwd.is_none() {
+                        cwd = last_cwd(&fp);
+                    }
+                }
+            }
+        }
+        if count == 0 {
+            continue;
+        }
+        let display_path = cwd.unwrap_or_else(|| dir_name.replace('-', "/"));
+        let exists = Path::new(&display_path).is_dir();
+        let (parent_dir_name, worktree_name) =
+            if let Some(pos) = dir_name.find("--claude-worktrees-") {
+                let parent = dir_name[..pos].to_string();
+                let wt = dir_name[pos + "--claude-worktrees-".len()..].to_string();
+                (Some(parent), Some(wt))
+            } else {
+                (None, None)
+            };
+        out.push(ProjectInfo {
+            dir_name,
+            display_path,
+            session_count: count,
+            last_modified: last,
+            exists,
+            bookmarked: false,
+            parent_dir_name,
+            worktree_name,
+        });
+    }
+    out.sort_by_key(|p| std::cmp::Reverse(p.last_modified));
+    Ok(out)
+}
+
 impl SessionSource for ClaudeSource {
     fn name(&self) -> &'static str {
         "claude"
@@ -37,59 +92,7 @@ impl SessionSource for ClaudeSource {
         _include_codex_internal: bool,
         _include_codex_archived: bool,
     ) -> Result<Vec<ProjectInfo>, String> {
-        let dir = projects_dir();
-        let mut out = Vec::new();
-        let entries = fs::read_dir(&dir).map_err(|e| format!("Failed to read project directory: {e}"))?;
-        for e in entries.flatten() {
-            let path = e.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let dir_name = e.file_name().to_string_lossy().to_string();
-            let mut count = 0usize;
-            let mut last = 0u64;
-            let mut cwd: Option<String> = None;
-            if let Ok(files) = fs::read_dir(&path) {
-                for f in files.flatten() {
-                    let fp = f.path();
-                    if is_jsonl(&fp) {
-                        count += 1;
-                        let m = mtime_millis(&fp);
-                        if m > last {
-                            last = m;
-                        }
-                        if cwd.is_none() {
-                            cwd = first_cwd(&fp);
-                        }
-                    }
-                }
-            }
-            if count == 0 {
-                continue;
-            }
-            let display_path = cwd.unwrap_or_else(|| dir_name.replace('-', "/"));
-            let exists = Path::new(&display_path).is_dir();
-            let (parent_dir_name, worktree_name) =
-                if let Some(pos) = dir_name.find("--claude-worktrees-") {
-                    let parent = dir_name[..pos].to_string();
-                    let wt = dir_name[pos + "--claude-worktrees-".len()..].to_string();
-                    (Some(parent), Some(wt))
-                } else {
-                    (None, None)
-                };
-            out.push(ProjectInfo {
-                dir_name,
-                display_path,
-                session_count: count,
-                last_modified: last,
-                exists,
-                bookmarked: false,
-                parent_dir_name,
-                worktree_name,
-            });
-        }
-        out.sort_by_key(|p| std::cmp::Reverse(p.last_modified));
-        Ok(out)
+        list_projects_in(&projects_dir())
     }
 
     fn list_sessions(
@@ -214,12 +217,62 @@ impl SessionSource for ClaudeSource {
         AgentCommand::new("claude")
     }
 
+    /// headless stream-json：管道驱动 + 逐行事件。`-p`（print）配合
+    /// `--input-format stream-json` 让 claude 从 stdin 持续读 JSON 用户消息、保持长驻；
+    /// `--output-format stream-json --verbose` 让它把 system/assistant/user/result 事件
+    /// 逐行吐到 stdout。`--resume <id>` 续聊既有会话。
+    fn chat_command(
+        &self,
+        session_id: Option<&str>,
+        permission_mode: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Option<AgentCommand> {
+        let mut cmd = AgentCommand::new("claude")
+            .arg("--print")
+            .arg("--input-format")
+            .arg("stream-json")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--verbose")
+            // token 级流式：额外吐 `stream_event`（content_block_delta 等）；
+            // 权威 `assistant` 记录仍随后到达，故只是叠加、不破坏现有解析。
+            .arg("--include-partial-messages")
+            .arg("--permission-mode")
+            .arg(permission_mode);
+        // model 为别名（opus / sonnet / haiku / fable）或全名；effort 取
+        // low|medium|high|xhigh|max。None 走 CLI 默认（不下发 flag）。长驻进程下这两者
+        // 在 start 时定型，切换靠 restart-with-resume。
+        if let Some(m) = model {
+            cmd = cmd.arg("--model").arg(m);
+        }
+        if let Some(e) = effort {
+            cmd = cmd.arg("--effort").arg(e);
+        }
+        if let Some(id) = session_id {
+            cmd = cmd.arg("--resume").arg(id);
+        }
+        Some(cmd)
+    }
+
+    fn parse_chat_line(&self, line: &str) -> ChatEvent {
+        parse_chat_line(line)
+    }
+
+    fn chat_slash_commands(&self, cwd: &str) -> Vec<crate::types::SlashCommand> {
+        chat_slash_commands(cwd)
+    }
+
     fn image_src(&self, block: &Value) -> Option<String> {
         image_src(block)
     }
 
     fn usage_summary(&self, path: &str) -> Result<UsageSummary, String> {
         usage_summary(Path::new(path))
+    }
+
+    fn context_usage(&self, path: &str) -> Result<UsageSummary, String> {
+        Ok(last_context_usage(Path::new(path)))
     }
 
     fn read_turns(&self, path: &str) -> Result<Vec<Turn>, String> {
@@ -265,16 +318,61 @@ fn usage_summary(fp: &Path) -> Result<UsageSummary, String> {
     Ok(acc.finalize())
 }
 
-fn first_cwd(fp: &Path) -> Option<String> {
+/// 取文件里**最后一条**带非零 usage 的记录 = 会话末尾喂给模型的上下文规模。
+/// 区别于 `usage_summary` 的全程累加：这里只保留最近一条（不累加），用作 resume
+/// 后的「当前上下文」种子值。全 0 的 usage（如 user 消息、占位）跳过，避免把末尾
+/// 一条没意义的零值当成上下文。文件不可读 → default。
+fn last_context_usage(fp: &Path) -> UsageSummary {
+    let file = match fs::File::open(fp) {
+        Ok(f) => f,
+        Err(_) => return UsageSummary::default(),
+    };
+    let mut last = UsageSummary::default();
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let Some(u) = v
+            .get("message")
+            .and_then(|m| m.get("usage"))
+            .or_else(|| v.get("usage"))
+        else {
+            continue;
+        };
+        let input = u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+        let cache_creation = u
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let cache_read = u
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        // 跳过没有上下文输入的 usage（纯输出 / 占位 / user 行）
+        if input + cache_creation + cache_read == 0 {
+            continue;
+        }
+        let mut cur = UsageSummary::default();
+        cur.input_tokens = input;
+        cur.output_tokens = u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+        cur.cache_creation_input_tokens = cache_creation;
+        cur.cache_read_input_tokens = cache_read;
+        last = cur.finalize();
+    }
+    last
+}
+
+fn last_cwd(fp: &Path) -> Option<String> {
     let file = fs::File::open(fp).ok()?;
-    for line in BufReader::new(file).lines().map_while(Result::ok).take(12) {
+    let mut last: Option<String> = None;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
         if let Ok(v) = serde_json::from_str::<Value>(&line) {
             if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
-                return Some(c.to_string());
+                last = Some(c.to_string());
             }
         }
     }
-    None
+    last
 }
 
 /// 用户在 Claude 处理过程中排队输入的消息会被记成
@@ -649,10 +747,8 @@ fn scan(fp: &Path) -> SessionMeta {
                 Err(_) => continue,
             };
             let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-            if cwd.is_none() {
-                if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
-                    cwd = Some(c.to_string());
-                }
+            if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
+                cwd = Some(c.to_string());
             }
             if t == "custom-title" || t == "agent-name" {
                 let field = if t == "custom-title" {
@@ -731,173 +827,469 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-        // 用户在 Claude 处理中排队输入的消息不是常规 user 记录，而是
-        // `attachment`（attachment.type == "queued_command"）。常规解析只认
-        // user/assistant，会整条丢掉它 —— 这里单独补成一条 user 气泡。
-        if t == "attachment" {
-            if let Some(blocks) = queued_command_blocks(&v) {
-                // 排队进来的可能是用户手敲消息（→ Me），也可能是处理中到达的
-                // 任务通知（commandMode == "task-notification" → 系统块）。
-                let meta_kind = classify_meta_kind(&v, &blocks);
-                msgs.push(Msg {
-                    uuid: v.get("uuid").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                    role: "user".to_string(),
-                    timestamp: v
-                        .get("timestamp")
-                        .and_then(|x| x.as_str())
-                        .map(|s| s.to_string()),
-                    model: None,
-                    sidechain: v
-                        .get("isSidechain")
-                        .and_then(|x| x.as_bool())
-                        .unwrap_or(false),
-                    blocks,
-                    meta_kind,
-                });
-            }
-            continue;
+        if let Some(msg) = record_to_msg(&v) {
+            msgs.push(msg);
         }
-        if t != "user" && t != "assistant" {
-            continue;
-        }
-        let sidechain = v
-            .get("isSidechain")
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false);
-        let uuid = v
-            .get("uuid")
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string());
-        let timestamp = v
-            .get("timestamp")
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string());
-        let message = v.get("message");
-        let model = message
-            .and_then(|m| m.get("model"))
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string());
+    }
+    Ok(msgs)
+}
 
-        let mut blocks = Vec::new();
-        if let Some(content) = message.and_then(|m| m.get("content")) {
-            match content {
-                Value::String(s) if !s.trim().is_empty() => {
-                    blocks.push(text_block("text", s));
-                }
-                Value::Array(arr) => {
-                    for el in arr {
-                        let et = el.get("type").and_then(|x| x.as_str()).unwrap_or("");
-                        match et {
-                            "text" => {
-                                if let Some(s) = el.get("text").and_then(|x| x.as_str()) {
-                                    if !s.trim().is_empty() {
-                                        blocks.push(text_block("text", s));
-                                    }
-                                }
-                            }
-                            "thinking" => {
-                                if let Some(s) = el.get("thinking").and_then(|x| x.as_str()) {
-                                    if !s.trim().is_empty() {
-                                        blocks.push(text_block("thinking", s));
-                                    }
-                                }
-                            }
-                            "tool_use" => {
-                                let name = el
-                                    .get("name")
-                                    .and_then(|x| x.as_str())
-                                    .unwrap_or("tool")
-                                    .to_string();
-                                let input = el
-                                    .get("input")
-                                    .map(|i| serde_json::to_string_pretty(i).unwrap_or_default());
-                                let id = el
-                                    .get("id")
-                                    .and_then(|x| x.as_str())
-                                    .map(|s| s.to_string());
-                                blocks.push(Block {
-                                    kind: "tool_use".to_string(),
-                                    tool_name: Some(name),
-                                    tool_input: input,
-                                    tool_id: id,
-                                    ..Default::default()
-                                });
-                            }
-                            "tool_result" => {
-                                let id = el
-                                    .get("tool_use_id")
-                                    .and_then(|x| x.as_str())
-                                    .map(|s| s.to_string());
-                                let is_error = el
-                                    .get("is_error")
-                                    .and_then(|x| x.as_bool())
-                                    .unwrap_or(false);
-                                let txt = stringify_tool_result(el.get("content"));
-                                // 同一条记录顶层的 toolUseResult 携带文件改动的结构化 diff。
-                                let tur = v.get("toolUseResult");
-                                let file_path = tur
-                                    .and_then(|t| t.get("filePath"))
-                                    .and_then(|x| x.as_str())
-                                    .map(|s| s.to_string());
-                                let diff = tur
-                                    .and_then(|t| t.get("structuredPatch"))
-                                    .and_then(parse_structured_patch);
-                                blocks.push(Block {
-                                    kind: "tool_result".to_string(),
-                                    text: Some(txt),
-                                    tool_id: id,
-                                    is_error,
-                                    file_path,
-                                    diff,
-                                    ..Default::default()
-                                });
-                            }
-                            "image" => {
-                                if let Some(src) = image_src(el) {
-                                    blocks.push(Block {
-                                        kind: "image".to_string(),
-                                        image_src: Some(src),
-                                        ..Default::default()
-                                    });
-                                } else {
-                                    blocks.push(text_block("text", "[image]"));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        if blocks.is_empty() {
-            continue;
-        }
-        // Claude 把用户贴图拆成两条 user 记录：一条是带 base64 的真实消息，
-        // 紧跟一条 `isMeta:true` 的 `[Image: source: <local-path>]` 引用。
-        // 已经在上一条里渲染过真实图，跳过 meta 那条避免出现重复气泡。
-        if t == "user" && is_image_source_meta(&v, &blocks) {
-            continue;
-        }
-        // 系统注入的 user 记录（压缩摘要 / skill / 任务通知 / 命令输出）归类，
-        // 让前端把它们渲染成低调的系统块而非「Me」气泡。assistant 永远是 None。
-        let meta_kind = if t == "user" {
-            classify_meta_kind(&v, &blocks)
-        } else {
-            None
-        };
-        msgs.push(Msg {
-            uuid,
-            role: t.to_string(),
-            timestamp,
-            model,
-            sidechain,
+/// 把单条 JSONL 记录（或 stream-json 事件里同形的 `message` 记录）解析成一条 `Msg`。
+/// 返回 `None` 表示这条记录不产生气泡：非 user/assistant/queued attachment、空内容、
+/// 或 `isMeta` 的 `[Image: source:]` 引用副本。
+///
+/// 既给 [`read`] 逐行复用，也给 stream-json 的 [`parse_chat_line`] 复用 —— stream-json 的
+/// assistant/user 事件的 `message` 字段与 JSONL 记录同形，所以记录→`Block` 的归一逻辑
+/// 只此一份，GUI live chat 与离线回看走完全一致的渲染。
+pub(crate) fn record_to_msg(v: &Value) -> Option<Msg> {
+    let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+    // 用户在 Claude 处理中排队输入的消息不是常规 user 记录，而是
+    // `attachment`（attachment.type == "queued_command"）。常规解析只认
+    // user/assistant，会整条丢掉它 —— 这里单独补成一条 user 气泡。
+    if t == "attachment" {
+        let blocks = queued_command_blocks(v)?;
+        // 排队进来的可能是用户手敲消息（→ Me），也可能是处理中到达的
+        // 任务通知（commandMode == "task-notification" → 系统块）。
+        let meta_kind = classify_meta_kind(v, &blocks);
+        return Some(Msg {
+            uuid: v.get("uuid").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            role: "user".to_string(),
+            timestamp: v
+                .get("timestamp")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            model: None,
+            sidechain: v
+                .get("isSidechain")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
             blocks,
             meta_kind,
         });
     }
-    Ok(msgs)
+    if t != "user" && t != "assistant" {
+        return None;
+    }
+    let sidechain = v
+        .get("isSidechain")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+    let uuid = v
+        .get("uuid")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let timestamp = v
+        .get("timestamp")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let message = v.get("message");
+    let model = message
+        .and_then(|m| m.get("model"))
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+
+    let mut blocks = Vec::new();
+    if let Some(content) = message.and_then(|m| m.get("content")) {
+        match content {
+            Value::String(s) if !s.trim().is_empty() => {
+                blocks.push(text_block("text", s));
+            }
+            Value::Array(arr) => {
+                for el in arr {
+                    let et = el.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                    match et {
+                        "text" => {
+                            if let Some(s) = el.get("text").and_then(|x| x.as_str()) {
+                                if !s.trim().is_empty() {
+                                    blocks.push(text_block("text", s));
+                                }
+                            }
+                        }
+                        "thinking" => {
+                            if let Some(s) = el.get("thinking").and_then(|x| x.as_str()) {
+                                if !s.trim().is_empty() {
+                                    blocks.push(text_block("thinking", s));
+                                }
+                            }
+                        }
+                        "tool_use" => {
+                            let name = el
+                                .get("name")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("tool")
+                                .to_string();
+                            let input = el
+                                .get("input")
+                                .map(|i| serde_json::to_string_pretty(i).unwrap_or_default());
+                            let id = el
+                                .get("id")
+                                .and_then(|x| x.as_str())
+                                .map(|s| s.to_string());
+                            blocks.push(Block {
+                                kind: "tool_use".to_string(),
+                                tool_name: Some(name),
+                                tool_input: input,
+                                tool_id: id,
+                                ..Default::default()
+                            });
+                        }
+                        "tool_result" => {
+                            let id = el
+                                .get("tool_use_id")
+                                .and_then(|x| x.as_str())
+                                .map(|s| s.to_string());
+                            let is_error = el
+                                .get("is_error")
+                                .and_then(|x| x.as_bool())
+                                .unwrap_or(false);
+                            let txt = stringify_tool_result(el.get("content"));
+                            // 同一条记录顶层的 toolUseResult 携带文件改动的结构化 diff。
+                            // stream-json 事件没有这个顶层字段 → diff/file_path 为 None，
+                            // 工具结果以纯文本呈现，离线回看时再带出结构化 diff。
+                            let tur = v.get("toolUseResult");
+                            let file_path = tur
+                                .and_then(|t| t.get("filePath"))
+                                .and_then(|x| x.as_str())
+                                .map(|s| s.to_string());
+                            let diff = tur
+                                .and_then(|t| t.get("structuredPatch"))
+                                .and_then(parse_structured_patch);
+                            blocks.push(Block {
+                                kind: "tool_result".to_string(),
+                                text: Some(txt),
+                                tool_id: id,
+                                is_error,
+                                file_path,
+                                diff,
+                                ..Default::default()
+                            });
+                        }
+                        "image" => {
+                            if let Some(src) = image_src(el) {
+                                blocks.push(Block {
+                                    kind: "image".to_string(),
+                                    image_src: Some(src),
+                                    ..Default::default()
+                                });
+                            } else {
+                                blocks.push(text_block("text", "[image]"));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if blocks.is_empty() {
+        return None;
+    }
+    // Claude 把用户贴图拆成两条 user 记录：一条是带 base64 的真实消息，
+    // 紧跟一条 `isMeta:true` 的 `[Image: source: <local-path>]` 引用。
+    // 已经在上一条里渲染过真实图，跳过 meta 那条避免出现重复气泡。
+    if t == "user" && is_image_source_meta(v, &blocks) {
+        return None;
+    }
+    // 系统注入的 user 记录（压缩摘要 / skill / 任务通知 / 命令输出）归类，
+    // 让前端把它们渲染成低调的系统块而非「Me」气泡。assistant 永远是 None。
+    let meta_kind = if t == "user" {
+        classify_meta_kind(v, &blocks)
+    } else {
+        None
+    };
+    Some(Msg {
+        uuid,
+        role: t.to_string(),
+        timestamp,
+        model,
+        sidechain,
+        blocks,
+        meta_kind,
+    })
+}
+
+// ============================ §10.1 slash 指令磁盘发现 ============================
+
+/// 扫出 GUI chat 可用的动态 slash 指令：项目 / 用户级 `.claude/commands/**/*.md` +
+/// `~/.claude/skills/*/SKILL.md` 里 `user-invocable: true` 的。**不含 TUI 内置命令**
+/// （headless 不展开）。同名以先到的为准（项目 > 用户 > skill）。
+pub(crate) fn chat_slash_commands(cwd: &str) -> Vec<crate::types::SlashCommand> {
+    use crate::types::SlashCommand;
+    let mut out: Vec<SlashCommand> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // 项目级优先（覆盖同名用户命令）。
+    let proj_cmds = Path::new(cwd).join(".claude").join("commands");
+    scan_commands_dir(&proj_cmds, &proj_cmds, "project", &mut out, &mut seen);
+
+    let user_cmds = home().join(".claude").join("commands");
+    scan_commands_dir(&user_cmds, &user_cmds, "user", &mut out, &mut seen);
+
+    scan_user_invocable_skills(&home().join(".claude").join("skills"), &mut out, &mut seen);
+
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// 递归扫 `.claude/commands` 下的 `*.md`。命名空间 = 相对 `root` 的路径去扩展名、`/`→`:`
+/// （如 `git/commit.md` → `git:commit`），对齐 Claude 自身的命令命名。
+fn scan_commands_dir(
+    dir: &Path,
+    root: &Path,
+    source: &str,
+    out: &mut Vec<crate::types::SlashCommand>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_commands_dir(&path, root, source, out, seen);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(root) else { continue };
+        let name = rel
+            .with_extension("")
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, ":");
+        if name.is_empty() || !seen.insert(name.clone()) {
+            continue;
+        }
+        let description = md_description(&path).unwrap_or_default();
+        out.push(crate::types::SlashCommand { name, description, source: source.to_string() });
+    }
+}
+
+/// 扫 `~/.claude/skills/*/SKILL.md`，只收 frontmatter 标了 `user-invocable: true` 的。
+fn scan_user_invocable_skills(
+    skills_dir: &Path,
+    out: &mut Vec<crate::types::SlashCommand>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    let Ok(entries) = fs::read_dir(skills_dir) else { return };
+    for entry in entries.flatten() {
+        let skill_md = entry.path().join("SKILL.md");
+        if !skill_md.is_file() {
+            continue;
+        }
+        let fm = read_frontmatter(&skill_md);
+        if fm.get("user-invocable").map(|v| v.as_str()) != Some("true") {
+            continue;
+        }
+        // name 取 frontmatter name，回退目录名。
+        let name = fm
+            .get("name")
+            .cloned()
+            .unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+        if name.is_empty() || !seen.insert(name.clone()) {
+            continue;
+        }
+        let description = fm.get("description").cloned().unwrap_or_default();
+        out.push(crate::types::SlashCommand { name, description, source: "skill".to_string() });
+    }
+}
+
+/// 取命令 `.md` 的描述：优先 frontmatter `description:`，否则正文首个非空非标题行。封顶 200 字符。
+fn md_description(path: &Path) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    let fm = parse_frontmatter(&content);
+    if let Some(d) = fm.get("description") {
+        if !d.is_empty() {
+            return Some(cap_desc(d));
+        }
+    }
+    // 跳过 frontmatter 块后找正文首行。
+    let body = strip_frontmatter(&content);
+    for raw in body.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        return Some(cap_desc(line));
+    }
+    None
+}
+
+fn cap_desc(s: &str) -> String {
+    let s = s.trim();
+    if s.chars().count() > 200 {
+        format!("{}…", s.chars().take(200).collect::<String>())
+    } else {
+        s.to_string()
+    }
+}
+
+/// 读并解析一个文件的 YAML frontmatter（极简：`key: value` 行，value 去引号）。无则空 map。
+fn read_frontmatter(path: &Path) -> std::collections::HashMap<String, String> {
+    fs::read_to_string(path)
+        .map(|c| parse_frontmatter(&c))
+        .unwrap_or_default()
+}
+
+/// 解析 `---\n...\n---` 之间的简单 `key: value`。仅取标量行，忽略嵌套 / 列表。
+fn parse_frontmatter(content: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let trimmed = content.trim_start_matches('\u{feff}');
+    if !trimmed.starts_with("---") {
+        return map;
+    }
+    let mut lines = trimmed.lines();
+    lines.next(); // 开头的 ---
+    for line in lines {
+        if line.trim() == "---" {
+            break;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            let key = k.trim();
+            if key.is_empty() || key.starts_with('#') {
+                continue;
+            }
+            let val = v.trim().trim_matches(['"', '\'']).trim();
+            map.insert(key.to_string(), val.to_string());
+        }
+    }
+    map
+}
+
+/// 去掉开头的 frontmatter 块，返回正文（找闭合的 `---` 行之后）。无 frontmatter 原样返回。
+fn strip_frontmatter(content: &str) -> &str {
+    let trimmed = content.trim_start_matches('\u{feff}');
+    if !trimmed.starts_with("---") {
+        return content;
+    }
+    let Some(first_nl) = trimmed.find('\n') else { return "" };
+    let after_open = &trimmed[first_nl + 1..];
+    let mut pos = 0;
+    for line in after_open.split_inclusive('\n') {
+        if line.trim() == "---" {
+            return &after_open[pos + line.len()..];
+        }
+        pos += line.len();
+    }
+    content
+}
+
+/// 把 stream-json 子进程 stdout 的一行翻成统一的 [`ChatEvent`]。Claude 事件形状：
+///   `{"type":"system","subtype":"init","session_id":"...",...}`  → `Init`
+///   `{"type":"assistant","message":{...},"session_id":"..."}`     → `Message`（复用 `record_to_msg`）
+///   `{"type":"user","message":{"content":[tool_result…]},...}`    → `Message`
+///   `{"type":"result","subtype":"success","usage":{...},...}`     → `Result`（一轮结束）
+/// 其它（`stream_event` 局部增量 / 未知类型）→ `Ignore`。
+pub(crate) fn parse_chat_line(line: &str) -> ChatEvent {
+    let line = line.trim();
+    if line.is_empty() {
+        return ChatEvent::Ignore;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return ChatEvent::Ignore;
+    };
+    match v.get("type").and_then(|x| x.as_str()).unwrap_or("") {
+        "assistant" | "user" => match record_to_msg(&v) {
+            Some(msg) => ChatEvent::Message(msg),
+            None => ChatEvent::Ignore,
+        },
+        "system" => ChatEvent::Init {
+            session_id: v
+                .get("session_id")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            // init 携带 apiKeySource：用来区分订阅登录（"none"）与 API key 计费。
+            api_key_source: v
+                .get("apiKeySource")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+        },
+        "result" => {
+            let is_error = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+            let ok =
+                !is_error && v.get("subtype").and_then(|x| x.as_str()) == Some("success");
+            let usage = v.get("usage").map(parse_stream_usage);
+            ChatEvent::Result { ok, usage }
+        }
+        // token 级流式：`stream_event` 包裹标准 Anthropic SSE，payload 在 `.event`。
+        "stream_event" => parse_stream_event(v.get("event")),
+        // 限额事件不走流解析了：额度改由 OAuth 用量接口（usage_api）随时全量拉取。
+        _ => ChatEvent::Ignore,
+    }
+}
+
+/// 把一个 `stream_event.event`（标准 Anthropic 流式事件）归一成 `ChatEvent::Delta`。
+/// 只关心块生命周期 + 文本增量；`message_start/delta/stop`、`signature_delta`、
+/// `input_json_delta` 对 MVP 打字机无用 → `Ignore`（权威 `assistant` 记录会定稿）。
+fn parse_stream_event(event: Option<&Value>) -> ChatEvent {
+    let Some(ev) = event else {
+        return ChatEvent::Ignore;
+    };
+    let index = ev.get("index").and_then(Value::as_u64).unwrap_or(0);
+    match ev.get("type").and_then(Value::as_str).unwrap_or("") {
+        "content_block_start" => ChatEvent::Delta(ChatDelta {
+            index,
+            phase: "start".to_string(),
+            kind: ev
+                .get("content_block")
+                .and_then(|c| c.get("type"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            text: None,
+        }),
+        "content_block_delta" => {
+            let delta = ev.get("delta");
+            let dtype = delta
+                .and_then(|d| d.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            // text_delta → .text；thinking_delta → .thinking。其它（signature/input_json）忽略。
+            let (kind, text) = match dtype {
+                "text_delta" => (
+                    "text",
+                    delta.and_then(|d| d.get("text")).and_then(Value::as_str),
+                ),
+                "thinking_delta" => (
+                    "thinking",
+                    delta.and_then(|d| d.get("thinking")).and_then(Value::as_str),
+                ),
+                _ => ("", None),
+            };
+            match text {
+                Some(t) => ChatEvent::Delta(ChatDelta {
+                    index,
+                    phase: "delta".to_string(),
+                    kind: Some(kind.to_string()),
+                    text: Some(t.to_string()),
+                }),
+                None => ChatEvent::Ignore,
+            }
+        }
+        "content_block_stop" => ChatEvent::Delta(ChatDelta {
+            index,
+            phase: "stop".to_string(),
+            kind: None,
+            text: None,
+        }),
+        _ => ChatEvent::Ignore,
+    }
+}
+
+/// 从 `result` 事件的 `usage` 对象抽出 `UsageSummary`（字段同 assistant.message.usage）。
+fn parse_stream_usage(u: &Value) -> UsageSummary {
+    UsageSummary {
+        input_tokens: u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
+        output_tokens: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
+        cache_creation_input_tokens: u
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        cache_read_input_tokens: u
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        ..Default::default()
+    }
+    .finalize()
 }
 
 // ---- read_turns（统计聚合用）---------------------------------------------
@@ -933,10 +1325,8 @@ fn read_turns(fp: &Path) -> Vec<Turn> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if project_path.is_empty() {
-            if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
-                project_path = c.to_string();
-            }
+        if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
+            project_path = c.to_string();
         }
         let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
         if t != "user" && t != "assistant" {
@@ -1396,6 +1786,40 @@ mod tests {
     }
 
     #[test]
+    fn scan_uses_last_cwd_after_cd() {
+        let p = write_temp("cwd-moved.jsonl", &[
+            r#"{"type":"user","cwd":"C:\\Users\\BLL","message":{"content":"start"},"timestamp":"2025-01-01T00:00:00.000Z"}"#,
+            r#"{"type":"assistant","cwd":"C:\\Users\\BLL","message":{"content":[{"type":"text","text":"Already in C:\\Users\\BLL."}]}}"#,
+            r#"{"type":"user","cwd":"D:\\ZLSYSproject","message":{"content":"/cd D:\\ZLSYSproject"},"timestamp":"2025-01-01T00:00:01.000Z"}"#,
+            r#"{"type":"assistant","cwd":"D:\\ZLSYSproject","message":{"content":[{"type":"text","text":"Moved to D:\\ZLSYSproject"}]}}"#,
+        ]);
+        let meta = scan(&p);
+        assert_eq!(meta.cwd.as_deref(), Some(r#"D:\ZLSYSproject"#));
+    }
+
+    #[test]
+    fn list_projects_uses_last_cwd_for_display_path() {
+        let root = std::env::temp_dir().join("csv-claude-project-cwd-tests");
+        let _ = fs::remove_dir_all(&root);
+        let proj = root.join("moved-project");
+        fs::create_dir_all(&proj).unwrap();
+        let session = proj.join("session-1.jsonl");
+        fs::write(
+            &session,
+            [
+                r#"{"type":"user","cwd":"C:\\Users\\BLL","message":{"content":"start"}}"#,
+                r#"{"type":"user","cwd":"D:\\ZLSYSproject","message":{"content":"/cd D:\\ZLSYSproject"}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let projects = list_projects_in(&root).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].display_path, r#"D:\ZLSYSproject"#);
+    }
+
+    #[test]
     #[ignore = "manual full-scan; reads every Claude JSONL on disk"]
     fn dedup_full_claude_scan() {
         let src = ClaudeSource;
@@ -1578,4 +2002,230 @@ mod tests {
         let meta = scan(&p);
         assert_eq!(meta.id, "abc123-uuid");
     }
+
+    // ---- parse_chat_line: stream-json 事件归一 ----
+
+    #[test]
+    fn parse_chat_line_assistant_event_becomes_message() {
+        let line = r#"{"type":"assistant","message":{"id":"msg_1","role":"assistant","model":"claude-opus-4","content":[{"type":"text","text":"hi there"}]},"session_id":"s1"}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Message(m) => {
+                assert_eq!(m.role, "assistant");
+                assert_eq!(m.model.as_deref(), Some("claude-opus-4"));
+                assert_eq!(m.blocks.len(), 1);
+                assert_eq!(m.blocks[0].kind, "text");
+                assert_eq!(m.blocks[0].text.as_deref(), Some("hi there"));
+            }
+            _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn parse_chat_line_user_tool_result_becomes_message_not_meta() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},"session_id":"s1"}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Message(m) => {
+                assert_eq!(m.role, "user");
+                assert!(m.meta_kind.is_none(), "tool_result user must not be meta");
+                assert_eq!(m.blocks[0].kind, "tool_result");
+            }
+            _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn parse_chat_line_system_init_carries_session_id() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"abc-123","apiKeySource":"none","tools":[]}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Init {
+                session_id,
+                api_key_source,
+            } => {
+                assert_eq!(session_id.as_deref(), Some("abc-123"));
+                assert_eq!(api_key_source.as_deref(), Some("none"));
+            }
+            _ => panic!("expected Init"),
+        }
+    }
+
+    #[test]
+    fn parse_chat_line_result_success_is_ok_with_usage() {
+        let line = r#"{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":2}}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Result { ok, usage } => {
+                assert!(ok);
+                let u = usage.expect("usage present");
+                assert_eq!(u.input_tokens, 10);
+                assert_eq!(u.output_tokens, 5);
+                assert_eq!(u.cache_read_input_tokens, 2);
+                assert_eq!(u.total, 17);
+            }
+            _ => panic!("expected Result"),
+        }
+    }
+
+    #[test]
+    fn parse_chat_line_result_error_is_not_ok() {
+        let line = r#"{"type":"result","subtype":"error_during_execution","is_error":true}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Result { ok, .. } => assert!(!ok),
+            _ => panic!("expected Result"),
+        }
+    }
+
+    #[test]
+    fn parse_chat_line_ignores_unknown_and_garbage() {
+        assert!(matches!(parse_chat_line("not json"), ChatEvent::Ignore));
+        assert!(matches!(parse_chat_line(""), ChatEvent::Ignore));
+        assert!(matches!(
+            parse_chat_line(r#"{"type":"stream_event","event":{}}"#),
+            ChatEvent::Ignore
+        ));
+    }
+
+    // ---- §10.6 token 级流式：stream_event → ChatEvent::Delta ----
+
+    #[test]
+    fn stream_content_block_start_is_delta_start_with_kind() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"text"}},"session_id":"s1"}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Delta(d) => {
+                assert_eq!(d.index, 1);
+                assert_eq!(d.phase, "start");
+                assert_eq!(d.kind.as_deref(), Some("text"));
+                assert!(d.text.is_none());
+            }
+            _ => panic!("expected Delta start"),
+        }
+    }
+
+    #[test]
+    fn stream_text_delta_carries_text_fragment() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"1\n2\n"}}}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Delta(d) => {
+                assert_eq!(d.index, 1);
+                assert_eq!(d.phase, "delta");
+                assert_eq!(d.kind.as_deref(), Some("text"));
+                assert_eq!(d.text.as_deref(), Some("1\n2\n"));
+            }
+            _ => panic!("expected Delta delta"),
+        }
+    }
+
+    #[test]
+    fn stream_thinking_delta_carries_thinking_fragment() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Delta(d) => {
+                assert_eq!(d.kind.as_deref(), Some("thinking"));
+                assert_eq!(d.text.as_deref(), Some("hmm"));
+            }
+            _ => panic!("expected Delta from thinking_delta"),
+        }
+    }
+
+    #[test]
+    fn stream_signature_and_input_json_deltas_are_ignored() {
+        // 签名 / 工具入参增量对打字机无用 —— 不产 Delta（权威 assistant 记录会定稿）。
+        assert!(matches!(
+            parse_chat_line(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Eq=="}}}"#),
+            ChatEvent::Ignore
+        ));
+        assert!(matches!(
+            parse_chat_line(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"a\":"}}}"#),
+            ChatEvent::Ignore
+        ));
+    }
+
+    #[test]
+    fn stream_content_block_stop_is_delta_stop() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_stop","index":1}}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Delta(d) => {
+                assert_eq!(d.index, 1);
+                assert_eq!(d.phase, "stop");
+            }
+            _ => panic!("expected Delta stop"),
+        }
+    }
+
+    #[test]
+    fn stream_message_lifecycle_events_are_ignored() {
+        for et in ["message_start", "message_delta", "message_stop"] {
+            let line = format!(r#"{{"type":"stream_event","event":{{"type":"{et}"}}}}"#);
+            assert!(
+                matches!(parse_chat_line(&line), ChatEvent::Ignore),
+                "{et} should be Ignore"
+            );
+        }
+    }
+
+    #[test]
+    fn assistant_record_still_parses_as_message_alongside_streaming() {
+        // 关键：开了 --include-partial-messages 后，权威 assistant 记录照旧到达并解析成 Message。
+        let line = r#"{"type":"assistant","message":{"id":"m","role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"done"}]},"session_id":"s1"}"#;
+        assert!(matches!(parse_chat_line(line), ChatEvent::Message(_)));
+    }
+
+    // ---- §10.1 slash 指令磁盘发现 ----
+
+    #[test]
+    fn parse_frontmatter_extracts_scalars_and_strips_quotes() {
+        let fm = parse_frontmatter("---\ndescription: \"Do a thing\"\nname: foo\n---\nbody\n");
+        assert_eq!(fm.get("description").map(String::as_str), Some("Do a thing"));
+        assert_eq!(fm.get("name").map(String::as_str), Some("foo"));
+    }
+
+    #[test]
+    fn parse_frontmatter_empty_when_no_block() {
+        assert!(parse_frontmatter("no frontmatter here\n# Title").is_empty());
+    }
+
+    #[test]
+    fn strip_frontmatter_returns_body_after_close() {
+        assert_eq!(strip_frontmatter("---\na: b\n---\nhello\nworld\n").trim(), "hello\nworld");
+        assert_eq!(strip_frontmatter("plain body").trim(), "plain body");
+    }
+
+    #[test]
+    fn md_description_prefers_frontmatter_then_first_body_line() {
+        let dir = std::env::temp_dir().join("csv-claude-slash-desc");
+        let _ = fs::create_dir_all(&dir);
+        let a = dir.join("a.md");
+        fs::write(&a, "---\ndescription: From frontmatter\n---\n# Heading\nbody").unwrap();
+        assert_eq!(md_description(&a).as_deref(), Some("From frontmatter"));
+
+        let b = dir.join("b.md");
+        fs::write(&b, "# Heading\n\nFirst real line\nsecond").unwrap();
+        assert_eq!(md_description(&b).as_deref(), Some("First real line"));
+    }
+
+    #[test]
+    fn scan_commands_dir_namespaces_nested_and_skips_dups() {
+        let root = std::env::temp_dir().join("csv-claude-slash-scan");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("git")).unwrap();
+        fs::write(root.join("review.md"), "---\ndescription: Review code\n---\n").unwrap();
+        fs::write(root.join("git").join("commit.md"), "Make a commit").unwrap();
+        fs::write(root.join("notes.txt"), "ignored, not md").unwrap();
+
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        scan_commands_dir(&root, &root, "project", &mut out, &mut seen);
+
+        let names: std::collections::HashSet<_> = out.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains("review"), "{names:?}");
+        assert!(names.contains("git:commit"), "nested namespaced with ':': {names:?}");
+        assert!(!names.iter().any(|n| n.contains("notes")), "non-md ignored");
+        let review = out.iter().find(|c| c.name == "review").unwrap();
+        assert_eq!(review.description, "Review code");
+        assert_eq!(review.source, "project");
+
+        // 同名再扫一次（如用户级）不应重复加入。
+        let before = out.len();
+        scan_commands_dir(&root, &root, "user", &mut out, &mut seen);
+        assert_eq!(out.len(), before, "已 seen 的名字不重复");
+    }
+
 }

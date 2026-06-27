@@ -1,7 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
+  AccountUsage,
   Agent,
   AgentStats,
+  ChatImageInput,
+  ChatStartInfo,
+  SlashCommand,
   ProjectInfo,
   SessionPage,
   Msg,
@@ -27,6 +31,10 @@ export const listProjects = (
     includeCodexInternal: options.includeCodexInternal ?? false,
     includeCodexArchived: options.includeCodexArchived ?? false,
   })
+
+/** 把原生窗口外观（标题栏 / 失焦红绿灯灰圈）钉到 App 主题。null = 跟随系统。 */
+export const setTitlebarTheme = (theme: 'dark' | 'light' | null) =>
+  invoke<void>('set_titlebar_theme', { theme })
 
 export const addBookmark = (agent: Agent, path: string) =>
   invoke<void>('add_bookmark', { agent, path })
@@ -57,6 +65,10 @@ export const readSession = (agent: Agent, path: string) =>
  *  后端按 (path, mtime) 缓存，重复调用不会重复扫描文件。 */
 export const sessionUsage = (agent: Agent, path: string) =>
   invoke<UsageSummary>('session_usage', { agent, path })
+
+/** 续聊种子：会话最后一条 usage（≈当前上下文规模），区别于 sessionUsage 的累加。 */
+export const sessionContextUsage = (agent: Agent, path: string) =>
+  invoke<UsageSummary>('session_context_usage', { agent, path })
 
 /** 当前 agent 的统计概览。**兼容入口**，前端 stats 页面默认走 `startAgentStats` 流式
  *  接口；这里保留仅作老回退。 */
@@ -243,7 +255,61 @@ export const ptyResize = (id: number, cols: number, rows: number) =>
 /** 强杀子进程并清理 PTY；幂等，已死的 id 也安全。 */
 export const ptyKill = (id: number) => invoke<void>('pty_kill', { id })
 
+// ---------- GUI chat（程序化聊天：管道子进程跑 stream-json）----------
+
+/** 启动一个 GUI chat 子进程，返回 { chatId, processModel }。`sessionId` 给出时续聊既有
+ *  会话；`permissionMode` 走后端允许列表（default | acceptEdits | plan | bypassPermissions），
+ *  缺省 acceptEdits。`model` / `effort` 缺省走 CLI 自身默认。`processModel` 让前端决定切
+ *  设置走 restart-with-resume（长驻）还是下轮 flag（one-shot）。后续通过
+ *  `agent-chat://event|init|result|delta|exit|stderr` 事件接收。 */
+export const agentChatStart = (
+  agent: Agent,
+  cwd: string,
+  sessionId?: string,
+  permissionMode?: string,
+  model?: string,
+  effort?: string,
+) =>
+  invoke<ChatStartInfo>('agent_chat_start', {
+    agent,
+    cwd,
+    sessionId,
+    permissionMode,
+    model,
+    effort,
+  })
+
+/** 向某个 chat 子进程发送一条用户消息（含可选图片附件 + 本轮 model/effort/权限）。
+ *  one-shot agent（Codex）据此每轮切换；长驻 agent（Claude）后端忽略这三者（在 start
+ *  已定型，切换走 restart）。 */
+export const agentChatSend = (
+  id: number,
+  text: string,
+  images?: ChatImageInput[],
+  model?: string,
+  effort?: string,
+  permissionMode?: string,
+) =>
+  invoke<void>('agent_chat_send', {
+    id,
+    text,
+    images: images ?? [],
+    model,
+    effort,
+    permissionMode,
+  })
+
+/** 结束一个 chat 子进程（kill + 回收）。幂等。 */
+export const agentChatStop = (id: number) => invoke<void>('agent_chat_stop', { id })
+
+/** 拉 GUI chat `/` 浮层的动态指令（磁盘上的自定义命令 / user-invocable skills）。 */
+export const agentChatSlashCommands = (agent: Agent, cwd: string) =>
+  invoke<SlashCommand[]>('agent_chat_slash_commands', { agent, cwd })
+
 export const trayQuickStats = () => invoke<TrayStats>('tray_quick_stats')
+
+/** 账号额度（5 小时 / 周 / 各模型分项）—— 走 OAuth 用量接口，每窗口含精确利用率 + 重置时间。 */
+export const accountUsage = (force = false) => invoke<AccountUsage>('account_usage', { force })
 
 export interface UpdateInfo {
   current: string

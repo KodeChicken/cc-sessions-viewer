@@ -31,6 +31,7 @@ import {
   IconSelect,
   IconClose,
   IconTerminal,
+  IconChat,
   agentIcons,
 } from '../components/icons'
 
@@ -47,12 +48,14 @@ const emit = defineEmits<{
   (e: 'open', s: SessionMeta): void
   (e: 'rename', s: SessionMeta): void
   (e: 'resume', s: SessionMeta): void
+  (e: 'chat', s: SessionMeta): void
   (e: 'reveal', path: string): void
   (e: 'delete', s: SessionMeta): void
   (e: 'copy', text: string): void
   (e: 'export', s: SessionMeta, kind: 'md' | 'html' | 'json'): void
   (e: 'refresh'): void
   (e: 'new-session'): void
+  (e: 'new-gui-session'): void
   (e: 'new-shell'): void
   (e: 'delete-project'): void
   (e: 'load-more'): void
@@ -407,22 +410,45 @@ function onListMouseLeave() {
 // ---- 新建会话下拉菜单 ----
 const newMenuOpen = ref(false)
 const newMenuEl = ref<HTMLElement>()
+// 标题空白处右键 → 同一组「新建」菜单，跟随光标定位（fixed 视口坐标）。
+const ctxMenuPos = ref<{ x: number; y: number } | null>(null)
+const ctxMenuEl = ref<HTMLElement>()
 function toggleNewMenu(e: Event) {
   e.stopPropagation()
   newMenuOpen.value = !newMenuOpen.value
 }
+function openContextMenu(e: MouseEvent) {
+  // 目录已不存在时没有可执行的新建动作（与「+」按钮同样 v-if="project.exists"），不弹。
+  if (!props.project.exists) return
+  ctxMenuPos.value = { x: e.clientX, y: e.clientY }
+}
 function pickNewAgent() {
   newMenuOpen.value = false
+  ctxMenuPos.value = null
   emit('new-session')
+}
+function pickNewGui() {
+  newMenuOpen.value = false
+  ctxMenuPos.value = null
+  emit('new-gui-session')
 }
 function pickNewShell() {
   newMenuOpen.value = false
+  ctxMenuPos.value = null
   emit('new-shell')
 }
-function onNewMenuDocClick(e: MouseEvent) {
-  if (!newMenuOpen.value) return
-  if (newMenuEl.value?.contains(e.target as Node)) return
+function pickRefresh() {
   newMenuOpen.value = false
+  ctxMenuPos.value = null
+  emit('refresh')
+}
+function onNewMenuDocClick(e: MouseEvent) {
+  if (newMenuOpen.value && !newMenuEl.value?.contains(e.target as Node)) {
+    newMenuOpen.value = false
+  }
+  if (ctxMenuPos.value && !ctxMenuEl.value?.contains(e.target as Node)) {
+    ctxMenuPos.value = null
+  }
 }
 onMounted(() => document.addEventListener('click', onNewMenuDocClick))
 onUnmounted(() => document.removeEventListener('click', onNewMenuDocClick))
@@ -432,7 +458,7 @@ defineExpose({ scrollEl })
 
 <template>
   <div class="list-head list-head-row">
-    <div class="grow">
+    <div class="grow" @contextmenu.prevent="openContextMenu">
       <h2>{{ shortName(project.displayPath) }}</h2>
       <div class="path">
         {{ project.displayPath }}<span
@@ -440,6 +466,33 @@ defineExpose({ scrollEl })
           class="dir-missing-tag"
         >{{ t('list.dirMissing') }}</span>
       </div>
+    </div>
+    <!-- 标题 / 列表区右键菜单：复用「新建」三项 + 刷新，position:fixed 跟随光标。 -->
+    <div
+      v-if="ctxMenuPos"
+      ref="ctxMenuEl"
+      class="new-menu new-menu-floating"
+      role="menu"
+      :style="{ left: ctxMenuPos.x + 'px', top: ctxMenuPos.y + 'px' }"
+      @click.stop
+    >
+      <button type="button" class="new-menu-item" role="menuitem" @click="pickNewAgent">
+        <component :is="agentIcons[agent]" class="new-menu-ic" />
+        <span>{{ t('list.action.newSessionTui') }}</span>
+      </button>
+      <button v-if="agent === 'claude'" type="button" class="new-menu-item" role="menuitem" @click="pickNewGui">
+        <IconChat class="new-menu-ic" />
+        <span>{{ t('list.action.newSessionGui') }}</span>
+      </button>
+      <button type="button" class="new-menu-item" role="menuitem" @click="pickNewShell">
+        <IconTerminal class="new-menu-ic" />
+        <span>{{ t('list.action.newTerminal') }}</span>
+      </button>
+      <div class="new-menu-sep" role="separator" />
+      <button type="button" class="new-menu-item" role="menuitem" @click="pickRefresh">
+        <IconRefresh class="new-menu-ic" />
+        <span>{{ t('list.action.refresh') }}</span>
+      </button>
     </div>
     <div class="list-head-actions">
       <template v-if="sessionSelectMode">
@@ -539,7 +592,11 @@ defineExpose({ scrollEl })
           <div v-if="newMenuOpen" class="new-menu" role="menu">
             <button type="button" class="new-menu-item" role="menuitem" @click="pickNewAgent">
               <component :is="agentIcons[agent]" class="new-menu-ic" />
-              <span>{{ t('list.action.newAgentSession') }}</span>
+              <span>{{ t('list.action.newSessionTui') }}</span>
+            </button>
+            <button v-if="agent === 'claude'" type="button" class="new-menu-item" role="menuitem" @click="pickNewGui">
+              <IconChat class="new-menu-ic" />
+              <span>{{ t('list.action.newSessionGui') }}</span>
             </button>
             <button type="button" class="new-menu-item" role="menuitem" @click="pickNewShell">
               <IconTerminal class="new-menu-ic" />
@@ -567,11 +624,11 @@ defineExpose({ scrollEl })
     </div>
   </div>
   <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
-  <div v-else-if="!sessions.length" class="empty">
+  <div v-else-if="!sessions.length" class="empty" @contextmenu.prevent="openContextMenu">
     <div class="big"><IconInbox /></div>
     <div>{{ t('list.empty') }}</div>
   </div>
-  <div v-else-if="!visibleSessions.length" class="empty">
+  <div v-else-if="!visibleSessions.length" class="empty" @contextmenu.prevent="openContextMenu">
     <div class="big"><IconSearch /></div>
     <div>{{ t('list.noMatch') }}</div>
   </div>
@@ -579,6 +636,7 @@ defineExpose({ scrollEl })
     v-else
     ref="scrollEl"
     class="scroll-area"
+    @contextmenu.prevent="openContextMenu"
     @scroll="onScroll"
     @mouseover.passive="onListMouseOver"
     @mouseleave.passive="onListMouseLeave"
@@ -663,6 +721,14 @@ defineExpose({ scrollEl })
         </div>
       </div>
       <div v-if="!sessionSelectMode" class="session-actions">
+        <button
+          v-if="agent === 'claude' && project.exists"
+          class="icon-btn"
+          v-tooltip="t('list.action.openChat')"
+          @click.stop="emit('chat', s)"
+        >
+          <IconChat />
+        </button>
         <button
           v-if="project.exists"
           class="icon-btn"

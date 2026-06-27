@@ -1,0 +1,516 @@
+// 程序化聊天（GUI chat）—— 用纯管道子进程跑 agent 的 headless stream-json 模式，
+// 逐行读 JSON 事件直接喂给前端复用的 `Block`/ChatView 渲染。
+//
+// 与 `pty.rs` 的关系：
+//   - pty.rs 服务「窗口内 TUI resume / shell」—— 走伪终端，处理 ANSI / 光标，给 xterm。
+//   - agent_chat.rs 服务「干净聊天框」—— 走 `Stdio::piped()` 纯管道，没有 TUI 控制字符，
+//     stdout 每一行是一个 JSON 事件，由各 agent 的 `parse_chat_line` 归一成 `ChatEvent`。
+//   两者并存，互不影响；结构刻意对齐（HashMap<id, Arc<Handle>> + reader/waiter 线程）。
+//
+// 设计：
+//   - 通过用户登录 shell 拉起 CLI（`$SHELL -l -i -c "cd '<cwd>' && <cli>"` / powershell），
+//     与 pty.rs 同款，确保 nvm / fnm / volta / npm-global 的 PATH 都能拿到 claude。
+//   - stdin 持续喂 `{"type":"user","message":{...}}`（含可选 image 块）；进程长驻直到 stdin
+//     关闭 / 被 kill。
+//   - reader 线程逐行读 stdout → `source.parse_chat_line(line)` → emit 对应事件。
+//   - stderr 线程收诊断行（emit `agent-chat://stderr`，便于排障）。
+//   - waiter 线程 try_wait 退出码后 emit 一次 `agent-chat://exit` 并清理。
+//
+// 前端事件契约：
+//   agent-chat://event   { chatId, msg }              一条解析好的 Msg（assistant / tool_result）
+//   agent-chat://init    { chatId, sessionId }        子进程报告的 session id（定位 JSONL / 续聊）
+//   agent-chat://result  { chatId, ok, usage }        一轮回答结束（驱动 turn 门控）
+//   agent-chat://stderr  { chatId, line }             子进程 stderr 诊断行
+//   agent-chat://exit    { chatId, code }             子进程退出
+//
+// 不持久化：webview 刷新 = 所有 chat 子进程被回收（与 TUI tab 语义一致）。
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
+use std::time::Duration;
+
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
+
+use crate::agent_command::AgentCommand;
+use crate::agents::{self, ChatEvent, ChatProcessModel};
+use crate::types::{ChatImageInput, UsageSummary};
+
+/// 一个 chat「会话」的句柄。两种进程模型对应两个变体（见 [`ChatProcessModel`]）。
+enum ChatHandle {
+    /// 长驻进程（Claude）：start 时 spawn，send 写 stdin，waiter 监控退出。
+    LongLived {
+        /// 该会话的 agent —— send 时据此取 `chat_encode_input`。
+        agent: String,
+        /// 写端：用户消息 JSON 逐行写进来；Mutex 保护并发输入。
+        stdin: Mutex<ChildStdin>,
+        /// 子进程句柄：stop 时 kill；waiter 线程走短锁 try_wait 避免长占。
+        child: Mutex<Child>,
+    },
+    /// 一轮一进程（Codex / Gemini）：start 不 spawn，send 时 spawn 一个 resume 进程。
+    OneShot {
+        /// 用于 send 时 spawn turn 进程 + emit 事件。
+        app: AppHandle,
+        agent: String,
+        cwd: String,
+        /// 上一轮回填的 session/thread id —— 下一轮 resume 用。
+        session_id: Mutex<Option<String>>,
+        /// 当前在跑的那一轮子进程（stop 时 kill）。
+        current: Mutex<Option<Child>>,
+    },
+}
+
+static CHATS: OnceLock<Mutex<HashMap<u64, Arc<ChatHandle>>>> = OnceLock::new();
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn map() -> &'static Mutex<HashMap<u64, Arc<ChatHandle>>> {
+    CHATS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct InitPayload {
+    chat_id: u64,
+    session_id: Option<String>,
+    /// Claude init 的 apiKeySource：前端据此判断是否隐藏 5h/周限额角标（见 ChatEvent::Init）。
+    api_key_source: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ResultPayload {
+    chat_id: u64,
+    ok: bool,
+    usage: Option<UsageSummary>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct StderrPayload {
+    chat_id: u64,
+    line: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExitPayload {
+    chat_id: u64,
+    code: i32,
+}
+
+/// 按 OS 组装管道子进程命令。与 `pty.rs::build_shell_command` 同款 PATH 策略，只是
+/// 改用 `std::process::Command` + 三路管道（无 PTY）。
+#[cfg(unix)]
+fn build_piped_command(cwd: &str, command: &AgentCommand) -> std::process::Command {
+    #[cfg(target_os = "macos")]
+    const DEFAULT_SHELL: &str = "/bin/zsh";
+    #[cfg(not(target_os = "macos"))]
+    const DEFAULT_SHELL: &str = "/bin/bash";
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string());
+    let inner = format!(
+        "cd {} && {}",
+        crate::agent_command::posix_quote(cwd),
+        command.to_posix_shell()
+    );
+    let mut cmd = std::process::Command::new(&shell);
+    cmd.arg("-l").arg("-i").arg("-c").arg(&inner);
+    cmd.env_remove("npm_config_prefix");
+    cmd.current_dir(cwd);
+    cmd
+}
+
+#[cfg(windows)]
+fn build_piped_command(cwd: &str, command: &AgentCommand) -> std::process::Command {
+    let mut cmd = std::process::Command::new("powershell.exe");
+    cmd.arg("-NoLogo")
+        .arg("-Command")
+        .arg(crate::agent_command::powershell_set_location_and_run(cwd, command));
+    cmd.env("PATH", crate::agent_command::merged_system_path());
+    cmd.current_dir(cwd);
+    cmd
+}
+
+/// 起一个 chat「会话」。`session_id` 给出时续聊既有会话；否则新开。返回内部 chat id。
+/// 按该 agent 的 [`ChatProcessModel`] 选驱动路径：
+///   - LongLivedStdin：spawn 一个长驻进程 + reader/stderr/waiter 线程（现状）。
+///   - OneShotResume：**不 spawn**，只登记会话；首条 `send` 才起「这一轮」的进程。
+pub fn start(
+    app: AppHandle,
+    agent: String,
+    cwd: String,
+    session_id: Option<String>,
+    permission_mode: String,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Result<u64, String> {
+    if !std::path::Path::new(&cwd).is_dir() {
+        return Err("项目目录已不存在，无法启动聊天".into());
+    }
+    let source = agents::source(&agent)?;
+    let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+
+    match source.chat_process_model() {
+        ChatProcessModel::LongLivedStdin => {
+            // 长驻进程：model / effort 在 start 时定型（切换靠 restart-with-resume）。
+            let command = source
+                .chat_command(
+                    session_id.as_deref(),
+                    &permission_mode,
+                    model.as_deref(),
+                    effort.as_deref(),
+                )
+                .ok_or_else(|| format!("{agent} 暂不支持 GUI 聊天模式"))?;
+
+            let mut cmd = build_piped_command(&cwd, &command);
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
+            let stdin = child.stdin.take().ok_or("failed to capture stdin")?;
+            let stdout = child.stdout.take().ok_or("failed to capture stdout")?;
+            let stderr = child.stderr.take().ok_or("failed to capture stderr")?;
+
+            let handle = Arc::new(ChatHandle::LongLived {
+                agent: agent.clone(),
+                stdin: Mutex::new(stdin),
+                child: Mutex::new(child),
+            });
+            map().lock().map_err(|e| e.to_string())?.insert(id, handle);
+
+            // ---- reader 线程：逐行 stdout → parse_chat_line → emit ----
+            let app_for_reader = app.clone();
+            let agent_for_reader = agent.clone();
+            thread::spawn(move || reader_loop(app_for_reader, id, agent_for_reader, stdout));
+            // ---- stderr 线程：诊断行透传 ----
+            spawn_stderr_pump(app.clone(), id, stderr);
+            // ---- waiter 线程：try_wait 退出码后 emit + 清理 ----
+            let app_for_wait = app.clone();
+            thread::spawn(move || waiter_loop(app_for_wait, id));
+        }
+        ChatProcessModel::OneShotResume => {
+            // 验证该 agent 真支持 one-shot chat（否则入口该禁用 / start 该失败）。
+            // model / effort / permission 不在 start 定型 —— 每轮 send 自带（免费即时切换）。
+            if source
+                .chat_turn_command(session_id.as_deref(), "", &permission_mode, None, None)
+                .is_none()
+            {
+                return Err(format!("{agent} 暂不支持 GUI 聊天模式"));
+            }
+            // 不 spawn：登记会话配置，首条 send 才起「这一轮」的进程。
+            let handle = Arc::new(ChatHandle::OneShot {
+                app: app.clone(),
+                agent: agent.clone(),
+                cwd: cwd.clone(),
+                session_id: Mutex::new(session_id),
+                current: Mutex::new(None),
+            });
+            map().lock().map_err(|e| e.to_string())?.insert(id, handle);
+        }
+    }
+
+    Ok(id)
+}
+
+/// stderr 诊断行透传线程 —— 两条路径共用（长驻进程 / 每轮进程都有 stderr）。
+fn spawn_stderr_pump(app: AppHandle, id: u64, stderr: std::process::ChildStderr) {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let trimmed = line.trim_end_matches(['\r', '\n']).to_string();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if app
+                        .emit("agent-chat://stderr", StderrPayload { chat_id: id, line: trimmed })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn reader_loop(app: AppHandle, id: u64, agent: String, stdout: std::process::ChildStdout) {
+    let Ok(source) = agents::source(&agent) else {
+        return;
+    };
+    let reader = BufReader::new(stdout);
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let emit_ok = match source.parse_chat_line(&line) {
+            ChatEvent::Message(msg) => app
+                .emit("agent-chat://event", EventPayload { chat_id: id, msg })
+                .is_ok(),
+            ChatEvent::Init {
+                session_id,
+                api_key_source,
+            } => app
+                .emit(
+                    "agent-chat://init",
+                    InitPayload {
+                        chat_id: id,
+                        session_id,
+                        api_key_source,
+                    },
+                )
+                .is_ok(),
+            ChatEvent::Result { ok, usage } => app
+                .emit("agent-chat://result", ResultPayload { chat_id: id, ok, usage })
+                .is_ok(),
+            ChatEvent::Delta(delta) => app
+                .emit("agent-chat://delta", DeltaPayload { chat_id: id, delta })
+                .is_ok(),
+            ChatEvent::Ignore => true,
+        };
+        if !emit_ok {
+            // emit 失败通常意味着 app 在 teardown —— 直接退出 reader。
+            break;
+        }
+    }
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct EventPayload {
+    chat_id: u64,
+    msg: crate::types::Msg,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DeltaPayload {
+    chat_id: u64,
+    delta: crate::types::ChatDelta,
+}
+
+fn waiter_loop(app: AppHandle, id: u64) {
+    loop {
+        let res = {
+            let arc = match map().lock().ok().and_then(|m| m.get(&id).cloned()) {
+                Some(a) => a,
+                None => return, // stop() 已经把它移走，啥也别干。
+            };
+            // waiter 只服务长驻进程；OneShot 没有长驻进程，不该被起 waiter。
+            let ChatHandle::LongLived { child, .. } = &*arc else {
+                return;
+            };
+            let mut child = match child.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            child.try_wait()
+        };
+        match res {
+            Ok(Some(status)) => {
+                let code = status.code().unwrap_or(-1);
+                let _ = app.emit("agent-chat://exit", ExitPayload { chat_id: id, code });
+                if let Ok(mut m) = map().lock() {
+                    m.remove(&id);
+                }
+                return;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(150)),
+            Err(_) => {
+                let _ = app.emit("agent-chat://exit", ExitPayload { chat_id: id, code: -1 });
+                if let Ok(mut m) = map().lock() {
+                    m.remove(&id);
+                }
+                return;
+            }
+        }
+    }
+}
+
+/// 发送一条用户消息（含可选图片附件）。按进程模型分两条路：
+///   - LongLived：用 `chat_encode_input` 编一行写进长驻进程 stdin。`model`/`effort`/
+///     `permission_mode` 在 start 时已定型，此处忽略（切换走 restart-with-resume）。
+///   - OneShot：spawn 一个 `chat_turn_command(...)` 进程跑这一轮 —— 三者每轮自带，
+///     故模型 / effort / 权限切换免费即时生效（下一轮带新 flag）。
+pub fn send(
+    id: u64,
+    text: &str,
+    images: &[ChatImageInput],
+    model: Option<&str>,
+    effort: Option<&str>,
+    permission_mode: &str,
+) -> Result<(), String> {
+    let arc = {
+        let m = map().lock().map_err(|e| e.to_string())?;
+        m.get(&id).cloned().ok_or_else(|| "chat not found".to_string())?
+    };
+    if text.is_empty() && images.is_empty() {
+        return Ok(()); // 空消息不发。
+    }
+
+    match &*arc {
+        ChatHandle::LongLived { agent, stdin, .. } => {
+            let source = agents::source(agent)?;
+            let mut line = source.chat_encode_input(text, images);
+            line.push('\n');
+            let mut w = stdin.lock().map_err(|e| e.to_string())?;
+            w.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+            w.flush().map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        ChatHandle::OneShot {
+            app,
+            agent,
+            cwd,
+            session_id,
+            current,
+        } => {
+            let source = agents::source(agent)?;
+            let sid = session_id.lock().ok().and_then(|g| g.clone());
+            // OneShot 的图片入参暂不处理：Codex/Gemini 的 CLI 图片形态各异（多为文件路径
+            // 而非 base64 arg），接具体 agent 时再补；这里只发文本 prompt。
+            let command = source
+                .chat_turn_command(sid.as_deref(), text, permission_mode, model, effort)
+                .ok_or_else(|| format!("{agent} 暂不支持 GUI 聊天模式"))?;
+
+            let mut cmd = build_piped_command(cwd, &command);
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
+            let stdout = child.stdout.take().ok_or("failed to capture stdout")?;
+            let stderr = child.stderr.take().ok_or("failed to capture stderr")?;
+            // 记录在跑的这一轮（stop 时 kill）。
+            if let Ok(mut g) = current.lock() {
+                *g = Some(child);
+            }
+            spawn_stderr_pump(app.clone(), id, stderr);
+            // 这一轮的 reader：读到退出；捕获 Init 回填 session_id 供下轮 resume；
+            // 退出时若没见过 Result，补一条 Result{ok:false} 防止前端 turn 卡住。
+            let app_for_reader = app.clone();
+            let agent_for_reader = agent.clone();
+            let arc_for_reader = arc.clone();
+            thread::spawn(move || {
+                oneshot_turn_reader(app_for_reader, id, agent_for_reader, stdout, arc_for_reader)
+            });
+            Ok(())
+        }
+    }
+}
+
+/// OneShot「这一轮」的 stdout reader：归一事件 → emit；`Init` 回填会话 session_id；
+/// 进程退出（stdout EOF）时收尾 —— 没见过 `Result` 就补一条失败 Result，并清掉
+/// `current`（该轮进程已结束）。**不** emit `exit`：one-shot 的「会话」要活到 stop。
+fn oneshot_turn_reader(
+    app: AppHandle,
+    id: u64,
+    agent: String,
+    stdout: std::process::ChildStdout,
+    arc: Arc<ChatHandle>,
+) {
+    let Ok(source) = agents::source(&agent) else {
+        return;
+    };
+    let reader = BufReader::new(stdout);
+    let mut saw_result = false;
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let emit_ok = match source.parse_chat_line(&line) {
+            ChatEvent::Message(msg) => app
+                .emit("agent-chat://event", EventPayload { chat_id: id, msg })
+                .is_ok(),
+            ChatEvent::Init {
+                session_id,
+                api_key_source,
+            } => {
+                if let (Some(s), ChatHandle::OneShot { session_id: slot, .. }) =
+                    (session_id.as_ref(), &*arc)
+                {
+                    if let Ok(mut g) = slot.lock() {
+                        *g = Some(s.clone());
+                    }
+                }
+                app.emit(
+                    "agent-chat://init",
+                    InitPayload {
+                        chat_id: id,
+                        session_id,
+                        api_key_source,
+                    },
+                )
+                .is_ok()
+            }
+            ChatEvent::Result { ok, usage } => {
+                saw_result = true;
+                app.emit("agent-chat://result", ResultPayload { chat_id: id, ok, usage })
+                    .is_ok()
+            }
+            // OneShot agent（Codex）目前不产 Delta；保留分支以满足穷尽匹配。
+            ChatEvent::Delta(delta) => app
+                .emit("agent-chat://delta", DeltaPayload { chat_id: id, delta })
+                .is_ok(),
+            ChatEvent::Ignore => true,
+        };
+        if !emit_ok {
+            break;
+        }
+    }
+    // 该轮进程已退出。
+    if !saw_result {
+        let _ = app.emit(
+            "agent-chat://result",
+            ResultPayload { chat_id: id, ok: false, usage: None },
+        );
+    }
+    if let ChatHandle::OneShot { current, .. } = &*arc {
+        if let Ok(mut g) = current.lock() {
+            // 回收该轮 child（已退出，wait 清掉僵尸）。
+            if let Some(mut c) = g.take() {
+                let _ = c.wait();
+            }
+        }
+    }
+}
+
+/// 结束一个 chat 会话：先把 entry 拿走（waiter 下一轮发现不见了就 return，
+/// 不再 emit 奇怪的 exit），再 kill + wait 回收，避免僵尸。幂等。
+pub fn stop(id: u64) -> Result<(), String> {
+    let arc = {
+        let mut m = map().lock().map_err(|e| e.to_string())?;
+        m.remove(&id)
+    };
+    let Some(arc) = arc else {
+        return Ok(());
+    };
+    match &*arc {
+        ChatHandle::LongLived { child, .. } => {
+            if let Ok(mut child) = child.lock() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        ChatHandle::OneShot { current, .. } => {
+            // 杀掉当前在跑的那一轮（如果有）；没有在跑就只是从 map 摘除。
+            if let Ok(mut g) = current.lock() {
+                if let Some(mut c) = g.take() {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
+            }
+        }
+    }
+    Ok(())
+}

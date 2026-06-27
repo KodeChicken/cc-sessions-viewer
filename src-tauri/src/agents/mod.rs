@@ -104,6 +104,55 @@ pub mod claude;
 pub mod codex;
 pub mod gemini;
 
+/// 程序化聊天（GUI chat）里，agent 子进程 stdout 的一行被归一成的事件。
+/// 各 agent 的 [`SessionSource::parse_chat_line`] 把自家 stream-json / JSON 行翻成这套
+/// 统一形状，`agent_chat.rs` 只认这一个 enum，完全不感知具体协议。
+#[allow(dead_code)] // 部分变体字段按 agent / cfg 可能未读取，保留以保持契约完整。
+pub enum ChatEvent {
+    /// 一条解析好的消息（assistant 回答 / 工具结果 user 记录）。
+    Message(Msg),
+    /// 子进程报告的 session id（如 Claude 的 `system`/init 事件）—— 前端据此定位
+    /// 落盘的 JSONL、后续 `--resume` 续聊。`api_key_source` 来自 Claude init 的
+    /// `apiKeySource`：`"none"` = 订阅/OAuth 登录（受 5 小时 / 周限额约束）；其它值
+    /// （`ANTHROPIC_API_KEY` / `apiKeyHelper` / …）= API key 计费，不受 5h/周窗口约束，
+    /// 前端据此隐藏限额角标。非 Claude / 拿不到时为 None。
+    Init {
+        session_id: Option<String>,
+        api_key_source: Option<String>,
+    },
+    /// 一轮回答结束（如 Claude 的 `result` 事件）。`ok=false` 表示该轮出错。
+    Result { ok: bool, usage: Option<UsageSummary> },
+    /// token 级流式增量（`--include-partial-messages` 的 `stream_event`）。
+    /// 仅长驻 stdin 模型产出；权威 `Message` 仍会随后到达定稿。
+    Delta(crate::types::ChatDelta),
+    /// 与 UI 无关的行（诊断 / 未知类型）—— 直接丢弃。
+    Ignore,
+}
+
+/// GUI chat 的「进程模型」—— 不同 agent 的 headless CLI 工作方式不同，`agent_chat.rs`
+/// 据此分两条驱动路径（trait 驱动，不在驱动里按 agent 名分支）。
+///
+/// - `LongLivedStdin`（Claude）：起**一个长驻进程**，多轮用户消息持续写进 stdin
+///   （`--input-format stream-json`）。
+/// - `OneShotResume`（Codex / Gemini）：**一轮一进程**，每条用户消息 spawn 一个
+///   `<cli> [resume <id>] "<prompt>"`，跑完即退出；靠 session/thread id resume 续上下文。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChatProcessModel {
+    LongLivedStdin,
+    OneShotResume,
+}
+
+impl ChatProcessModel {
+    /// 给前端的稳定标识：前端据此决定「切设置」是要 restart-with-resume（长驻）还是
+    /// 改下轮 flag 即可（one-shot）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ChatProcessModel::LongLivedStdin => "longLivedStdin",
+            ChatProcessModel::OneShotResume => "oneShotResume",
+        }
+    }
+}
+
 #[allow(dead_code)] // `name` / `image_src` 暂时只在调试/未来扩展中使用，但保留在 trait 上让 agent 契约完整。
 pub trait SessionSource: Send + Sync {
     /// agent 标识，跟前端 `Agent` 联合类型保持一致（"claude" / "codex" / ...）。
@@ -143,6 +192,94 @@ pub trait SessionSource: Send + Sync {
     /// 终端里开一个全新会话用的 CLI 命令（不带 --resume）。
     fn new_session_command(&self) -> AgentCommand;
 
+    /// GUI chat 输入框 `/` 浮层的动态指令列表 —— 扫磁盘上该 agent 的自定义命令 /
+    /// user-invocable skills（headless 下能展开的那些），**不含 TUI 内置命令**。
+    /// `cwd` 用于扫项目级 `.claude/commands/`。默认空：未适配的 agent 不提供。
+    fn chat_slash_commands(&self, _cwd: &str) -> Vec<crate::types::SlashCommand> {
+        Vec::new()
+    }
+
+    /// 程序化聊天（GUI chat）的子进程命令 —— 跑该 agent 的 headless stream-json 模式
+    /// （纯管道，不走 PTY）。`session_id` 给出时续聊该会话；`permission_mode` 决定工具
+    /// 审批策略（MVP 走 `acceptEdits`）。返回 `None` 表示该 agent 暂无可用的 headless
+    /// chat 模式 —— 调用方据此禁用 GUI 入口 / 退回方案 A（TUI）。
+    ///
+    /// 默认 `None`：尚未适配的 agent（codex / gemini）不必改动即可编译，Phase 3 再实现。
+    ///
+    /// `model` / `effort` 为 `None` 时走 CLI 自身默认（不下发对应 flag）。长驻进程模型下
+    /// 这两者在 start 时定型；切换需 restart-with-resume（前端据 `chat_process_model` 决策）。
+    fn chat_command(
+        &self,
+        _session_id: Option<&str>,
+        _permission_mode: &str,
+        _model: Option<&str>,
+        _effort: Option<&str>,
+    ) -> Option<AgentCommand> {
+        None
+    }
+
+    /// 把子进程 stdout 的一行归一成 [`ChatEvent`]。事件归一逻辑放在各 agent 模块内
+    /// （不污染 trait 形状、不在 `lib.rs`/`agent_chat.rs` 加 agent 分支）。
+    ///
+    /// 默认 `Ignore`：未实现 headless 的 agent 不会被 `agent_chat.rs` 起进程，所以这条
+    /// 默认实现实际不会被调用，只为让 trait 契约完整、编译通过。
+    fn parse_chat_line(&self, _line: &str) -> ChatEvent {
+        ChatEvent::Ignore
+    }
+
+    /// 该 agent 的 GUI chat 进程模型。默认 `LongLivedStdin`（Claude）；one-shot 的 agent
+    /// （Codex / Gemini）覆写为 `OneShotResume`。`agent_chat.rs` 据此选驱动路径。
+    fn chat_process_model(&self) -> ChatProcessModel {
+        ChatProcessModel::LongLivedStdin
+    }
+
+    /// 【LongLivedStdin 用】把一条用户消息编码成写进子进程 stdin 的**一行**（不含换行）。
+    /// 默认 = Anthropic stream-json 用户消息形状（content 数组 = [image…, text]）——
+    /// Claude 直接用默认；其它 stdin 形状不同的 LongLivedStdin agent 可覆写。
+    ///
+    /// 把编码从 `agent_chat.rs` 收进 trait，是为了让驱动彻底 agent-agnostic（不再写死
+    /// 某家的 stdin 形状）。
+    fn chat_encode_input(&self, text: &str, images: &[crate::types::ChatImageInput]) -> String {
+        let mut content: Vec<Value> = Vec::new();
+        for img in images {
+            content.push(serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.media_type,
+                    "data": img.data,
+                }
+            }));
+        }
+        if !text.is_empty() {
+            content.push(serde_json::json!({ "type": "text", "text": text }));
+        }
+        serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": content }
+        })
+        .to_string()
+    }
+
+    /// 【OneShotResume 用】构造「这一轮」的子进程命令：把 `prompt` 直接编进命令
+    /// （如 `codex exec [resume <id>] --json "<prompt>"`）。`session_id` 给出时 resume
+    /// 续上一轮的上下文。返回 `None` 表示该 agent 暂无可用 one-shot headless chat。
+    ///
+    /// 默认 `None`：LongLivedStdin agent（Claude）和尚未适配的 agent 都不必实现。
+    ///
+    /// `model` / `effort` 为 `None` 时走 CLI / 配置默认。one-shot 模型下三者（含
+    /// `permission_mode`）每轮重新下发，故切换**免费即时生效**（下一轮带新 flag）。
+    fn chat_turn_command(
+        &self,
+        _session_id: Option<&str>,
+        _prompt: &str,
+        _permission_mode: &str,
+        _model: Option<&str>,
+        _effort: Option<&str>,
+    ) -> Option<AgentCommand> {
+        None
+    }
+
     /// 从单个 content 块中尝试提取图片 src（data:URL 或外链）。
     /// 主要供该 agent 自己的 `read_session` 内部使用，放在 trait 上也方便外部预览图片块。
     fn image_src(&self, block: &Value) -> Option<String>;
@@ -151,6 +288,15 @@ pub trait SessionSource: Send + Sync {
     /// `UsageSummary::default()` 占位 —— 前端可以照画零值角标，不需要特判 None。
     /// 调用方应该自己负责缓存（`session_usage` 命令走 `USAGE_CACHE`）。
     fn usage_summary(&self, path: &str) -> Result<UsageSummary, String>;
+
+    /// 「当前上下文」估算 —— 取文件里**最后一条**带非零 usage 的记录
+    /// （≈ 会话末尾喂给模型的总输入 = 当前上下文规模），区别于 `usage_summary` 的
+    /// 全程累加。用于 resume 后立刻把上下文进度角标填成真实值，而不必空等下一轮
+    /// result 才有数（否则刚续聊时显示 0% 与 TUI 不符）。默认返回 default
+    /// （agent 不记 token 时为 0）；记 token 的 agent 重写。
+    fn context_usage(&self, _path: &str) -> Result<UsageSummary, String> {
+        Ok(UsageSummary::default())
+    }
 
     /// 把一个 JSONL 解析成 `Turn` 列表，给统计聚合器（stats）使用。
     /// 一个 Turn = 一条用户消息 + 紧随其后的 N 个 assistant API call；

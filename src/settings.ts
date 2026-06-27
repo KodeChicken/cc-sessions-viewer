@@ -16,6 +16,7 @@ const CODEX_SHOW_ARCHIVED_KEY = 'codexShowArchivedSessions:v1'
 const LAUNCH_ARGS_KEY = 'launchArgs:v1'
 const FONT_SCALE_KEY = 'fontScale:v1'
 const ENABLED_AGENTS_KEY = 'enabledAgents:v1'
+const QUICK_OPEN_KEY = 'quickOpenTarget:v1'
 
 /**
  * 根据浏览器/系统语言探测默认语言。
@@ -59,6 +60,21 @@ export const terminalApp = ref<TerminalApp>(
 )
 export const codexShowInternalSessions = ref(localStorage.getItem(CODEX_SHOW_INTERNAL_KEY) === '1')
 export const codexShowArchivedSessions = ref(localStorage.getItem(CODEX_SHOW_ARCHIVED_KEY) !== '0')
+
+// ---------- 双击 / 新建快捷键默认打开什么 ----------
+// 双击 tab 条空白处、⌘N / ⌘T 默认都开「会话(session)」。这里让用户改成开
+// 「终端(terminal, 纯 shell)」或「chat(GUI live chat, 等价右键 New chat)」。
+// 注意：chat 目前只有 claude 支持，codex / gemini 选了也会被调用方拦下来提示。
+export type QuickOpenTarget = 'session' | 'terminal' | 'chat'
+function readQuickOpenTarget(): QuickOpenTarget {
+  const v = localStorage.getItem(QUICK_OPEN_KEY)
+  return v === 'session' || v === 'terminal' || v === 'chat' ? v : 'session'
+}
+export const quickOpenTarget = ref<QuickOpenTarget>(readQuickOpenTarget())
+export function setQuickOpenTarget(v: QuickOpenTarget) {
+  quickOpenTarget.value = v
+  localStorage.setItem(QUICK_OPEN_KEY, v)
+}
 
 export type LaunchArgs = { claude: string; codex: string; gemini: string }
 function readLaunchArgs(): LaunchArgs {
@@ -186,6 +202,13 @@ export function applyTheme() {
   document.documentElement.classList.toggle('theme-dark', dark)
   document.documentElement.classList.toggle('theme-codex', theme.value === 'codex')
   document.documentElement.classList.toggle('theme-dracula', theme.value === 'dracula')
+}
+
+/** 原生窗口外观该钉到哪一态（同步标题栏 / 失焦红绿灯灰圈的对比）。
+ *  'system' 返回 null —— 交还系统自动跟随，不固定，免得破坏 prefers-color-scheme。 */
+export function nativeAppearance(t: Theme): 'dark' | 'light' | null {
+  if (t === 'system') return null
+  return t === 'dark' || t === 'dracula' ? 'dark' : 'light'
 }
 
 // 主题变化或系统外观变化时自动应用

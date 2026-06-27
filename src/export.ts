@@ -9,7 +9,7 @@ import type { Msg, Block, SessionMeta, Agent, DiffHunk } from './types'
 import { writeFile } from './api'
 import { save as saveDialog, open as openDialog } from '@tauri-apps/plugin-dialog'
 import { t } from './i18n'
-import { formatTime, isCaveatOnlyMsg, parseSystemEvent, renderText, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage } from './format'
+import { formatTime, isCaveatOnlyMsg, parseSystemEvent, renderText, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage, stripImagePlaceholders } from './format'
 import {
   highlightJsonInPlace,
   looksLikeJson,
@@ -250,7 +250,16 @@ function msgToMd(
   const model = m.model ? ` · ${m.model}` : ''
   const displayRole = isToolOnly(m) ? 'tool' : m.role
   const head = `## ${roleLabel(displayRole, agent)}${model}${ts}`
-  const body = m.blocks.map((b) => blockToMd(b, ctx)).filter(Boolean).join('\n\n')
+  // 带图消息：正文滤掉 [Image #n] 占位符（图片本身已用 ![image](src) 表达）。
+  const hasImgs = m.blocks.some((b) => b.kind === 'image' && b.imageSrc)
+  const body = m.blocks
+    .map((b) =>
+      b.kind === 'text' && hasImgs
+        ? blockToMd({ ...b, text: stripImagePlaceholders(b.text ?? '') }, ctx)
+        : blockToMd(b, ctx),
+    )
+    .filter(Boolean)
+    .join('\n\n')
   return body ? `${head}\n\n${body}` : head
 }
 
@@ -576,8 +585,21 @@ details > summary::before {
 details[open] > summary::before { transform: rotate(90deg); }
 details[open] > summary { margin-bottom: 10px; }
 img { max-width: 100%; border-radius: 6px; border: 1px solid var(--border); }
+/* 消息内容列：缩略图行 + 气泡竖排（缩略图浮在气泡上方，不进气泡）。 */
+.msg-content { display: flex; flex-direction: column; min-width: 0; max-width: min(75%, 880px); }
+.msg.user .msg-content { align-items: flex-end; }
+.msg.assistant .msg-content, .msg.tool .msg-content { align-items: flex-start; }
+.msg-content > .bubble { max-width: 100%; }
+/* 图片成排小缩略图（自适应比例），浮在气泡上方。 */
+.msg-images { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-bottom: 6px; }
+.msg.user .msg-images { justify-content: flex-end; }
 /* 图片可点击放大 —— 见 blockToHtml case 'image' 的 onclick + lightbox runtime。 */
-img.msg-image { cursor: zoom-in; }
+img.msg-image {
+  cursor: zoom-in;
+  width: auto; height: auto;
+  max-width: 200px; max-height: 160px;
+  border-radius: 10px; object-fit: contain;
+}
 img.msg-image:hover { border-color: var(--border-strong); }
 /* Lightbox：fixed 覆盖层，不开就 display:none；img 居中且按视口尺寸限缩。 */
 .csv-lightbox {
@@ -594,6 +616,25 @@ img.msg-image:hover { border-color: var(--border-strong); }
   max-width: 100%; max-height: 100%;
   border-radius: 6px; border: none;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  cursor: default;
+}
+/* 多图时左右翻看的箭头 + 计数；单图时 JS 隐藏。 */
+.csv-lb-nav {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  width: 44px; height: 66px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: 8px;
+  background: rgba(0, 0, 0, 0.4); color: #fff;
+  font-size: 30px; line-height: 1; cursor: pointer;
+  -webkit-user-select: none; user-select: none;
+}
+.csv-lb-nav:hover { background: rgba(0, 0, 0, 0.66); }
+.csv-lb-prev { left: 20px; }
+.csv-lb-next { right: 20px; }
+.csv-lb-count {
+  position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.85); font-size: 13px;
+  background: rgba(0, 0, 0, 0.4); padding: 4px 10px; border-radius: 99px;
 }
 .diff {
   background: var(--surface-2); border: 1px solid var(--border);
@@ -871,18 +912,55 @@ function buildRuntimeScript(labels: {
     var lb = document.createElement('div');
     lb.id = 'csv-lightbox';
     lb.className = 'csv-lightbox';
+    var lbPrev = document.createElement('button');
+    lbPrev.type = 'button'; lbPrev.className = 'csv-lb-nav csv-lb-prev'; lbPrev.innerHTML = '‹';
+    var lbNext = document.createElement('button');
+    lbNext.type = 'button'; lbNext.className = 'csv-lb-nav csv-lb-next'; lbNext.innerHTML = '›';
     var lbImg = document.createElement('img');
-    lb.appendChild(lbImg);
+    var lbCount = document.createElement('div');
+    lbCount.className = 'csv-lb-count';
+    lb.appendChild(lbPrev); lb.appendChild(lbImg); lb.appendChild(lbNext); lb.appendChild(lbCount);
     document.body.appendChild(lb);
-    function closeLb() { lb.classList.remove('open'); lbImg.removeAttribute('src'); }
-    function openLb(src) {
-      if (!src) return;
-      lbImg.src = src;
-      lb.classList.add('open');
+    var lbList = [];
+    var lbIdx = 0;
+    function renderLb() {
+      if (!lbList.length) return;
+      lbImg.src = lbList[lbIdx];
+      var multi = lbList.length > 1;
+      lbPrev.style.display = multi ? '' : 'none';
+      lbNext.style.display = multi ? '' : 'none';
+      lbCount.style.display = multi ? '' : 'none';
+      lbCount.textContent = (lbIdx + 1) + ' / ' + lbList.length;
     }
-    lb.addEventListener('click', closeLb);
+    function stepLb(d) {
+      if (lbList.length < 2) return;
+      lbIdx = (lbIdx + d + lbList.length) % lbList.length;
+      renderLb();
+    }
+    function closeLb() { lb.classList.remove('open'); lbImg.removeAttribute('src'); lbList = []; }
+    // 点击某张图，取同一条消息 .msg-images 里的全部图片成组，从点中的那张开始翻看。
+    function openLb(el) {
+      if (!el || el.tagName !== 'IMG') return;
+      var box = el.closest('.msg-images');
+      var imgs = box ? [].slice.call(box.querySelectorAll('img')) : [el];
+      lbList = imgs.map(function (im) { return im.getAttribute('src'); });
+      lbIdx = Math.max(0, imgs.indexOf(el));
+      if (!lbList.length) return;
+      lb.classList.add('open');
+      renderLb();
+    }
+    lb.addEventListener('click', function (e) {
+      if (e.target === lbPrev || e.target === lbNext || e.target === lbImg) return;
+      closeLb();
+    });
+    lbImg.addEventListener('click', function (e) { e.stopPropagation(); });
+    lbPrev.addEventListener('click', function (e) { e.stopPropagation(); stepLb(-1); });
+    lbNext.addEventListener('click', function (e) { e.stopPropagation(); stepLb(1); });
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape' && lb.classList.contains('open')) closeLb();
+      if (!lb.classList.contains('open')) return;
+      if (e.key === 'Escape') closeLb();
+      else if (e.key === 'ArrowLeft') stepLb(-1);
+      else if (e.key === 'ArrowRight') stepLb(1);
     });
     window.__csvLightbox = openLb;
 
@@ -1165,9 +1243,10 @@ function blockToHtml(
       // 导出的 HTML 里图片默认按文本宽度缩放，看不清细节；点击 → 同页 lightbox
       // 放大查看。原本用 window.open(this.src) 但 Chrome 拒绝从 window.open
       // 顶层导航到 data: URL（数据 URL 是 base64 图片，被 Block 成 about:blank）。
-      // lightbox 在同页 fixed 覆盖，没有跨源 / 顶层导航问题。
+      // lightbox 在同页 fixed 覆盖，没有跨源 / 顶层导航问题。传 this（<img> 元素），
+      // runtime 从同一条消息的 .msg-images 里取出整组图片，可左右翻看。
       return b.imageSrc
-        ? `<img src="${escapeHtml(b.imageSrc)}" alt="" class="msg-image" onclick="window.__csvLightbox&amp;&amp;window.__csvLightbox(this.src)">`
+        ? `<img src="${escapeHtml(b.imageSrc)}" alt="" class="msg-image" onclick="window.__csvLightbox&amp;&amp;window.__csvLightbox(this)">`
         : ''
     default:
       return ''
@@ -1231,19 +1310,33 @@ function msgToHtml(
   ]
     .filter(Boolean)
     .join(' · ')
-  const body = m.blocks.map((b) => blockToHtml(b, ctx)).filter(Boolean).join('\n')
-  if (!body) return ''
+  // 跟 ChatView 一致：图片缩略图浮在气泡上方（不进气泡），正文滤掉 [Image #n] 占位符；
+  // 纯图片消息不渲染空气泡。
+  const imgs = m.blocks.filter((b) => b.kind === 'image' && b.imageSrc)
+  const imagesHtml = imgs.length
+    ? `<div class="msg-images">${imgs.map((b) => blockToHtml(b, ctx)).join('')}</div>`
+    : ''
+  const body = m.blocks
+    .filter((b) => b.kind !== 'image')
+    .map((b) =>
+      b.kind === 'text' && imgs.length
+        ? blockToHtml({ ...b, text: stripImagePlaceholders(b.text ?? '') }, ctx)
+        : blockToHtml(b, ctx),
+    )
+    .filter(Boolean)
+    .join('\n')
+  if (!body && !imagesHtml) return ''
   // 跟 ChatView 一致：只有用户消息整体走 CollapsibleBox，超过 320px 才折叠+显示更多
   const wrappedBody =
     displayRole === 'user'
       ? `<div class="collapsible-box" data-collapsible>${body}</div>`
       : body
+  const bubbleHtml = body
+    ? `<div class="bubble"><div class="role-tag">${tag}</div>${wrappedBody}</div>`
+    : ''
   return `<div class="msg ${displayRole}" data-msg-key="${escapeHtml(key)}">
   <div class="avatar">${avatarSvg(displayRole, agent)}</div>
-  <div class="bubble">
-    <div class="role-tag">${tag}</div>
-    ${wrappedBody}
-  </div>
+  <div class="msg-content">${imagesHtml}${bubbleHtml}</div>
 </div>`
 }
 

@@ -1327,6 +1327,19 @@ body.is-sidebar-resizing {
   flex-direction: column;
   gap: 2px;
 }
+/* 标题右键菜单：完全复用 .new-menu 外观（与「+」下拉一致），只把锚定从
+   absolute/top/right 改成 fixed + 内联 left/top 跟随光标。用独立 modifier 而不是
+   共享的 .ctx-menu —— 后者另有一套 border + --shadow-lg 描边，叠上来会双层边框。 */
+.new-menu.new-menu-floating {
+  position: fixed;
+  top: auto;
+  right: auto;
+}
+.new-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
 .new-menu-item {
   appearance: none;
   background: transparent;
@@ -1674,6 +1687,176 @@ mark.locate-hl {
   text-align: center;
   color: var(--text-mute);
   font-size: 13px;
+}
+
+/* ---------- Views 历史下拉（List 和 View 之间的 meta 控件） ---------- */
+.views-menu-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.views-tab-caret {
+  width: 12px;
+  height: 12px;
+  opacity: 0.55;
+  margin-left: -2px;
+}
+.views-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  width: 320px;
+  max-height: 440px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.views-menu-search {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.views-search-input {
+  width: 100%;
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  outline: none;
+}
+.views-search-input:focus {
+  border-color: var(--border-strong);
+}
+.views-menu-list {
+  overflow-y: auto;
+  padding: 4px;
+}
+.views-menu-group {
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-mute);
+}
+.views-menu-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.12s, padding-right 0.12s;
+}
+.views-menu-item:hover {
+  background: var(--surface-hover);
+  /* hover 时右侧让出空间给绝对定位的 ×（平时 × 不占位，star 贴右） */
+  padding-right: 28px;
+}
+/* 当前正在 View tab 渲染的那条：左侧一道居中的细竖条。绝对定位 → 不挤压内容、
+   不随圆角弯成括号、hover 切背景时也不闪。 */
+.views-menu-item.active::before {
+  content: '';
+  position: absolute;
+  left: 1px;
+  top: 50%;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: translateY(-50%);
+}
+/* 收藏项的辨识 = 分组到 FAVORITES + 实心星标，不再用背景色 / 竖条 */
+.views-item-mode {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  color: var(--text-mute);
+}
+.views-item-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.views-item-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+.views-item-star,
+.views-item-remove {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--text-mute);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, opacity 0.12s;
+}
+.views-item-star svg,
+.views-item-remove svg {
+  width: 13px;
+  height: 13px;
+}
+.views-item-star:hover,
+.views-item-remove:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+/* 已收藏：实心金色星（覆盖 lucide 默认 fill:none，连同子元素一起填充） */
+.views-item-star.filled {
+  color: #f5a623;
+}
+.views-item-star.filled svg,
+.views-item-star.filled svg * {
+  fill: currentColor;
+}
+/* × 移除：绝对定位 → 平时完全不占布局位置（star 直接贴右边）；hover 行才在右上角
+   淡入，行同时让出 padding-right 给它，不与 star 重叠、不误点。 */
+.views-item-remove {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+}
+.views-menu-item:hover .views-item-remove {
+  opacity: 1;
+  pointer-events: auto;
+}
+.views-menu-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-mute);
+  font-size: 13px;
+}
+/* chat-head 头部收藏星标 */
+.fav-btn.active {
+  color: #f5a623;
+}
+.fav-star.filled,
+.fav-star.filled * {
+  fill: currentColor;
 }
 
 /* ---------- Empty / loading ---------- */
@@ -2063,35 +2246,52 @@ mark.locate-hl {
   margin: 0 auto;
   padding: 0 22px;
 }
+/* 底部输入框（ChatComposer 的 .chat-composer）与消息列同宽同居中：相同的 max-width、
+   margin auto，再加上组件里相同的 22px 横向 padding（两者都是 border-box），输入框和底部
+   操作行因此始终与气泡内容左右对齐。放全局而非 scoped，是为了和 .chat-inner 单一来源同处维护。 */
+.chat-composer {
+  max-width: min(86%, 1800px);
+  margin: 0 auto;
+  width: 100%;
+}
 
 .msg-row {
   display: flex;
+  flex-direction: column;
   margin-bottom: 22px;
 }
+/* 气泡 + 悬停操作行竖排：操作行行内排在气泡正下方，故按列对齐（用户右、AI 左）。 */
+.msg-row.user,
+.msg-row.assistant,
+.msg-row.tool-only {
+  margin-bottom: 14px;
+}
+/* 文件改动型结果挂在 assistant tool_use 行内：气泡下方、时间行上方，宽度与独立
+   tool-only 结果行一致（86%），上方留一点间距与「Tool call」卡分开。 */
+.attached-result {
+  max-width: 86%;
+  min-width: 0;
+  margin-top: 8px;
+}
 .msg-row.user {
-  justify-content: flex-end;
+  align-items: flex-end;
 }
 .msg-row.assistant,
 .msg-row.tool-only {
-  justify-content: flex-start;
+  align-items: flex-start;
 }
-/* tool-only rows are conceptually paired with their preceding tool-call,
-   so collapse the gap between them. */
-.msg-row:has(+ .msg-row.tool-only) {
-  margin-bottom: 0;
-}
-.msg-row.tool-only {
-  margin-top: 0;
-}
+/* tool-only 结果行（diff / 工具输出卡）与普通消息一样留正常间距，并保留各自的悬停
+   时间行——之前把「调用行 + 结果行」收成贴合一体（margin:0 + 隐藏时间），导致工具
+   调用挨太紧且 hover 不出时间，按用户要求改为统一节奏。 */
 .msg-row.system {
-  justify-content: center;
+  align-items: center;
   margin-bottom: 16px;
 }
 /* System-injected user records (compaction summary, skill injection, task
    notifications, command output): rendered like an assistant turn — a labeled
    tag chip + body, NO gray card. Clearly not a "Me" bubble. */
 .msg-row.meta {
-  justify-content: flex-start;
+  align-items: flex-start;
 }
 .bubble.meta-msg {
   max-width: 100%;
@@ -2167,6 +2367,7 @@ mark.locate-hl {
 }
 
 .bubble {
+  position: relative;
   max-width: 86%;
   border-radius: 14px;
   padding: 10px 14px;
@@ -2174,14 +2375,75 @@ mark.locate-hl {
   word-break: break-word;
 }
 .bubble.user {
-  background: var(--user-bubble);
+  /* 用户消息：灰底圆角气泡 + 右对齐（参考微信/iMessage 风）。 */
+  background: var(--surface-hover);
   color: var(--text);
-  border-radius: 14px 14px 4px 14px;
+  padding: 9px 14px;
+  border-radius: 16px;
+  max-width: 80%;
+}
+/* 用户气泡不再显示「Me」抬头：右对齐 + 灰底气泡本身已表达「这是我」。 */
+.bubble.user .role-tag {
+  display: none;
 }
 .bubble.assistant {
   background: transparent;
   max-width: 100%;
   padding: 0;
+}
+
+/* 悬停操作行：与气泡平级、行内排在气泡正下方（不再绝对定位贴边），所以永远不会
+   压到紧随其后的 tool-only 结果卡上。左/右对齐由 .msg-row 的 align-items 决定，
+   行本身收缩贴合内容（time + copy + hide），窄气泡也不会被挤成逐字竖排。
+   平时 opacity:0 仅占位、不抢视线；hover 整条消息或该消息被显式隐藏时才浮现。 */
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  min-height: 18px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  /* 收起态**不加** transition：移开瞬间即收。否则向下连续 hover 时，每行的 0.12s
+     淡出会拖尾，多行时间戳同时残留 → 看起来像「都不隐藏」。淡入动画放到 .row-active 上。 */
+}
+/* 显隐由 JS 维护的 .row-active 驱动（见 ChatView 的 hoveredKey），而非 :hover——
+   纯 :hover 在 live chat 流式重渲染时会粘在旧行上、多行同时常亮。row-active 任一时刻
+   至多一行，天然互斥。被显式隐藏的消息（msg-hidden）也常亮，方便再点开。 */
+.msg-row.row-active .msg-actions,
+.msg-row.msg-hidden .msg-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 0.1s ease;
+}
+.msg-time {
+  font-size: 11px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+.msg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-mute);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.msg-action-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.msg-action-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 .role-tag {
@@ -2275,26 +2537,42 @@ mark.locate-hl {
 .collapsible-toggle .chev.open {
   transform: rotate(-90deg);
 }
-.inline-image-wrap {
-  display: block;
-  margin-top: 8px;
-  cursor: zoom-in;
-  width: fit-content;
-  max-width: 100%;
+/* 消息图片：小缩略图成排浮在气泡上方（参考 Claude 客户端），不进灰底气泡。
+   对齐由 .msg-row 的 align-items 决定（用户右、AI 左）；自身收缩贴合内容。 */
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end; /* 不同高度的缩略图底部对齐 */
+  gap: 8px;
+  margin-bottom: 6px;
+  max-width: 86%;
 }
-.inline-image {
+.msg-row.user .msg-images {
+  justify-content: flex-end;
+}
+.msg-image-thumb {
   display: block;
-  max-width: 100%;
-  max-height: 480px;
-  border-radius: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+  line-height: 0;
+  border-radius: 10px;
+}
+.msg-image-thumb img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 200px;
+  max-height: 160px;
+  border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--surface);
   object-fit: contain;
   user-select: none;
   -webkit-user-select: none;
   -webkit-user-drag: none;
-  /* 关闭 macOS Live Text 在图片上方画的虚线选区与右下角的小箭头按钮；
-     点击放大由外层 .inline-image-wrap 接管。 */
+  /* 关闭 macOS Live Text 的虚线选区与小箭头；点击放大由外层 button 接管。 */
   pointer-events: none;
   -webkit-touch-callout: none;
 }
@@ -2307,6 +2585,11 @@ mark.locate-hl {
   font-size: 13.5px;
   margin: 10px 0 4px;
   font-weight: 600;
+}
+/* 消息首行就是标题时，去掉标题上边距，避免与 role-tag 之间多出一段空白。 */
+.text-run > h3:first-child,
+.text-run > h4:first-child {
+  margin-top: 0;
 }
 /* Geist 风：链接默认无下划线，hover 才出来，颜色用 ds-blue */
 .text-run a {
@@ -2336,9 +2619,6 @@ mark.locate-hl {
   font-size: var(--font-code-size);
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;
 }
-.bubble.user code {
-  background: color-mix(in srgb, var(--text) 12%, transparent);
-}
 .code-block {
   background: var(--code-bg);
   color: var(--code-fg);
@@ -2356,6 +2636,57 @@ mark.locate-hl {
   background: none !important;
   padding: 0;
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+/* `---` / `***` / `___` 整行 → 分隔线（renderText 产出 <hr class="md-hr">）。 */
+.md-hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 14px 0;
+}
+
+/* 代码块悬停复制：decorateCodeBlocks 把围栏代码块包进 .code-wrap，右上角浮一个
+   hover 才显形的复制按钮。包裹层接管外边距、内层 pre 归零，避免按钮相对边距错位。 */
+.code-wrap {
+  position: relative;
+  margin: 10px 0;
+}
+.code-wrap > .code-block {
+  margin: 0;
+}
+.code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-mute);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s, color 0.12s;
+}
+.code-wrap:hover .code-copy,
+.code-copy:focus-visible {
+  opacity: 1;
+}
+.code-copy:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.code-copy.copied {
+  color: #16a34a;
+  opacity: 1;
+}
+.code-copy svg {
+  width: 14px;
+  height: 14px;
 }
 .code-block.shiki {
   background: var(--code-bg) !important;
@@ -2741,6 +3072,12 @@ details[open] > .block-summary > .chev {
   gap: 6px;
   z-index: 20;
 }
+.scroll-arrow-stack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 .fab {
   width: 32px;
   height: 32px;
@@ -2765,10 +3102,59 @@ details[open] > .block-summary > .chev {
 .fab:active {
   transform: scale(0.92);
 }
+/* 入口 3：切到 chat 模式的强调 FAB（brand 描边） */
+.fab.fab-accent {
+  color: var(--brand);
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--border));
+}
+.fab.fab-accent:hover {
+  background: color-mix(in srgb, var(--brand) 12%, var(--surface));
+  color: var(--brand);
+}
+/* live chat 有底部 composer 时把 FAB 抬高，避免压住输入框 */
+.scroll-fab.has-composer {
+  bottom: 150px;
+}
+
+/* live GUI chat：本轮运行中的 ✳ + 计时行（左对齐，像正在形成的 assistant 气泡） */
+.chat-running-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+/* 运行中的 ✳ 是 agent 的品牌标记 —— 用 agent 自己的色调（claude 橙 / codex 绿 /
+   gemini 蓝），不跟随主题的 --brand（否则 codex 主题下会被染成蓝）。 */
+.chat-running-star {
+  color: var(--brand-claude);
+  display: inline-block;
+  animation: chat-running-spin 1.4s linear infinite;
+}
+.chat-running-star.codex {
+  color: var(--brand-codex);
+}
+.chat-running-star.gemini {
+  color: var(--brand-gemini);
+}
+@keyframes chat-running-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* §10.6 流式预览：正在生成的文本块逐 delta 走与定稿气泡同一个 markdown 渲染器
+   （.text-run + v-html），故无需额外样式 —— 标题/粗体/列表即时成型，权威记录到达后
+   本气泡被同位的真气泡替换，无缝。代码块语法高亮 / mermaid 在定稿后才上。 */
 
 /* "N new ↓" pill —— Live tail 模式下，用户不在底部时聚集未读，点一下回到底。
    宽度自适应，与下面圆形 fab 保持相同视觉重量；用 brand 色让它一眼就抓眼球。 */
 .new-pill {
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 2px;
   padding: 0 12px;
   height: 28px;
   border-radius: 999px;
@@ -2782,6 +3168,7 @@ details[open] > .block-summary > .chev {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  white-space: nowrap;
   transition: filter 0.12s, transform 0.08s;
 }
 .new-pill:hover {
@@ -2847,18 +3234,59 @@ details[open] > .block-summary > .chev {
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
 }
-.term-strip-scroll {
+/* 固定的 meta tab 区（List / View + 分隔线）—— 钉在左侧，永不滑动、永不收缩 */
+.term-strip-meta {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
+}
+/* 无滚动条的横向滑动遮罩区：超出部分被裁掉，靠 .term-strip-track 的 translateX 平移露出 */
+.term-strip-scroll {
+  position: relative;
+  display: flex;
+  align-items: center;
   flex: 1;
   min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: thin;
+  overflow: hidden;
 }
-.term-strip-scroll::-webkit-scrollbar { height: 6px; }
-.term-strip-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
-.term-strip-scroll::-webkit-scrollbar-track { background: transparent; }
+/* 真正承载所有 tab 的轨道；transform 平移 + transition 做位置切换动画 */
+.term-strip-track {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  transform: translateX(0);
+  transition: transform 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
+  will-change: transform;
+}
+/* 滚轮 / 拖拽进行中：关掉动画，1:1 跟手 */
+.term-strip-track.panning {
+  transition: none;
+}
+/* 没有滚动条，用两侧渐隐提示「这边还有被遮挡的 tab」，仅在可继续滑动时出现 */
+.term-strip-scroll::before,
+.term-strip-scroll::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 22px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 1;
+}
+.term-strip-scroll::before {
+  left: 0;
+  background: linear-gradient(to right, var(--surface-2), transparent);
+}
+.term-strip-scroll::after {
+  right: 0;
+  background: linear-gradient(to left, var(--surface-2), transparent);
+}
+.term-strip-scroll.can-left::before { opacity: 1; }
+.term-strip-scroll.can-right::after { opacity: 1; }
 
 .term-tab {
   position: relative;
@@ -2880,9 +3308,13 @@ details[open] > .block-summary > .chev {
   transition: background 0.12s, color 0.12s, border-color 0.12s, box-shadow 0.12s;
   flex-shrink: 0;
 }
-/* View 按钮没有 × —— 右侧补一点 padding 平衡视觉 */
+/* List 这种无 × 的 meta tab —— 右侧补一点 padding 平衡视觉 */
 .term-tab.view-tab {
   padding-right: 10px;
+}
+/* View 带 × —— 回到和 PTY tab 一致的右内边距，让 × 贴合 */
+.term-tab.view-tab.view-tab-closable {
+  padding-right: 4px;
 }
 /* tab 条里 View 按钮和 PTY tabs 之间的分隔线 */
 .term-tab-sep {
@@ -3754,6 +4186,17 @@ body.is-tab-reordering * {
   flex-direction: column;
   gap: 0;
 }
+.set-shortcut-group + .set-shortcut-group {
+  margin-top: 20px;
+}
+.set-shortcut-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-mute);
+  padding: 4px 0 6px;
+}
 .set-shortcut-row {
   display: flex;
   align-items: center;
@@ -3761,6 +4204,7 @@ body.is-tab-reordering * {
   padding: 8px 0;
   border-bottom: 1px solid var(--border);
 }
+/* 每组最后一行去掉分隔线（:last-child 现在落在组内最后一行） */
 .set-shortcut-row:last-child {
   border-bottom: none;
 }

@@ -6,6 +6,21 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.2.0]
+
+### Features
+
+- **In-app agent chat (GUI)** — start or resume Claude / Codex / Gemini sessions in a built-in chat, no terminal required. Live pickers for model, reasoning-effort, and permission-mode; an **Auto mode** for hands-off runs; and per-session token / rate-limit badges (5h & weekly usage) in the composer
+- **Reasoning-effort slider with Ultracode** — Faster↔Smarter effort slider aligned with the Claude client; Opus 4.7 / 4.8 expose an extra **Ultracode** notch (= `xhigh` + workflows) with an animated fill, and labels are unified (`xhigh` → "Xhigh")
+- **Views history** — a per-project, searchable dropdown between the **List** and **View** tabs listing every view you've opened. Favorites (★) pin to the top and stay visually distinct; read vs chat entries are marked with their own icon; pick any entry to render it back into the View tab. New GUI chats join the list automatically and auto-title from their first message, matching the session list
+- **Persistent View tab** — the View tab now stays put when you click **List** or open a terminal (it's a background tab, closed only via its own ×), and is restored on relaunch even if you quit while on a terminal tab
+
+### Bug Fixes
+
+- **Rename works in chat mode** — the rename (pencil) action in a live chat now opens the dialog; the new title syncs to the header, the session list, and the matching Views history entry
+- **Views dropdown navigation** — switching between chat and read views from the dropdown no longer drops you back to the session list; renaming a session no longer closes the live chat / loses the View tab; right-click inside the dropdown is suppressed
+- **Restore no longer loses the View tab** — quitting with a terminal/session tab in front used to discard the open View on relaunch; the View tab is now restored regardless of which tab was focused at exit
+
 ## [v0.1.15]
 
 ### Features

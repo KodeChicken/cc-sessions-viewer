@@ -7,7 +7,7 @@
 // 隐藏的 PTY tab（别的项目 / 别的 agent）不在这里出现，但 PTY 仍在后台跑 ——
 // 切回对应项目时它们会再次显示，scrollback 全程不丢。
 
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Agent } from '../types'
 import type { TerminalTab, SavedTab } from '../terminals'
 import {
@@ -20,8 +20,22 @@ import {
   removeSavedTab,
   moveTab,
 } from '../terminals'
+import type { ViewHistoryEntry } from '../viewHistory'
+import { viewHistory, sortViewHistory, toggleViewFavorite, removeView } from '../viewHistory'
 import { statusKind } from '../tabStatus'
-import { IconClose, IconChat, IconList, IconPlus, IconTerminal, agentIcons } from './icons'
+import { formatTime } from '../format'
+import {
+  IconClose,
+  IconChat,
+  IconList,
+  IconPlus,
+  IconTerminal,
+  IconHistory,
+  IconStar,
+  IconReader,
+  IconChevronDown,
+  agentIcons,
+} from './icons'
 import { t } from '../i18n'
 
 const props = defineProps<{
@@ -33,6 +47,10 @@ const props = defineProps<{
   inProjectBrowse: boolean
   /** 当前是否打开了某个会话 —— 用来决定要不要显示 View tab */
   hasOpenSession: boolean
+  /** 当前 View 层渲染的那条 view 的 key（session id / path）—— Views 下拉里据此高亮"正在看的那条" */
+  activeViewKey: string | null
+  /** 点了 List 但会话/聊天仍常驻（露出列表、View tab 还在）—— 决定 List/View 谁高亮 */
+  viewingList: boolean
 }>()
 
 const emit = defineEmits<{
@@ -40,15 +58,25 @@ const emit = defineEmits<{
   listClick: []
   /** View —— 保留当前会话，仅退出 TUI，回到聊天详情 */
   viewClick: []
-  /** Tab 被手动关闭（点 ×）—— App 据此刷新数据 */
-  tabClosed: [sessionPath: string]
+  /** View 的 × —— 手动关闭聊天详情 tab，清掉当前会话，落回会话列表 */
+  viewClose: []
+  /** PTY tab 被手动关闭（点 ×）—— App 据此刷新数据 */
+  tabClosed: []
   /** TUI tab 操作菜单 —— 复用会话重命名弹窗 */
   tabRename: [tab: TerminalTab]
   tabsReordered: []
-  /** 双击 tab 条空白处 —— 开一个纯 shell tab */
+  /** 入口 0 - 显式「新建会话(TUI)」（+ 菜单 / 右键菜单） */
   newSession: []
+  /** 双击 tab 条空白处 / 默认新建手势 —— 由设置决定开 session/terminal/chat */
+  newDefault: []
+  /** 入口 1 - GUI：新开一个 live GUI chat */
+  newGuiSession: []
   newShell: []
   hydrateSaved: [saved: SavedTab]
+  /** saved tab 右键「重命名」—— 复用会话重命名弹窗（saved 分支只改内存标题） */
+  savedRename: [saved: SavedTab]
+  /** Views 下拉里点了某条历史 View —— App 据此把它渲染回 View tab */
+  selectView: [entry: ViewHistoryEntry]
 }>()
 
 const visibleTabs = computed(() =>
@@ -61,7 +89,59 @@ const visibleSaved = computed(() =>
     (t) => t.agent === props.agent && t.projectKey === (props.projectKey ?? ''),
   ),
 )
-const visible = computed(() => visibleTabs.value.length > 0 || visibleSaved.value.length > 0)
+
+// ---- Views 下拉（List 和 View 之间的历史列表，每个 (agent, 项目) 独立）----
+const viewsMenuOpen = ref(false)
+const viewsMenuEl = ref<HTMLElement>()
+const viewsFilter = ref('')
+const viewsSearchEl = ref<HTMLInputElement>()
+// 本项目历史里所有 View，按 (agent, projectKey) 过滤
+const projectViews = computed(() =>
+  viewHistory.value.filter(
+    (v) => v.agent === props.agent && v.dir === (props.projectKey ?? ''),
+  ),
+)
+// 收藏在前 + 搜索过滤后的列表（纯函数 sortViewHistory）；模板里按 favorite 边界插分组头
+const sortedViews = computed(() => sortViewHistory(projectViews.value, viewsFilter.value))
+// 有历史才显示 Views 控件，避免空项目堆控件
+const hasViews = computed(() => projectViews.value.length > 0)
+
+function toggleViewsMenu(ev?: Event) {
+  ev?.stopPropagation()
+  viewsMenuOpen.value = !viewsMenuOpen.value
+  if (viewsMenuOpen.value) {
+    nextTick(() => viewsSearchEl.value?.focus())
+  } else {
+    viewsFilter.value = ''
+  }
+}
+function onPickView(entry: ViewHistoryEntry) {
+  viewsMenuOpen.value = false
+  viewsFilter.value = ''
+  emit('selectView', entry)
+}
+function onToggleViewFav(entry: ViewHistoryEntry, ev: Event) {
+  ev.stopPropagation()
+  toggleViewFavorite(entry.agent, entry.dir, entry.session.id || entry.session.path)
+}
+function onRemoveView(entry: ViewHistoryEntry, ev: Event) {
+  ev.stopPropagation()
+  removeView(entry.agent, entry.dir, entry.session.id || entry.session.path)
+}
+function onViewsMenuDocClick(e: MouseEvent) {
+  if (!viewsMenuOpen.value) return
+  if (viewsMenuEl.value?.contains(e.target as Node)) return
+  viewsMenuOpen.value = false
+}
+// 一旦打开了会话（View tab 存在），整条 strip 就保持可见 —— 即使右侧 PTY tab 全部关闭，
+// List / View 两个 meta tab 仍在，View 只能由它自己的 × 手动关闭，不再自动隐藏。
+const visible = computed(
+  () =>
+    visibleTabs.value.length > 0 ||
+    visibleSaved.value.length > 0 ||
+    // 有历史 View 时即便没开会话也显示 strip，让用户能从 List 上拉出 Views 下拉。
+    (props.inProjectBrowse && (props.hasOpenSession || hasViews.value)),
+)
 
 function onSavedClick(saved: SavedTab) {
   removeSavedTab(saved.sessionPath ? saved.sessionPath : saved)
@@ -73,12 +153,13 @@ function onSavedClose(saved: SavedTab, ev: Event) {
   removeSavedTab(saved.sessionPath ? saved.sessionPath : saved)
 }
 const listActive = computed(
-  () => activeUiId.value === null && !props.hasOpenSession,
+  () => activeUiId.value === null && (props.viewingList || !props.hasOpenSession),
 )
 const viewActive = computed(
-  () => activeUiId.value === null && props.hasOpenSession,
+  () => activeUiId.value === null && props.hasOpenSession && !props.viewingList,
 )
 const tabCtx = ref<{ x: number; y: number; tab: TerminalTab } | null>(null)
+const savedCtx = ref<{ x: number; y: number; saved: SavedTab } | null>(null)
 const stripCtx = ref<{ x: number; y: number } | null>(null)
 const draggingTabUiId = ref<number | null>(null)
 const dropTarget = ref<{ uiId: number; position: 'before' | 'after' } | null>(null)
@@ -94,6 +175,117 @@ const nativeMenuSupported = typeof window !== 'undefined' && '__TAURI_INTERNALS_
 let pendingDrag: { uiId: number; startX: number; startY: number } | null = null
 let suppressNextTabClick = false
 
+// ---- 横向滑动（无原生滚动条）: translateX + CSS transition ----
+// 拿掉丑陋的横向滚动条，把 tab 条做成一个可滑动的遮罩区：所有 tab 放进 .term-strip-track，
+// 用 transform: translateX(-scrollX) 平移；滚轮 / 拖空白处改 scrollX（跟手、关 transition），
+// 点临近边缘的 tab / 新建 tab 则带 transition 平滑滑入。
+const viewportRef = ref<HTMLElement>()
+const trackRef = ref<HTMLElement>()
+const scrollX = ref(0)
+const maxScroll = ref(0)
+// panning=true 时关掉 transition，让滚轮 / 拖拽 1:1 跟手；程序化滑动时为 false 走动画。
+const panning = ref(false)
+const canLeft = computed(() => scrollX.value > 0.5)
+const canRight = computed(() => scrollX.value < maxScroll.value - 0.5)
+const trackStyle = computed(() => ({ transform: `translateX(${-scrollX.value}px)` }))
+
+function measure() {
+  const vp = viewportRef.value
+  const tr = trackRef.value
+  maxScroll.value = vp && tr ? Math.max(0, tr.scrollWidth - vp.clientWidth) : 0
+  if (scrollX.value > maxScroll.value) scrollX.value = maxScroll.value
+}
+function setScroll(x: number) {
+  scrollX.value = Math.max(0, Math.min(x, maxScroll.value))
+}
+
+// 滚轮 / 触控板 → 横向平移（取代原生横向滚动）
+let wheelIdleTimer = 0
+function onWheel(ev: WheelEvent) {
+  if (maxScroll.value <= 0) return
+  const delta = Math.abs(ev.deltaX) > Math.abs(ev.deltaY) ? ev.deltaX : ev.deltaY
+  if (!delta) return
+  ev.preventDefault()
+  panning.value = true
+  setScroll(scrollX.value + delta)
+  window.clearTimeout(wheelIdleTimer)
+  wheelIdleTimer = window.setTimeout(() => (panning.value = false), 140)
+}
+
+// 拖拽空白处 → 平移（tab 本体的拖拽留给排序逻辑，不在此响应）
+let pan: { startX: number; startScroll: number } | null = null
+function onPanPointerDown(ev: PointerEvent) {
+  if (ev.button !== 0 || maxScroll.value <= 0) return
+  const target = ev.target as HTMLElement | null
+  if (target?.closest('.term-tab, .term-tab-new')) return
+  pan = { startX: ev.clientX, startScroll: scrollX.value }
+  panning.value = true
+  window.addEventListener('pointermove', onPanPointerMove)
+  window.addEventListener('pointerup', onPanPointerUp)
+  window.addEventListener('pointercancel', onPanPointerUp)
+}
+function onPanPointerMove(ev: PointerEvent) {
+  if (!pan) return
+  setScroll(pan.startScroll - (ev.clientX - pan.startX))
+}
+function onPanPointerUp() {
+  pan = null
+  panning.value = false
+  window.removeEventListener('pointermove', onPanPointerMove)
+  window.removeEventListener('pointerup', onPanPointerUp)
+  window.removeEventListener('pointercancel', onPanPointerUp)
+}
+
+// 把某个 tab 完整滑入视野；点临近边缘（被遮挡）的 tab 时露出它被切掉的部分
+function revealEl(el: HTMLElement | null | undefined) {
+  measure()
+  const vp = viewportRef.value
+  if (!vp || !el || maxScroll.value <= 0) return
+  const tabRect = el.getBoundingClientRect()
+  const vpRect = vp.getBoundingClientRect()
+  const margin = 16
+  let dx = 0
+  if (tabRect.left < vpRect.left + margin) dx = tabRect.left - (vpRect.left + margin)
+  else if (tabRect.right > vpRect.right - margin) dx = tabRect.right - (vpRect.right - margin)
+  if (dx === 0) return
+  panning.value = false // 程序化滑动：保留 transition 动画
+  setScroll(scrollX.value + dx)
+}
+function revealActiveTab() {
+  nextTick(() => {
+    const el = trackRef.value?.querySelector<HTMLElement>(
+      `.term-tab[data-tab-ui-id="${activeUiId.value}"]`,
+    )
+    revealEl(el)
+  })
+}
+
+let stripRo: ResizeObserver | null = null
+watch(
+  viewportRef,
+  (el) => {
+    stripRo?.disconnect()
+    stripRo = null
+    if (!el || typeof ResizeObserver === 'undefined') return
+    stripRo = new ResizeObserver(() => measure())
+    stripRo.observe(el)
+    nextTick(() => {
+      if (trackRef.value && stripRo) stripRo.observe(trackRef.value)
+      measure()
+    })
+  },
+  { immediate: true },
+)
+watch([() => visibleTabs.value.length, () => visibleSaved.value.length], () => nextTick(measure))
+watch(activeUiId, () => revealActiveTab())
+onUnmounted(() => {
+  stripRo?.disconnect()
+  window.clearTimeout(wheelIdleTimer)
+  window.removeEventListener('pointermove', onPanPointerMove)
+  window.removeEventListener('pointerup', onPanPointerUp)
+  window.removeEventListener('pointercancel', onPanPointerUp)
+})
+
 // ---- 新建会话下拉菜单（+ 按钮） ----
 const newMenuOpen = ref(false)
 const newMenuEl = ref<HTMLElement>()
@@ -105,6 +297,10 @@ function pickNewAgent() {
   newMenuOpen.value = false
   emit('newSession')
 }
+function pickNewGui() {
+  newMenuOpen.value = false
+  emit('newGuiSession')
+}
 function pickNewShell() {
   newMenuOpen.value = false
   emit('newShell')
@@ -114,8 +310,14 @@ function onNewMenuDocClick(e: MouseEvent) {
   if (newMenuEl.value?.contains(e.target as Node)) return
   newMenuOpen.value = false
 }
-onMounted(() => document.addEventListener('click', onNewMenuDocClick))
-onUnmounted(() => document.removeEventListener('click', onNewMenuDocClick))
+onMounted(() => {
+  document.addEventListener('click', onNewMenuDocClick)
+  document.addEventListener('click', onViewsMenuDocClick)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', onNewMenuDocClick)
+  document.removeEventListener('click', onViewsMenuDocClick)
+})
 
 function shortTitle(title: string): string {
   if (!title) return t('chat.tui.untitled')
@@ -130,6 +332,8 @@ function onTabClick(uiId: number, ev?: Event) {
     suppressNextTabClick = false
     return
   }
+  // 点临近边缘（被遮挡）的 tab 时，先把它完整滑入视野
+  revealEl((ev?.currentTarget as HTMLElement) ?? null)
   markTabViewed(uiId)
   // 点已激活的 tab 不做切换 —— 避免和"× 关闭"的视觉位置混淆。要回 view 用左侧的 meta tab。
   if (activeUiId.value === uiId) return
@@ -142,13 +346,15 @@ function onListClick() {
 function onViewClick() {
   emit('viewClick')
 }
+function onViewClose(ev: Event) {
+  ev.stopPropagation()
+  emit('viewClose')
+}
 
 function onClose(uiId: number, ev: Event) {
   ev.stopPropagation()
-  const tab = tabs.value.find(t => t.uiId === uiId)
-  const sessionPath = tab?.sessionPath ?? ''
   closeTab(uiId)
-  emit('tabClosed', sessionPath)
+  emit('tabClosed')
 }
 
 function renameTab(tab: TerminalTab, ev?: Event) {
@@ -246,7 +452,7 @@ function onStripDoubleClick(ev: MouseEvent) {
   const target = ev.target as HTMLElement | null
   if (target?.closest('.term-tab, .term-tab-ctx-menu')) return
   closeTabCtx()
-  emit('newSession')
+  emit('newDefault')
 }
 
 async function onStripContextMenu(ev: MouseEvent) {
@@ -264,6 +470,86 @@ async function onTabContextMenu(tab: TerminalTab, ev: MouseEvent) {
   closeTabCtx()
   if (await openNativeTabContextMenu(tab, ev)) return
   openFallbackTabContextMenu(tab, ev)
+}
+
+// saved（懒恢复）tab 右键 —— 和 live tab 一致：先试原生 Tauri 菜单，失败再退 HTML 菜单。
+// 在此之前 saved tab 没挂 @contextmenu，会落到 webview 原生菜单，和 live tab 不一致。
+async function onSavedContextMenu(saved: SavedTab, ev: MouseEvent) {
+  ev.preventDefault()
+  ev.stopPropagation()
+  closeTabCtx()
+  if (await openNativeSavedContextMenu(saved, ev)) return
+  openFallbackSavedContextMenu(saved, ev)
+}
+
+async function openNativeSavedContextMenu(saved: SavedTab, ev: MouseEvent): Promise<boolean> {
+  if (!nativeMenuSupported) return false
+  try {
+    const [{ Menu }, { LogicalPosition }] = await Promise.all([
+      import('@tauri-apps/api/menu'),
+      import('@tauri-apps/api/dpi'),
+    ])
+    const menu = await Menu.new({
+      items: [
+        {
+          id: 'saved-rename',
+          text: t(saved.isShell ? 'chat.tui.tabRenameShell' : 'chat.tui.tabRename'),
+          action: () => emit('savedRename', saved),
+        },
+        { item: 'Separator' },
+        {
+          id: 'saved-close',
+          text: t('chat.tui.tabClose'),
+          action: () => removeSaved(saved),
+        },
+        {
+          id: 'saved-close-others',
+          text: t('chat.tui.tabCloseOthers'),
+          action: () => closeOthersFromSaved(saved),
+        },
+        {
+          id: 'saved-close-project',
+          text: t('chat.tui.tabCloseProject'),
+          action: () => closeProjectAllTabs(),
+        },
+      ],
+    })
+    await menu.popup(new LogicalPosition(ev.clientX, ev.clientY))
+    return true
+  } catch (err) {
+    console.warn('Failed to open native saved tab context menu, falling back to HTML menu', err)
+    return false
+  }
+}
+
+function openFallbackSavedContextMenu(saved: SavedTab, ev: MouseEvent) {
+  const menuW = 220
+  const menuH = 318
+  savedCtx.value = {
+    x: Math.max(8, Math.min(ev.clientX, window.innerWidth - menuW - 8)),
+    y: Math.max(8, Math.min(ev.clientY, window.innerHeight - menuH - 8)),
+    saved,
+  }
+}
+
+function removeSaved(saved: SavedTab) {
+  removeSavedTab(saved.sessionPath ? saved.sessionPath : saved)
+}
+
+// 关闭「其它」：saved tab 视角下，其它 = 所有 live tab + 除自己外的 saved tab。
+function closeOthersFromSaved(saved: SavedTab) {
+  for (const item of visibleTabs.value) closeTab(item.uiId)
+  for (const s of [...visibleSaved.value]) {
+    if (s !== saved) removeSavedTab(s.sessionPath ? s.sessionPath : s)
+  }
+  emit('tabClosed')
+}
+
+// 关闭整个项目：live + saved 全清。
+function closeProjectAllTabs() {
+  for (const item of visibleTabs.value) closeTab(item.uiId)
+  for (const s of [...visibleSaved.value]) removeSavedTab(s.sessionPath ? s.sessionPath : s)
+  emit('tabClosed')
 }
 
 async function openNativeTabContextMenu(tab: TerminalTab, ev: MouseEvent): Promise<boolean> {
@@ -317,9 +603,19 @@ async function openNativeStripContextMenu(ev: MouseEvent): Promise<boolean> {
       items: [
         {
           id: 'strip-new-agent',
-          text: t('list.action.newAgentSession'),
+          text: t('list.action.newSessionTui'),
           action: () => emit('newSession'),
         },
+        // New chat (GUI) 目前只有 claude 支持；codex / gemini 先不放这一项。
+        ...(props.agent === 'claude'
+          ? [
+              {
+                id: 'strip-new-gui',
+                text: t('list.action.newSessionGui'),
+                action: () => emit('newGuiSession'),
+              },
+            ]
+          : []),
         {
           id: 'strip-new-shell',
           text: t('list.action.newTerminal'),
@@ -357,11 +653,16 @@ function openFallbackStripContextMenu(ev: MouseEvent) {
 function closeTabCtx() {
   tabCtx.value = null
   stripCtx.value = null
+  savedCtx.value = null
 }
 
 function newSessionFromStripCtx() {
   closeTabCtx()
   emit('newSession')
+}
+function newGuiFromStripCtx() {
+  closeTabCtx()
+  emit('newGuiSession')
 }
 function newShellFromStripCtx() {
   closeTabCtx()
@@ -378,9 +679,8 @@ function closeCtxTab() {
   const tab = tabCtx.value?.tab
   closeTabCtx()
   if (!tab) return
-  const sessionPath = tab.sessionPath ?? ''
   closeTab(tab.uiId)
-  emit('tabClosed', sessionPath)
+  emit('tabClosed')
 }
 
 function closeOtherCtxTabs() {
@@ -390,7 +690,7 @@ function closeOtherCtxTabs() {
   for (const item of visibleTabs.value) {
     if (item.uiId !== tab.uiId) closeTab(item.uiId)
   }
-  emit('tabClosed', '')
+  emit('tabClosed')
 }
 
 function closeProjectCtxTabs() {
@@ -398,36 +698,59 @@ function closeProjectCtxTabs() {
   closeProjectNativeCtxTabs()
 }
 
+// ---- saved tab 的 HTML fallback 菜单动作（读 savedCtx）----
+function renameCtxSaved() {
+  const saved = savedCtx.value?.saved
+  closeTabCtx()
+  if (saved) emit('savedRename', saved)
+}
+function closeCtxSaved() {
+  const saved = savedCtx.value?.saved
+  closeTabCtx()
+  if (saved) removeSaved(saved)
+}
+function closeOthersCtxSaved() {
+  const saved = savedCtx.value?.saved
+  closeTabCtx()
+  if (saved) closeOthersFromSaved(saved)
+}
+function closeProjectCtxSaved() {
+  closeTabCtx()
+  closeProjectAllTabs()
+}
+
 function closeNativeCtxTab(tab: TerminalTab) {
-  const sessionPath = tab.sessionPath ?? ''
   closeTab(tab.uiId)
-  emit('tabClosed', sessionPath)
+  emit('tabClosed')
 }
 
 function closeOtherNativeCtxTabs(tab: TerminalTab) {
   for (const item of visibleTabs.value) {
     if (item.uiId !== tab.uiId) closeTab(item.uiId)
   }
-  emit('tabClosed', '')
+  emit('tabClosed')
 }
 
 function closeProjectNativeCtxTabs() {
   for (const item of visibleTabs.value) {
     closeTab(item.uiId)
   }
-  emit('tabClosed', '')
+  emit('tabClosed')
 }
 
 
 function onDocMouseDown(e: MouseEvent) {
-  if (!tabCtx.value && !stripCtx.value) return
+  if (!tabCtx.value && !stripCtx.value && !savedCtx.value) return
   const target = e.target as HTMLElement | null
   if (target?.closest('.term-tab-ctx-menu, .term-strip-ctx-menu')) return
   closeTabCtx()
 }
 
 function onDocKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') closeTabCtx()
+  if (e.key === 'Escape') {
+    closeTabCtx()
+    viewsMenuOpen.value = false
+  }
 }
 
 onMounted(() => {
@@ -454,10 +777,10 @@ onUnmounted(() => {
     @dblclick="onStripDoubleClick"
     @contextmenu="onStripContextMenu"
   >
-    <div class="term-strip-scroll">
+    <!-- 固定 meta tab：List / View 永远钉在左侧，不随终端 tab 一起滑动 -->
+    <div v-if="inProjectBrowse" class="term-strip-meta">
       <!-- List —— 项目浏览模式下永久显示 -->
       <div
-        v-if="inProjectBrowse"
         class="term-tab view-tab"
         :class="{ active: listActive }"
         v-tooltip:bottom="t('chat.tui.listTabTooltip')"
@@ -471,10 +794,108 @@ onUnmounted(() => {
         <span class="term-tab-title">{{ t('chat.tui.listTab') }}</span>
       </div>
 
-      <!-- View —— 仅当用户已经打开了某个会话时显示 -->
+      <!-- Views —— List 和 View 之间的历史下拉：每个 (agent, 项目) 独立，可搜索 + 收藏。
+           选一条历史 View 即渲染回右侧的 View tab；View tab 本身不变。 -->
+      <div v-if="hasViews" ref="viewsMenuEl" class="views-menu-wrap">
+        <div
+          class="term-tab view-tab views-tab"
+          :class="{ active: viewsMenuOpen }"
+          v-tooltip:bottom="t('chat.tui.viewsTabTooltip')"
+          role="button"
+          tabindex="0"
+          @click.stop="toggleViewsMenu"
+          @keydown.enter.prevent="toggleViewsMenu"
+          @keydown.space.prevent="toggleViewsMenu"
+        >
+          <IconHistory class="term-tab-agent" />
+          <span class="term-tab-title">{{ t('chat.tui.viewsTab') }}</span>
+          <IconChevronDown class="views-tab-caret" />
+        </div>
+        <div
+          v-if="viewsMenuOpen"
+          class="views-menu"
+          role="menu"
+          @contextmenu.stop.prevent
+        >
+          <div class="views-menu-search">
+            <input
+              ref="viewsSearchEl"
+              v-model="viewsFilter"
+              class="views-search-input"
+              :placeholder="t('chat.tui.viewsSearchPlaceholder')"
+              @keydown.escape.stop="viewsMenuOpen = false"
+              @click.stop
+            />
+          </div>
+          <div class="views-menu-list">
+            <template v-for="(entry, idx) in sortedViews" :key="entry.session.id || entry.session.path">
+              <div
+                v-if="idx === 0 && entry.favorite"
+                class="views-menu-group"
+              >
+                {{ t('chat.tui.viewsFavorites') }}
+              </div>
+              <div
+                v-if="!entry.favorite && idx > 0 && sortedViews[idx - 1].favorite"
+                class="views-menu-group"
+              >
+                {{ t('chat.tui.viewsRecent') }}
+              </div>
+              <div
+                class="views-menu-item"
+                :class="{ active: (entry.session.id || entry.session.path) === activeViewKey }"
+                role="button"
+                tabindex="0"
+                @click="onPickView(entry)"
+                @keydown.enter.prevent="onPickView(entry)"
+              >
+                <component
+                  :is="entry.mode === 'chat' ? IconChat : IconReader"
+                  class="views-item-mode"
+                  v-tooltip:bottom="
+                    entry.mode === 'chat' ? t('chat.action.switchToChat') : t('list.action.view')
+                  "
+                />
+                <span class="views-item-text">{{
+                  entry.session.title || t('chat.tui.untitled')
+                }}</span>
+                <span class="views-item-time">{{ formatTime(entry.openedAt) }}</span>
+                <span
+                  class="views-item-star"
+                  :class="{ filled: entry.favorite }"
+                  v-tooltip:bottom="
+                    entry.favorite ? t('chat.action.unfavorite') : t('chat.action.favorite')
+                  "
+                  role="button"
+                  tabindex="0"
+                  @click="onToggleViewFav(entry, $event)"
+                  @keydown.enter.prevent="onToggleViewFav(entry, $event)"
+                >
+                  <IconStar />
+                </span>
+                <span
+                  class="views-item-remove"
+                  v-tooltip:bottom="t('chat.tui.viewRemove')"
+                  role="button"
+                  tabindex="0"
+                  @click="onRemoveView(entry, $event)"
+                  @keydown.enter.prevent="onRemoveView(entry, $event)"
+                >
+                  <IconClose />
+                </span>
+              </div>
+            </template>
+            <div v-if="!sortedViews.length" class="views-menu-empty">
+              {{ viewsFilter ? t('chat.tui.viewsNoMatch') : t('chat.tui.viewsEmpty') }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- View —— 打开会话后常驻；只能点它自己的 × 手动关闭，不随 PTY tab 关闭而隐藏 -->
       <div
-        v-if="inProjectBrowse && hasOpenSession"
-        class="term-tab view-tab"
+        v-if="hasOpenSession"
+        class="term-tab view-tab view-tab-closable"
         :class="{ active: viewActive }"
         v-tooltip:bottom="t('chat.tui.viewTabTooltip')"
         role="button"
@@ -485,13 +906,34 @@ onUnmounted(() => {
       >
         <IconChat class="term-tab-agent" />
         <span class="term-tab-title">{{ t('chat.tui.viewTab') }}</span>
+        <span
+          class="term-tab-close"
+          v-tooltip:bottom="t('chat.tui.tabClose')"
+          role="button"
+          tabindex="0"
+          @click="onViewClose"
+          @keydown.enter.prevent="onViewClose"
+        >
+          <IconClose />
+        </span>
       </div>
 
       <div
-        v-if="inProjectBrowse && visibleTabs.length > 0"
+        v-if="visibleTabs.length > 0 || visibleSaved.length > 0"
         class="term-tab-sep"
         aria-hidden="true"
       />
+    </div>
+
+    <!-- 滑动区（红框动效区域）：只放终端 / saved tab -->
+    <div
+      ref="viewportRef"
+      class="term-strip-scroll"
+      :class="{ 'can-left': canLeft, 'can-right': canRight }"
+      @wheel="onWheel"
+      @pointerdown="onPanPointerDown"
+    >
+      <div ref="trackRef" class="term-strip-track" :class="{ panning }" :style="trackStyle">
 
       <div
         v-for="tab in visibleTabs"
@@ -559,6 +1001,7 @@ onUnmounted(() => {
         role="button"
         tabindex="0"
         @click="onSavedClick(saved)"
+        @contextmenu="onSavedContextMenu(saved, $event)"
       >
         <IconTerminal v-if="saved.isShell" class="term-tab-agent" />
         <component v-else :is="agentIcons[saved.agent]" class="term-tab-agent" :class="saved.agent" />
@@ -573,6 +1016,7 @@ onUnmounted(() => {
         >
           <IconClose />
         </span>
+      </div>
       </div>
     </div>
 
@@ -591,7 +1035,11 @@ onUnmounted(() => {
       <div v-if="newMenuOpen" class="new-menu" role="menu">
         <button type="button" class="new-menu-item" role="menuitem" @click="pickNewAgent">
           <component :is="agentIcons[agent]" class="new-menu-ic" />
-          <span>{{ t('list.action.newAgentSession') }}</span>
+          <span>{{ t('list.action.newSessionTui') }}</span>
+        </button>
+        <button type="button" class="new-menu-item" role="menuitem" @click="pickNewGui">
+          <IconChat class="new-menu-ic" />
+          <span>{{ t('list.action.newSessionGui') }}</span>
         </button>
         <button type="button" class="new-menu-item" role="menuitem" @click="pickNewShell">
           <IconTerminal class="new-menu-ic" />
@@ -613,7 +1061,16 @@ onUnmounted(() => {
         data-menu-action="strip-new-agent"
         @click="newSessionFromStripCtx"
       >
-        <span>{{ t('list.action.newAgentSession') }}</span>
+        <span>{{ t('list.action.newSessionTui') }}</span>
+      </button>
+      <button
+        v-if="agent === 'claude'"
+        type="button"
+        class="ctx-item"
+        data-menu-action="strip-new-gui"
+        @click="newGuiFromStripCtx"
+      >
+        <span>{{ t('list.action.newSessionGui') }}</span>
       </button>
       <button
         type="button"
@@ -652,6 +1109,38 @@ onUnmounted(() => {
         class="ctx-item danger"
         data-menu-action="tab-close-project"
         @click="closeProjectCtxTabs"
+      >
+        <span>{{ t('chat.tui.tabCloseProject') }}</span>
+      </button>
+    </div>
+
+    <div
+      v-if="savedCtx"
+      class="ctx-menu term-tab-ctx-menu"
+      :style="{ left: savedCtx.x + 'px', top: savedCtx.y + 'px' }"
+      @click.stop
+      @contextmenu.prevent.stop
+    >
+      <button type="button" class="ctx-item" data-menu-action="saved-rename" @click="renameCtxSaved">
+        <span>{{ t(savedCtx?.saved?.isShell ? 'chat.tui.tabRenameShell' : 'chat.tui.tabRename') }}</span>
+      </button>
+      <div class="ctx-sep" />
+      <button type="button" class="ctx-item" data-menu-action="saved-close" @click="closeCtxSaved">
+        <span>{{ t('chat.tui.tabClose') }}</span>
+      </button>
+      <button
+        type="button"
+        class="ctx-item"
+        data-menu-action="saved-close-others"
+        @click="closeOthersCtxSaved"
+      >
+        <span>{{ t('chat.tui.tabCloseOthers') }}</span>
+      </button>
+      <button
+        type="button"
+        class="ctx-item danger"
+        data-menu-action="saved-close-project"
+        @click="closeProjectCtxSaved"
       >
         <span>{{ t('chat.tui.tabCloseProject') }}</span>
       </button>

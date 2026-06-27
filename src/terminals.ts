@@ -25,7 +25,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import type { Agent } from './types'
+import type { Agent, SessionMeta } from './types'
 import { theme, launchArgs } from './settings'
 import * as api from './api'
 import {
@@ -108,6 +108,7 @@ let nextUiId = 1
 
 const SAVED_TABS_KEY = 'savedTabs:v1'
 const SAVED_NAV_KEY = 'savedNav:v1'
+const SAVED_VIEWS_KEY = 'savedViews:v1'
 
 export interface SavedTab {
   agent: Agent
@@ -125,10 +126,40 @@ export interface SavedNav {
   activeDir: string | null
   /** 退出时如果在终端 tab 上，记录它的 sessionPath 以便重启时自动水合 */
   activeSessionPath: string | null
-  /** 退出时的视图状态：'list' | 'tui' | 'welcome'（没选项目） */
-  view: 'list' | 'tui' | 'welcome'
+  /** 退出时的视图状态：'list' | 'tui' | 'view'（聊天详情）| 'welcome'（没选项目） */
+  view: 'list' | 'tui' | 'view' | 'welcome'
   /** 退出时活跃 tab 没有 sessionPath（shell / 未匹配新会话），记录它在 savedTabs 中的索引 */
   activeSavedIndex?: number
+}
+
+// 每个项目最近打开的 View（会话详情 + read/chat 子模式）。和 savedNav 分开存：
+// savedNav 只记「重启时停在哪个项目 / 哪个视图」，这里记「每个项目各自开着哪条 View」，
+// 这样切到任意项目（含重启后第一次点）都能恢复它自己的 View tab，而不只是上次激活的那个。
+export interface SavedView {
+  agent: Agent
+  dir: string
+  session: SessionMeta
+  mode: 'read' | 'chat'
+}
+
+export function loadSavedViews(): SavedView[] {
+  try {
+    const raw = localStorage.getItem(SAVED_VIEWS_KEY)
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr.filter((v: any) => v && v.agent && v.dir && v.session && v.session.path)
+  } catch {
+    return []
+  }
+}
+
+export function persistViews(views: SavedView[]) {
+  try {
+    localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(views))
+  } catch {
+    /* 配额满 / 隐私模式：丢了也只是少恢复 View，无所谓 */
+  }
 }
 
 export const savedTabs = ref<SavedTab[]>(loadSavedTabs())
@@ -193,6 +224,17 @@ export function removeSavedTab(target: string | SavedTab) {
     const idx = savedTabs.value.indexOf(target)
     if (idx >= 0) savedTabs.value.splice(idx, 1)
   }
+}
+
+// 改 saved tab 的标题。和 removeSavedTab 同构：有 sessionPath 按它匹配，
+// shell saved tab（无 path）按引用匹配。标记 userRenamed，水合后不被 session 标题覆盖。
+export function renameSavedTab(target: string | SavedTab, title: string) {
+  const apply = (t: SavedTab): SavedTab => ({ ...t, title, userRenamed: true })
+  savedTabs.value = savedTabs.value.map((t) =>
+    (typeof target === 'string' ? t.sessionPath === target : t === target)
+      ? apply(t)
+      : t,
+  )
 }
 
 export function clearSavedTabs() {

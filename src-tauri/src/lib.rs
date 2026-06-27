@@ -12,6 +12,7 @@
 // agents / stats are `pub` so the `examples/test_dedup.rs` binary (compiled as
 // an external consumer of the lib crate) can call into the dedup pipeline
 // directly. Everything else stays crate-private.
+mod agent_chat;
 pub mod agents;
 mod agent_command;
 mod bookmarks;
@@ -24,6 +25,7 @@ mod tray;
 mod trash;
 mod turn;
 mod types;
+mod usage_api;
 mod util;
 mod watch;
 
@@ -161,6 +163,14 @@ fn unwatch_session_turn(path: String) -> Result<(), String> {
 fn session_usage(agent: String, path: String) -> Result<UsageSummary, String> {
     let src = agents::source(&agent)?;
     agents::session_usage(&*src, &path)
+}
+
+/// 「当前上下文」用量 —— 取会话最后一条 usage（≈末尾上下文规模），而非全程累加。
+/// 续聊（resume）时前端拿它给上下文进度角标做种子，否则刚切过去会显示 0% 与 TUI 不符。
+#[tauri::command]
+fn session_context_usage(agent: String, path: String) -> Result<UsageSummary, String> {
+    let src = agents::source(&agent)?;
+    src.context_usage(&path)
 }
 
 /// 当前 agent 的统计概览：顶层标量 + 项目排行（按 token 降序）+ 日活时间轴。
@@ -341,6 +351,120 @@ fn pty_resize(id: u64, cols: u16, rows: u16) -> Result<(), String> {
 #[tauri::command]
 fn pty_kill(id: u64) -> Result<(), String> {
     pty::kill(id)
+}
+
+// ---------- 程序化聊天（GUI chat）：管道子进程跑 stream-json ----------
+
+/// model / effort flag 值的轻校验：非空、≤64、仅 `[A-Za-z0-9._:-]`。值最终经
+/// `AgentCommand` 的 posix_quote 安全转义（不会注入），这里只是额外挡掉明显垃圾，
+/// 并与前端候选列表对齐。低 / 高 / xhigh / max / minimal、gpt-5.1-codex-max 等均通过。
+fn valid_flag_token(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+}
+
+/// 权限模式允许列表（会进 shell 命令；虽已 posix_quote，仍只放行已知值）。
+/// 对齐 `claude --permission-mode` 的 choices（含 auto / dontAsk）。
+fn valid_permission_mode(mode: &str) -> bool {
+    matches!(
+        mode,
+        "default" | "acceptEdits" | "plan" | "auto" | "dontAsk" | "bypassPermissions"
+    )
+}
+
+/// 启动一个 GUI chat 子进程，返回 chat id + 进程模型。`session_id` 给出时续聊既有
+/// 会话；`permission_mode` / `model` / `effort` 走校验后透传给 CLI（默认 acceptEdits，
+/// model/effort 为空走 CLI 自身默认）。
+#[tauri::command]
+fn agent_chat_start(
+    app: tauri::AppHandle,
+    agent: String,
+    cwd: String,
+    session_id: Option<String>,
+    permission_mode: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Result<crate::types::ChatStartInfo, String> {
+    if !Path::new(&cwd).is_dir() {
+        return Err("Project directory no longer exists".to_string());
+    }
+    // 续聊时校验 session id（会被拼进 --resume）。新开会话 session_id 为空。
+    if let Some(id) = session_id.as_deref() {
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err("Invalid session ID".to_string());
+        }
+    }
+    let mode = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
+    if !valid_permission_mode(&mode) {
+        return Err("Invalid permission mode".to_string());
+    }
+    if let Some(m) = model.as_deref() {
+        if !valid_flag_token(m) {
+            return Err("Invalid model".to_string());
+        }
+    }
+    if let Some(e) = effort.as_deref() {
+        if !valid_flag_token(e) {
+            return Err("Invalid effort".to_string());
+        }
+    }
+    // 进程模型在 start 移走 agent 之前算（前端据此决定切设置走 restart 还是下轮 flag）。
+    let process_model = agents::source(&agent)?.chat_process_model().as_str().to_string();
+    let chat_id = agent_chat::start(app, agent, cwd, session_id, mode, model, effort)?;
+    Ok(crate::types::ChatStartInfo { chat_id, process_model })
+}
+
+/// 向某个 chat 子进程发送一条用户消息（含可选图片附件 + 本轮的 model/effort/权限）。
+/// one-shot agent（Codex）据此每轮切换；长驻 agent（Claude）这三者在 start 已定型，
+/// 后端忽略（切换走 restart-with-resume）。
+#[tauri::command]
+fn agent_chat_send(
+    id: u64,
+    text: String,
+    images: Option<Vec<crate::types::ChatImageInput>>,
+    model: Option<String>,
+    effort: Option<String>,
+    permission_mode: Option<String>,
+) -> Result<(), String> {
+    if let Some(m) = model.as_deref() {
+        if !valid_flag_token(m) {
+            return Err("Invalid model".to_string());
+        }
+    }
+    if let Some(e) = effort.as_deref() {
+        if !valid_flag_token(e) {
+            return Err("Invalid effort".to_string());
+        }
+    }
+    let mode = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
+    if !valid_permission_mode(&mode) {
+        return Err("Invalid permission mode".to_string());
+    }
+    agent_chat::send(
+        id,
+        &text,
+        &images.unwrap_or_default(),
+        model.as_deref(),
+        effort.as_deref(),
+        &mode,
+    )
+}
+
+/// 结束一个 chat 子进程（kill + 回收）。幂等。
+#[tauri::command]
+fn agent_chat_stop(id: u64) -> Result<(), String> {
+    agent_chat::stop(id)
+}
+
+/// GUI chat 输入框 `/` 浮层的动态指令列表（扫磁盘自定义命令 / user-invocable skills）。
+#[tauri::command]
+fn agent_chat_slash_commands(
+    agent: String,
+    cwd: String,
+) -> Result<Vec<crate::types::SlashCommand>, String> {
+    Ok(agents::source(&agent)?.chat_slash_commands(&cwd))
 }
 
 /// 在终端中用对应 CLI 恢复（resume）一个会话。
@@ -682,6 +806,22 @@ fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// 把原生窗口外观（标题栏 / 失焦时的红绿灯灰圈）同步到 App 内主题。
+///
+/// 此前原生外观只跟随 macOS 系统：浅色 App 主题下窗口失焦时，三个交通灯被画成浅灰，
+/// 叠在同样浅色的自定义顶栏上几乎看不见（深色主题下灰圈对比够，所以正常）。把窗口
+/// appearance 钉到当前主题后，深/浅两态都有正确对比。`theme=None`（系统模式）则交还
+/// 系统自动跟随，避免破坏 webview 内 prefers-color-scheme 的自动切换。
+#[tauri::command]
+fn set_titlebar_theme(window: tauri::WebviewWindow, theme: Option<String>) {
+    let t = match theme.as_deref() {
+        Some("dark") => Some(tauri::Theme::Dark),
+        Some("light") => Some(tauri::Theme::Light),
+        _ => None,
+    };
+    let _ = window.set_theme(t);
+}
+
 /// 把字符串内容写到用户指定的绝对路径。
 ///
 /// 历史：早期版本叫 save_to_downloads，自动落到 ~/Downloads；现在已经接入
@@ -940,6 +1080,18 @@ fn list_pricing() -> Vec<stats::pricing::PricingEntry> {
     stats::pricing::list_for_ui()
 }
 
+/// 账号额度（5 小时 / 周 / 各模型分项）—— 走 Claude OAuth 用量接口，返回每个窗口的
+/// 精确利用率 + 重置时间。前端底栏据此渲染 5h / 周徽标（随时精确，不依赖越阈值事件）。
+/// async + spawn_blocking：内部 `curl` 子进程是同步阻塞，不能霸占 webview 主线程。
+/// `force=true`：绕过 20s 缓存强制拉新（事件驱动刷新 —— 一轮对话结束后用，确保拿到刚变化的值）。
+#[tauri::command]
+async fn account_usage(force: Option<bool>) -> Result<usage_api::AccountUsage, String> {
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || usage_api::account_usage_blocking(force))
+        .await
+        .map_err(|e| format!("join: {e}"))?
+}
+
 /// 托盘弹窗用的快速统计：一次扫描三个时间窗口，返回 per-agent 的 token + cost。
 /// async + spawn_blocking —— 扫描耗时取决于会话数量（几百毫秒到几秒），不能阻塞主线程。
 #[tauri::command]
@@ -1017,6 +1169,7 @@ pub fn run() {
             watch_session_turn,
             unwatch_session_turn,
             session_usage,
+            session_context_usage,
             agent_stats,
             start_agent_stats,
             cancel_stats,
@@ -1037,16 +1190,22 @@ pub fn run() {
             pty_write,
             pty_resize,
             pty_kill,
+            agent_chat_start,
+            agent_chat_send,
+            agent_chat_stop,
+            agent_chat_slash_commands,
             reveal_in_finder,
             open_local_path,
             open_url,
             write_file,
+            set_titlebar_theme,
             add_bookmark,
             remove_bookmark,
             app_version,
             refresh_pricing,
             pricing_status,
             list_pricing,
+            account_usage,
             tray_quick_stats,
         ])
         .setup(|app| {

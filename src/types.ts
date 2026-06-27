@@ -215,6 +215,79 @@ export interface StatsError {
   error: string
 }
 
+// ============================ GUI chat（程序化聊天）============================
+
+/** 一轮问答的运行状态。 */
+export type ChatTurnState = 'idle' | 'running'
+
+/** 输入框里的图片附件（粘贴 / 拖拽 / 选择）。`dataUrl` 供预览与本地回显，
+ *  `data` 是去掉 `data:` 前缀的纯 base64，发送给后端时用。 */
+export interface ChatImageAttachment {
+  dataUrl: string
+  mediaType: string
+  data: string
+  /** 文件名（来自文件选择/拖拽；粘贴的截图回退 image.png）。仅前端展示用。 */
+  name?: string
+}
+
+/** agent_chat_send 透传给后端的图片输入（与 Rust ChatImageInput 同形）。 */
+export interface ChatImageInput {
+  mediaType: string
+  data: string
+}
+
+/** GUI chat `/` 浮层的一条动态指令（与 Rust SlashCommand 同形）。 */
+export interface SlashCommand {
+  name: string
+  description: string
+  /** project | user | skill */
+  source: string
+}
+
+/** GUI chat 的进程模型：长驻 stdin（Claude，切设置需 restart-with-resume）
+ *  vs 一轮一进程 resume（Codex/Gemini，切设置改下轮 flag 即生效）。 */
+export type ChatProcessModel = 'longLivedStdin' | 'oneShotResume'
+
+/** agent_chat_start 的返回（与 Rust ChatStartInfo 同形）。 */
+export interface ChatStartInfo {
+  chatId: number
+  processModel: ChatProcessModel
+}
+
+/** agent-chat://* 事件 payload（与 Rust 端同形）。 */
+export interface ChatEventPayload { chatId: number; msg: Msg }
+export interface ChatInitPayload { chatId: number; sessionId?: string; apiKeySource?: string }
+export interface ChatResultPayload { chatId: number; ok: boolean; usage?: UsageSummary }
+export interface ChatStderrPayload { chatId: number; line: string }
+export interface ChatExitPayload { chatId: number; code: number }
+
+/** token 级流式增量（仅 Claude --include-partial-messages）。 */
+export interface ChatDelta {
+  index: number
+  /** 'start' | 'delta' | 'stop' —— 内容块生命周期。 */
+  phase: string
+  /** 块类型 text | thinking | tool_use（start 必有；delta 也带，前端兜底建块）。 */
+  kind?: string
+  /** 仅 delta：本次追加的文本片段。 */
+  text?: string
+}
+export interface ChatDeltaPayload { chatId: number; delta: ChatDelta }
+
+/** 单个额度窗口（与 Rust usage_api::UsageWindow 同形）。来自 OAuth 用量接口。 */
+export interface UsageWindow {
+  /** 利用率百分比 0–100。 */
+  utilization: number
+  /** ISO8601 重置时间（用 `new Date()` 解析）。 */
+  resetsAt?: string
+}
+/** 账号额度快照（与 Rust usage_api::AccountUsage 同形）。 */
+export interface AccountUsage {
+  fiveHour?: UsageWindow | null
+  sevenDay?: UsageWindow | null
+  sevenDayOpus?: UsageWindow | null
+  sevenDaySonnet?: UsageWindow | null
+}
+
 export interface TrashItem {
   trashFile: string
   agent: Agent

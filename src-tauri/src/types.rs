@@ -8,7 +8,54 @@
 
 #![allow(dead_code)]
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// 前端发送一条 GUI chat 用户消息时附带的图片附件（粘贴 / 拖拽 / 选择）。
+/// `data` 是去掉 `data:` 前缀的纯 base64；`media_type` 如 `image/png`。
+/// 放在 types.rs（而非 agent_chat.rs）：`SessionSource::chat_encode_input` 要用到它，
+/// 类型住在共享层，避免 trait 反向依赖驱动模块。
+/// GUI chat 可用的一条 slash 指令（自定义命令 / user-invocable skill）。`name` 不含
+/// 前导 `/`；前端按输入过滤、选中后按 `/<name>` 透传给 CLI（CLI 自己展开）。
+/// 不含 TUI 内置命令（headless 下不展开，会报「not available」）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SlashCommand {
+    pub name: String,
+    pub description: String,
+    /// 来源：project（项目 .claude/commands）/ user（~/.claude/commands）/ skill。给 UI 角标。
+    pub source: String,
+}
+
+/// `agent_chat_start` 的返回：内部 chat id + 该 agent 的进程模型标识。前端据
+/// `process_model`（"longLivedStdin" / "oneShotResume"）决定切模型 / effort / 权限时
+/// 是要 restart-with-resume（长驻）还是改下轮 flag 即可（one-shot）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatStartInfo {
+    pub chat_id: u64,
+    pub process_model: String,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatImageInput {
+    pub media_type: String,
+    pub data: String,
+}
+
+/// 流式增量（`--include-partial-messages` → `stream_event`）归一后的一帧。
+/// 仅 LongLivedStdin（Claude）会产出；前端据此驱动「正在生成」气泡的打字机效果。
+/// `phase`：`start`(块开始) | `delta`(追加) | `stop`(块结束)。
+/// `kind`：块类型 `text` | `thinking` | `tool_use`（start 必有；delta 带上便于前端兜底建块）。
+/// `text`：仅 delta —— 本次追加的文本片段。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatDelta {
+    pub index: u64,
+    pub phase: String,
+    pub kind: Option<String>,
+    pub text: Option<String>,
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
