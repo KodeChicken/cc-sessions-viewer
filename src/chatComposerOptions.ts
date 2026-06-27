@@ -1,10 +1,10 @@
 // GUI chat 底栏切换器的候选项（§10.2 模型 / §10.3 effort / §10.4 权限）。
 // 纯数据 + 纯函数，便于单测；UI 在 ChatModelMenu / ChatEffortSlider / ChatModeMenu。
 //
-// 模型值用**完整标准 model id（不带 [1m]）**：用户的 ~/.claude/settings.json 把别名
-// （opus/sonnet/haiku）经 ANTHROPIC_DEFAULT_*_MODEL 重映射到 [1m] 1M-context 变体，
-// 没 usage credits 会报 "Usage credits required for 1M context"。传完整 id 绕开重映射、
-// 走标准 200k 上下文，切任意模型都能跑（已实测 claude-sonnet-4-6 通）。
+// Claude 有两套菜单：
+// - 订阅/OAuth（apiKeySource === 'none'）沿用官方完整 model id；
+// - API-key / 第三方兼容端点走 family alias（opus / sonnet / haiku / fable），让 Claude CLI
+//   自己按 ~/.claude/settings.json 的 ANTHROPIC_DEFAULT_*_MODEL 映射到用户当前配置的真实模型。
 
 import type { Agent } from './types'
 
@@ -26,7 +26,12 @@ export interface ModelMenuConfig {
   showFastMode: boolean
 }
 
-/** 模型菜单（按 agent）。Claude 用完整标准 id；Codex 给一组常见 gpt-5.x（provider 相关）。 */
+export interface ModelMenuOptions {
+  claudeAliasMode?: boolean
+  claudeAliasTargets?: Partial<Record<'opus' | 'sonnet' | 'haiku' | 'fable', string>>
+}
+
+/** 标准模型菜单（按 agent）。Claude 用官方完整 id；Codex 给一组常见 gpt-5.x。 */
 export const CHAT_MODEL_MENU: Record<Agent, ModelMenuConfig> = {
   claude: {
     unavailable: [{ value: 'claude-fable-5', label: 'Fable 5' }],
@@ -54,22 +59,71 @@ export const CHAT_MODEL_MENU: Record<Agent, ModelMenuConfig> = {
   gemini: { unavailable: [], primary: [], more: [], showFastMode: false },
 }
 
+/** Claude 在 API-key / 第三方兼容端点下改走 alias，让本地 settings.json 模型映射接管。 */
+export const CLAUDE_ALIAS_MODEL_MENU: ModelMenuConfig = {
+  unavailable: [],
+  primary: [
+    { value: 'opus', label: 'Opus' },
+    { value: 'sonnet', label: 'Sonnet' },
+    { value: 'haiku', label: 'Haiku' },
+    { value: 'fable', label: 'Fable' },
+  ],
+  more: [],
+  showFastMode: true,
+}
+
+function withAliasTargetLabel(base: ModelOption, target?: string): ModelOption {
+  const clean = target?.trim()
+  if (!clean) return base
+  return { ...base, label: `${base.label} (${clean})` }
+}
+
+export function modelMenuFor(agent: Agent, opts: ModelMenuOptions = {}): ModelMenuConfig {
+  if (agent === 'claude' && opts.claudeAliasMode) {
+    return {
+      ...CLAUDE_ALIAS_MODEL_MENU,
+      primary: CLAUDE_ALIAS_MODEL_MENU.primary.map((m) =>
+        withAliasTargetLabel(
+          m,
+          opts.claudeAliasTargets?.[m.value as keyof NonNullable<ModelMenuOptions['claudeAliasTargets']>],
+        ),
+      ),
+    }
+  }
+  return CHAT_MODEL_MENU[agent]
+}
+
+function claudeKnownModels(): ModelOption[] {
+  return [
+    ...CHAT_MODEL_MENU.claude.unavailable,
+    ...CHAT_MODEL_MENU.claude.primary,
+    ...CHAT_MODEL_MENU.claude.more,
+    ...CLAUDE_ALIAS_MODEL_MENU.primary,
+  ]
+}
+
 /** 该 agent 是否提供模型选择。 */
-export function hasModelChoice(agent: Agent): boolean {
-  const c = CHAT_MODEL_MENU[agent]
+export function hasModelChoice(agent: Agent, opts: ModelMenuOptions = {}): boolean {
+  const c = modelMenuFor(agent, opts)
   return c.primary.length > 0 || c.more.length > 0
 }
 
 /** 扁平化所有可选模型（primary + more），用于按 value 反查展示名。 */
-export function allModels(agent: Agent): ModelOption[] {
-  const c = CHAT_MODEL_MENU[agent]
+export function allModels(agent: Agent, opts: ModelMenuOptions = {}): ModelOption[] {
+  const c = modelMenuFor(agent, opts)
   return [...c.primary, ...c.more]
 }
 
 /** 按 value 找展示名；找不到回退 value 本身（如直接显示某个未列出的 id）。 */
-export function modelLabel(agent: Agent, value: string | undefined): string {
+export function modelLabel(
+  agent: Agent,
+  value: string | undefined,
+  opts: ModelMenuOptions = {},
+): string {
   if (!value) return ''
-  return allModels(agent).find((m) => m.value === value)?.label ?? value
+  const base = allModels(agent, opts)
+  const pool = agent === 'claude' ? [...base, ...claudeKnownModels()] : base
+  return pool.find((m) => m.value === value)?.label ?? value
 }
 
 /**
@@ -155,11 +209,13 @@ export function fallbackEffort(
 /** 该 agent 的初始模型（= 主列表第一项；无则 undefined）。用户要求「不存在 default model」，
  *  故每个会话都以一个明确模型起步。 */
 export function defaultModel(agent: Agent): string | undefined {
-  return CHAT_MODEL_MENU[agent].primary[0]?.value
+  if (agent === 'claude') return undefined
+  return modelMenuFor(agent).primary[0]?.value
 }
 
 /** 该 agent 的初始 effort（取中高档：claude→high、codex→medium）。同样不留「default」。 */
 export function defaultEffort(agent: Agent): string | undefined {
+  if (agent === 'claude') return undefined
   const lv = CHAT_EFFORT_LEVELS[agent]
   return lv[2] ?? lv[lv.length - 1]
 }

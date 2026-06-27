@@ -32,6 +32,7 @@ export function contextWindowFor(
   const m = (model || '').toLowerCase()
   if (m.includes('[1m]')) return 1_000_000
   if (agent === 'codex') return 1_000_000
+  if (agent === 'claude' && /^(opus|sonnet|fable)$/.test(m) && used > 200_000) return 1_000_000
   if (used > 200_000) return 1_000_000
   return 200_000
 }

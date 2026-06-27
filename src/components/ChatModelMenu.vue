@@ -4,11 +4,16 @@
 // 「More models ›」右侧弹出子菜单（Opus 4.7 / 4.6）+「Fast mode」区（headless 无 flag，禁用）。
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { t } from '../i18n'
-import { CHAT_MODEL_MENU, modelLabel } from '../chatComposerOptions'
+import { modelLabel, modelMenuFor, type ModelMenuOptions } from '../chatComposerOptions'
 import type { Agent } from '../types'
 import { IconCheck, IconChevronRight } from './icons'
 
-const props = defineProps<{ agent: Agent; selected: string | undefined }>()
+const props = defineProps<{
+  agent: Agent
+  selected: string | undefined
+  displayValue?: string
+  menuOptions?: ModelMenuOptions
+}>()
 const emit = defineEmits<{ (e: 'pick', value: string): void }>()
 
 const open = ref(false)
@@ -41,8 +46,15 @@ function cancelCloseMore() {
   }
 }
 
-const cfg = computed(() => CHAT_MODEL_MENU[props.agent])
-const currentLabel = computed(() => modelLabel(props.agent, props.selected) || t('chat.composer.model.label'))
+const cfg = computed(() => modelMenuFor(props.agent, props.menuOptions))
+const currentLabel = computed(
+  () =>
+    modelLabel(
+      props.agent,
+      props.displayValue ?? props.selected,
+      props.menuOptions,
+    ) || t('chat.composer.model.label'),
+)
 
 function toggle() {
   open.value = !open.value

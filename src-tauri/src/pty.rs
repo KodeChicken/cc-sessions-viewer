@@ -146,8 +146,8 @@ fn build_shell_command(
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("COLORFGBG", color_scheme.colorfgbg());
-    // 打包后的 .app 可能从安装器继承了不完整的 PATH，合并注册表里的 User + Machine PATH。
-    cmd.env("PATH", crate::agent_command::merged_system_path());
+    // 与 v0.1.12 一致：不在这里注入 PATH。powershell_set_location_and_run 已在 shell 内先跑
+    // powershell_refresh_path()（$processPath 打头继承），再 `& <cli>`，node/claude 都能找到。
     cmd.cwd(cwd);
     cmd
 }
@@ -174,12 +174,13 @@ fn build_interactive_shell(cwd: &str, color_scheme: PtyColorScheme) -> CommandBu
 
 #[cfg(windows)]
 fn build_interactive_shell(cwd: &str, color_scheme: PtyColorScheme) -> CommandBuilder {
+    // 与 v0.1.12 一致：裸 powershell，直接继承 GUI 进程已展开的环境块 PATH —— 实测
+    // node / npm 都能找到。不再注入 / 刷新 PATH，避免覆盖掉本来就好用的继承 PATH。
     let mut cmd = CommandBuilder::new("powershell.exe");
     cmd.arg("-NoLogo");
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("COLORFGBG", color_scheme.colorfgbg());
-    cmd.env("PATH", crate::agent_command::merged_system_path());
     cmd.cwd(cwd);
     cmd
 }

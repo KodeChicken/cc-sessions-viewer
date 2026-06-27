@@ -1496,7 +1496,6 @@ function onDocClick(e: MouseEvent) {
           <div class="text-run" v-html="streamingHtml" />
         </div>
       </div>
-
       <!-- live 模式：本轮正在运行的 ✳ + 计时（参考 Claude 客户端） -->
       <div v-if="liveSession && liveSession.turnState === 'running'" class="chat-running-row">
         <span class="chat-running-star" :class="agent">✳</span>

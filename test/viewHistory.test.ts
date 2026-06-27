@@ -5,6 +5,7 @@ import {
   setViewMode,
   toggleViewFavorite,
   removeView,
+  removeViewEverywhere,
   isViewFavorited,
   sortViewHistory,
   persistViewHistory,
@@ -134,6 +135,20 @@ describe('removeView', () => {
     recordView({ agent: 'claude', dir: '/p', session: sess('b.jsonl'), mode: 'read' })
     removeView('claude', '/p', 'a.jsonl')
     expect(viewHistory.value.map((v) => v.session.path)).toEqual(['b.jsonl'])
+  })
+})
+
+describe('removeViewEverywhere', () => {
+  it('removes all matching entries for the deleted session across dirs/modes', () => {
+    recordView({ agent: 'claude', dir: '/p', session: sess('a.jsonl'), mode: 'read' })
+    recordView({ agent: 'claude', dir: '/q', session: sess('a.jsonl'), mode: 'chat' })
+    recordView({ agent: 'codex', dir: '/p', session: sess('a.jsonl'), mode: 'read' })
+    recordView({ agent: 'claude', dir: '/p', session: sess('b.jsonl'), mode: 'read' })
+    removeViewEverywhere('claude', 'a.jsonl')
+    expect(viewHistory.value.map((v) => `${v.agent}:${v.session.path}`)).toEqual([
+      'codex:a.jsonl',
+      'claude:b.jsonl',
+    ])
   })
 })
 

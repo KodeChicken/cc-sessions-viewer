@@ -84,6 +84,23 @@ export interface ChatSession {
   processModel?: ChatProcessModel
   /** 当前**运行中的长驻进程**实际生效的设置（restart 检测用）。one-shot 不看它。 */
   applied?: { permissionMode: string; model?: string; effort?: string }
+  /** 前端主动 stop/restart 旧进程时暂时屏蔽那次 exit，避免把新进程会话误标为 ended。 */
+  suppressNextExit?: boolean
+}
+
+function claudeApiKeyDisablesEffort(s: Pick<ChatSession, 'agent' | 'apiKeySource'>): boolean {
+  return s.agent === 'claude' && typeof s.apiKeySource === 'string' && s.apiKeySource !== '' && s.apiKeySource !== 'none'
+}
+
+function sessionEffectiveEffort(s: Pick<ChatSession, 'agent' | 'model' | 'effort' | 'apiKeySource'>): string | undefined {
+  if (claudeApiKeyDisablesEffort(s)) return undefined
+  return effectiveEffort(s.agent, s.model, s.effort)
+}
+
+export function chatEffectiveEffortForTest(
+  s: Pick<ChatSession, 'agent' | 'model' | 'effort' | 'apiKeySource'>,
+): string | undefined {
+  return sessionEffectiveEffort(s)
 }
 
 export const chatSessions = ref<ChatSession[]>([])
@@ -187,7 +204,12 @@ function onInit(s: ChatSession, p: ChatInitPayload) {
   // 同 `system` 类型还会发 hook_started / thinking_tokens 等事件，它们没有 apiKeySource
   // （→ null）；若用 `!== undefined` 判断会被这些 null 覆盖回去，导致订阅模式被误判成 API
   // key 而隐藏限额角标。故只在拿到真实字符串时才写入，null/undefined 一律忽略。
-  if (typeof p.apiKeySource === 'string' && p.apiKeySource) s.apiKeySource = p.apiKeySource
+  if (typeof p.apiKeySource === 'string' && p.apiKeySource) {
+    s.apiKeySource = p.apiKeySource
+    if (claudeApiKeyDisablesEffort(s) && s.effort !== undefined) {
+      s.effort = undefined
+    }
+  }
   if (s.status === 'spawning') s.status = 'running'
 }
 
@@ -200,6 +222,10 @@ function onResult(s: ChatSession, p: ChatResultPayload) {
 }
 
 function onExit(s: ChatSession, p: ChatExitPayload) {
+  if (s.suppressNextExit) {
+    s.suppressNextExit = false
+    return
+  }
   s.live = null
   endTurn(s)
   if (s.status !== 'error') s.status = 'exited'
@@ -213,6 +239,18 @@ function onStderr(s: ChatSession, p: ChatStderrPayload) {
   if (s.stderrTail.length > STDERR_TAIL_MAX) {
     s.stderrTail.splice(0, s.stderrTail.length - STDERR_TAIL_MAX)
   }
+}
+
+function appendInterruptedMarker(s: ChatSession) {
+  s.msgs = [
+    ...s.msgs,
+    {
+      role: 'user',
+      sidechain: false,
+      timestamp: new Date().toISOString(),
+      blocks: [{ kind: 'text', text: '[Request interrupted by user]', isError: false }],
+    },
+  ]
 }
 
 // ============================ 计时器 ============================
@@ -328,7 +366,7 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
 
   try {
     // Haiku 等不支持 effort 的模型省掉 --effort（effectiveEffort → undefined）。
-    const eff = effectiveEffort(session.agent, session.model, session.effort)
+    const eff = sessionEffectiveEffort(session)
     const info = await api.agentChatStart(
       opts.agent,
       opts.cwd,
@@ -402,7 +440,7 @@ export async function sendPrompt(
       trimmed,
       images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
       session.model,
-      effectiveEffort(session.agent, session.model, session.effort),
+      sessionEffectiveEffort(session),
       session.permissionMode,
     )
   } catch (err) {
@@ -419,7 +457,7 @@ function settingsChanged(s: ChatSession): boolean {
   return (
     a.permissionMode !== s.permissionMode ||
     a.model !== s.model ||
-    a.effort !== effectiveEffort(s.agent, s.model, s.effort)
+    a.effort !== sessionEffectiveEffort(s)
   )
 }
 
@@ -436,7 +474,7 @@ async function restartChat(s: ChatSession): Promise<boolean> {
     await api.agentChatStop(old)
     // 有源 session id 就 --resume 续上下文；还没有（首轮 init 未回填）就全新起，
     // 反正此时也没历史可丢，新 flag 直接生效。
-    const eff = effectiveEffort(s.agent, s.model, s.effort)
+    const eff = sessionEffectiveEffort(s)
     const info = await api.agentChatStart(
       s.agent,
       s.cwd,
@@ -469,6 +507,66 @@ export async function stopChat(session: ChatSession): Promise<void> {
   }
   endTurn(session)
   if (session.status !== 'error') session.status = 'exited'
+}
+
+/** 中断当前这一轮回复，但保留 chat 会话继续可发。Claude 映射到 CLI 的 Esc。 */
+export async function interruptChat(session: ChatSession): Promise<void> {
+  if (session.chatId === null) return
+  if (session.processModel === 'longLivedStdin') {
+    const old = session.chatId
+    try {
+      // TODO：这里**故意丢弃**当前 live 流式内容，只保留一条 interrupted marker。
+      //
+      // 原因：Claude 的 headless stream-json 模式并不会像交互式 TTY 那样，在用户中断时把
+      // 「已经流出来但尚未定稿」的半成品 assistant 内容可靠地写进 transcript/JSONL。
+      // 如果前端擅自把那段 live 文本塞进 msgs，live 视图看起来像保留住了内容，但一旦切到
+      // read 模式或刷新页面（它们重新 read_session 只认磁盘上的真实 transcript），那段
+      // 内容就会消失，形成前后不一致的“假象”。这里宁可少显示，也要保证 live/read/刷新
+      // 三者都只基于真实可重放的数据。
+      appendInterruptedMarker(session)
+      session.suppressNextExit = true
+      sessionsByChatId.delete(old)
+      pendingByChatId.delete(old)
+      await api.agentChatStop(old)
+      const eff = sessionEffectiveEffort(session)
+      const info = await api.agentChatStart(
+        session.agent,
+        session.cwd,
+        session.sessionId || undefined,
+        session.permissionMode,
+        session.model,
+        eff,
+      )
+      session.chatId = info.chatId
+      session.processModel = info.processModel
+      session.applied = {
+        permissionMode: session.permissionMode,
+        model: session.model,
+        effort: eff,
+      }
+      registerChat(info.chatId, session)
+      endTurn(session)
+      session.live = null
+      session.status = 'running'
+      return
+    } catch (err) {
+      session.suppressNextExit = false
+      session.status = 'error'
+      session.errorMessage = String(err)
+      endTurn(session)
+      return
+    }
+  }
+  try {
+    await api.agentChatInterrupt(session.chatId)
+    endTurn(session)
+    session.live = null
+    if (session.status === 'spawning') session.status = 'running'
+  } catch (err) {
+    session.status = 'error'
+    session.errorMessage = String(err)
+    endTurn(session)
+  }
 }
 
 /** 关闭并回收一个 chat 会话：停进程、解路由、从列表移除。 */

@@ -4,6 +4,7 @@ import type {
   Agent,
   AgentStats,
   ChatImageInput,
+  ClaudeRuntimeInfo,
   ChatStartInfo,
   SlashCommand,
   ProjectInfo,
@@ -165,6 +166,7 @@ export const terminalTurnSignal = (
 ) => invoke<void>('terminal_turn_signal', { agent, path, state })
 
 export const installClaudeTurnHooks = () => invoke<string>('install_claude_turn_hooks')
+export const claudeRuntimeInfo = () => invoke<ClaudeRuntimeInfo>('claude_runtime_info')
 
 export const watchSessionTurn = (agent: Agent, path: string, catchUp = false) =>
   invoke<void>('watch_session_turn', { agent, path, catchUp })
@@ -301,6 +303,8 @@ export const agentChatSend = (
 
 /** 结束一个 chat 子进程（kill + 回收）。幂等。 */
 export const agentChatStop = (id: number) => invoke<void>('agent_chat_stop', { id })
+/** 仅中断当前一轮生成；Claude 长驻 chat 会话继续保活。 */
+export const agentChatInterrupt = (id: number) => invoke<void>('agent_chat_interrupt', { id })
 
 /** 拉 GUI chat `/` 浮层的动态指令（磁盘上的自定义命令 / user-invocable skills）。 */
 export const agentChatSlashCommands = (agent: Agent, cwd: string) =>

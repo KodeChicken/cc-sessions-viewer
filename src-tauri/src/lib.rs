@@ -16,6 +16,7 @@ mod agent_chat;
 pub mod agents;
 mod agent_command;
 mod bookmarks;
+mod claude_config;
 #[cfg(target_os = "macos")]
 mod menu;
 mod pty;
@@ -35,7 +36,7 @@ use std::path::{Path, PathBuf};
 
 use crate::agent_command::AgentCommand;
 use crate::types::{
-    AgentStats, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, TrayStats, UsageSummary,
+    AgentStats, ClaudeRuntimeInfo, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, TrayStats, UsageSummary,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::Manager;
@@ -140,6 +141,11 @@ fn terminal_turn_signal(
 #[tauri::command]
 fn install_claude_turn_hooks() -> Result<String, String> {
     turn::install_claude_hooks()
+}
+
+#[tauri::command]
+fn claude_runtime_info() -> Result<ClaudeRuntimeInfo, String> {
+    claude_config::runtime_info()
 }
 
 #[tauri::command]
@@ -458,6 +464,11 @@ fn agent_chat_stop(id: u64) -> Result<(), String> {
     agent_chat::stop(id)
 }
 
+#[tauri::command]
+fn agent_chat_interrupt(id: u64) -> Result<(), String> {
+    agent_chat::interrupt(id)
+}
+
 /// GUI chat 输入框 `/` 浮层的动态指令列表（扫磁盘自定义命令 / user-invocable skills）。
 #[tauri::command]
 fn agent_chat_slash_commands(
@@ -567,7 +578,7 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
         let shell_cmd = format!("cd {} && {}", crate::agent_command::posix_quote(cwd), cli);
 
         match _terminal_app {
-            // TODO: Ghostty macOS 没有窗口管理 API，无法按 cwd 复用已有窗口，
+            // Ghostty macOS 没有窗口管理 API，无法按 cwd 复用已有窗口，
             // 每次都会开新实例。等 Ghostty 支持 IPC 后再实现窗口复用。
             "ghostty" => {
                 std::process::Command::new("open")
@@ -715,11 +726,13 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
 
     #[cfg(target_os = "windows")]
     {
+        // 编码后的命令里已含 powershell_refresh_path()：起来的 powershell 会以继承到的
+        // $processPath 打头、再并上注册表 User + Machine PATH，无需在 cmd 这层注入 PATH
+        // （注入反而会覆盖掉继承来的完整 PATH，留下未展开的注册表字面量）。
         let ps_cmd = crate::agent_command::powershell_set_location_and_run(cwd, command);
         let encoded = crate::agent_command::powershell_encoded_command(&ps_cmd);
         std::process::Command::new("cmd")
             .args(["/c", "start", "", "powershell.exe", "-NoExit", "-EncodedCommand", &encoded])
-            .env("PATH", crate::agent_command::merged_system_path())
             .spawn()
             .map_err(|e| format!("Failed to launch terminal: {e}"))?;
     }
@@ -1166,6 +1179,7 @@ pub fn run() {
             unwatch_session,
             terminal_turn_signal,
             install_claude_turn_hooks,
+            claude_runtime_info,
             watch_session_turn,
             unwatch_session_turn,
             session_usage,
@@ -1193,6 +1207,7 @@ pub fn run() {
             agent_chat_start,
             agent_chat_send,
             agent_chat_stop,
+            agent_chat_interrupt,
             agent_chat_slash_commands,
             reveal_in_finder,
             open_local_path,
@@ -1219,7 +1234,6 @@ pub fn run() {
 
             #[cfg(target_os = "windows")]
             {
-                crate::agent_command::warm_merged_system_path_cache();
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.set_decorations(false);
                 }

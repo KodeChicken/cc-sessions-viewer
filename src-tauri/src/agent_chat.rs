@@ -130,7 +130,6 @@ fn build_piped_command(cwd: &str, command: &AgentCommand) -> std::process::Comma
     cmd.arg("-NoLogo")
         .arg("-Command")
         .arg(crate::agent_command::powershell_set_location_and_run(cwd, command));
-    cmd.env("PATH", crate::agent_command::merged_system_path());
     cmd.current_dir(cwd);
     cmd
 }
@@ -513,4 +512,23 @@ pub fn stop(id: u64) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 仅中断当前这轮生成，不结束 chat 会话本身。
+/// Claude 长驻进程里这应等价于用户在 CLI 按一次 Esc：当前请求打断，但进程继续存活，下一条
+/// 消息还能继续发。OneShot agent 没有长驻 stdin / 没有可复用会话进程，回退到 stop。
+pub fn interrupt(id: u64) -> Result<(), String> {
+    let arc = {
+        let m = map().lock().map_err(|e| e.to_string())?;
+        m.get(&id).cloned().ok_or_else(|| "chat not found".to_string())?
+    };
+    match &*arc {
+        ChatHandle::LongLived { stdin, .. } => {
+            let mut w = stdin.lock().map_err(|e| e.to_string())?;
+            w.write_all(&[0x1b]).map_err(|e| e.to_string())?;
+            w.flush().map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        ChatHandle::OneShot { .. } => stop(id),
+    }
 }

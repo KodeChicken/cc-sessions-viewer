@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CHAT_PERMISSION_MODES,
   CHAT_MODEL_MENU,
+  CLAUDE_ALIAS_MODEL_MENU,
   CHAT_EFFORT_LEVELS,
   hasModelChoice,
   hasEffortChoice,
@@ -11,6 +12,7 @@ import {
   fallbackEffort,
   allModels,
   modelLabel,
+  modelMenuFor,
   effortLabel,
   defaultModel,
   defaultEffort,
@@ -56,11 +58,38 @@ describe('chatComposerOptions', () => {
     ])
   })
 
+  it('Claude API-key 菜单改走 alias，让 Claude CLI 自己按 settings.json 做模型映射', () => {
+    expect(CLAUDE_ALIAS_MODEL_MENU.primary.map((m) => m.value)).toEqual([
+      'opus',
+      'sonnet',
+      'haiku',
+      'fable',
+    ])
+    expect(modelMenuFor('claude', { claudeAliasMode: true }).primary.map((m) => m.value)).toEqual([
+      'opus',
+      'sonnet',
+      'haiku',
+      'fable',
+    ])
+  })
+
+  it('Claude alias 菜单会把本地映射模型名拼到展示标签上', () => {
+    expect(
+      modelMenuFor('claude', {
+        claudeAliasMode: true,
+        claudeAliasTargets: { opus: 'mimo-v2.5-pro' },
+      }).primary[0].label,
+    ).toBe('Opus (mimo-v2.5-pro)')
+  })
+
   it('关键回归：任何下发模型 id 都不含 [1m]（否则会触发 1M-context credits 报错）', () => {
     for (const agent of ['claude', 'codex', 'gemini'] as const) {
       for (const m of allModels(agent)) {
         expect(m.value).not.toContain('[1m]')
       }
+    }
+    for (const m of allModels('claude', { claudeAliasMode: true })) {
+      expect(m.value).not.toContain('[1m]')
     }
   })
 
@@ -86,6 +115,9 @@ describe('chatComposerOptions', () => {
   it('modelLabel / effortLabel：命中返回展示名，未知回退原值', () => {
     expect(modelLabel('claude', 'claude-opus-4-8')).toBe('Opus 4.8')
     expect(modelLabel('claude', 'claude-opus-4-7')).toBe('Opus 4.7')
+    expect(modelLabel('claude', 'opus')).toBe('Opus')
+    expect(modelLabel('claude', 'haiku')).toBe('Haiku')
+    expect(modelLabel('claude', 'sonnet', { claudeAliasMode: true })).toBe('Sonnet')
     expect(modelLabel('claude', undefined)).toBe('')
     expect(modelLabel('claude', 'weird-id')).toBe('weird-id')
     expect(effortLabel('high')).toBe('High')
@@ -150,10 +182,10 @@ describe('chatComposerOptions', () => {
   })
 
   it('defaultModel / defaultEffort：明确起步值（无 "default" 概念）', () => {
-    expect(defaultModel('claude')).toBe('claude-opus-4-8')
+    expect(defaultModel('claude')).toBeUndefined()
     expect(defaultModel('codex')).toBe('gpt-5.4')
     expect(defaultModel('gemini')).toBeUndefined()
-    expect(defaultEffort('claude')).toBe('high')
+    expect(defaultEffort('claude')).toBeUndefined()
     expect(defaultEffort('codex')).toBe('medium')
     expect(defaultEffort('gemini')).toBeUndefined()
   })

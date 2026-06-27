@@ -161,6 +161,20 @@ export function removeView(agent: Agent, dir: string, key: string) {
   persistViewHistory()
 }
 
+// 会话被删除后，需要把 Views 历史里所有指向它的条目一起清掉。
+// 这里按 agent + (session.id | session.path) 全局匹配，故意**不**要求 dir：
+//   - 从聊天详情页删除时，来源可能是导出历史/跨项目，调用点未必拿得到稳定 dir；
+//   - 同一会话在历史里可能因旧数据/模式切换残留多条引用，统一扫一遍最稳。
+export function removeViewEverywhere(agent: Agent, key: string) {
+  if (!key) return
+  const next = viewHistory.value.filter(
+    (v) => !(v.agent === agent && (v.session.id === key || v.session.path === key)),
+  )
+  if (next.length === viewHistory.value.length) return
+  viewHistory.value = next
+  persistViewHistory()
+}
+
 export function isViewFavorited(agent: Agent, dir: string, key: string): boolean {
   const i = findViewIndex(agent, dir, key)
   return i >= 0 && viewHistory.value[i].favorite

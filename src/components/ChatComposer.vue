@@ -7,7 +7,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { t } from '../i18n'
 import * as api from '../api'
-import { sendPrompt, stopChat, now, type ChatSession } from '../chatSessions'
+import { sendPrompt, interruptChat, now, type ChatSession } from '../chatSessions'
 import type { ChatImageAttachment, SlashCommand } from '../types'
 import { IconPlus, IconSend, IconStop, IconClose } from './icons'
 import ChatModeMenu from './ChatModeMenu.vue'
@@ -19,6 +19,7 @@ import {
   modelSupportsEffort,
   fallbackPermissionMode,
   fallbackEffort,
+  type ModelMenuOptions,
 } from '../chatComposerOptions'
 import { isAutoModeConfirmed, rememberAutoModeConfirmed } from '../autoMode'
 import {
@@ -38,9 +39,30 @@ import {
 } from '../usage'
 
 const props = defineProps<{ session: ChatSession }>()
+const claudeHasCustomBaseUrl = ref(false)
+const claudeAliasTargets = ref<Record<string, string | undefined>>({})
+// init 事件回来前对鉴权方式的预判（后端 runtime_info 判：钥匙串有订阅凭证 → 'none'）。
+// 进会话即拿，让官方订阅用户立刻看到 effort + 限额，而不是等首轮 init 才显形。
+const claudeRuntimeApiKeySource = ref<string | undefined>(undefined)
 
 // 进入 live chat 即订阅账号额度轮询，离开退订（引用计数，多个 composer 共享一个定时器）。
-onMounted(startUsagePolling)
+onMounted(() => {
+  startUsagePolling()
+  if (props.session.agent === 'claude') {
+    void api
+      .claudeRuntimeInfo()
+      .then((info) => {
+        claudeHasCustomBaseUrl.value = !!info.hasCustomBaseUrl
+        claudeAliasTargets.value = info.aliasTargets ?? {}
+        claudeRuntimeApiKeySource.value = info.apiKeySource || undefined
+      })
+      .catch(() => {
+        claudeHasCustomBaseUrl.value = false
+        claudeAliasTargets.value = {}
+        claudeRuntimeApiKeySource.value = undefined
+      })
+  }
+})
 onBeforeUnmount(stopUsagePolling)
 
 const text = ref('')
@@ -68,9 +90,34 @@ const elapsedSec = computed(() => {
 // 长驻（Claude）由下一次 sendPrompt 检测到变更后 restart-with-resume。t() 让 label 随
 // 语言 / session 选择响应式刷新。
 const agent = computed(() => props.session.agent)
-const showModelPicker = computed(() => hasModelChoice(agent.value))
+// 权威值（init 给的 session.apiKeySource）优先；没来之前用 runtime 预判兜底。
+const effectiveApiKeySource = computed(
+  () => props.session.apiKeySource ?? claudeRuntimeApiKeySource.value,
+)
+const usingApiKey = computed(() => {
+  const src = effectiveApiKeySource.value
+  return typeof src === 'string' && src !== '' && src !== 'none'
+})
+const usingCustomClaudeEndpoint = computed(
+  () => props.session.agent === 'claude' && claudeHasCustomBaseUrl.value,
+)
+const claudeAliasMode = computed(
+  () =>
+    agent.value === 'claude' &&
+    (effectiveApiKeySource.value !== 'none' || usingCustomClaudeEndpoint.value),
+)
+const modelMenuOptions = computed<ModelMenuOptions>(() => ({
+  claudeAliasMode: claudeAliasMode.value,
+  claudeAliasTargets: claudeAliasTargets.value,
+}))
+const showModelPicker = computed(() => hasModelChoice(agent.value, modelMenuOptions.value))
 // effort 是「按模型」的能力：Haiku 不支持 effort，选中它就不展示滑杆（对齐 Claude 客户端）。
-const showEffortPicker = computed(() => modelSupportsEffort(agent.value, props.session.model))
+const showEffortPicker = computed(() =>
+  (agent.value !== 'claude' || effectiveApiKeySource.value === 'none') &&
+  !usingCustomClaudeEndpoint.value &&
+  !usingApiKey.value &&
+  modelSupportsEffort(agent.value, props.session.model),
+)
 
 // 切到 auto（自动）模式前的二次确认门控：本工作区还没确认过就先弹框，确认后才真正生效
 // 并记住该工作区（之后不再追问）。其它模式直接切。
@@ -127,13 +174,15 @@ const ctxTooltip = computed(
 
 // 限额：走 OAuth 用量接口（src/usage.ts 轮询），每个窗口带精确利用率 + 重置时间，不受
 // 「越过阈值才上报」限制，故 5h / 周能随时精确显示（context 在外层最先 → 5h → 周）。
-// API key 计费（apiKeySource 已知且非 'none' 的字符串）不受 5h/周窗口约束 → 隐藏全部限额徽标。
-// 只认真实字符串：undefined（还没拿到 init）/ null（非 init 的 system 事件）一律按订阅照常显示，
-// 绝不因为缺失/空值把订阅模式误判成 API key。
-const usingApiKey = computed(() => {
-  const src = props.session.apiKeySource
-  return typeof src === 'string' && src !== '' && src !== 'none'
-})
+// Claude 的 5h/周额度只对订阅/OAuth（apiKeySource === 'none'）成立。API key 计费一律不显示，
+// 避免把第三方/API-key 会话误判成订阅。init 没回来前用 runtime 预判兜底（effectiveApiKeySource），
+// 官方订阅一进会话即显示；真判不出（预判也未知）时仍保守隐藏。
+const showRateLimits = computed(
+  () =>
+    props.session.agent === 'claude' &&
+    effectiveApiKeySource.value === 'none' &&
+    !usingCustomClaudeEndpoint.value,
+)
 function rlResetText(iso: string | undefined): string {
   if (!iso) return ''
   const d = new Date(iso)
@@ -150,7 +199,7 @@ function rlTypeLabel(key: 'five_hour' | 'seven_day'): string {
   return key === 'five_hour' ? t('chat.composer.limit.fiveHour') : t('chat.composer.limit.weekly')
 }
 const rateBadges = computed(() => {
-  if (usingApiKey.value) return []
+  if (!showRateLimits.value || usingApiKey.value) return []
   const now = nowMs.value // 读响应式心跳 → 倒计时每跳重算（纯前端，零网络）。
   return usageWindows(usage.value).map((w) => {
     const label = rlTypeLabel(w.key)
@@ -345,7 +394,7 @@ async function submit() {
 
 function onPrimary() {
   if (running.value) {
-    void stopChat(props.session)
+    void interruptChat(props.session)
   } else {
     void submit()
   }
@@ -471,6 +520,8 @@ function onPrimary() {
           v-if="showModelPicker"
           :agent="session.agent"
           :selected="session.model"
+          :display-value="session.model ?? session.lastModel"
+          :menu-options="modelMenuOptions"
           @pick="onPickModel"
         />
         <ChatEffortSlider

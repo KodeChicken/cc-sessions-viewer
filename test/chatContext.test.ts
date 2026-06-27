@@ -30,6 +30,7 @@ describe('chatContext', () => {
   it('contextWindowFor：claude 默认 200k，[1m] → 1M，codex → 1M', () => {
     expect(contextWindowFor('claude', 'claude-opus-4-8')).toBe(200_000)
     expect(contextWindowFor('claude', 'claude-opus-4-8[1m]')).toBe(1_000_000)
+    expect(contextWindowFor('claude', 'opus')).toBe(200_000)
     expect(contextWindowFor('codex', 'gpt-5.4')).toBe(1_000_000)
     expect(contextWindowFor('claude', undefined)).toBe(200_000)
   })

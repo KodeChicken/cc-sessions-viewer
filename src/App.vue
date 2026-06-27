@@ -112,9 +112,11 @@ import {
   setViewTitle,
   toggleViewFavorite,
   isViewFavorited,
+  removeViewEverywhere,
   type ViewHistoryEntry,
 } from './viewHistory'
 import { startChat, closeChat, type ChatSession } from './chatSessions'
+import { sameProjectClickAction } from './projectSelection'
 
 // ---------- 状态 ----------
 // 默认进首个可见 agent —— 用户若在设置里关掉了 claude，启动时就不该停在隐藏的 agent 上。
@@ -266,6 +268,7 @@ const loadingList = ref(false)
 const PAGE_SIZE = 40
 
 const openSession = ref<SessionMeta | null>(null)
+const suppressNextLiveChatNavClose = ref(false)
 // 每个项目最近打开的 View（会话 + read/chat 子模式）—— 切到别的项目再切回来时
 // 据此恢复 View tab，行为对齐 terminal tab（切项目不丢，仅手动 × 才关）。
 // 持久化到 localStorage（savedViews:v1），重启后切到任意项目都能恢复它自己的 View；
@@ -516,6 +519,7 @@ function deleteProject(p: ProjectInfo) {
         for (const s of all) {
           try {
             await api.softDeleteSession(agent.value, s.path, p.displayPath)
+            removeViewEverywhere(agent.value, s.id || s.path)
           } catch {}
         }
         // 始终尝试移除书签：书签可能已被 loadProjects 合并进真实项目，
@@ -584,6 +588,7 @@ function batchDeleteProjects(dirs: string[]) {
                 clearLive()
               }
               await api.softDeleteSession(agent.value, s.path, p.displayPath)
+              removeViewEverywhere(agent.value, s.id || s.path)
             } catch {}
           }
           await api.removeBookmark(agent.value, p.displayPath)
@@ -902,14 +907,23 @@ async function selectProject(dir: string) {
   // 任何点项目 / 切项目的动作都先把 TUI 层收起，否则用户点了项目却看不到列表。
   setActiveTui(null)
   // 再次点击当前已选中的项目：
-  //   - 若右侧是会话详情 → 关闭详情，回到会话列表（不收起项目）
-  //   - 若右侧已是会话列表 → 收起项目，回到「请选择项目」空状态
+  //   - 若当前正看着 View / live chat → 切到会话列表，但保留后台 View tab
+  //   - 若当前已在列表 → 收起项目，回到「请选择项目」空状态
   if (activeDir.value === dir && !showTrash.value && !showStats.value) {
-    if (openSession.value) {
-      openSession.value = null
+    if (
+      sameProjectClickAction({
+        viewingList: viewingList.value,
+        hasOpenSession: !!openSession.value,
+        hasLiveChat: !!liveChat.value,
+      }) === 'show-list'
+    ) {
+      viewingList.value = true
       return
     }
+    if (liveChat.value) closeLiveChat()
+    else openSession.value = null
     activeDir.value = null
+    viewingList.value = false
     sessions.value = []
     sessionTotal.value = 0
     resetSessionsToolbar()
@@ -1339,11 +1353,15 @@ function restoreTarget(item: TrashItem): HTMLElement | null {
 }
 
 function deleteSession(s: SessionMeta) {
+  const fromChat = openSession.value?.path === s.path
+  const deleteAgent = fromChat ? chatAgent.value : agent.value
+  const deleteKey = s.id || s.path
   const afterDelete = async () => {
     closeTabBySessionPath(s.path)
     sessions.value = sessions.value.filter((x) => x.path !== s.path)
     sessionTotal.value = Math.max(0, sessionTotal.value - 1)
     if (openSession.value?.path === s.path) openSession.value = null
+    removeViewEverywhere(deleteAgent, deleteKey)
     if (sessions.value.length === 0 && activeProject.value) {
       const proj = activeProject.value
       closeTabsByProject(proj.dirName)
@@ -1361,11 +1379,9 @@ function deleteSession(s: SessionMeta) {
     altText: t('dialog.delete.permOk'),
     onAlt: async () => {
       try {
-        const fromChat = openSession.value?.path === s.path
-        const a = fromChat ? chatAgent.value : agent.value
         const label = activeProject.value?.displayPath ?? s.cwd ?? ''
         closeTabBySessionPath(s.path)
-        await api.softDeleteSession(a, s.path, label)
+        await api.softDeleteSession(deleteAgent, s.path, label)
         const trashItems = await api.listTrash()
         const match = trashItems.find(item => item.originalPath === s.path)
         if (match) await api.permanentDeleteTrash(match.trashFile)
@@ -1381,12 +1397,10 @@ function deleteSession(s: SessionMeta) {
       // 从聊天页删除时，会话可能来自「导出历史」（跨 agent，且 activeProject 为空）——
       // 此时用会话自身的 agent / cwd，而不是侧栏当前 agent / 项目，否则回收站条目
       // 的归属项目会变成空（显示「—」）甚至 agent 标错。
-      const fromChat = openSession.value?.path === s.path
-      const a = fromChat ? chatAgent.value : agent.value
       const label = activeProject.value?.displayPath ?? s.cwd ?? ''
       try {
         closeTabBySessionPath(s.path)
-        await api.softDeleteSession(a, s.path, label)
+        await api.softDeleteSession(deleteAgent, s.path, label)
         fly({
           from: srcRect,
           to: document.querySelector<HTMLElement>('.topbar-trash-btn'),
@@ -1527,6 +1541,7 @@ function batchDeleteSessions() {
       for (const s of items) {
         try {
           await api.softDeleteSession(agent.value, s.path, dir)
+          removeViewEverywhere(agent.value, s.id || s.path)
           deleted.add(s.path)
         } catch {
           /* 跳过失败项，继续删除其余 */
@@ -1719,8 +1734,11 @@ function onTuiViewClick() {
 async function onTuiViewClose() {
   const wasViewing = activeUiId.value === null
   viewingList.value = false
-  openSession.value = null
-  clearLive()
+  if (liveChat.value) closeLiveChat()
+  else {
+    openSession.value = null
+    clearLive()
+  }
   if (wasViewing && activeDir.value && !showTrash.value && !showStats.value) {
     await loadProjects()
     await refreshSessions()
@@ -1866,20 +1884,27 @@ const chatPeekRead = ref(false)
 // 「回看统计」开关：live chat 里点会话统计时置 true，临时盖上 StatsView 但**不停**子进程
 // （和 chatPeekRead 同构）。不走 showStats，避免触发下面 watch 把 live chat 误杀。
 const chatPeekStats = ref(false)
+const liveChatSourceSession = computed<SessionMeta | null>(() => {
+  const c = liveChat.value
+  const s = openSession.value
+  if (!c || !s) return null
+  return s.id === c.sessionId ? s : null
+})
 
 /** 给 ChatView 的 session prop 造一个合成 SessionMeta（live 模式没有真正的列表条目）。 */
 const liveChatMeta = computed<SessionMeta>(() => {
   const c = liveChat.value
+  const source = liveChatSourceSession.value
   return {
     id: c?.sessionId ?? '',
-    fileName: '',
-    path: '',
+    fileName: source?.fileName ?? '',
+    path: source?.path ?? '',
     title: c?.title ?? t('list.action.newSessionGui'),
-    cwd: c?.cwd,
+    cwd: source?.cwd ?? c?.cwd,
     created: c?.createdAt,
-    modified: 0,
-    size: 0,
-    messageCount: c?.msgs.length ?? 0,
+    modified: source?.modified ?? 0,
+    size: source?.size ?? 0,
+    messageCount: source?.messageCount ?? c?.msgs.length ?? 0,
     codexAppListRank: null,
     codexAppListScanned: 0,
     codexAppFirstPageSize: 0,
@@ -1947,6 +1972,50 @@ watch(
 )
 
 /** 启动一个 live GUI chat：新开（无 sessionId）或续聊（带 sessionId + 预载历史）。 */
+function setLiveChatSourceSession(session: SessionMeta | null) {
+  suppressNextLiveChatNavClose.value = true
+  openSession.value = session
+}
+
+async function bindLiveChatSourceSession(c: ChatSession) {
+  if (!c.sessionId || !c.projectKey) return
+  if (liveChatSourceSession.value?.id === c.sessionId && liveChatSourceSession.value.path) return
+  const loaded = sessions.value.find((s) => s.id === c.sessionId)
+  if (loaded) {
+    setLiveChatSourceSession(loaded)
+    return
+  }
+  const limit = Math.max(PAGE_SIZE, sessions.value.length || 0)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (!liveChat.value || liveChat.value.uiId !== c.uiId || liveChat.value.sessionId !== c.sessionId) return
+    try {
+      const page = await api.listSessions(c.agent, c.projectKey, 0, limit, sessionListOptions())
+      const found = page.sessions.find((s) => s.id === c.sessionId)
+      if (!liveChat.value || liveChat.value.uiId !== c.uiId || liveChat.value.sessionId !== c.sessionId) return
+      if (c.agent === agent.value && c.projectKey === activeDir.value) {
+        sessions.value = page.sessions
+        sessionTotal.value = page.total
+      }
+      if (found) {
+        setLiveChatSourceSession(found)
+        return
+      }
+    } catch {
+      // 新会话刚落盘时列表端可能暂时还看不到；短暂重试即可。
+    }
+    if (attempt < 4) await new Promise((resolve) => window.setTimeout(resolve, 250))
+  }
+}
+
+watch(
+  () => (liveChat.value ? `${liveChat.value.uiId}\u0000${liveChat.value.sessionId}` : ''),
+  () => {
+    const c = liveChat.value
+    if (!c || !c.sessionId) return
+    void bindLiveChatSourceSession(c)
+  },
+)
+
 async function startLiveChat(opts: {
   cwd: string
   projectKey: string
@@ -1971,6 +2040,10 @@ async function startLiveChat(opts: {
   activeUiId.value = null
   viewingList.value = false
   try {
+    if (!opts.sessionId) {
+      // 全新 GUI chat 没有来源 transcript，先断开旧 openSession，避免 read 落到上一条会话。
+      setLiveChatSourceSession(null)
+    }
     const session = await startChat({
       agent: opts.agent,
       projectKey: opts.projectKey,
@@ -1984,10 +2057,7 @@ async function startLiveChat(opts: {
     })
     liveChat.value = session
     chatPeekRead.value = false
-    // 注意：这里**不能**清 openSession —— 导航 watcher（见 closeLiveChat 上方）盯着
-    // openSession.path，清它会被误判成「导航离开」从而立刻关掉刚开的 live chat。
-    // openSession 保留 = chat 的「来源只读会话」，供 read ⇄ chat 来回切；replace 语义
-    // 改在退出时实现：closeLiveChat 退出时一并清 openSession → 回到列表。
+    // 续聊沿用现成的来源 openSession；全新 chat 先空着，等 sessionId 回填后再绑定真实 transcript。
   } catch (e) {
     notify(`${e}`, true)
   }
@@ -2060,7 +2130,7 @@ function closeLiveChat() {
  *  按钮本就不显示。回到 chat 走头部同一位置的「切到 chat」按钮（resumeChatFromSession）。
  *  read ⇄ chat 的两个切换按钮在头部同一位置就地换图标，故切换无飞线动画。 */
 function switchLiveToRead() {
-  if (!liveChat.value || !openSession.value) return
+  if (!liveChat.value || !liveChatSourceSession.value) return
   chatPeekRead.value = true
 }
 
@@ -2071,7 +2141,7 @@ function switchLiveToRead() {
 /** live chat 里看会话统计：用来源会话的文件路径，盖 StatsView 但不停子进程。
  *  全新 GUI 会话（无来源文件）没有可统计的内容，直接忽略。 */
 function openLiveChatStats() {
-  const s = openSession.value
+  const s = liveChatSourceSession.value
   if (!s) return
   sessionStatsTarget.value = { agent: chatAgent.value, path: s.path, title: s.title }
   sessionStatsFrom.value = 'chat'
@@ -2095,7 +2165,7 @@ async function exportLiveChat(kind: ExportKind) {
 /** live chat 里删除：有来源会话就软删它（确认后 afterDelete 清 openSession →
  *  上面的导航 watch 触发 closeLiveChat 自动停掉子进程）；全新会话无文件，直接关。 */
 function deleteFromLiveChat() {
-  if (openSession.value) deleteSession(openSession.value)
+  if (liveChatSourceSession.value) deleteSession(liveChatSourceSession.value)
   else closeLiveChat()
 }
 
@@ -2121,6 +2191,10 @@ watch(
       showPricing.value,
     ].join('|'),
   () => {
+    if (suppressNextLiveChatNavClose.value) {
+      suppressNextLiveChatNavClose.value = false
+      return
+    }
     if (liveChat.value) closeLiveChat()
   },
 )

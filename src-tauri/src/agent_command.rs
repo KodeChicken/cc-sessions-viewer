@@ -72,6 +72,9 @@ pub fn powershell_set_location_and_run(cwd: &str, command: &AgentCommand) -> Str
     )
 }
 
+/// 在 PowerShell 会话内把 PATH 重新拼一遍 —— 进程现有 PATH（已由 OS 展开，最可靠）打头，
+/// 再补注册表里的 User + Machine PATH。与 v0.1.12 一致：$processPath 在前，保证继承到的
+/// 完整 PATH 永远优先生效。
 #[cfg(target_os = "windows")]
 fn powershell_refresh_path() -> &'static str {
     "$machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine'); \
@@ -79,10 +82,6 @@ fn powershell_refresh_path() -> &'static str {
      $processPath = [Environment]::GetEnvironmentVariable('Path', 'Process'); \
      $env:Path = (@($processPath, $userPath, $machinePath) -ne '') -join ';'"
 }
-
-#[cfg(target_os = "windows")]
-static PATH_CACHE_REFRESHING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 
 /// 将 PowerShell 命令编码为 `-EncodedCommand` 所需的 Base64 (UTF-16LE)。
 /// 打包后的 .app 经 `cmd /c start "" powershell.exe -Command "..."` 启动时，
@@ -94,97 +93,4 @@ pub fn powershell_encoded_command(ps_cmd: &str) -> String {
     use base64::Engine;
     let utf16le: Vec<u8> = ps_cmd.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
     B64.encode(utf16le)
-}
-
-/// 返回 User + Machine PATH 与当前进程 PATH 的合并结果。
-/// 打包后的 .app 可能从安装器 / 升级器继承了不完整的 PATH（缺 nvm / volta / fnm 等），
-/// 这里用后台缓存避免每次启动终端都同步等待 `reg query`。
-#[cfg(target_os = "windows")]
-pub fn merged_system_path() -> String {
-    if let Some(cached) = cached_merged_system_path() {
-        return cached;
-    }
-    warm_merged_system_path_cache();
-    std::env::var("PATH").unwrap_or_default()
-}
-
-#[cfg(target_os = "windows")]
-pub fn warm_merged_system_path_cache() {
-    if PATH_CACHE_REFRESHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
-    if std::thread::Builder::new()
-        .name("windows-path-cache".to_string())
-        .spawn(|| {
-            let path = build_merged_system_path();
-            if let Ok(mut cached) = path_cache().write() {
-                *cached = Some(path);
-            }
-            PATH_CACHE_REFRESHING.store(false, std::sync::atomic::Ordering::SeqCst);
-        })
-        .is_err()
-    {
-        PATH_CACHE_REFRESHING.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn cached_merged_system_path() -> Option<String> {
-    path_cache().read().ok().and_then(|cached| cached.clone())
-}
-
-#[cfg(target_os = "windows")]
-fn path_cache() -> &'static std::sync::RwLock<Option<String>> {
-    static PATH_CACHE: std::sync::OnceLock<std::sync::RwLock<Option<String>>> =
-        std::sync::OnceLock::new();
-    PATH_CACHE.get_or_init(|| std::sync::RwLock::new(None))
-}
-
-#[cfg(target_os = "windows")]
-fn build_merged_system_path() -> String {
-    let current = std::env::var("PATH").unwrap_or_default();
-    let user = read_registry_path("HKCU\\Environment");
-    let machine = read_registry_path("HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment");
-    let mut seen = std::collections::HashSet::new();
-    let mut merged = String::new();
-    for entry in current.split(';').chain(user.split(';')).chain(machine.split(';')) {
-        let trimmed = entry.trim();
-        if !trimmed.is_empty() && seen.insert(trimmed.to_ascii_lowercase()) {
-            if !merged.is_empty() {
-                merged.push(';');
-            }
-            merged.push_str(trimmed);
-        }
-    }
-    merged
-}
-
-#[cfg(target_os = "windows")]
-fn read_registry_path(key: &str) -> String {
-    std::process::Command::new("reg")
-        .args(["query", key, "/v", "Path"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            for line in stdout.lines() {
-                let line = line.trim();
-                if line.to_ascii_lowercase().starts_with("path") {
-                    // 格式: "Path    REG_EXPAND_SZ    C:\Users\..."
-                    // 跳过 "Path" 和类型 ("REG_SZ" / "REG_EXPAND_SZ")，取剩余部分。
-                    if let Some(rest) = line.find("REG_") {
-                        let after_type = &line[rest..];
-                        if let Some(pos) = after_type.find(char::is_whitespace) {
-                            let value = after_type[pos..].trim();
-                            if !value.is_empty() {
-                                return Some(value.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-            None
-        })
-        .unwrap_or_default()
 }

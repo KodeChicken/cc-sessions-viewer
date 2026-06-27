@@ -352,11 +352,13 @@ fn last_context_usage(fp: &Path) -> UsageSummary {
         if input + cache_creation + cache_read == 0 {
             continue;
         }
-        let mut cur = UsageSummary::default();
-        cur.input_tokens = input;
-        cur.output_tokens = u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
-        cur.cache_creation_input_tokens = cache_creation;
-        cur.cache_read_input_tokens = cache_read;
+        let cur = UsageSummary {
+            input_tokens: input,
+            output_tokens: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
+            cache_creation_input_tokens: cache_creation,
+            cache_read_input_tokens: cache_read,
+            ..Default::default()
+        };
         last = cur.finalize();
     }
     last

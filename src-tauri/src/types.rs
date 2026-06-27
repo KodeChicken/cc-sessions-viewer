@@ -36,6 +36,29 @@ pub struct ChatStartInfo {
     pub process_model: String,
 }
 
+/// Claude GUI chat 需要知道当前本机配置是否挂了自定义 Anthropic 兼容端点。
+/// 一旦 `has_custom_base_url=true`，前端就不应显示订阅专属的 5h/周限额，也不应暴露
+/// effort 这种可能被第三方端点拒绝的参数。
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeRuntimeInfo {
+    pub has_custom_base_url: bool,
+    pub alias_targets: ClaudeAliasTargets,
+    /// 进会话前对 Claude 鉴权方式的**预判**（init 事件回来前的种子；init 一到以其为准）：
+    /// `"none"` = 订阅/OAuth 登录（5h/周限额 + effort 生效）；`"ANTHROPIC_API_KEY"` /
+    /// `"apiKeyHelper"` = API key 计费；`None` = 判不出（UI 保持保守，等 init）。
+    pub api_key_source: Option<String>,
+}
+
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeAliasTargets {
+    pub opus: Option<String>,
+    pub sonnet: Option<String>,
+    pub haiku: Option<String>,
+    pub fable: Option<String>,
+}
+
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatImageInput {

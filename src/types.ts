@@ -254,6 +254,18 @@ export interface ChatStartInfo {
   processModel: ChatProcessModel
 }
 
+export interface ClaudeRuntimeInfo {
+  hasCustomBaseUrl: boolean
+  aliasTargets: {
+    opus?: string
+    sonnet?: string
+    haiku?: string
+    fable?: string
+  }
+  /** init 事件回来前对鉴权方式的预判：'none' = 订阅/OAuth；其它 = API key；缺省 = 判不出。 */
+  apiKeySource?: string
+}
+
 /** agent-chat://* 事件 payload（与 Rust 端同形）。 */
 export interface ChatEventPayload { chatId: number; msg: Msg }
 export interface ChatInitPayload { chatId: number; sessionId?: string; apiKeySource?: string }
