@@ -1773,8 +1773,19 @@ async function onSelectView(entry: ViewHistoryEntry) {
       await resumeChatFromSession(entry.session)
     }
   } else {
-    // 新建 chat 历史没有可读的磁盘 path → 直接按 session id resume 成 live chat。
-    await resumeChatFromSession(entry.session)
+    // 新建 chat 历史的 View 没有磁盘 path，但它的 sessionId 早已落盘。优先按 id 在当前会话
+    // 列表里找到真实条目（绑定时会把新会话刷进 sessions），用真实 path 走 openChat 把**它自己**
+    // 的历史读进 chatMsgs 再 resume——否则会预载到上一个会话的 chatMsgs（数据串台）。找不到才
+    // 退回直接 resume（此时 resumeChatFromSession 的预载守卫会拦住串台，最差只是空历史）。
+    const real = entry.session.id
+      ? sessions.value.find((x) => x.id === entry.session.id && !!x.path)
+      : undefined
+    if (real) {
+      await openChat(real)
+      if (entry.mode === 'chat' && openSession.value) await resumeChatFromSession(real)
+    } else {
+      await resumeChatFromSession(entry.session)
+    }
   }
 }
 
@@ -1958,7 +1969,14 @@ watch(
 // 就登记/更新「Views」历史。新建 chat 没有磁盘 path 也能进来（按 session id 记录）；之后从
 // 列表打开同一会话会按 id 合并、补上真实 path（recordView 不会用空 path 覆盖已有 path）。
 watch(
-  () => (liveChat.value ? `${liveChat.value.sessionId} ${liveChat.value.title}` : ''),
+  // key 里带上来源 path 很关键：新建 chat 在 init 先拿到 sessionId（此刻还没绑定来源、path 为空），
+  // 绑定完成后 liveChatSourceSession.path 才补上。key 不含 path 的话「补 path」不会重新触发，View
+  // 历史就永远停在 path=''——之后从 Views 切回它会走 onSelectView 的「无 path 直接 resume」分支，
+  // 把上一个会话的 chatMsgs 当历史预载进去（串台）。带上 path，绑定后再记一次、把真实 path 合并进来。
+  () =>
+    liveChat.value
+      ? `${liveChat.value.sessionId} ${liveChat.value.title} ${liveChatSourceSession.value?.path ?? ''}`
+      : '',
   () => {
     const c = liveChat.value
     if (!c || !c.sessionId || !activeDir.value) return
@@ -1973,7 +1991,12 @@ watch(
 
 /** 启动一个 live GUI chat：新开（无 sessionId）或续聊（带 sessionId + 预载历史）。 */
 function setLiveChatSourceSession(session: SessionMeta | null) {
-  suppressNextLiveChatNavClose.value = true
+  // suppressNextLiveChatNavClose 是「下一次导航 watch 触发时跳过一次自动关 chat」的一次性闸门。
+  // 它只能由导航 watch 的真实触发来消费，而 watch 仅在 openSession.path 变化时才触发。
+  // 因此只有当 path 真的会变（→ watch 必定触发 → 闸门必被消费）时才置真；否则置真会**永久泄漏**：
+  // 下一次真正切到别的会话时被错误吞掉，导致旧 live chat 不关、盖在新会话上（串台）。
+  const samePath = (openSession.value?.path ?? '') === (session?.path ?? '')
+  if (!samePath) suppressNextLiveChatNavClose.value = true
   openSession.value = session
 }
 
@@ -2076,6 +2099,20 @@ async function resumeChatFromSession(s: SessionMeta) {
   }
   // 续聊种子：先拉原会话末尾的上下文用量，让上下文角标一开始就显示真实占比，
   // 而不是 0%（首个 result 事件到达后会被真实 usage 覆盖）。失败就不种子化。
+  // 预载历史只在 chatMsgs 确属本会话时才用：从 Views 切回「新建 chat」时（其 View 的 path 已被
+  // 绑定回填，正常会走 onSelectView 的 openChat 分支把 chatMsgs 重载成本会话）这里 openSession
+  // 即本会话；万一仍走到无 openChat 的 resume，chatMsgs 还停在上一个会话——那就别拿它当历史，
+  // 有 path 就从磁盘重载、否则置空，绝不把别的会话内容当本会话历史预载（串台的第二道防线）。
+  let preload: Msg[] = []
+  if (openSession.value?.id === s.id) {
+    preload = chatMsgs.value
+  } else if (s.path) {
+    try {
+      preload = await api.readSession(chatAgent.value, s.path)
+    } catch {
+      preload = []
+    }
+  }
   let initialUsage: UsageSummary | undefined
   try {
     initialUsage = await api.sessionContextUsage(chatAgent.value, s.path)
@@ -2089,7 +2126,7 @@ async function resumeChatFromSession(s: SessionMeta) {
     sessionId: s.id,
     title: s.title,
     created: s.created,
-    preloadMsgs: chatMsgs.value,
+    preloadMsgs: preload,
     initialUsage,
   })
 }
@@ -2129,9 +2166,24 @@ function closeLiveChat() {
  *  置真即可，liveChat 仍在）。没有来源只读会话（如全新 GUI 会话）时无 read 可回看，
  *  按钮本就不显示。回到 chat 走头部同一位置的「切到 chat」按钮（resumeChatFromSession）。
  *  read ⇄ chat 的两个切换按钮在头部同一位置就地换图标，故切换无飞线动画。 */
-function switchLiveToRead() {
-  if (!liveChat.value || !liveChatSourceSession.value) return
+async function switchLiveToRead() {
+  const c = liveChat.value
+  const src = liveChatSourceSession.value
+  if (!c || !src) return
+  // read 视图的正文来自 chatMsgs（按 path 读盘），live chat 的正文来自内存里的 msgs —— 两套。
+  // 切到 read 必须按来源会话的真实 transcript 重新读盘；否则 chatMsgs 仍是上一个被打开会话
+  // 的残留内容，表现为「标题/ID 对、正文却是别的会话」（尤其全新 chat 从没 openChat 过）。
+  // 用 live chat 自己的 agent 解析（claude / codex / gemini 的 JSONL 格式不同）。
+  loadingChat.value = true
+  chatMsgs.value = []
   chatPeekRead.value = true
+  try {
+    chatMsgs.value = await api.readSession(c.agent, src.path)
+  } catch (e) {
+    notify(t('toast.readFail', { e: String(e) }), true)
+  } finally {
+    loadingChat.value = false
+  }
 }
 
 // ---------- live chat 顶栏会话级动作（统计 / 导出 / 删除）----------
