@@ -2,12 +2,104 @@
 // 这里只放"agent 无关"的逻辑——目录定位、时间戳、JSONL 文件写入、标题清洗等。
 // agent-specific 的解析逻辑请放到对应的 `agents/<name>.rs` 文件里。
 
+use std::collections::VecDeque;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::types::{Block, Msg};
+use crate::types::{Block, Msg, ProjectFileEntry};
+
+/// `@` 文件浮层永远跳过的重目录（构建产物 / 依赖 / VCS）。点文件（`.codex` 等）保留 ——
+/// 用户就是要 @ 它们。
+const SKIP_DIRS: &[&str] = &[
+    ".git", "node_modules", "target", "dist", "build", "out", "coverage", ".next",
+    ".nuxt", ".svelte-kit", ".turbo", ".cache", "vendor", ".venv", "venv",
+    "__pycache__", ".idea", "Pods", "DerivedData", ".dart_tool", ".gradle", ".fvm",
+];
+
+/// 目录是否含**可见子项**（任一非 .DS_Store、非 SKIP_DIRS 的条目）。空目录 / 只含被跳过
+/// 目录 → false，前端据此隐藏「进入」chevron（钻进去也是空的）。只读到第一个命中即返回。
+fn dir_has_visible_child(dir: &Path) -> bool {
+    let rd = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return false,
+    };
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".DS_Store" {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir && SKIP_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+/// GUI chat `@` 浮层的项目文件列举 —— 像 IDE 文件树一样**逐级**展开，不递归。
+/// `query` 形如 `<dir_part><filter>`：到最后一个 `/`（含）的段是目录前缀，其后是末段过滤词。
+/// 只列 `cwd/dir_part` 的**直接子项**，按末段（大小写不敏感子串）过滤。空 query → cwd 顶层。
+/// 结果「目录在前、文件在后」，组内按名排序，截断到 `limit`，并为目录回填 `has_children`。
+pub fn list_project_files(cwd: &str, query: &str, limit: usize) -> Vec<ProjectFileEntry> {
+    let base = Path::new(cwd);
+    if cwd.is_empty() || !base.is_dir() {
+        return Vec::new();
+    }
+    // 末段 `/` 切成「目录前缀（含尾斜杠）」+「过滤词」。无 `/` → 顶层 + 整体作过滤词。
+    let (dir_part, filter) = match query.rfind('/') {
+        Some(i) => (&query[..=i], &query[i + 1..]),
+        None => ("", query),
+    };
+    let filter_lc = filter.to_lowercase();
+    let target = if dir_part.is_empty() {
+        base.to_path_buf()
+    } else {
+        base.join(dir_part)
+    };
+
+    let mut out: Vec<ProjectFileEntry> = Vec::new();
+    let rd = match fs::read_dir(&target) {
+        Ok(rd) => rd,
+        Err(_) => return Vec::new(), // 目标不存在（如打错的前缀）→ 空，前端收起浮层
+    };
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".DS_Store" {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir && SKIP_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+        if !filter_lc.is_empty() && !name.to_lowercase().contains(&filter_lc) {
+            continue;
+        }
+        out.push(ProjectFileEntry {
+            rel_path: format!("{dir_part}{name}"),
+            name,
+            is_dir,
+            has_children: false, // 截断后再回填，避免给丢弃项白扫一次 read_dir
+        });
+    }
+
+    // 目录在前、文件在后；组内按相对路径（大小写敏感字节序，点文件 < 大写 < 小写）。
+    out.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.rel_path.cmp(&b.rel_path),
+    });
+    out.truncate(limit);
+    // 截断后再为留下的目录回填 has_children（每个目录一次浅 read_dir，最多 limit 次）。
+    for e in out.iter_mut() {
+        if e.is_dir {
+            e.has_children = dir_has_visible_child(&base.join(&e.rel_path));
+        }
+    }
+    out
+}
 
 pub fn home() -> PathBuf {
     dirs::home_dir().expect("无法定位用户主目录")
@@ -215,6 +307,134 @@ pub fn append_jsonl_line(path: &Path, line: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 当前 git 分支名 —— 给 chat 头部展示「分支图标 + 名称」用。
+///
+/// 直接读 `.git/HEAD` 而不 shell out 到 `git`：GUI app 从 Finder 启动时 PATH 往往很瘦，
+/// 未必能找到 git；读文件没有这个依赖，也更快。从 `cwd` 逐级向上找 `.git`：
+/// - `.git` 是目录 → 普通仓库，读它下面的 `HEAD`；
+/// - `.git` 是文件（`gitdir: <path>`）→ worktree / submodule，跟到真正的 gitdir 再读 `HEAD`。
+///
+/// `HEAD` 内容两种形态：`ref: refs/heads/<branch>`（返回 `<branch>`）或裸 commit sha
+/// （detached，返回短 sha）。非仓库 / 读不到时返回 `None`，前端据此不渲染分支块。
+pub fn git_current_branch(cwd: &str) -> Option<String> {
+    if cwd.is_empty() {
+        return None;
+    }
+    let mut dir: &Path = Path::new(cwd);
+    loop {
+        let dot_git = dir.join(".git");
+        if dot_git.is_dir() {
+            return read_head_ref(&dot_git);
+        }
+        if dot_git.is_file() {
+            // ".git" 文件：内容形如 "gitdir: /abs/or/rel/path"
+            let content = fs::read_to_string(&dot_git).ok()?;
+            let rest = content.lines().next()?.strip_prefix("gitdir:")?.trim();
+            let gitdir = Path::new(rest);
+            let gitdir = if gitdir.is_absolute() {
+                gitdir.to_path_buf()
+            } else {
+                dir.join(gitdir)
+            };
+            return read_head_ref(&gitdir);
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// 读 gitdir 下的 `HEAD`，解析出分支名或短 commit sha。
+fn read_head_ref(gitdir: &Path) -> Option<String> {
+    let head = fs::read_to_string(gitdir.join("HEAD")).ok()?;
+    let head = head.trim();
+    if let Some(r) = head.strip_prefix("ref:") {
+        let r = r.trim();
+        return Some(r.strip_prefix("refs/heads/").unwrap_or(r).to_string());
+    }
+    if head.is_empty() {
+        return None;
+    }
+    // detached HEAD：取短 sha
+    Some(head.chars().take(7).collect())
+}
+
+/// 把聊天里点击的「文件引用」解析成磁盘上真实存在的文件路径。
+///
+/// `rel` 可能是完整相对路径，也可能是**部分路径**——聊天正文里常写成 `bank/refund_detail.dart`，
+/// 真身其实在 `lib/pages/wallet/bank/refund_detail.dart`。解析两步：
+///   1. 先按 `cwd` 直接拼接，存在即用（完整相对路径 / 绝对路径走这条）。
+///   2. 否则在 `cwd` 下广度优先搜索，找「目录段尾部与 `rel` 完全对齐」的文件。BFS 保证先
+///      命中**最靠近根**的那个；段级对齐避免 `xbank/f.dart` 误命中 `bank/f.dart`。
+///
+/// 跳过 `SKIP_DIRS`（依赖 / 构建产物），并对访问条目数设上限，避免在超大仓库里走太久。
+/// 找不到返回 `None`（调用方据此报「文件不存在」）。
+pub fn resolve_file_ref(cwd: &str, rel: &str) -> Option<PathBuf> {
+    if cwd.is_empty() || rel.is_empty() {
+        return None;
+    }
+    let base = Path::new(cwd);
+    let direct = base.join(rel);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    let want: Vec<String> = rel
+        .split(['/', '\\'])
+        .filter(|s| !s.is_empty() && *s != ".")
+        .map(|s| s.to_string())
+        .collect();
+    if want.is_empty() {
+        return None;
+    }
+    let file_name = want.last().unwrap().as_str();
+
+    let mut budget: usize = 50_000; // 访问条目上限（一次点击的可接受成本）
+    let mut queue: VecDeque<PathBuf> = VecDeque::new();
+    queue.push_back(base.to_path_buf());
+    while let Some(dir) = queue.pop_front() {
+        let rd = match fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        let mut subdirs: Vec<PathBuf> = Vec::new();
+        for entry in rd.flatten() {
+            if budget == 0 {
+                return None;
+            }
+            budget -= 1;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                if name == ".DS_Store" || SKIP_DIRS.contains(&name.as_str()) {
+                    continue;
+                }
+                subdirs.push(entry.path());
+            } else if name == file_name {
+                let path = entry.path();
+                if path_ends_with_segments(&path, &want) {
+                    return Some(path); // BFS：先命中即最浅
+                }
+            }
+        }
+        // 同层文件全看完再下钻 —— 维持「最靠近根优先」。
+        queue.extend(subdirs);
+    }
+    None
+}
+
+/// `path` 的尾部目录段是否与 `want` 逐段相等（段级对齐，非子串匹配）。
+fn path_ends_with_segments(path: &Path, want: &[String]) -> bool {
+    let segs: Vec<String> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+    if want.len() > segs.len() {
+        return false;
+    }
+    segs[segs.len() - want.len()..] == *want
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +454,204 @@ mod tests {
     fn yyyymmdd_strips_to_date_only() {
         // 2026-05-23T12:34:56Z = 1779539696 s
         assert_eq!(yyyymmdd_utc(1_779_539_696_000), "2026-05-23");
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cssv_{}_{}", std::process::id(), name));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".codex/skills/git-push")).unwrap();
+        fs::write(dir.join(".codex/config.toml"), "x").unwrap();
+        fs::write(dir.join(".codex/skills/git-push/SKILL.md"), "x").unwrap();
+        fs::create_dir_all(dir.join("node_modules/pkg")).unwrap();
+        fs::write(dir.join("node_modules/pkg/index.js"), "x").unwrap();
+        fs::create_dir(dir.join(".empty")).unwrap(); // 空目录 → has_children=false
+        fs::write(dir.join("README.md"), "x").unwrap();
+        dir
+    }
+
+    #[test]
+    fn list_project_files_empty_query_lists_top_level_only() {
+        let dir = scratch("toplevel");
+        let out = list_project_files(dir.to_str().unwrap(), "", 200);
+        let rels: Vec<&str> = out.iter().map(|e| e.rel_path.as_str()).collect();
+        // 只列直接子项，目录在前；node_modules 被跳过、不出现。
+        assert_eq!(rels, vec![".codex", ".empty", "README.md"]);
+        // 含可见子项的目录 has_children=true；空目录 false；文件恒 false。
+        assert!(out[0].is_dir && out[0].has_children); // .codex
+        assert!(out[1].is_dir && !out[1].has_children); // .empty
+        assert!(!out[2].is_dir && !out[2].has_children); // README.md
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_project_files_lists_direct_children_one_level() {
+        let dir = scratch("children");
+        // 进入 .codex/：只列其直接子项（不递归进 skills/git-push）。目录在前。
+        let out = list_project_files(dir.to_str().unwrap(), ".codex/", 200);
+        let rels: Vec<&str> = out.iter().map(|e| e.rel_path.as_str()).collect();
+        assert_eq!(rels, vec![".codex/skills", ".codex/config.toml"]);
+        assert!(out[0].is_dir && out[0].has_children); // skills 含 git-push
+        assert!(!out[1].is_dir); // config.toml
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_project_files_filters_by_trailing_segment() {
+        let dir = scratch("filter");
+        // 末段是过滤词（VS Code 路径式 `<dir>/<filter>`）。顶层用 "codex" 过滤。
+        let top = list_project_files(dir.to_str().unwrap(), "codex", 200);
+        assert_eq!(top.iter().map(|e| e.rel_path.as_str()).collect::<Vec<_>>(), vec![".codex"]);
+        // 进入后再用末段过滤：.codex/ 下含 "sk" 的只有 skills。
+        let nested = list_project_files(dir.to_str().unwrap(), ".codex/sk", 200);
+        assert_eq!(nested.iter().map(|e| e.rel_path.as_str()).collect::<Vec<_>>(), vec![".codex/skills"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_project_files_skips_ignored_dirs() {
+        let dir = scratch("skip");
+        // node_modules 在顶层即被跳过，绝不递归进去 → 顶层用 "index" 过滤命中不到它里面的文件。
+        let out = list_project_files(dir.to_str().unwrap(), "index", 200);
+        assert!(out.is_empty());
+        // 即便显式进入 node_modules/，也按「跳过」处理（不列内容）。
+        let inside = list_project_files(dir.to_str().unwrap(), "node_modules/", 200);
+        assert_eq!(inside.iter().map(|e| e.rel_path.as_str()).collect::<Vec<_>>(), vec!["node_modules/pkg"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_project_files_invalid_cwd_is_empty() {
+        assert!(list_project_files("", "x", 10).is_empty());
+        assert!(list_project_files("/no/such/dir/xyz", "x", 10).is_empty());
+    }
+
+    fn git_scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cssv_git_{}_{}", std::process::id(), name));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn git_branch_reads_ref_head() {
+        let dir = git_scratch("ref");
+        fs::write(dir.join(".git/HEAD"), "ref: refs/heads/feature/chat\n").unwrap();
+        assert_eq!(git_current_branch(dir.to_str().unwrap()).as_deref(), Some("feature/chat"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn git_branch_detached_head_is_short_sha() {
+        let dir = git_scratch("detached");
+        fs::write(dir.join(".git/HEAD"), "0123456789abcdef0123456789abcdef01234567\n").unwrap();
+        assert_eq!(git_current_branch(dir.to_str().unwrap()).as_deref(), Some("0123456"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn git_branch_walks_up_from_subdir() {
+        let dir = git_scratch("nested");
+        fs::write(dir.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let sub = dir.join("a/b/c");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(git_current_branch(sub.to_str().unwrap()).as_deref(), Some("main"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn git_branch_follows_worktree_gitdir_file() {
+        // worktree：cwd 下的 ".git" 是文件，内容 "gitdir: <真正的 gitdir>"。
+        let dir = git_scratch("worktree");
+        let real_gitdir = dir.join("realgit");
+        fs::create_dir_all(&real_gitdir).unwrap();
+        fs::write(real_gitdir.join("HEAD"), "ref: refs/heads/wt-branch\n").unwrap();
+        let wt = dir.join("wt");
+        fs::create_dir_all(&wt).unwrap();
+        fs::write(wt.join(".git"), format!("gitdir: {}\n", real_gitdir.display())).unwrap();
+        assert_eq!(git_current_branch(wt.to_str().unwrap()).as_deref(), Some("wt-branch"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn git_branch_none_when_not_a_repo() {
+        assert_eq!(git_current_branch(""), None);
+        assert_eq!(git_current_branch("/no/such/dir/xyz"), None);
+        let dir = std::env::temp_dir().join(format!("cssv_nogit_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(git_current_branch(dir.to_str().unwrap()), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // 仿真一个 Flutter 工程：多个同名 refund_detail.dart 散在不同父目录下，外加一个被跳过的
+    // node_modules 副本，用来验证「部分路径 → 段级后缀解析」。
+    fn ref_scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cssv_ref_{}_{}", std::process::id(), name));
+        let _ = fs::remove_dir_all(&dir);
+        for sub in ["bank", "cash", "alipay"] {
+            let d = dir.join(format!("lib/pages/wallet/{sub}"));
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("refund_detail.dart"), "x").unwrap();
+        }
+        fs::create_dir_all(dir.join("lib/main")).unwrap();
+        fs::write(dir.join("lib/main/app.dart"), "x").unwrap();
+        // 被 SKIP_DIRS 跳过的目录里也放一个同名文件，确认搜索不会命中它。
+        fs::create_dir_all(dir.join("node_modules/pkg/bank")).unwrap();
+        fs::write(dir.join("node_modules/pkg/bank/refund_detail.dart"), "x").unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_file_ref_direct_join_wins() {
+        let dir = ref_scratch("direct");
+        let got = resolve_file_ref(dir.to_str().unwrap(), "lib/main/app.dart");
+        assert_eq!(got, Some(dir.join("lib/main/app.dart")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_file_ref_partial_path_is_segment_aligned() {
+        let dir = ref_scratch("partial");
+        // `bank/refund_detail.dart` 只对齐 wallet/bank 那一份，不会错到 cash/alipay。
+        assert_eq!(
+            resolve_file_ref(dir.to_str().unwrap(), "bank/refund_detail.dart"),
+            Some(dir.join("lib/pages/wallet/bank/refund_detail.dart")),
+        );
+        assert_eq!(
+            resolve_file_ref(dir.to_str().unwrap(), "cash/refund_detail.dart"),
+            Some(dir.join("lib/pages/wallet/cash/refund_detail.dart")),
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_file_ref_rejects_substring_segment() {
+        let dir = ref_scratch("substr");
+        // `ank/refund_detail.dart` 不是任何文件的「整段」后缀 → 不命中（不能子串匹配 bank）。
+        assert_eq!(
+            resolve_file_ref(dir.to_str().unwrap(), "ank/refund_detail.dart"),
+            None,
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_file_ref_skips_ignored_dirs() {
+        let dir = ref_scratch("skip");
+        // node_modules 里那份同名文件不应被搜到（只有它带 pkg/bank 这层时才可能命中）。
+        assert_eq!(
+            resolve_file_ref(dir.to_str().unwrap(), "pkg/bank/refund_detail.dart"),
+            None,
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_file_ref_none_when_missing_or_empty() {
+        let dir = ref_scratch("missing");
+        assert_eq!(resolve_file_ref(dir.to_str().unwrap(), "nope/ghost.dart"), None);
+        assert_eq!(resolve_file_ref("", "bank/refund_detail.dart"), None);
+        assert_eq!(resolve_file_ref(dir.to_str().unwrap(), ""), None);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

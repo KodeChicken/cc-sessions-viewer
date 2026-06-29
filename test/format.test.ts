@@ -7,6 +7,7 @@ import {
   highlightSegments,
   isCaveatOnlyMsg,
   metaKindIsPre,
+  parseFileRef,
   parseMetaFields,
   parseSystemEvent,
   parseTeammateMessage,
@@ -24,6 +25,27 @@ const block = (kind: string, text?: string) => ({ kind, text })
 const userMsg = (...blocks: Array<{ kind: string; text?: string }>) => ({
   role: 'user',
   blocks,
+})
+
+describe('parseFileRef', () => {
+  it('splits off a trailing :line and :line:col', () => {
+    expect(parseFileRef('lib/a/b.dart')).toEqual({ path: 'lib/a/b.dart' })
+    expect(parseFileRef('lib/a/b.dart:371')).toEqual({
+      path: 'lib/a/b.dart',
+      line: 371,
+      col: undefined,
+    })
+    expect(parseFileRef('src/x.ts:10:5')).toEqual({ path: 'src/x.ts', line: 10, col: 5 })
+  })
+
+  it('does not mistake a Windows drive colon for a line number', () => {
+    expect(parseFileRef('C:\\proj\\x.ts')).toEqual({ path: 'C:\\proj\\x.ts' })
+    expect(parseFileRef('C:\\proj\\x.ts:42')).toEqual({
+      path: 'C:\\proj\\x.ts',
+      line: 42,
+      col: undefined,
+    })
+  })
 })
 
 describe('renderText', () => {
@@ -65,6 +87,35 @@ describe('renderText', () => {
     // the <code> closes before the </li> — no leaked formatting tag
     expect(html).toContain('<code>https://localhost:1021/</code></li>')
     expect(html).not.toContain('</code>"')
+  })
+
+  // 文件路径形态的 inline code 渲染成可点 .file-ref（ChatView 委托点击在外部编辑器打开）。
+  it('turns a file-path inline code into a clickable file-ref', () => {
+    const html = renderText('see `lib/pages/home/todo_workbench_screen.dart:371` here')
+    expect(html).toContain('class="file-ref"')
+    expect(html).toContain('data-file-ref="lib/pages/home/todo_workbench_screen.dart:371"')
+    expect(html).toContain('>lib/pages/home/todo_workbench_screen.dart:371</code>')
+  })
+
+  it('treats absolute paths and :line:col suffixes as file-refs', () => {
+    expect(renderText('`/Users/me/proj/src/x.ts:5:3`')).toContain(
+      'data-file-ref="/Users/me/proj/src/x.ts:5:3"',
+    )
+    expect(renderText('`./src/index.ts`')).toContain('data-file-ref="./src/index.ts"')
+  })
+
+  it('does not treat object.method, bare filenames or dirs as file-refs', () => {
+    // 无路径分隔符 → 普通 code（避免 obj.method / package.json 误判）。
+    expect(renderText('`array.map`')).toContain('<code>array.map</code>')
+    expect(renderText('`array.map`')).not.toContain('file-ref')
+    expect(renderText('`package.json`')).not.toContain('file-ref')
+    // 末段无扩展名（目录）→ 不是文件引用。
+    expect(renderText('`src/components`')).not.toContain('file-ref')
+  })
+
+  it('does not treat a URL inside backticks as a file-ref', () => {
+    expect(renderText('`https://x.com/a.ts`')).not.toContain('file-ref')
+    expect(renderText('`https://x.com/a.ts`')).toContain('<code>https://x.com/a.ts</code>')
   })
 
   it('renders a fenced code block with a language line', () => {
@@ -174,15 +225,15 @@ describe('renderText', () => {
     expect(html).toContain('after</div>')
   })
 
-  it('drops <command-message> and emits <command-name> as a code chip', () => {
+  it('drops <command-message> and emits <command-name> as a blue command chip', () => {
     const html = renderText(
       '<command-message>init</command-message><command-name>/init</command-name>',
     )
     expect(html).not.toContain('command-message')
-    expect(html).toContain('<code class="cmd-tag">/init</code>')
+    expect(html).toContain('<code class="cmd-tag cmd-name">/init</code>')
   })
 
-  it('emits <command-args> as a code chip and escapes its content', () => {
+  it('emits <command-args> as a plain code chip (no cmd-name) and escapes its content', () => {
     const html = renderText('<command-args><x></command-args>')
     expect(html).toContain('<code class="cmd-tag">&lt;x&gt;</code>')
   })
@@ -191,7 +242,7 @@ describe('renderText', () => {
     const html = renderText(
       '<command-name>/clear</command-name><command-args></command-args>',
     )
-    expect(html).toContain('<code class="cmd-tag">/clear</code>')
+    expect(html).toContain('<code class="cmd-tag cmd-name">/clear</code>')
     // No empty chip after the /clear pill
     expect(html).not.toMatch(/<code class="cmd-tag"><\/code>/)
   })

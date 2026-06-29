@@ -8,7 +8,14 @@ import { effortLevelsFor, effortLabel } from '../chatComposerOptions'
 import type { Agent } from '../types'
 import { IconHelpCircle, IconChevronDown } from './icons'
 
-const props = defineProps<{ agent: Agent; model: string | undefined; selected: string | undefined }>()
+const props = defineProps<{
+  agent: Agent
+  model: string | undefined
+  selected: string | undefined
+  /** 用户未显式改档（selected=undefined）时展示的兜底档：Claude settings.json 的全局
+   *  effortLevel —— CLI 不带 --effort 即用它，故它才是「真实生效」的档，而非滑杆假定的最低档。 */
+  defaultLevel?: string
+}>()
 const emit = defineEmits<{ (e: 'pick', value: string): void }>()
 
 const open = ref(false)
@@ -18,13 +25,17 @@ const dragging = ref(false)
 
 // 档位随模型变（Opus 4.7/4.8 在 max 之后多一档 ultracode）。
 const levels = computed(() => effortLevelsFor(props.agent, props.model))
-const index = computed(() => {
-  const i = levels.value.indexOf(props.selected ?? '')
-  return i < 0 ? 0 : i
+// 实际展示的档：用户改过 → selected；否则 → 运行时默认（defaultLevel）；都没有/不在当前
+// 模型档位里 → 回落最低档。滑杆位置、标题、ultracode 判定全部以它为准。
+const effective = computed(() => {
+  if (props.selected && levels.value.includes(props.selected)) return props.selected
+  if (props.defaultLevel && levels.value.includes(props.defaultLevel)) return props.defaultLevel
+  return levels.value[0]
 })
-const currentLabel = computed(() => effortLabel(props.selected) || effortLabel(levels.value[0]))
+const index = computed(() => Math.max(0, levels.value.indexOf(effective.value)))
+const currentLabel = computed(() => effortLabel(effective.value))
 // ultracode = max effort + 自动跑 workflows，标题旁加一行小字说明它实际是什么。
-const isUltracode = computed(() => props.selected === 'ultracode')
+const isUltracode = computed(() => effective.value === 'ultracode')
 function pct(i: number) {
   const n = levels.value.length
   return n <= 1 ? 0 : (i / (n - 1)) * 100

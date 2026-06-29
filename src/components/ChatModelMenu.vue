@@ -47,19 +47,23 @@ function cancelCloseMore() {
 }
 
 const cfg = computed(() => modelMenuFor(props.agent, props.menuOptions))
+// 触发器标签 + 菜单勾选都认这个「实际生效」值：用户改过 → selected；否则续聊回填的
+// displayValue（lastModel）。否则勾选只看 selected，会出现「触发器显示 Sonnet 4.6 但
+// 菜单里一项都没打勾」的割裂（session.model 续聊时仍为 undefined）。
+const effectiveValue = computed(() => props.displayValue ?? props.selected)
 const currentLabel = computed(
-  () =>
-    modelLabel(
-      props.agent,
-      props.displayValue ?? props.selected,
-      props.menuOptions,
-    ) || t('chat.composer.model.label'),
+  () => modelLabel(props.agent, effectiveValue.value, props.menuOptions) || t('chat.composer.model.label'),
 )
 
 function toggle() {
   open.value = !open.value
   if (!open.value) moreOpen.value = false
 }
+// 供 composer 的 `/model` 指令程序化展开（底部模型面板）。
+function openMenu() {
+  open.value = true
+}
+defineExpose({ openMenu })
 function pick(v: string) {
   open.value = false
   moreOpen.value = false
@@ -123,12 +127,12 @@ onBeforeUnmount(() => {
         v-for="(m, i) in cfg.primary"
         :key="m.value"
         class="mm-item"
-        :class="{ active: m.value === selected }"
+        :class="{ active: m.value === effectiveValue }"
         role="option"
         @click="pick(m.value)"
       >
         <span class="mm-label">{{ m.label }}</span>
-        <span class="mm-check"><IconCheck v-if="m.value === selected" /></span>
+        <span class="mm-check"><IconCheck v-if="m.value === effectiveValue" /></span>
         <span class="mm-key">{{ i + 1 }}</span>
       </button>
 
@@ -157,13 +161,13 @@ onBeforeUnmount(() => {
               v-for="m in cfg.more"
               :key="m.value"
               class="mm-item"
-              :class="{ active: m.value === selected }"
+              :class="{ active: m.value === effectiveValue }"
               role="option"
               @click="pick(m.value)"
             >
               <span class="mm-label">{{ m.label }}</span>
               <!-- 子菜单没有数字列，无需预留勾选位：仅选中项才渲染 √，盒子贴住文字（对齐 Claude 客户端）。 -->
-              <span v-if="m.value === selected" class="mm-check"><IconCheck /></span>
+              <span v-if="m.value === effectiveValue" class="mm-check"><IconCheck /></span>
             </button>
           </div>
         </div>

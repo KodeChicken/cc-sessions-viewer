@@ -12,7 +12,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }))
 
-import { chatEffectiveEffortForTest, interruptChat, startChat } from '../src/chatSessions'
+import { chatEffectiveEffortForTest, interruptChat, parseRetryLine, startChat } from '../src/chatSessions'
 
 describe('chatSessions Claude API-key compatibility', () => {
   beforeEach(() => {
@@ -99,5 +99,31 @@ describe('chatSessions Claude API-key compatibility', () => {
     expect(session.msgs).toHaveLength(1)
     expect(session.msgs[0].role).toBe('user')
     expect(session.msgs[0].blocks[0].text).toBe('[Request interrupted by user]')
+  })
+})
+
+describe('parseRetryLine — network-retry detection from CLI stderr', () => {
+  it('extracts attempt/max from "(N/M)" form', () => {
+    expect(parseRetryLine('Request failed · retrying (4/10) · 24s')).toEqual({ attempt: 4, max: 10 })
+  })
+
+  it('extracts attempt/max from "N of M" form', () => {
+    expect(parseRetryLine('API error, retrying 2 of 5...')).toEqual({ attempt: 2, max: 5 })
+  })
+
+  it('matches transient-error keywords without a count → empty object', () => {
+    expect(parseRetryLine('Overloaded, backing off')).toEqual({})
+    expect(parseRetryLine('fetch failed: ECONNRESET')).toEqual({})
+    expect(parseRetryLine('socket hang up')).toEqual({})
+  })
+
+  it('is case-insensitive', () => {
+    expect(parseRetryLine('RETRYING request')).toEqual({})
+  })
+
+  it('returns null for unrelated stderr lines', () => {
+    expect(parseRetryLine('[debug] loaded 3 of 4 plugins')).toBeNull()
+    expect(parseRetryLine('Reading config from ~/.claude')).toBeNull()
+    expect(parseRetryLine('')).toBeNull()
   })
 })

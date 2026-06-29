@@ -24,6 +24,7 @@ import type {
   ChatEventPayload,
   ChatExitPayload,
   ChatImageAttachment,
+  ChatFileAttachment,
   ChatInitPayload,
   ChatProcessModel,
   ChatResultPayload,
@@ -32,6 +33,10 @@ import type {
   Msg,
   UsageSummary,
 } from './types'
+
+// Claude Code 给 /context、/compact、/model 等本地命令的 synthetic 记录打的「伪模型」标记 ——
+// 它不是真实模型，绝不能让它流进底栏模型选择器（模型只应在用户手动调整时变动）。
+const SYNTHETIC_MODEL = '<synthetic>'
 
 export interface ChatSession {
   /** 本地稳定 id（v-for / 选中用），与后端 chatId 是两套号。 */
@@ -67,6 +72,12 @@ export interface ChatSession {
   errorMessage?: string
   /** stderr 诊断行（封顶，排障用）。 */
   stderrTail: string[]
+  /**
+   * 网络不稳/重试状态：running 期间 CLI 往 stderr 写退避/瞬时错误时置位，状态行据此显示
+   * 「请求失败 · 重试中 (n/N)」替代纯耗时；收到下一条 event/delta（有进展）即清空。
+   * null = 正常；`{}` = 重试中但拿不到次数；`{attempt,max}` = 带次数。
+   */
+  retry?: { attempt?: number; max?: number } | null
   /**
    * 正在流式生成的「进行中」文本块（仅 Claude --include-partial-messages）。
    * 与 `msgs` 解耦：每 token 只动这个小对象 → 只重渲染流式气泡，不触发整列表
@@ -136,6 +147,23 @@ function registerChat(chatId: number, s: ChatSession) {
 
 const STDERR_TAIL_MAX = 50
 
+// 网络重试/瞬时错误信号（来自 CLI stderr）。命中 → 状态行显示「重试中」。宽松匹配以兼容
+// 各 agent / 版本的措辞差异；只在 running 期间生效，且任何「有进展」事件都会清掉。
+const RETRY_RE =
+  /\b(retry(?:ing)?|overloaded|rate.?limit|request failed|api error|connection (?:error|reset|timed?\s?out)|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed)\b/i
+// 重试次数：兼容「(4/10)」与「4 of 10」两种写法；抓不到则只显示通用「重试中」。
+const RETRY_COUNT_RE = /\b(\d+)\s*(?:\/|of)\s*(\d+)\b/i
+
+/**
+ * 解析一条 CLI stderr：命中网络重试/瞬时错误信号则返回重试态（带次数填 `attempt`/`max`，
+ * 否则空对象 `{}`），未命中返回 `null`。纯函数，导出供测试。
+ */
+export function parseRetryLine(line: string): { attempt?: number; max?: number } | null {
+  if (!RETRY_RE.test(line)) return null
+  const m = RETRY_COUNT_RE.exec(line)
+  return m ? { attempt: Number(m[1]), max: Number(m[2]) } : {}
+}
+
 let listenersInstalled = false
 const unlistens: UnlistenFn[] = []
 
@@ -170,9 +198,12 @@ function onMsg(s: ChatSession, msg: Msg) {
   // 「此刻」（消息刚到达的时间），让 live 气泡显示真实时间。
   if (!msg.timestamp) msg.timestamp = new Date().toISOString()
   // 记下模型全名（assistant 记录带 model）→ §10.5 上下文窗口换算。
-  if (msg.model) s.lastModel = msg.model
+  // `<synthetic>`（本地命令的 synthetic 记录）不是真实模型，跳过 —— 否则 /context、
+  // /compact 等会话消息会把底栏模型选择器从真实模型带歪成「未知模型」。
+  if (msg.model && msg.model !== SYNTHETIC_MODEL) s.lastModel = msg.model
   // 权威记录到达 → 当前块定稿，清掉流式预览（避免预览与真气泡并存）。
   s.live = null
+  s.retry = null // 有权威输出 = 网络恢复，撤掉「重试中」。
   // stream-json 的每个 assistant / tool_result(user) 事件就是一条完整气泡。
   // **重建数组**（而非 push）：ChatView 的 mermaid / 代码高亮 watcher 按引用比较
   // `props.messages`，只有引用变化才会重跑 —— 与只读模式 reassign chatMsgs 一致。
@@ -185,6 +216,7 @@ function onMsg(s: ChatSession, msg: Msg) {
  * 故每 token 不触发整列表重渲染。
  */
 function onDelta(s: ChatSession, d: ChatDelta) {
+  s.retry = null // 收到 token 流 = 有进展，撤掉「重试中」。
   if (d.phase === 'start') {
     // 仅文本块起预览；thinking / tool_use 不预览（authoritative 记录会补）。
     s.live = d.kind === 'text' ? { kind: 'text', text: '' } : null
@@ -239,6 +271,12 @@ function onStderr(s: ChatSession, p: ChatStderrPayload) {
   if (s.stderrTail.length > STDERR_TAIL_MAX) {
     s.stderrTail.splice(0, s.stderrTail.length - STDERR_TAIL_MAX)
   }
+  // 网络不稳重试：CLI 把退避/瞬时错误写到 stderr。running 期间命中就置「重试中」，
+  // 下一条 event/delta/result（有进展）会把它清掉。
+  if (s.turnState === 'running') {
+    const r = parseRetryLine(p.line)
+    if (r) s.retry = r
+  }
 }
 
 function appendInterruptedMarker(s: ChatSession) {
@@ -274,6 +312,7 @@ function ensureTicking() {
 function startTurn(s: ChatSession) {
   s.turnState = 'running'
   s.turnStartedAt = Date.now()
+  s.retry = null // 新一轮重置重试态。
   now.value = Date.now()
   ensureTicking()
 }
@@ -283,6 +322,7 @@ function endTurn(s: ChatSession) {
     s.lastTurnMs = Date.now() - s.turnStartedAt
   }
   s.turnState = 'idle'
+  s.retry = null // 一轮结束撤掉「重试中」。
 }
 
 // ============================ 查找 ============================
@@ -311,6 +351,8 @@ export interface StartChatOptions {
   cwd: string
   /** 续聊既有会话时给出；新开会话留空（init 事件回填）。 */
   sessionId?: string
+  /** btw 侧聊：配合 `sessionId` 从主聊**派生**一份独立会话（继承上下文、不污染原 transcript）。 */
+  fork?: boolean
   title: string
   /** 续聊既有会话时传原会话的 created；新开留空（startChat 用当前时刻）。 */
   created?: string
@@ -328,6 +370,17 @@ export interface StartChatOptions {
   /** 开起来立刻发的第一句（可选）。 */
   initialPrompt?: string
   initialImages?: ChatImageAttachment[]
+}
+
+/** 预载 transcript 末尾那条带 model 的 assistant 记录的模型全名（续聊时回填 lastModel）。 */
+function lastAssistantModel(msgs: Msg[] | undefined): string | undefined {
+  if (!msgs) return undefined
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    // `<synthetic>` 是本地命令的伪模型，不是真实续聊模型 —— 跳过，继续往前找真实的那条。
+    if (m.role === 'assistant' && m.model && m.model !== SYNTHETIC_MODEL) return m.model
+  }
+  return undefined
 }
 
 /**
@@ -353,11 +406,16 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
     lastTurnMs: 0,
     status: 'spawning',
     stderrTail: [],
+    retry: null,
     live: null,
     permissionMode: opts.permissionMode ?? 'acceptEdits',
     // 「不存在 default」：每个会话起步即带一个明确模型 + effort（用户可改）。
     model: opts.model ?? defaultModel(opts.agent),
     effort: opts.effort ?? defaultEffort(opts.agent),
+    // 续聊：从预载 transcript 末尾的 assistant 记录回填 lastModel，让模型在「进会话即显」
+    // （而非等首轮回复后才由 onMsg 填上）。effort 不在 transcript 里 → 无法同样回填，
+    // 由 composer 用运行时 settings.effortLevel 兜底显示真实生效默认。
+    lastModel: lastAssistantModel(opts.preloadMsgs),
     // 续聊种子：原会话末尾上下文规模，首个 result 到达前给进度角标兜底。
     usage: opts.initialUsage,
   }) as ChatSession
@@ -374,6 +432,7 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
       session.permissionMode,
       session.model,
       eff,
+      opts.fork,
     )
     session.chatId = info.chatId
     session.processModel = info.processModel
@@ -401,17 +460,26 @@ export async function sendPrompt(
   session: ChatSession,
   text: string,
   images: ChatImageAttachment[] = [],
+  files: ChatFileAttachment[] = [],
 ): Promise<void> {
   const trimmed = text.trim()
-  if (!trimmed && images.length === 0) return
+  if (!trimmed && images.length === 0 && files.length === 0) return
   if (session.chatId === null || session.status === 'exited' || session.status === 'error') {
     return
   }
 
-  // 本地回显（与离线回看同形：image 块 + text 块）。
+  // 文件/文件夹附件以 `@"path"` 追加到发给 agent 的文本，让它自己按路径读取；
+  // 本地回显里则拆成 file 块（chip），正文仍只显示用户写的话（与离线回看同形）。
+  const refs = files.map((f) => `@"${f.path}"`).join(' ')
+  const sendText = [trimmed, refs].filter(Boolean).join(trimmed && refs ? ' ' : '')
+
+  // 本地回显（与离线回看同形：image 块 + file 块 + text 块）。
   const blocks: Block[] = []
   for (const img of images) {
     blocks.push({ kind: 'image', imageSrc: img.dataUrl, isError: false })
+  }
+  for (const f of files) {
+    blocks.push({ kind: 'file', filePath: f.path, isDir: f.isDir, isError: false })
   }
   if (trimmed) {
     blocks.push({ kind: 'text', text: trimmed, isError: false })
@@ -437,7 +505,7 @@ export async function sendPrompt(
   try {
     await api.agentChatSend(
       chatId,
-      trimmed,
+      sendText,
       images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
       session.model,
       sessionEffectiveEffort(session),
@@ -563,6 +631,57 @@ export async function interruptChat(session: ChatSession): Promise<void> {
     session.live = null
     if (session.status === 'spawning') session.status = 'running'
   } catch (err) {
+    session.status = 'error'
+    session.errorMessage = String(err)
+    endTurn(session)
+  }
+}
+
+/**
+ * `/clear`：清屏 + 重置上下文。先清空界面消息，再停掉当前 chat 进程、**不带**任何源
+ * session 重起一个全新进程（空上下文、新 session id 由 init 回填）。磁盘上的旧 transcript
+ * 不动，仍可在会话列表里续聊。两种进程模型通吃：长驻（Claude）换一个全新长驻进程；
+ * one-shot（Codex / Gemini）换一个 session_id 为空的新登记，下一轮即从零开始。
+ */
+export async function clearChat(session: ChatSession): Promise<void> {
+  // 立即视觉清屏 —— 无论后续 restart 成败，界面与上下文角标都应清零。
+  session.msgs = []
+  session.live = null
+  session.usage = undefined
+  session.retry = null
+
+  if (session.chatId === null || session.status === 'exited' || session.status === 'error') {
+    // 进程已不在：纯视觉清屏即可（没有可重置的上下文）。
+    return
+  }
+  const old = session.chatId
+  try {
+    session.suppressNextExit = true
+    sessionsByChatId.delete(old)
+    pendingByChatId.delete(old)
+    await api.agentChatStop(old)
+    const eff = sessionEffectiveEffort(session)
+    const info = await api.agentChatStart(
+      session.agent,
+      session.cwd,
+      undefined, // 不续任何会话 → 全新空上下文
+      session.permissionMode,
+      session.model,
+      eff,
+    )
+    session.chatId = info.chatId
+    session.processModel = info.processModel
+    session.applied = {
+      permissionMode: session.permissionMode,
+      model: session.model,
+      effort: eff,
+    }
+    session.sessionId = '' // 新进程的 init 会回填全新 session id
+    registerChat(info.chatId, session)
+    endTurn(session)
+    session.status = 'running'
+  } catch (err) {
+    session.suppressNextExit = false
     session.status = 'error'
     session.errorMessage = String(err)
     endTurn(session)

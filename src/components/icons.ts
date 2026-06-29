@@ -42,8 +42,16 @@ import IconFoldRaw from '~icons/lucide/chevrons-down-up'
 import IconUnfoldRaw from '~icons/lucide/chevrons-up-down'
 import IconDownloadRaw from '~icons/lucide/download'
 import IconMarkdownRaw from '~icons/lucide/file-text'
+import IconFileRaw from '~icons/lucide/file'
 import IconHtmlRaw from '~icons/lucide/file-code'
 import IconJsonRaw from '~icons/lucide/braces'
+// 文件附件 chip 的分类型图标（统一 lucide 单色，靠形状区分，不破坏中性配色）。
+import IconFileSheetRaw from '~icons/lucide/file-spreadsheet'
+import IconFileSlidesRaw from '~icons/lucide/presentation'
+import IconFileImageRaw from '~icons/lucide/file-image'
+import IconFileVideoRaw from '~icons/lucide/file-video'
+import IconFileAudioRaw from '~icons/lucide/file-audio'
+import IconFileArchiveRaw from '~icons/lucide/file-archive'
 import IconSortRaw from '~icons/lucide/arrow-down-up'
 import IconSelectRaw from '~icons/lucide/list-checks'
 import IconPlusRaw from '~icons/lucide/plus'
@@ -73,6 +81,10 @@ import IconClaudeRaw from '~icons/material-icon-theme/claude'
 import IconGeminiRaw from '~icons/material-icon-theme/gemini-ai'
 import IconKeyboardRaw from '~icons/lucide/keyboard'
 import IconSlidersRaw from '~icons/lucide/sliders-horizontal'
+import IconPaperclipRaw from '~icons/lucide/paperclip'
+import IconSlashSquareRaw from '~icons/lucide/square-slash'
+import IconSkillRaw from '~icons/lucide/box'
+import IconContextWindowRaw from '~icons/lucide/layout-grid'
 
 export const IconPinUp = IconPinUpRaw
 export const IconPinDown = IconPinDownRaw
@@ -113,6 +125,7 @@ export const IconFold = IconFoldRaw
 export const IconUnfold = IconUnfoldRaw
 export const IconDownload = IconDownloadRaw
 export const IconMarkdown = IconMarkdownRaw
+export const IconFile = IconFileRaw
 export const IconHtml = IconHtmlRaw
 export const IconJson = IconJsonRaw
 export const IconSort = IconSortRaw
@@ -144,6 +157,10 @@ export const IconEye = IconEyeRaw
 export const IconGitBranch = IconGitBranchRaw
 export const IconKeyboard = IconKeyboardRaw
 export const IconSliders = IconSlidersRaw
+export const IconPaperclip = IconPaperclipRaw
+export const IconSlashSquare = IconSlashSquareRaw
+export const IconSkill = IconSkillRaw
+export const IconContextWindow = IconContextWindowRaw
 // 「已 pin」状态的小圆点指示器；6×6 实心圆，自己拼比拉一整个集合便宜。
 import { defineComponent, h, type Component } from 'vue'
 import type { Agent } from '../types'
@@ -308,4 +325,47 @@ export const agentIcons: Record<Agent, Component> = {
   claude: IconClaudeRaw,
   codex: IconCodexRaw,
   gemini: IconGeminiRaw,
+}
+
+// ---- 文件附件按扩展名分型的图标 ----
+export const IconFileDoc = IconMarkdownRaw
+export const IconFileSheet = IconFileSheetRaw
+export const IconFileSlides = IconFileSlidesRaw
+export const IconFileImage = IconFileImageRaw
+export const IconFileVideo = IconFileVideoRaw
+export const IconFileAudio = IconFileAudioRaw
+export const IconFileArchive = IconFileArchiveRaw
+export const IconFileCode = IconHtmlRaw
+
+// 扩展名 → 图标。同类多扩展共用一个图标，未命中回落到通用 file 图标。
+const FILE_ICON_BY_EXT: Record<string, Component> = {}
+const registerFileIcon = (icon: Component, exts: string[]) => {
+  for (const e of exts) FILE_ICON_BY_EXT[e] = icon
+}
+registerFileIcon(IconMarkdownRaw, [
+  'txt', 'text', 'log', 'md', 'markdown', 'mdx', 'rtf', 'doc', 'docx', 'odt', 'pages', 'pdf',
+])
+registerFileIcon(IconFileSheetRaw, ['xls', 'xlsx', 'csv', 'tsv', 'ods', 'numbers'])
+registerFileIcon(IconFileSlidesRaw, ['ppt', 'pptx', 'odp', 'key'])
+registerFileIcon(IconFileImageRaw, [
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'heic', 'heif', 'avif', 'tiff', 'tif', 'ico', 'svg',
+])
+registerFileIcon(IconFileVideoRaw, ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'flv', 'wmv', 'mpeg', 'mpg'])
+registerFileIcon(IconFileAudioRaw, ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'opus', 'wma', 'aiff'])
+registerFileIcon(IconFileArchiveRaw, ['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'zst', 'zstd'])
+registerFileIcon(IconJsonRaw, ['json', 'jsonc', 'json5'])
+registerFileIcon(IconHtmlRaw, [
+  'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'vue', 'svelte', 'py', 'rb', 'php', 'go', 'rs',
+  'java', 'kt', 'kts', 'c', 'h', 'cpp', 'cc', 'cxx', 'hpp', 'cs', 'swift', 'dart', 'scala',
+  'sh', 'bash', 'zsh', 'sql', 'html', 'htm', 'css', 'scss', 'sass', 'less', 'xml',
+  'yaml', 'yml', 'toml', 'ini',
+])
+
+/** 取文件名末段扩展名对应的图标；无扩展名（含 `.gitignore` 这类无后缀点文件）回落到通用图标。 */
+export function fileIconFor(path: string): Component {
+  const name = path.replace(/[/\\]+$/, '')
+  const slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'))
+  const dot = name.lastIndexOf('.')
+  if (dot <= slash + 1) return IconFileRaw
+  return FILE_ICON_BY_EXT[name.slice(dot + 1).toLowerCase()] ?? IconFileRaw
 }

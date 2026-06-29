@@ -106,6 +106,20 @@ function hide() {
   tipEl?.classList.remove('is-visible')
 }
 
+// 程序化触发：用于 v-html 动态生成、挂不上指令的元素（如聊天气泡里的命令 token）。
+// 复用同一个单例 tip 节点与 250ms 延迟；hideTooltip 收起。
+export function showTooltipFor(el: HTMLElement, text: string) {
+  if (!text) return
+  activeEl = el
+  if (showTimer) clearTimeout(showTimer)
+  showTimer = window.setTimeout(() => {
+    if (activeEl === el) showFor(el, text, 'auto')
+  }, 250)
+}
+export function hideTooltip() {
+  hide()
+}
+
 function bind(el: HTMLElement, text: string, placement: Placement) {
   const data: BindData = {
     text,

@@ -665,6 +665,51 @@ fn agent_message_phase(payload: &Value) -> Option<&str> {
     payload.get("phase").and_then(Value::as_str)
 }
 
+/// Codex Desktop 用户带文件提问时，message 文本是一段固定结构（见 rollout JSONL 原文）：
+///
+/// ```text
+/// # Files mentioned by the user:
+///
+/// ## devtools_options.yaml: /abs/path/devtools_options.yaml
+///
+/// ## My request for Codex:
+/// hi
+/// ```
+///
+/// 把每个 `## <name>: <path>` 抽成 `file` 块（点击外部打开），正文换成 `## My request for
+/// Codex:` 之后的真实请求。没有这个结构就原样返回（文件块为空）。
+fn extract_codex_files(text: &str) -> (Vec<Block>, String) {
+    const HEADER: &str = "# Files mentioned by the user:";
+    const REQUEST: &str = "## My request for Codex:";
+    let (Some(hidx), Some(ridx)) = (text.find(HEADER), text.find(REQUEST)) else {
+        return (Vec::new(), text.to_string());
+    };
+    if ridx < hidx {
+        return (Vec::new(), text.to_string());
+    }
+    let mut files = Vec::new();
+    for line in text[hidx + HEADER.len()..ridx].lines() {
+        let Some(rest) = line.trim().strip_prefix("## ") else {
+            continue;
+        };
+        // `<name>: <path>` —— 取第一个 `: ` 之后的整段当 path（name 即 basename，一般不含冒号）。
+        if let Some((_, path)) = rest.split_once(": ") {
+            let path = path.trim();
+            if !path.is_empty() {
+                files.push(Block {
+                    kind: "file".to_string(),
+                    file_path: Some(path.to_string()),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    if files.is_empty() {
+        return (Vec::new(), text.to_string());
+    }
+    (files, text[ridx + REQUEST.len()..].trim().to_string())
+}
+
 fn user_message_has_content(payload: &Value) -> bool {
     payload
         .get("message")
@@ -786,7 +831,9 @@ fn scan(
             }
             if first_user_title.is_empty() && pt == "user_message" {
                 if let Some(msg) = p.get("message").and_then(|x| x.as_str()) {
-                    let clean = clean_title(msg);
+                    // 带文件提问时标题取真实请求，而非「# Files mentioned…」文件头。
+                    let (_, body) = extract_codex_files(msg);
+                    let clean = clean_title(&body);
                     if !clean.is_empty() {
                         first_user_title = clean;
                     }
@@ -908,15 +955,19 @@ fn read_with_title_index(
             }
             ("event_msg", "user_message") => {
                 let text = p.get("message").and_then(|x| x.as_str()).unwrap_or("");
+                // 带文件提问的 message 是「# Files mentioned…」固定结构：抽出 file 块，
+                // 正文换成真实请求（标题也用真实请求，别把文件头当标题）。
+                let (file_blocks, body) = extract_codex_files(text);
                 let mut blocks: Vec<Block> = std::mem::take(&mut pending_user_images);
                 if first_user_title.is_empty() {
-                    let clean = clean_title(text);
+                    let clean = clean_title(&body);
                     if !clean.is_empty() {
                         first_user_title = clean;
                     }
                 }
-                if !text.trim().is_empty() {
-                    blocks.push(text_block("text", text));
+                blocks.extend(file_blocks);
+                if !body.trim().is_empty() {
+                    blocks.push(text_block("text", &body));
                 }
                 if !blocks.is_empty() {
                     msgs.push(Msg {
@@ -1849,6 +1900,36 @@ fn read_codex_total_usage(t: &Value) -> UsageSummary {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn codex_files_mentioned_block_extracts_files_and_request() {
+        let text = "\n# Files mentioned by the user:\n\n## devtools_options.yaml: /Users/wuchao/develop/flutter/sales-app/devtools_options.yaml\n\n## My request for Codex:\nhi\n";
+        let (files, body) = extract_codex_files(text);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].kind, "file");
+        assert_eq!(
+            files[0].file_path.as_deref(),
+            Some("/Users/wuchao/develop/flutter/sales-app/devtools_options.yaml")
+        );
+        assert_eq!(body, "hi");
+    }
+
+    #[test]
+    fn codex_files_mentioned_multiple_files() {
+        let text = "# Files mentioned by the user:\n\n## a.yaml: /p/a.yaml\n## b.json: /p/b.json\n\n## My request for Codex:\ncompare them\n";
+        let (files, body) = extract_codex_files(text);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].file_path.as_deref(), Some("/p/a.yaml"));
+        assert_eq!(files[1].file_path.as_deref(), Some("/p/b.json"));
+        assert_eq!(body, "compare them");
+    }
+
+    #[test]
+    fn codex_plain_message_untouched() {
+        let (files, body) = extract_codex_files("just a normal question\n");
+        assert!(files.is_empty());
+        assert_eq!(body, "just a normal question\n");
+    }
 
     fn write_temp(name: &str, lines: &[&str]) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join("csv-codex-usage-tests");

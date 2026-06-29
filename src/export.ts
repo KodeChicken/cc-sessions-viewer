@@ -212,6 +212,8 @@ function blockToMd(b: Block, ctx: { resultByToolId: Map<string, Block>; inlinedI
     }
     case 'image':
       return b.imageSrc ? `![image](${b.imageSrc})` : ''
+    case 'file':
+      return b.filePath ? `📎 [${b.filePath.split(/[/\\]/).pop() || b.filePath}](${b.filePath})` : ''
     default:
       return ''
   }
@@ -1247,6 +1249,10 @@ function blockToHtml(
       // runtime 从同一条消息的 .msg-images 里取出整组图片，可左右翻看。
       return b.imageSrc
         ? `<img src="${escapeHtml(b.imageSrc)}" alt="" class="msg-image" onclick="window.__csvLightbox&amp;&amp;window.__csvLightbox(this)">`
+        : ''
+    case 'file':
+      return b.filePath
+        ? `<div class="msg-file">📎 ${escapeHtml(b.filePath.split(/[/\\]/).pop() || b.filePath)}</div>`
         : ''
     default:
       return ''

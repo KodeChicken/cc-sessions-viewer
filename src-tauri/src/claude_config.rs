@@ -45,6 +45,12 @@ pub fn runtime_info() -> Result<ClaudeRuntimeInfo, String> {
             fable: alias_target(env, "FABLE"),
         },
         api_key_source: guess_api_key_source(&settings, env),
+        effort_level: settings
+            .get("effortLevel")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     })
 }
 

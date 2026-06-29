@@ -256,6 +256,24 @@ fn rename_session(agent: String, path: String, name: String) -> Result<(), Strin
     agents::source(&agent)?.rename_session(&fp, &name)
 }
 
+/// `/fork`：把既有会话克隆成一个全新、独立的磁盘 transcript（新 session id），打上 `title`，
+/// 返回新 session id。`source_id` 会被插进文件名 → 用与 resume 同款 `[A-Za-z0-9-]+` 白名单
+/// 拦掉路径穿越。仅 Claude 实现派生语义，其它 agent 经 trait 默认实现报错。
+#[tauri::command]
+fn fork_session(
+    agent: String,
+    project_key: String,
+    source_id: String,
+    title: String,
+) -> Result<String, String> {
+    if source_id.is_empty()
+        || !source_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("Invalid session ID".to_string());
+    }
+    agents::source(&agent)?.fork_session(&project_key, &source_id, &title)
+}
+
 #[tauri::command]
 fn soft_delete_session(agent: String, path: String, project_label: String) -> Result<(), String> {
     trash::soft_delete(&agent, &path, &project_label)
@@ -384,6 +402,7 @@ fn valid_permission_mode(mode: &str) -> bool {
 /// 会话；`permission_mode` / `model` / `effort` 走校验后透传给 CLI（默认 acceptEdits，
 /// model/effort 为空走 CLI 自身默认）。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn agent_chat_start(
     app: tauri::AppHandle,
     agent: String,
@@ -392,6 +411,7 @@ fn agent_chat_start(
     permission_mode: Option<String>,
     model: Option<String>,
     effort: Option<String>,
+    fork: Option<bool>,
 ) -> Result<crate::types::ChatStartInfo, String> {
     if !Path::new(&cwd).is_dir() {
         return Err("Project directory no longer exists".to_string());
@@ -418,7 +438,16 @@ fn agent_chat_start(
     }
     // 进程模型在 start 移走 agent 之前算（前端据此决定切设置走 restart 还是下轮 flag）。
     let process_model = agents::source(&agent)?.chat_process_model().as_str().to_string();
-    let chat_id = agent_chat::start(app, agent, cwd, session_id, mode, model, effort)?;
+    let chat_id = agent_chat::start(
+        app,
+        agent,
+        cwd,
+        session_id,
+        mode,
+        model,
+        effort,
+        fork.unwrap_or(false),
+    )?;
     Ok(crate::types::ChatStartInfo { chat_id, process_model })
 }
 
@@ -916,6 +945,242 @@ fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// macOS 上这些扩展名默认会被 Xcode 接管，按「文本方式」（`open -t` → 默认文本编辑器）打开更合适。
+#[cfg(target_os = "macos")]
+fn opens_as_text(p: &Path) -> bool {
+    matches!(
+        p.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("md" | "markdown" | "mdx")
+    )
+}
+
+/// 给定 app 内 CLI 的相对 bundle 路径（如 `Cursor.app/Contents/Resources/app/bin/cursor`），
+/// 展开成 `/Applications` 与 `~/Applications` 两个候选绝对路径。GUI 进程 PATH 很薄，裸命令名
+/// 往往找不到，所以直接查 bundle 里的固定 CLI 路径最可靠。
+#[cfg(target_os = "macos")]
+fn bundle_bins(rel: &str) -> Vec<String> {
+    let mut v = vec![format!("/Applications/{rel}")];
+    if let Some(home) = std::env::var_os("HOME") {
+        v.push(format!("{}/Applications/{rel}", home.to_string_lossy()));
+    }
+    v
+}
+
+/// 源码 / 文本类文件点击时优先用「代码编辑器」打开 —— 而不是 macOS 默认那个（如 `.dart` 默认会被
+/// Xcode 接管，又重又不对路）。pdf / 图片 / office / 压缩包等仍交给各自默认程序；无扩展名（含目录、
+/// `Dockerfile` 这类）也走默认，交给 `open`。
+fn wants_editor(p: &Path) -> bool {
+    let ext = match p.extension().and_then(|e| e.to_str()) {
+        Some(e) => e.to_ascii_lowercase(),
+        None => return false,
+    };
+    matches!(
+        ext.as_str(),
+        // 代码
+        "dart" | "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "vue" | "svelte"
+            | "py" | "go" | "java" | "kt" | "kts" | "swift" | "m" | "mm" | "c" | "h"
+            | "cc" | "cpp" | "cxx" | "hpp" | "hh" | "cs" | "rb" | "php" | "scala"
+            | "sh" | "bash" | "zsh" | "fish" | "ps1" | "lua" | "pl" | "r" | "sql"
+            | "gradle" | "groovy"
+            // 标记 / 配置 / 文本
+            | "md" | "markdown" | "mdx" | "txt" | "json" | "jsonc" | "yaml" | "yml"
+            | "toml" | "ini" | "cfg" | "conf" | "env" | "properties" | "xml" | "html"
+            | "htm" | "css" | "scss" | "sass" | "less" | "csv" | "log"
+    )
+}
+
+/// 用「代码编辑器」打开 `p`，有 `line`（可选 `col`）就定位到对应行。按常见度探测已装的编辑器，
+/// 用第一个装了的：
+///   - Trae（含国内版）/ VS Code / Cursor / Windsurf / VSCodium（VS Code 系）：CLI `-g file[:line[:col]]`，可跳行
+///   - Zed / Sublime Text：CLI `file[:line[:col]]`，可跳行
+///   - JetBrains（Android Studio / IntelliJ 系）：`open -a <bundle> <file>`，可靠打开但不跳行
+///
+/// 一个都没装 → 返回 `false`，调用方退回系统 `open`（用默认程序打开，不跳行）。
+///
+/// ⚠️ JetBrains 必须走 `open -a`，**绝不能**直接 exec 它的 `Contents/MacOS/<ide>` 主二进制：那不是
+/// CLI，是 App 本体，直接跑会卡在单实例锁上 100% CPU 狂转、变成永不退出的僵尸进程（已踩坑）。
+/// VS Code 系 / Zed / Sublime 的 `bin/*` 才是正经 CLI 包装器（连上 App 即退出），可以直接 spawn。
+#[cfg(target_os = "macos")]
+fn open_in_editor(p: &Path, line: Option<u32>, col: Option<u32>) -> bool {
+    use std::process::Command;
+    let file = p.to_string_lossy().into_owned();
+    // `file:line:col` 形式（VS Code 系 / Zed / Sublime）；没行号就是裸路径。
+    let goto = match (line, col) {
+        (Some(l), Some(c)) => format!("{file}:{l}:{c}"),
+        (Some(l), None) => format!("{file}:{l}"),
+        (None, _) => file.clone(),
+    };
+    // VS Code 系用 `-g`；Zed / Sublime 直接吃 `file:line:col`。
+    let code_args = match line {
+        Some(_) => vec!["-g".to_string(), goto.clone()],
+        None => vec![goto.clone()],
+    };
+
+    // ① 命令行工具型编辑器：bundle 里的 CLI（连上 App 后立即退出，安全）。Trae 放最前 —— 用户主力。
+    let mut trae = bundle_bins("Trae.app/Contents/Resources/app/bin/trae");
+    trae.extend(bundle_bins("Trae CN.app/Contents/Resources/app/bin/trae-cn"));
+    trae.extend(bundle_bins("Trae CN.app/Contents/Resources/app/bin/trae"));
+    let cli_editors: Vec<(Vec<String>, Vec<String>)> = vec![
+        (trae, code_args.clone()),
+        (bundle_bins("Visual Studio Code.app/Contents/Resources/app/bin/code"), code_args.clone()),
+        (bundle_bins("Cursor.app/Contents/Resources/app/bin/cursor"), code_args.clone()),
+        (bundle_bins("Windsurf.app/Contents/Resources/app/bin/windsurf"), code_args.clone()),
+        (bundle_bins("VSCodium.app/Contents/Resources/app/bin/codium"), code_args.clone()),
+        (bundle_bins("Zed.app/Contents/MacOS/cli"), vec![goto.clone()]),
+        (bundle_bins("Sublime Text.app/Contents/SharedSupport/bin/subl"), vec![goto.clone()]),
+    ];
+    for (bins, args) in &cli_editors {
+        if let Some(bin) = bins.iter().find(|b| Path::new(b).exists()) {
+            if Command::new(bin).args(args).spawn().is_ok() {
+                return true;
+            }
+        }
+    }
+
+    // ② JetBrains 系：用 `open -a <bundle> <file>` 交给 LaunchServices（可靠、不会狂转 CPU），但
+    //    不支持跳行 —— 见上面 ⚠️。
+    for app in ["Android Studio.app", "IntelliJ IDEA.app"] {
+        if let Some(bundle) = bundle_bins(app).into_iter().find(|b| Path::new(b).exists()) {
+            if Command::new("open").arg("-a").arg(&bundle).arg(&file).spawn().is_ok() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 打开一个本地文件（聊天里 `@文件` / 文件引用 / Codex 文件附件的点击）。相对 / 部分路径按会话
+/// `cwd` 解析。源码 / 文本类文件优先用代码编辑器打开（见 `wants_editor` / `open_in_editor`），
+/// 避开 macOS 把 `.dart` 等交给 Xcode 的默认行为；传了 `line`（可选 `col`）还会跳到对应行。
+/// 其它文件（pdf/图片/office…）及没装编辑器时，交给系统默认程序。只 spawn 进程、不经 shell，避免注入。
+#[tauri::command]
+fn open_path_external(
+    path: String,
+    cwd: Option<String>,
+    line: Option<u32>,
+    col: Option<u32>,
+) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("Empty path".to_string());
+    }
+    let mut p = PathBuf::from(&path);
+    if p.is_relative() {
+        if let Some(base) = cwd.as_deref().filter(|c| !c.is_empty()) {
+            p = Path::new(base).join(&p);
+        }
+    }
+    if !p.exists() {
+        // 聊天里点的「文件引用」常是部分路径（如 `bank/refund_detail.dart`），直接拼 cwd 找不到。
+        // 在项目树里按目录段后缀搜真身（`lib/pages/wallet/bank/refund_detail.dart`）。
+        if let Some(found) = cwd
+            .as_deref()
+            .filter(|c| !c.is_empty())
+            .and_then(|base| util::resolve_file_ref(base, &path))
+        {
+            p = found;
+        }
+    }
+    if !p.exists() {
+        return Err(format!("File not found: {}", p.to_string_lossy()));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (line, col); // 编辑器优先 / 跳行目前仅 macOS 实现；其它平台仅用默认程序打开。
+    #[cfg(target_os = "macos")]
+    {
+        // 源码 / 文本类文件 → 优先用代码编辑器打开（有行号则跳到该行），避开默认把 .dart 等交给
+        // Xcode 的行为。装了任一编辑器就到此为止；都没装才落回下面的系统 open。
+        if wants_editor(&p) && open_in_editor(&p, line, col) {
+            return Ok(());
+        }
+        // 没有可用编辑器时的兜底：.md 等纯文本用 `open -t` 走 LaunchServices 注册的默认文本编辑器
+        // （一般 TextEdit），避开 Xcode；其它（xlsx/pdf/docx…）仍交给各自的默认程序。
+        let mut cmd = std::process::Command::new("open");
+        if opens_as_text(&p) {
+            cmd.arg("-t");
+        }
+        cmd.arg(&p)
+            .spawn()
+            .map_err(|e| format!("Failed to open file: {e}"))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // start 需要一个空标题占位，否则带空格的路径会被当成窗口标题。
+        std::process::Command::new("cmd")
+            .args(["/c", "start", ""])
+            .arg(&p)
+            .spawn()
+            .map_err(|e| format!("Failed to open file: {e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&p)
+            .spawn()
+            .map_err(|e| format!("Failed to open file: {e}"))?;
+    }
+    Ok(())
+}
+
+/// 系统图片选择器给的是路径而非字节（没装 fs 插件），这里按路径读出来编成 base64，
+/// 前端拿去做缩略图 + 视觉块（与粘贴/拖拽的图片同形）。仅用于图片附件。
+#[tauri::command]
+fn read_file_base64(path: String) -> Result<crate::types::ChatImageInput, String> {
+    use base64::Engine as _;
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err(format!("File not found: {}", p.to_string_lossy()));
+    }
+    let bytes = std::fs::read(&p).map_err(|e| format!("Failed to read file: {e}"))?;
+    Ok(crate::types::ChatImageInput {
+        media_type: image_mime_from_ext(&p),
+        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+    })
+}
+
+/// GUI chat 附件：判断一个本地路径是否是目录。拖拽到输入框的路径可能是文件也可能是
+/// 文件夹，前端据此决定 chip 用文件夹图标 +「打开文件夹」还是文件图标 +「打开文件」。
+#[tauri::command]
+fn path_is_dir(path: String) -> bool {
+    Path::new(&path).is_dir()
+}
+
+/// chat 头部展示用：会话 `cwd` 所在仓库的当前分支名（无仓库 / 读不到 → None）。
+#[tauri::command]
+fn git_current_branch(cwd: String) -> Option<String> {
+    util::git_current_branch(&cwd)
+}
+
+/// GUI chat 输入框 `@` 文件浮层：列出会话 `cwd` 下的目录/文件（相对路径）。`query` 空 →
+/// 顶层直接子项；非空 → 递归子串匹配。详见 `util::list_project_files`。
+#[tauri::command]
+fn list_project_files(
+    cwd: String,
+    query: String,
+    limit: usize,
+) -> Vec<crate::types::ProjectFileEntry> {
+    util::list_project_files(&cwd, &query, limit)
+}
+
+/// 由扩展名推断图片 MIME；未知回落到通用二进制类型。
+fn image_mime_from_ext(p: &Path) -> String {
+    match p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
 fn path_env_candidates() -> Vec<PathBuf> {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).collect())
@@ -1190,6 +1455,7 @@ pub fn run() {
             search_sessions,
             cancel_search,
             rename_session,
+            fork_session,
             soft_delete_session,
             list_trash,
             restore_session,
@@ -1212,6 +1478,11 @@ pub fn run() {
             reveal_in_finder,
             open_local_path,
             open_url,
+            open_path_external,
+            read_file_base64,
+            path_is_dir,
+            git_current_branch,
+            list_project_files,
             write_file,
             set_titlebar_theme,
             add_bookmark,

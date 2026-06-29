@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, defineAsyncComponent } from 'vue'
 import type { Agent, Msg, SessionMeta, Block } from '../types'
-import { renderText, formatTime, isCaveatOnlyMsg, parseSystemEvent, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage, stripImagePlaceholders } from '../format'
+import { renderText, formatTime, isCaveatOnlyMsg, parseSystemEvent, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage, stripImagePlaceholders, parseFileRef } from '../format'
 import type { MetaField } from '../format'
 import { prettifyAndHighlightJson } from '../jsonHighlight'
 import { renderAllMermaid, resetMermaidForTheme } from '../mermaid'
@@ -11,7 +11,10 @@ import { theme } from '../settings'
 import { t } from '../i18n'
 import ToolResult from '../components/ToolResult.vue'
 import CollapsibleBox from '../components/CollapsibleBox.vue'
-import VueEasyLightbox from 'vue-easy-lightbox'
+import ContextWindowCard from '../components/ContextWindowCard.vue'
+import { parseContextUsage, type ContextUsage } from '../contextUsage'
+// 图片灯箱只在点开预览时用 —— 懒加载，不进首屏（vue-easy-lightbox 不算大但能省一点）。
+const VueEasyLightbox = defineAsyncComponent(() => import('vue-easy-lightbox'))
 import { highlightDiff, looksLikeDiff } from '../diffHighlight'
 import { renderCodexApplyPatchHtml } from '../codexApplyPatch'
 import {
@@ -48,10 +51,16 @@ import {
   IconChat,
   IconReader,
   IconStar,
+  IconStop,
+  IconGitBranch,
+  fileIconFor,
   agentIcons,
 } from '../components/icons'
 import ChatComposer from '../components/ChatComposer.vue'
-import { now as chatNow, type ChatSession } from '../chatSessions'
+import { now as chatNow, interruptChat, type ChatSession } from '../chatSessions'
+import { openPathExternal, agentChatSlashCommands } from '../api'
+import { useGitBranch } from '../gitBranch'
+import { showTooltipFor, hideTooltip } from '../tooltip'
 
 const props = defineProps<{
   agent: Agent
@@ -85,6 +94,8 @@ defineEmits<{
   /** live chat 头部：切回来源会话的只读详情（read 模式），进程不停。 */
   switchToRead: []
   rename: []
+  /** `/fork` 指令：把当前 live chat clone 成独立新会话并切过去（仅 live 模式、Claude）。 */
+  fork: []
   reveal: []
   copyId: []
   exportMd: []
@@ -104,6 +115,21 @@ const runningElapsedSec = computed(() => {
   if (!s || s.turnState !== 'running') return 0
   return Math.max(0, Math.floor((chatNow.value - s.turnStartedAt) / 1000))
 })
+/** 进行中状态动词：网络重试时 → 「请求失败 · 重试中 (n/N)」；流式 thinking → 「思考中」；
+ *  否则「处理中」（参考 Claude 客户端）。 */
+const runningVerb = computed(() => {
+  const r = props.liveSession?.retry
+  if (r) {
+    return r.attempt && r.max
+      ? t('chat.running.retryingN', { n: r.attempt, max: r.max })
+      : t('chat.running.retrying')
+  }
+  return props.liveSession?.live?.kind === 'thinking' ? t('chat.running.thinking') : t('chat.running.working')
+})
+
+// 头部分支展示：会话 cwd 所在仓库的当前 git 分支（共用 useGitBranch，与 ChatComposer 底栏一致）。
+// cwd 取 props.cwd（resume 用的工作目录）兜 session.cwd（解析出的会话工作目录）。
+const gitBranch = useGitBranch(() => props.cwd || props.session.cwd)
 
 function toggleTools() {
   toolsCollapsed.value = !toolsCollapsed.value
@@ -291,10 +317,114 @@ function imageBlocks(m: Msg): Block[] {
 function bubbleText(m: Msg, raw: string): string {
   return imageBlocks(m).length ? stripImagePlaceholders(raw) : raw
 }
-// 气泡是否还有非图片正文 —— 纯图片消息不渲染空灰泡，只留上方缩略图。
+// 用户消息以 /命令 开头时，把开头那段 /token 标蓝（对齐输入框命令高亮 + 官方客户端渲染）。
+// 只处理开头：renderText 把首段文本包成 <div class="text-run">，正则只命中首段开头的 /token
+// （[^\s<]+ 到空白或下一个标签为止），不碰正文里别处的斜杠；非 / 开头的消息原样返回。
+function renderBubble(m: Msg, raw: string): string {
+  const text = bubbleText(m, raw)
+  let html = renderText(text)
+  if (m.role === 'user' && /^\/\S/.test(text)) {
+    html = html.replace(
+      /(<div class="text-run">)(\/[^\s<]+)/,
+      '$1<span class="cmd-name">$2</span>',
+    )
+  }
+  return injectCmdDesc(html)
+}
+
+// ---- 命令描述：hover 蓝色命令 token 时显示其描述 ----
+// 描述来自扫描当前项目可用的 commands/skills（与输入框 slash 列表同源；codex/gemini 暂为空）。
+// 内置命令（/config、/clear 等）不在扫描列表里 → 无描述、hover 即无提示。
+const cmdDesc = ref<Record<string, string>>({})
+async function loadCmdDescriptions() {
+  const cwd = props.cwd || props.session.cwd || ''
+  try {
+    const list = await agentChatSlashCommands(props.agent, cwd)
+    const map: Record<string, string> = {}
+    for (const c of list) if (c.description) map[c.name] = c.description
+    cmdDesc.value = map
+  } catch {
+    cmdDesc.value = {}
+  }
+}
+watch(
+  () => [props.agent, props.cwd, props.session.path],
+  () => void loadCmdDescriptions(),
+  { immediate: true },
+)
+// 给已识别命令的 cmd-name 注入 data-cmd-desc（hover 读它显示 tip）。覆盖 <code>（转录
+// <command-name>）与 <span>（纯文本开头 token）两种载体；无描述的不加。读 cmdDesc 建立响应依赖，
+// 描述异步加载完后气泡自动重渲染。
+function injectCmdDesc(html: string): string {
+  const map = cmdDesc.value
+  if (!html.includes('cmd-name') || !Object.keys(map).length) return html
+  return html.replace(
+    /<(code|span)([^>]*\bcmd-name\b[^>]*)>(\/[^<\s]+)<\/\1>/g,
+    (full, tag, attrs, name) => {
+      const desc = map[name.slice(1)]
+      return desc ? `<${tag}${attrs} data-cmd-desc="${escapeAttr(desc)}">${name}</${tag}>` : full
+    },
+  )
+}
+function escapeAttr(s: string): string {
+  const t = s.length > 200 ? s.slice(0, 200) + '…' : s
+  return t
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+// ---- 文件附件：文件 chip 浮在气泡上方（参考目标样式），点击用系统默认程序打开 ----
+// 栅格图扩展名：这类附件已作为缩略图展示，同条消息里不再重复出文件 chip。
+const IMAGE_CHIP_EXTS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'heic', 'heif', 'avif', 'tiff', 'ico',
+])
+function isImagePath(path: string): boolean {
+  return IMAGE_CHIP_EXTS.has(path.split('.').pop()?.toLowerCase() ?? '')
+}
+function fileBlocks(m: Msg): Block[] {
+  // 同条消息已有图片缩略图时，跳过图片类文件 chip —— 避免和上方缩略图重复（如 Codex 的
+  // 「Files mentioned」会把贴的图也列进文件清单，Claude 贴图同理）。
+  const hasThumbs = m.blocks.some((b) => b.kind === 'image' && b.imageSrc)
+  return m.blocks.filter(
+    (b) => b.kind === 'file' && b.filePath && !(hasThumbs && isImagePath(b.filePath)),
+  )
+}
+// 文件名 = 路径 basename（兼容 `/` 与 `\`）；空则回退整段路径。
+function fileName(path: string): string {
+  const norm = path.replace(/[/\\]+$/, '')
+  const base = norm.split(/[/\\]/).pop() ?? ''
+  return base || path
+}
+function openFile(b: Block) {
+  if (!b.filePath) return
+  // 相对路径按会话 cwd 解析；后端校验存在性并用系统默认程序打开。
+  void openPathExternal(b.filePath, props.session?.cwd).catch((e) => {
+    console.warn('[chat] open file failed:', e)
+  })
+}
+
+// `/context` 报告（`## Context Usage` markdown）有两条来源：① live stream —— 一条
+// assistant 消息（model `<synthetic>`），正文是裸 markdown；② 刷新/离线回看 —— 落盘的
+// system/local_command 记录被还原成 command-output 折叠块，正文外面包着 <local-command-stdout>。
+// 两者都先经 cleanMetaText 去壳（裸文本则原样返回），命中 `## Context Usage` 就升级成可折叠的
+// ContextWindowCard。先用 startsWith 廉价过滤，再 parseContextUsage 严格确认；按文本缓存避免重解析。
+const ctxUsageCache = new Map<string, ContextUsage | null>()
+function contextUsageOf(m: Msg): ContextUsage | null {
+  if (m.role !== 'assistant' && m.metaKind !== 'command-output') return null
+  // 廉价子串过滤在前（每行 class 绑定都会调本函数）；命中的极少数块才去壳 + 严格确认结构。
+  const b = m.blocks.find((x) => x.kind === 'text' && x.text && x.text.includes('## Context Usage'))
+  if (!b?.text) return null
+  const txt = cleanMetaText(b.text)
+  if (!txt.startsWith('## Context Usage')) return null
+  if (!ctxUsageCache.has(txt)) ctxUsageCache.set(txt, parseContextUsage(txt))
+  return ctxUsageCache.get(txt)!
+}
+
+// 气泡是否还有非图片 / 非文件正文 —— 纯图片 / 纯文件消息不渲染空灰泡，只留上方缩略图 / chip。
 function hasBubbleBody(m: Msg): boolean {
   return m.blocks.some((b) => {
-    if (b.kind === 'image') return false
+    if (b.kind === 'image' || b.kind === 'file') return false
     if (b.kind === 'text') return bubbleText(m, b.text ?? '').trim().length > 0
     return true
   })
@@ -731,13 +861,53 @@ function onScroll() {
     updateEdges()
   })
 }
+// 悬浮 tip：事件委托挂在滚动容器上（v-html 动态节点挂不上指令）。两类目标共用：
+// 命令 token（.cmd-name，描述来自 data-cmd-desc）与文件引用（.file-ref，固定提示「打开文件」）。
+// 只在「进入新目标」时触发，避免在同一元素内移动反复重置延时。
+let cmdHoverEl: HTMLElement | null = null
+function onCmdOver(e: MouseEvent) {
+  const el = (e.target as HTMLElement)?.closest?.(
+    '.cmd-name[data-cmd-desc], .file-ref[data-file-ref]',
+  ) as HTMLElement | null
+  if (el === cmdHoverEl) return
+  cmdHoverEl = el
+  if (!el) {
+    hideTooltip()
+    return
+  }
+  showTooltipFor(el, el.dataset.cmdDesc != null ? el.dataset.cmdDesc || '' : t('chat.file.open'))
+}
+function onCmdLeave() {
+  cmdHoverEl = null
+  hideTooltip()
+}
+
+// 文件引用 code（形如 a/b.ts:12，见 format.ts 的 .file-ref）点击：在外部编辑器打开。
+// 相对 / 部分路径按会话 cwd 解析；末尾 :行[:列] 拆出来传给后端 —— 装了支持跳行的编辑器就跳到该行。
+function onContentClick(e: MouseEvent) {
+  const el = (e.target as HTMLElement)?.closest?.('.file-ref[data-file-ref]') as HTMLElement | null
+  if (!el) return
+  const raw = el.dataset.fileRef || ''
+  if (!raw) return
+  e.preventDefault()
+  const { path, line, col } = parseFileRef(raw)
+  void openPathExternal(path, props.cwd || props.session?.cwd, line, col).catch((err) => {
+    console.warn('[chat] open file ref failed:', err)
+  })
+}
 onMounted(() => {
   scrollEl.value?.addEventListener('scroll', onScroll, { passive: true })
+  scrollEl.value?.addEventListener('mouseover', onCmdOver)
+  scrollEl.value?.addEventListener('mouseleave', onCmdLeave)
+  scrollEl.value?.addEventListener('click', onContentClick)
   // 内容渲染完再算一次（长消息列表挂载后 scrollHeight 才稳定）
   requestAnimationFrame(updateEdges)
 })
 onUnmounted(() => {
   scrollEl.value?.removeEventListener('scroll', onScroll)
+  scrollEl.value?.removeEventListener('mouseover', onCmdOver)
+  scrollEl.value?.removeEventListener('mouseleave', onCmdLeave)
+  scrollEl.value?.removeEventListener('click', onContentClick)
   if (rafEdge) cancelAnimationFrame(rafEdge)
   cancelScroll()
   cancelFlashStick()
@@ -1002,6 +1172,11 @@ function toggleExportMenu(e: Event) {
   exportMenuOpen.value = !exportMenuOpen.value
   locateMenuOpen.value = false
 }
+// composer 的 `/model`/`/export` 等客户端指令：`/export` 展开右上角导出下拉（与点导出按钮等效）。
+function openExportFromComposer() {
+  exportMenuOpen.value = true
+  locateMenuOpen.value = false
+}
 
 // ---- 定位下拉：列出所有用户提问，点击跳转到对应消息。
 const locateMenuOpen = ref(false)
@@ -1115,6 +1290,10 @@ function onDocClick(e: MouseEvent) {
           >
             <IconCopy />
           </button>
+        </span>
+        <span v-if="gitBranch" class="git-branch" v-tooltip="t('chat.branch') + ': ' + gitBranch">
+          <IconGitBranch class="git-branch-ic" />
+          <span class="git-branch-name">{{ gitBranch }}</span>
         </span>
       </div>
     </div>
@@ -1285,7 +1464,7 @@ function onDocClick(e: MouseEvent) {
     </button>
   </div>
 
-  <div ref="scrollEl" class="chat-scroll">
+  <div ref="scrollEl" class="chat-scroll" :class="{ 'has-composer': !!liveSession }">
     <div ref="innerEl" class="chat-inner">
       <div
         v-for="(m, i) in messages"
@@ -1293,7 +1472,7 @@ function onDocClick(e: MouseEvent) {
         v-show="rowHasContent(m) && (!isHidden(m, i) || showHidden)"
         class="msg-row"
         :class="[
-          systemEventLabel(m) ? 'system' : m.metaKind ? 'meta' : isToolOnly(m) ? 'tool-only' : m.role,
+          contextUsageOf(m) ? 'assistant' : systemEventLabel(m) ? 'system' : m.metaKind ? 'meta' : isToolOnly(m) ? 'tool-only' : m.role,
           { 'msg-flash': flashIdx === i, 'msg-hidden': isHidden(m, i) && showHidden, 'row-active': hoveredKey === msgKey(m, i) },
         ]"
         :data-search-scope="rowScope(m)"
@@ -1302,9 +1481,13 @@ function onDocClick(e: MouseEvent) {
         @mouseenter="hoveredKey = msgKey(m, i)"
         @mouseleave="hoveredKey === msgKey(m, i) && (hoveredKey = null)"
       >
+        <!-- /context 的可视化面板：放在最前，无论它来自 live 的 assistant 消息还是离线回看的
+             command-output 落盘记录，都升级成可折叠卡片（而非灰泡里的原始 markdown 表 / 命令输出框）。 -->
+        <ContextWindowCard v-if="contextUsageOf(m)" :usage="contextUsageOf(m)!" />
+
         <!-- System events (e.g. /rename) render as a small centered line,
              not a "Me" bubble — they're meta facts, not user prose. -->
-        <div v-if="systemEventLabel(m)" class="system-event">
+        <div v-else-if="systemEventLabel(m)" class="system-event">
           {{ systemEventLabel(m) }}
         </div>
 
@@ -1365,6 +1548,21 @@ function onDocClick(e: MouseEvent) {
             </button>
           </div>
 
+          <!-- 文件附件 chip：浮在气泡上方，点击用系统默认程序外部打开。 -->
+          <div v-if="fileBlocks(m).length" class="msg-files">
+            <button
+              v-for="(b, bi) in fileBlocks(m)"
+              :key="'file' + bi"
+              type="button"
+              class="msg-file-chip"
+              v-tooltip="b.isDir ? t('chat.folder.open') : t('chat.file.open')"
+              @click="openFile(b)"
+            >
+              <component :is="b.isDir ? IconFolder : fileIconFor(b.filePath!)" class="msg-file-icon" />
+              <span class="msg-file-name">{{ fileName(b.filePath!) }}</span>
+            </button>
+          </div>
+
           <div v-if="hasBubbleBody(m)" class="bubble" :class="m.role">
           <div class="role-tag">
             <span class="name">
@@ -1384,7 +1582,7 @@ function onDocClick(e: MouseEvent) {
 
           <CollapsibleBox :enabled="m.role === 'user'" :max-height="320">
             <template v-for="(b, bi) in m.blocks" :key="bi">
-              <div v-if="b.kind === 'text'" class="text-run" v-html="renderText(bubbleText(m, b.text ?? ''))" />
+              <div v-if="b.kind === 'text'" class="text-run" v-html="renderBubble(m, b.text ?? '')" />
 
               <!-- image 块已渲染在气泡上方，正文里跳过 -->
 
@@ -1496,10 +1694,24 @@ function onDocClick(e: MouseEvent) {
           <div class="text-run" v-html="streamingHtml" />
         </div>
       </div>
-      <!-- live 模式：本轮正在运行的 ✳ + 计时（参考 Claude 客户端） -->
-      <div v-if="liveSession && liveSession.turnState === 'running'" class="chat-running-row">
-        <span class="chat-running-star" :class="agent">✳</span>
+      <!-- live 模式：本轮正在运行的状态行（参考 Claude 客户端：闪烁动词 + 计时 + 可中断） -->
+      <div
+        v-if="liveSession && liveSession.turnState === 'running'"
+        class="chat-running-row"
+        :class="{ retrying: liveSession.retry }"
+      >
+        <component :is="agentIcons[agent]" class="chat-running-star" :class="agent" />
+        <span class="chat-running-label" :data-text="runningVerb">{{ runningVerb }}</span>
         <span class="chat-running-time">{{ runningElapsedSec }}s</span>
+        <button
+          class="chat-running-stop"
+          type="button"
+          v-tooltip="t('chat.composer.stop')"
+          @click="interruptChat(liveSession)"
+        >
+          <IconStop />
+          <span>{{ t('chat.composer.stop') }}</span>
+        </button>
       </div>
 
       <div v-if="!messages.length && !liveSession" class="empty" style="height: 200px">
@@ -1556,7 +1768,13 @@ function onDocClick(e: MouseEvent) {
   </div>
 
   <!-- live GUI chat：底部输入框（Claude 客户端样式） -->
-  <ChatComposer v-if="liveSession" :session="liveSession" />
+  <ChatComposer
+    v-if="liveSession"
+    :session="liveSession"
+    @open-export="openExportFromComposer"
+    @rename="$emit('rename')"
+    @fork="$emit('fork')"
+  />
 
   <VueEasyLightbox
     :visible="lightboxVisible"

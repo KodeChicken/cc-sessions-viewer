@@ -17,6 +17,24 @@ function escapeHtmlAttr(s: string): string {
 const URL_RE = /https?:\/\/[^\s<>&)}\]`]+/g
 const MD_LINK_RE = /\[([^\]\n]+)\]\((<[^>\n]+>|[^)\n]+)\)/g
 
+// 「文件引用」inline code：形如 lib/a/b.dart:371、./src/x.ts、/abs/y.rs:3:7、C:\p\z.cs。
+// 必须含至少一个路径分隔符（否则 obj.method / package.json 之类会被误判），末段是
+// name.ext，可带 :行 或 :行:列。命中后渲染成可点 code —— ChatView 按会话 cwd 解析、
+// 在外部编辑器打开。`https://…/a.ts` 这种以 `scheme:` 开头的不会命中（冒号断掉首段）。
+const FILE_REF_RE =
+  /^(?:~\/|\.{1,2}[\\/]|\/|[A-Za-z]:[\\/])?(?:[\w.@~-]+[\\/])+[\w.@-]+\.[A-Za-z][\w-]*(?::\d+(?::\d+)?)?$/
+
+/**
+ * 把文件引用拆成「路径 + 可选 行 / 列」。末尾的 `:行` 或 `:行:列` 是定位信息（点击后用于在
+ * 支持跳转的编辑器里定位），路径本身交给后端按 cwd 解析。Windows 盘符冒号（`C:\…`）不在末尾，
+ * 不会被误拆。
+ */
+export function parseFileRef(raw: string): { path: string; line?: number; col?: number } {
+  const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(raw)
+  if (!m) return { path: raw }
+  return { path: m[1], line: Number(m[2]), col: m[3] ? Number(m[3]) : undefined }
+}
+
 function isExternalUrl(target: string): boolean {
   return /^https?:\/\//i.test(target)
 }
@@ -76,7 +94,13 @@ function inline(text: string): string {
   // placeholder captured inside a code span still gets expanded by the link pass.
   if (codes.length) {
     const codeRe = new RegExp(`${SENT}CODE(\\d+)${SENT}`, 'g')
-    s = s.replace(codeRe, (_m, n) => `<code>${escapeHtml(codes[Number(n)] ?? '')}</code>`)
+    s = s.replace(codeRe, (_m, n) => {
+      const code = codes[Number(n)] ?? ''
+      if (FILE_REF_RE.test(code)) {
+        return `<code class="file-ref" data-file-ref="${escapeHtmlAttr(code)}">${escapeHtml(code)}</code>`
+      }
+      return `<code>${escapeHtml(code)}</code>`
+    })
   }
   if (links.length) {
     s = s.replace(/\u0001LINK(\d+)\u0001/g, (_m, n) => links[Number(n)] ?? '')
@@ -223,15 +247,30 @@ export function parseTeammateMessage(text: string): MetaField[] | null {
   }
   return fields.length ? fields : null
 }
-function extractCommandTags(raw: string): { text: string; codes: string[] } {
-  const codes: string[] = []
+const COMMAND_NAME_RE = /<command-name>([\s\S]*?)<\/command-name>/
+const COMMAND_ARGS_RE = /<command-args>([\s\S]*?)<\/command-args>/
+
+/** 把 slash 命令的伪 XML（<command-name>/effort</…> + <command-message>…</…> +
+ *  <command-args>…</…>）还原成用户当初敲的那行纯文本（"/effort" 或 "/review src/x"）。
+ *  供历史回填 / 导出用 —— 把那坨标签收回成干净命令。非命令标记返回 null。 */
+export function commandInputFromMarkup(text: string): string | null {
+  const name = COMMAND_NAME_RE.exec(text)?.[1]?.trim()
+  if (!name) return null
+  const args = COMMAND_ARGS_RE.exec(text)?.[1]?.trim()
+  return args ? `${name} ${args}` : name
+}
+
+type CmdCode = { isName: boolean; inner: string }
+function extractCommandTags(raw: string): { text: string; codes: CmdCode[] } {
+  const codes: CmdCode[] = []
   const stripped = raw.replace(COMMAND_MESSAGE_RE, '')
-  const text = stripped.replace(COMMAND_TAG_RE, (_m, _tag, inner) => {
+  const text = stripped.replace(COMMAND_TAG_RE, (_m, tag, inner) => {
     // 无参 slash 命令（`/clear` / `/init` 等）会带一个空的 <command-args></…>。
     // 留着就会渲染出一个只有 padding+背景的空 chip —— 像个小色块挂在命令后面。
     // inner 是空 / 全空白时直接吞掉整个标签。
     if (!inner.trim()) return ''
-    const idx = codes.push(inner) - 1
+    // 命令名（command-name，形如 /review）单独标记 → 渲染成蓝色；参数（command-args）走普通文本。
+    const idx = codes.push({ isName: tag === 'command-name', inner }) - 1
     return `CMD${idx}`
   })
   return { text, codes }
@@ -457,7 +496,13 @@ export function renderText(raw: string): string {
   if (codes.length) {
     html = html.replace(
       /CMD(\d+)/g,
-      (_m, n) => `<code class="cmd-tag">${escapeHtml(codes[Number(n)])}</code>`,
+      (_m, n) => {
+        const c = codes[Number(n)]
+        // 命令名加 cmd-name（蓝色），并补一个真实空格 —— 去灰底后命令名会和参数贴死
+        // （/configtui=default）；真实空格而非 margin，复制粘贴也保留分隔。参数只用 cmd-tag。
+        if (c.isName) return `<code class="cmd-tag cmd-name">${escapeHtml(c.inner)}</code> `
+        return `<code class="cmd-tag">${escapeHtml(c.inner)}</code>`
+      },
     )
   }
   return html

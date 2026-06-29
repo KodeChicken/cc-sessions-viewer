@@ -183,6 +183,19 @@ pub trait SessionSource: Send + Sync {
     /// path 已经被 lib.rs 预校验（存在且是 .jsonl），不必再重复检查。
     fn rename_session(&self, path: &Path, name: &str) -> Result<(), String>;
 
+    /// `/fork`：把既有会话**克隆**成一个全新、独立的磁盘 transcript（新 session id、新消息
+    /// uuid），并打上 `title`（写成 custom-title）。返回新 session id。`project_key` 含义同
+    /// `list_sessions`（Claude = 项目目录名）。仅支持「派生」语义的 agent（Claude）实现；
+    /// 默认不支持（其它 agent 调用即报错）。
+    fn fork_session(
+        &self,
+        _project_key: &str,
+        _source_id: &str,
+        _title: &str,
+    ) -> Result<String, String> {
+        Err("此 agent 不支持 fork 会话".into())
+    }
+
     /// 回收站标题：用 agent 自己的解析逻辑提取展示名。
     fn trash_title(&self, path: &Path) -> String;
 
@@ -208,12 +221,17 @@ pub trait SessionSource: Send + Sync {
     ///
     /// `model` / `effort` 为 `None` 时走 CLI 自身默认（不下发对应 flag）。长驻进程模型下
     /// 这两者在 start 时定型；切换需 restart-with-resume（前端据 `chat_process_model` 决策）。
+    ///
+    /// `fork` = true 且带 `session_id` 时：从该会话**派生**一个新 session id（不续写原文件）。
+    /// 供「btw 侧聊」继承主聊上下文却不污染其 transcript。仅支持派生语义的 agent（Claude
+    /// `--fork-session`）会用它；其它 agent 忽略。
     fn chat_command(
         &self,
         _session_id: Option<&str>,
         _permission_mode: &str,
         _model: Option<&str>,
         _effort: Option<&str>,
+        _fork: bool,
     ) -> Option<AgentCommand> {
         None
     }
@@ -796,13 +814,7 @@ mod tests {
         crate::types::Block {
             kind: kind.to_string(),
             text: text.map(String::from),
-            tool_name: None,
-            tool_input: None,
-            tool_id: None,
-            is_error: false,
-            file_path: None,
-            diff: None,
-            image_src: None,
+            ..Default::default()
         }
     }
     fn msg_with_role(role: &str, blocks: Vec<crate::types::Block>) -> Msg {

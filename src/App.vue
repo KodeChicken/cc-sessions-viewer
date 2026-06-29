@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, shallowRef, computed, onMounted, onUnmounted, watch, nextTick, defineAsyncComponent } from 'vue'
 import type { Agent, ProjectInfo, SessionMeta, TrashItem, Msg, UsageSummary } from './types'
 import * as api from './api'
 import { shortName } from './format'
@@ -48,6 +48,7 @@ import { globalSearchOpen, openGlobalSearch } from './globalSearch'
 import { runBackgroundCheck } from './updateCheck'
 import type { SearchHit } from './types'
 import ChatView from './views/ChatView.vue'
+import ChatSidePanel from './components/ChatSidePanel.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import { IconSearch } from './components/icons'
 import WindowsTitlebar, { type WindowMenuGroup } from './components/WindowsTitlebar.vue'
@@ -57,7 +58,9 @@ import SessionsTopbar from './components/topbar/SessionsTopbar.vue'
 import TrashView from './views/TrashView.vue'
 import SessionsView from './views/SessionsView.vue'
 import WelcomeView from './views/WelcomeView.vue'
-import StatsView from './views/StatsView.vue'
+// 按需视图懒加载：StatsView 拖着重量级图表库 @antv/g2，PricingView / ExportHistoryView 也是
+// 二级页面 —— 都不进首屏主包，进对应页面时再拉各自的 chunk。
+const StatsView = defineAsyncComponent(() => import('./views/StatsView.vue'))
 import Sidebar from './components/Sidebar.vue'
 import SidebarTopbar from './components/SidebarTopbar.vue'
 import TerminalStrip from './components/TerminalStrip.vue'
@@ -65,8 +68,8 @@ import TerminalPaneSlot from './components/TerminalPaneSlot.vue'
 import ConfirmModal from './modals/ConfirmModal.vue'
 import RenameModal from './modals/RenameModal.vue'
 import GlobalSearchModal from './modals/GlobalSearchModal.vue'
-import ExportHistoryView from './views/ExportHistoryView.vue'
-import PricingView from './views/PricingView.vue'
+const ExportHistoryView = defineAsyncComponent(() => import('./views/ExportHistoryView.vue'))
+const PricingView = defineAsyncComponent(() => import('./views/PricingView.vue'))
 import ProjectContextMenu from './modals/ProjectContextMenu.vue'
 import {
   clearPendingLiveNotification,
@@ -116,6 +119,7 @@ import {
   type ViewHistoryEntry,
 } from './viewHistory'
 import { startChat, closeChat, type ChatSession } from './chatSessions'
+import { sideChat, openSideChat } from './sideChat'
 import { sameProjectClickAction } from './projectSelection'
 
 // ---------- 状态 ----------
@@ -2149,6 +2153,86 @@ function newGuiSession() {
   })
 }
 
+/** `/fork`：把当前 live chat **克隆**成一个独立的新会话 —— 后端在磁盘上复制一份 transcript
+ *  （全新 session id、新消息 uuid，零共享），标题 `<原标题> fork`，随即自动切到这个新会话
+ *  续聊。原会话进程收掉（其 transcript 不动、仍可续聊）。仅 Claude 且当前会话已有 session id
+ *  （有可克隆的落盘内容）时有效；否则提示无法 fork。 */
+async function forkLiveChat() {
+  const c = liveChat.value
+  if (!c || c.agent !== 'claude' || !c.cwd) return
+  if (!c.sessionId) {
+    notify(t('toast.forkUnavailable'), true)
+    return
+  }
+  const title = `${c.title} fork`
+  const preload = [...c.msgs]
+  let newId: string
+  try {
+    // 先在磁盘上克隆出新会话文件（立即出现在列表里），拿到新 session id。
+    newId = await api.forkSession(c.agent, c.projectKey, c.sessionId, title)
+  } catch (e) {
+    notify(`${e}`, true)
+    return
+  }
+  // 与 startLiveChat 同序：先置空 liveChat 收掉旧进程，再 resume 克隆出来的新会话。
+  const projectKey = c.projectKey
+  const cwd = c.cwd
+  const created = c.createdAt
+  const permissionMode = c.permissionMode
+  const model = c.model
+  const effort = c.effort
+  const usage = c.usage
+  liveChat.value = null
+  void closeChat(c.uiId)
+  activeUiId.value = null
+  viewingList.value = false
+  // 克隆是独立新会话，先断开旧的来源只读绑定；新 session id 已知，bind watcher 会绑到克隆文件。
+  setLiveChatSourceSession(null)
+  try {
+    const session = await startChat({
+      agent: 'claude',
+      projectKey,
+      cwd,
+      sessionId: newId, // resume 克隆出来的真实会话（非 --fork-session）
+      title,
+      created,
+      preloadMsgs: preload,
+      permissionMode,
+      model,
+      effort,
+      initialUsage: usage,
+    })
+    liveChat.value = session
+    chatPeekRead.value = false
+    // 侧栏项目计数 +1：克隆文件已落盘，刷新一下让计数即时反映。
+    void loadProjects()
+  } catch (e) {
+    notify(`${e}`, true)
+  }
+}
+
+/** btw 侧聊浮框（按钮 / ⌘J / 主聊里输入 `/btw …`）。优先 fork 正在进行的 Claude 主聊
+ *  以继承其上下文；否则在当前活动项目目录里开一个全新 Claude 侧聊。两者都缺时静默无操作。 */
+function toggleBtwSideChat() {
+  const lc = liveChat.value
+  if (lc && lc.agent === 'claude' && lc.cwd) {
+    void openSideChat({
+      projectKey: lc.projectKey,
+      cwd: lc.cwd,
+      forkSessionId: lc.sessionId || undefined,
+      model: lc.model,
+      effort: lc.effort,
+    })
+    return
+  }
+  const cwd = activeProject.value?.displayPath
+  if (!cwd) return
+  void openSideChat({
+    projectKey: activeProject.value?.dirName ?? activeDir.value ?? '',
+    cwd,
+  })
+}
+
 /** 退出 live chat —— MVP：停子进程并回收会话（无 chat tab UI 可返回）。
  *  replace 语义：连同清掉来源的只读详情（openSession），退出后回到会话列表而不是
  *  那一页详情（用户：从详情「切到 chat」是 replace，不是新开页）。从列表/新建入口
@@ -2719,6 +2803,8 @@ onMounted(() => {
         if (openSession.value) exportSession('md')
       } else if (key === 'b' && !e.shiftKey) {
         e.preventDefault(); toggleSidebar()
+      } else if (key === 'j' && !e.shiftKey) {
+        e.preventDefault(); toggleBtwSideChat()
       } else if (key === 's' && e.shiftKey) {
         e.preventDefault(); openStats()
       } else if (key === ',' && !e.shiftKey) {
@@ -3039,6 +3125,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
             @back="closeLiveChat"
             @switch-to-read="switchLiveToRead"
             @rename="openRenameLiveChat"
+            @fork="forkLiveChat"
             @open-session-stats="openLiveChatStats"
             @reveal="reveal(openSession?.path || liveChat.cwd || '')"
             @export-md="exportLiveChat('md')"
@@ -3206,6 +3293,9 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       @delete="ctxDeleteProject"
       @remove-bookmark="ctxRemoveBookmark"
     />
+
+    <!-- btw 侧聊浮框（右上角可拖动；Teleport 到 body，与主视图层无关） -->
+    <ChatSidePanel v-if="sideChat" :session="sideChat" />
 
     <!-- toast -->
     <Transition name="fade">

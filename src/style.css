@@ -71,6 +71,17 @@
   --diff-added: #00a240;
   --diff-removed: #e02e2a;
   --skill: #751ed9;
+  /* /context 可视化面板：蓝色族（深→浅）按占比分配给真实占用类目，灰阶给缓冲/延迟/空闲 */
+  --ctx-blue-1: #1f6feb;
+  --ctx-blue-2: #3b82f6;
+  --ctx-blue-3: #5b9bf8;
+  --ctx-blue-4: #7cb0fa;
+  --ctx-blue-5: #9cc5fb;
+  --ctx-blue-6: #bcd8fc;
+  --ctx-blue-7: #d6e7fd;
+  --ctx-gray-buffer: #b9bec6;
+  --ctx-gray-deferred: #d3d7dd;
+  --ctx-track: hsl(0 0% 90%);
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text',
     'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
   font-feature-settings: 'cv11', 'ss01', 'ss03';
@@ -114,6 +125,16 @@
   --shadow-sm: 0 0 0 1px rgba(255, 255, 255, 0.06);
   --shadow-md: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 2px 8px rgba(0, 0, 0, 0.5);
   --shadow-lg: 0 0 0 1px rgba(255, 255, 255, 0.10), 0 16px 50px rgba(0, 0, 0, 0.6);
+  --ctx-blue-1: #5b9bf8;
+  --ctx-blue-2: #4a86ee;
+  --ctx-blue-3: #3f74d4;
+  --ctx-blue-4: #3661b0;
+  --ctx-blue-5: #2f528f;
+  --ctx-blue-6: #294670;
+  --ctx-blue-7: #243c5e;
+  --ctx-gray-buffer: #565b64;
+  --ctx-gray-deferred: #3c4048;
+  --ctx-track: hsl(0 0% 18%);
 }
 
 :root.theme-codex {
@@ -2241,6 +2262,14 @@ mark.locate-hl {
   user-select: text;
   -webkit-user-select: text;
 }
+/* live chat：滚动区底部柔化 —— 内容贴近输入框时用渐变淡出，而不是被生硬截断
+   （参考 Claude 客户端）。仅 live（有 composer）时加；mask 让视口底部 ~52px 的内容
+   渐隐到页面背景，输入框正好坐在这条柔化带下方，过渡不再有硬边。mask 作用于视口盒、
+   不随内容滚动；滚到底时末条消息落在 56px padding 之上、淡出带之外，故静止时不被淡化。 */
+.chat-scroll.has-composer {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 52px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 52px), transparent);
+}
 .chat-inner {
   max-width: min(86%, 1800px);
   margin: 0 auto;
@@ -2294,7 +2323,9 @@ mark.locate-hl {
   align-items: flex-start;
 }
 .bubble.meta-msg {
-  max-width: 100%;
+  /* 左对齐的系统块（COMMAND OUTPUT / 压缩摘要等）收窄到与普通气泡同宽，别铺满整列
+     —— 否则会一路顶到右侧用户消息列，看着像占了「Me」的地盘（用户反馈）。 */
+  max-width: 86%;
   background: transparent;
   padding: 0;
 }
@@ -2492,6 +2523,22 @@ mark.locate-hl {
 .text-run {
   white-space: pre-wrap;
 }
+/* slash 命令渲染对齐官方客户端：命令名蓝色、参数普通文本，都不套灰底 code chip。
+   cmd-tag 仅用于 slash 命令（command-name / command-args），去掉 .bubble code 的灰底与等宽。
+   cmd-name 既用于 Claude 转录里的 <command-name>，也用于聊天里以 / 开头的纯文本消息开头 token。 */
+.bubble code.cmd-tag {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-family: inherit;
+  font-size: inherit;
+}
+.bubble .cmd-name {
+  color: #2563eb;
+}
+:root.theme-dark .bubble .cmd-name {
+  color: #60a5fa;
+}
 
 /* Long "Me" bubbles get folded with a fade + show-more toggle, like CSDN posts. */
 .collapsible-box {
@@ -2563,8 +2610,8 @@ mark.locate-hl {
   display: block;
   width: auto;
   height: auto;
-  max-width: 200px;
-  max-height: 160px;
+  max-width: 160px;
+  max-height: 130px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--surface);
@@ -2575,6 +2622,49 @@ mark.locate-hl {
   /* 关闭 macOS Live Text 的虚线选区与小箭头；点击放大由外层 button 接管。 */
   pointer-events: none;
   -webkit-touch-callout: none;
+}
+/* 文件附件 chip：圆角描边胶囊，文件图标 + 文件名，点击外部打开。浮在气泡上方。 */
+.msg-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+  max-width: 86%;
+}
+.msg-row.user .msg-files {
+  justify-content: flex-end;
+}
+.msg-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 280px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.2;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+.msg-file-chip:hover {
+  background: var(--surface-hover);
+  border-color: var(--text-dim);
+}
+.msg-file-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--text-dim);
+}
+.msg-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .text-run h3 {
   font-size: 15px;
@@ -2618,6 +2708,16 @@ mark.locate-hl {
   border-radius: 4px;
   font-size: var(--font-code-size);
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+/* 文件引用 inline code（形如 a/b.ts:12，见 format.ts 的 FILE_REF_RE）：保留等宽码片外观，
+   但着蓝 + 可点，提示这是可在外部编辑器打开的文件。点击逻辑见 ChatView.onContentClick。
+   导出 HTML 没有 Tauri，点不动 —— 但样式仍在，视觉一致。 */
+code.file-ref {
+  color: var(--link);
+  cursor: pointer;
+}
+code.file-ref:hover {
+  text-decoration: underline;
 }
 .code-block {
   background: var(--code-bg);
@@ -3116,22 +3216,25 @@ details[open] > .block-summary > .chev {
   bottom: 150px;
 }
 
-/* live GUI chat：本轮运行中的 ✳ + 计时行（左对齐，像正在形成的 assistant 气泡） */
+/* live GUI chat：本轮运行中的状态行（左对齐，像正在形成的 assistant 气泡）。
+   参考 Claude 客户端：旋转 ✳ + 闪烁动词（shimmer）+ 计时 + 中断按钮。 */
 .chat-running-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 2px 4px 8px;
+  padding: 4px 4px 10px;
   color: var(--text-dim);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
-/* 运行中的 ✳ 是 agent 的品牌标记 —— 用 agent 自己的色调（claude 橙 / codex 绿 /
-   gemini 蓝），不跟随主题的 --brand（否则 codex 主题下会被染成蓝）。 */
+/* 运行中的 agent 品牌图标 —— 与消息头部 .role-tag .agent-icon 同一个 SVG、同尺寸，保持静止。
+   用 agent 自己的色调（claude 橙 / codex 绿 / gemini 蓝），不跟随主题的 --brand（否则 codex
+   主题下会被染成蓝）；SVG 走 currentColor，所以下面的 color 直接生效。 */
 .chat-running-star {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
   color: var(--brand-claude);
-  display: inline-block;
-  animation: chat-running-spin 1.4s linear infinite;
 }
 .chat-running-star.codex {
   color: var(--brand-codex);
@@ -3139,10 +3242,86 @@ details[open] > .block-summary > .chev {
 .chat-running-star.gemini {
   color: var(--brand-gemini);
 }
-@keyframes chat-running-spin {
-  to {
-    transform: rotate(360deg);
+/* 进行中动词「Working / 思考中」：底色是低调 --text-dim，上面叠一层同样文字的 --text 亮色副本
+   (::after content:attr(data-text))，用一条柔和的 mask 渐变带从左到右扫过它、扫到处提亮 →
+   CSS3「光感」流动。这是整行唯一的动效 —— 前面的 agent 图标保持静止。
+   ⚠️ 别回去用 `background-clip:text` + 动画 `background-position`/@property：在 macOS WKWebView 上
+   不会重绘、动画直接冻死（实测 Safari 同引擎里整列纹丝不动）。实色文字 + 动画 mask-position 不碰
+   文字裁剪层，是 WebKit 里唯一能动起来的写法。模板需给 .chat-running-label 绑 :data-text。 */
+.chat-running-label {
+  position: relative;
+  font-weight: 500;
+  color: var(--text-mute); /* 静止态是浅灰（参考 Codex），高光扫过时才提到 --text */
+}
+.chat-running-label::after {
+  content: attr(data-text);
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--text);
+  -webkit-mask-image: linear-gradient(90deg, transparent 35%, #000 50%, transparent 65%);
+  -webkit-mask-size: 260% 100%;
+  -webkit-mask-repeat: no-repeat;
+  animation: chat-running-shimmer 2.2s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes chat-running-shimmer {
+  from {
+    -webkit-mask-position: 130% 0;
   }
+  to {
+    -webkit-mask-position: -30% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-running-label {
+    color: var(--text-dim);
+  }
+  .chat-running-label::after {
+    display: none;
+  }
+}
+.chat-running-time {
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+/* 网络重试态：整行转琥珀色（品牌图标 + 动词 + 计时），提示请求失败正在重试。动词仍走
+   shimmer 流光，只是把底色/高光替换成琥珀两档。 */
+.chat-running-row.retrying .chat-running-star,
+.chat-running-row.retrying .chat-running-time,
+.chat-running-row.retrying .chat-running-label {
+  color: #d97706;
+}
+.chat-running-row.retrying .chat-running-label::after {
+  color: #f59e0b;
+}
+/* 中断按钮：常态低调、悬停整行时显现，点一下停掉本轮。 */
+.chat-running-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 2px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.chat-running-row:hover .chat-running-stop {
+  opacity: 1;
+}
+.chat-running-stop:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+.chat-running-stop svg {
+  width: 12px;
+  height: 12px;
 }
 
 /* §10.6 流式预览：正在生成的文本块逐 delta 走与定稿气泡同一个 markdown 渲染器
@@ -3797,6 +3976,14 @@ body.is-tab-reordering * {
   border-radius: 50%;
   background: var(--brand, #e8643c);
   flex-shrink: 0;
+}
+/* 左栏底部的版本号：margin-top:auto 把它顶到 nav 底部，低调小字。 */
+.set-nav-version {
+  margin-top: auto;
+  padding: 10px 10px 2px;
+  font-size: 11px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
 }
 .settings-modal .modal-close {
   position: absolute;
@@ -4533,6 +4720,29 @@ body.is-tab-reordering * {
   opacity: 1;
   background: var(--surface-hover);
   color: var(--text);
+}
+
+/* 当前 git 分支（分支图标 + 名称），头部与 composer 底栏共用。非 git 仓库时整块不渲染。
+   按用户要求：不加边框 / 背景，纯蓝色字体（--link，随主题深浅切换），图标同色。 */
+.git-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  color: var(--link);
+  font-size: 12px;
+}
+.git-branch-ic {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+.git-branch-name {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 详情页副标题里的 ID 跟统计文本之间留点距并加圆点分隔 */

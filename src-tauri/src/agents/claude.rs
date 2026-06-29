@@ -205,6 +205,10 @@ impl SessionSource for ClaudeSource {
         Ok(())
     }
 
+    fn fork_session(&self, project_key: &str, source_id: &str, title: &str) -> Result<String, String> {
+        fork_session(project_key, source_id, title)
+    }
+
     fn trash_title(&self, path: &Path) -> String {
         scan(path).title
     }
@@ -227,6 +231,7 @@ impl SessionSource for ClaudeSource {
         permission_mode: &str,
         model: Option<&str>,
         effort: Option<&str>,
+        fork: bool,
     ) -> Option<AgentCommand> {
         let mut cmd = AgentCommand::new("claude")
             .arg("--print")
@@ -251,6 +256,11 @@ impl SessionSource for ClaudeSource {
         }
         if let Some(id) = session_id {
             cmd = cmd.arg("--resume").arg(id);
+            // btw 侧聊：派生新 session id（继承上下文、不续写原 transcript）。仅在续聊既有
+            // 会话时有意义；新开会话（session_id 为空）无可派生对象，忽略 fork。
+            if fork {
+                cmd = cmd.arg("--fork-session");
+            }
         }
         Some(cmd)
     }
@@ -495,6 +505,114 @@ fn is_image_source_meta(v: &Value, blocks: &[Block]) -> bool {
     })
 }
 
+/// 解析用户文本里 Claude Code 的 `@文件` 引用：拖拽文件 / 用 `@` 选文件时，CC 会把形如
+/// `@"/abs/path with space.ext"`（带引号）或 `@/abs/path.ext`、`@dir/rel.ext`（不带引号、
+/// 不含空白）的标记写进 JSONL 原文。把每个引用抽成 `file` 块（前端渲染成可点击外部打开的
+/// 文件 chip），并从正文里剔除。返回 (file 块, 去掉引用后的干净文本)。
+fn extract_file_refs(text: &str) -> (Vec<Block>, String) {
+    use regex_lite::Regex;
+    let re = Regex::new(r#"@"([^"]+)"|@(\S+)"#).expect("valid file-ref regex");
+    let mut files = Vec::new();
+    let mut cleaned = String::new();
+    let mut last = 0usize;
+    for caps in re.captures_iter(text) {
+        let whole = caps.get(0).unwrap();
+        let path = match (caps.get(1), caps.get(2)) {
+            (Some(q), _) => Some(q.as_str().to_string()),
+            (None, Some(u)) if looks_like_file_path(u.as_str()) => Some(u.as_str().to_string()),
+            _ => None,
+        };
+        // path 为 None（普通 @提及，如 @某人）：不剔除，留给后续 cleaned 原样保留。
+        if let Some(p) = path {
+            cleaned.push_str(&text[last..whole.start()]);
+            last = whole.end();
+            // stat 一次区分文件 / 文件夹，让历史 chip 与实时回显一样显示对的图标 + 提示。
+            // 仅确为目录才标 Some(true)；文件 / 解析不出（相对路径等）留 None → 文件图标。
+            let is_dir = std::path::Path::new(&p).is_dir().then_some(true);
+            files.push(Block {
+                kind: "file".to_string(),
+                file_path: Some(p),
+                is_dir,
+                ..Default::default()
+            });
+        }
+    }
+    cleaned.push_str(&text[last..]);
+    (files, tidy_after_strip(&cleaned))
+}
+
+/// 不带引号的 `@token` 只有看起来像文件路径时才当文件引用，避免把 `@某人` 这类普通提及
+/// 误判：绝对路径 / `~` / `./` / `../` / 含 `/` / Windows 盘符 `X:`，或没有目录前缀但形如
+/// `name.ext` 的仓库根文件（`@package.json`、`@main_driver.dart`——Claude `@` 选文件的常见形态）。
+fn looks_like_file_path(s: &str) -> bool {
+    s.starts_with('/')
+        || s.starts_with('~')
+        || s.starts_with("./")
+        || s.starts_with("../")
+        || s.contains('/')
+        || s.as_bytes().get(1) == Some(&b':')
+        || has_file_extension(s)
+}
+
+/// token 末段是否像 `name.ext`（扩展名 1-8 位字母数字）。用于识别没有目录前缀的相对文件引用，
+/// 同时把 `@teammate` 这类无扩展名的普通提及排除在外。
+fn has_file_extension(s: &str) -> bool {
+    match s.rsplit_once('.') {
+        Some((stem, ext)) => {
+            !stem.is_empty()
+                && (1..=8).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        }
+        None => false,
+    }
+}
+
+/// 删掉引用后收尾：逐行去行尾空白、3+ 连续换行收敛成 2、整体 trim。文件引用多半独占一行，
+/// 删掉后会留下空行，这里一并清掉。
+fn tidy_after_strip(s: &str) -> String {
+    let joined = s
+        .lines()
+        .map(|l| l.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut out = String::new();
+    let mut newline_run = 0;
+    for ch in joined.chars() {
+        if ch == '\n' {
+            newline_run += 1;
+            if newline_run > 2 {
+                continue;
+            }
+        } else {
+            newline_run = 0;
+        }
+        out.push(ch);
+    }
+    out.trim().to_string()
+}
+
+/// 把一条用户消息里所有 text 块中的 `@文件` 引用抬升成独立 file 块（排在正文之前），正文
+/// 删掉引用；某个 text 块删完后为空就丢弃。只对真实用户消息（非 meta/系统注入）调用。
+fn lift_file_refs(blocks: Vec<Block>) -> Vec<Block> {
+    let mut out = Vec::with_capacity(blocks.len());
+    for b in blocks {
+        if b.kind == "text" {
+            if let Some(t) = b.text.as_deref() {
+                let (files, cleaned) = extract_file_refs(t);
+                if !files.is_empty() {
+                    out.extend(files);
+                    if !cleaned.is_empty() {
+                        out.push(text_block("text", &cleaned));
+                    }
+                    continue;
+                }
+            }
+        }
+        out.push(b);
+    }
+    out
+}
+
 /// Claude Code 把若干「系统注入」内容也写成 `type:"user"` 记录，但它们并不是用户
 /// 手敲的 prose —— 前端不该渲染成「Me」气泡。这里按 JSONL 上的 flag（新版 CC）+
 /// 内容标签（老版 CC 没有 flag）把它们归一成一个 meta_kind 字符串：
@@ -551,6 +669,12 @@ fn classify_meta_kind(v: &Value, blocks: &[Block]) -> Option<String> {
     if head.starts_with("<task-notification>") {
         return Some("task-notification".to_string());
     }
+    // 上下文压缩摘要兜底：headless stream-json 的续聊摘要事件**不带** isCompactSummary
+    // flag（只有落盘 transcript 才写），GUI chat 里只能靠 Claude Code 固定的续聊开场白
+    // 识别，否则会被当成「Me」气泡渲染（还会把摘要里的 `@文件` 误抬成附件 chip）。
+    if head.starts_with("This session is being continued from a previous conversation") {
+        return Some("compact".to_string());
+    }
     // 多 agent 协作：对方会话发来的消息被注入成 user 记录（无 flag，只能看正文）。
     if head.starts_with("Another Claude session sent a message:") || head.contains("<teammate-message") {
         return Some("teammate-message".to_string());
@@ -582,6 +706,7 @@ fn is_injected_user(v: &Value) -> bool {
         || head.starts_with("<bash-stdout>")
         || head.starts_with("<bash-stderr>")
         || head.starts_with("<task-notification>")
+        || head.starts_with("This session is being continued from a previous conversation")
         || head.starts_with("Another Claude session sent a message:")
         || head.contains("<teammate-message")
 }
@@ -710,6 +835,75 @@ fn is_subagent_path(fp: &Path) -> bool {
         == Some("subagents")
 }
 
+/// 把 `<projects>/<project_key>/<source_id>.jsonl` 克隆成一个全新、独立的会话文件。
+///
+/// 不走 `--fork-session`（它要等第一轮才落盘、列表里看不到），而是直接在磁盘上复制一份：
+/// 每条记录用 `serde_json::Value` 原样保留所有字段，只重写 `sessionId` → 新 id、`uuid` →
+/// 新 uuid，并据 uuid 映射重写 `parentUuid` / `leafUuid`，让克隆出来与原会话**零共享**
+/// （Claude `--resume <newid>` 续聊时不会跨文件撞 uuid）。末尾追加一对 custom-title +
+/// agent-name 写入 `title`，列表/详情即显示「<原名> fork」。返回新 session id。
+fn fork_session(project_key: &str, source_id: &str, title: &str) -> Result<String, String> {
+    let dir = projects_dir().join(project_key);
+    let src = dir.join(format!("{source_id}.jsonl"));
+    if !src.is_file() {
+        return Err("源会话文件不存在，无法 fork".into());
+    }
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let content = fs::read_to_string(&src).map_err(|e| format!("读取源会话失败: {e}"))?;
+    let out = fork_jsonl(&content, &new_id, title);
+    let dst = dir.join(format!("{new_id}.jsonl"));
+    fs::write(&dst, out).map_err(|e| format!("写入 fork 会话失败: {e}"))?;
+    Ok(new_id)
+}
+
+/// 纯转换：把一份 transcript 重写成「克隆」版本 —— `sessionId` 全改成 `new_id`，每条记录的
+/// `uuid` 换成全新 v4 并据映射重写 `parentUuid` / `leafUuid`（记录按时间序、父在子前 → 单遍
+/// 即可），末尾追加 custom-title + agent-name 写入 `title`。其余字段原样保留。无副作用，便于单测。
+fn fork_jsonl(content: &str, new_id: &str, title: &str) -> String {
+    let mut id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut out = String::new();
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Value>(line) {
+            Ok(mut v) => {
+                for key in ["parentUuid", "leafUuid"] {
+                    if let Some(old) = v.get(key).and_then(|x| x.as_str()) {
+                        if let Some(new) = id_map.get(old) {
+                            v[key] = Value::String(new.clone());
+                        }
+                    }
+                }
+                if let Some(old) = v.get("uuid").and_then(|x| x.as_str()) {
+                    let nu = uuid::Uuid::new_v4().to_string();
+                    id_map.insert(old.to_string(), nu.clone());
+                    v["uuid"] = Value::String(nu);
+                }
+                if v.get("sessionId").is_some() {
+                    v["sessionId"] = Value::String(new_id.to_string());
+                }
+                out.push_str(&v.to_string());
+                out.push('\n');
+            }
+            // 理论上不会有非 JSON 行；保守起见原样保留。
+            Err(_) => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    // 标题：照搬 rename 的成对写法（custom-title + agent-name），让扫描出的展示名是 fork 名。
+    let trimmed = validate_rename_name(title).unwrap_or("fork");
+    for (t, field) in [("custom-title", "customTitle"), ("agent-name", "agentName")] {
+        out.push_str(
+            &serde_json::json!({ "type": t, field: trimmed, "sessionId": new_id }).to_string(),
+        );
+        out.push('\n');
+    }
+    out
+}
+
 fn scan(fp: &Path) -> SessionMeta {
     let file_name = fp
         .file_name()
@@ -784,7 +978,10 @@ fn scan(fp: &Path) -> SessionMeta {
             // 变成 "Base directory for this skill: …" 之类的注入正文。
             if first_user_title.is_empty() && t == "user" && !is_injected_user(&v) {
                 if let Some(txt) = user_text(&v) {
-                    let clean = clean_title(&txt);
+                    // 先剥掉 `@文件` 引用，标题取用户真正写的话（否则侧栏 / 头部标题会变成
+                    // `@"/path" hi` 这种）。
+                    let (_, body) = extract_file_refs(&txt);
+                    let clean = clean_title(&body);
                     if !clean.is_empty() {
                         first_user_title = clean;
                     }
@@ -833,6 +1030,16 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
             msgs.push(msg);
         }
     }
+    // Claude Code 把 `/compact` 的「上下文摘要」记录写在续聊上下文的**开头** —— 文件顺序上
+    // 它排在触发它的 `/compact` 命令之前，但它的 timestamp 其实晚得多（压缩完成的时刻）。
+    // 直接按文件顺序渲染会让「摘要结果」跑到用户的 `/compact` 消息上方（很反直觉）。
+    // 仅当存在压缩摘要、且每条消息都带 timestamp 时，按 timestamp **稳定**排序把摘要归位 ——
+    // 其余消息本就按时间写入，稳定排序不会扰动它们（ISO-8601 + `Z`，字典序即时间序）。
+    if msgs.iter().any(|m| m.meta_kind.as_deref() == Some("compact"))
+        && msgs.iter().all(|m| m.timestamp.is_some())
+    {
+        msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    }
     Ok(msgs)
 }
 
@@ -852,6 +1059,37 @@ pub(crate) fn record_to_msg(v: &Value) -> Option<Msg> {
         let blocks = queued_command_blocks(v)?;
         // 排队进来的可能是用户手敲消息（→ Me），也可能是处理中到达的
         // 任务通知（commandMode == "task-notification" → 系统块）。
+        let meta_kind = classify_meta_kind(v, &blocks);
+        return Some(Msg {
+            uuid: v.get("uuid").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            role: "user".to_string(),
+            timestamp: v
+                .get("timestamp")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            model: None,
+            sidechain: v
+                .get("isSidechain")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
+            blocks,
+            meta_kind,
+        });
+    }
+    // `/context`、`/model` 等本地 slash 命令：on-disk transcript 把它们的「调用回显」
+    // （<command-name>…）和「输出」（<local-command-stdout>…）都落成 `system` /
+    // `subtype:"local_command"` 记录。read（刷新/离线回看）原本只认 user/assistant，会整条
+    // 丢掉它们 —— 这正是刷新后 /context 卡片消失、命令输出全无的原因。这里把它当作等价的
+    // user 记录交给既有逻辑：classify_meta_kind 会把 <command-name> 归为普通命令气泡、把
+    // <local-command-stdout> 归为 command-output 折叠块（与磁盘里以 user 记录落盘的 /effort
+    // 等命令完全一致）。/context 的 command-output 块再由前端 contextUsageOf 升级成可视化卡片。
+    // **不能**在这里造 model=<synthetic> 的 assistant 记录 —— 那会把底栏模型选择器带歪。
+    if t == "system" && v.get("subtype").and_then(|x| x.as_str()) == Some("local_command") {
+        let content = v.get("content").and_then(|x| x.as_str()).unwrap_or("");
+        if content.trim().is_empty() {
+            return None;
+        }
+        let blocks = vec![text_block("text", content)];
         let meta_kind = classify_meta_kind(v, &blocks);
         return Some(Msg {
             uuid: v.get("uuid").and_then(|x| x.as_str()).map(|s| s.to_string()),
@@ -987,6 +1225,17 @@ pub(crate) fn record_to_msg(v: &Value) -> Option<Msg> {
     if blocks.is_empty() {
         return None;
     }
+    // 本地 slash 命令（/context 等）在落盘 transcript 里跟着一条 model=<synthetic> 的
+    // 「No response requested.」assistant 占位 —— live stream 根本不吐它。离线回看也别渲染，
+    // 否则刚还原出来的 /context 卡片旁边会多一个空洞的占位气泡，跟 live 观感对不上。
+    if t == "assistant"
+        && model.as_deref() == Some("<synthetic>")
+        && blocks.len() == 1
+        && blocks[0].kind == "text"
+        && blocks[0].text.as_deref().map(str::trim) == Some("No response requested.")
+    {
+        return None;
+    }
     // Claude 把用户贴图拆成两条 user 记录：一条是带 base64 的真实消息，
     // 紧跟一条 `isMeta:true` 的 `[Image: source: <local-path>]` 引用。
     // 已经在上一条里渲染过真实图，跳过 meta 那条避免出现重复气泡。
@@ -1000,6 +1249,11 @@ pub(crate) fn record_to_msg(v: &Value) -> Option<Msg> {
     } else {
         None
     };
+    // 真实用户消息：把正文里的 `@文件` 引用抬升成 file 块（点击外部打开），系统/meta
+    // 注入的伪 user 记录不动（它们的 `@...` 多是说明文字，不该当成附件）。
+    if t == "user" && meta_kind.is_none() {
+        blocks = lift_file_refs(blocks);
+    }
     Some(Msg {
         uuid,
         role: t.to_string(),
@@ -1013,33 +1267,149 @@ pub(crate) fn record_to_msg(v: &Value) -> Option<Msg> {
 
 // ============================ §10.1 slash 指令磁盘发现 ============================
 
-/// 扫出 GUI chat 可用的动态 slash 指令：项目 / 用户级 `.claude/commands/**/*.md` +
-/// `~/.claude/skills/*/SKILL.md` 里 `user-invocable: true` 的。**不含 TUI 内置命令**
-/// （headless 不展开）。同名以先到的为准（项目 > 用户 > skill）。
+/// 扫出 GUI chat `/` 浮层可用项 —— **命令 + 技能**，按来源收集后分组排序。
+///   命令：项目 `<cwd>/.claude/commands` > 用户 `~/.claude/commands` > 已启用插件 `<install>/commands`
+///   技能：项目 `<cwd>/.claude/skills`   > 用户 `~/.claude/skills`   > 已启用插件 `<install>/skills`
+/// 命令、技能各自按名字去重（先到先得 = 项目 > 用户 > 插件）。**不含 TUI 内置指令**（headless
+/// 不展开）。排序：命令在前、技能在后，组内按展示名不分大小写。
 pub(crate) fn chat_slash_commands(cwd: &str) -> Vec<crate::types::SlashCommand> {
     use crate::types::SlashCommand;
     let mut out: Vec<SlashCommand> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_cmd: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_skill: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // 项目级优先（覆盖同名用户命令）。
+    let proj_name = project_basename(cwd);
+    let plugins = enabled_plugins(cwd); // (插件名, 安装目录)，仅当前 cwd 下已启用
+
+    // ---- 命令 ----
+    // 项目 / 用户命令无命名空间（namespace=None）；插件命令必须带 `<plugin>:` 前缀（如 `/codex:review`）
+    // 才是 CLI 认的真实调用名 —— 用插件名作 namespace，展示角标仍用美化名。
     let proj_cmds = Path::new(cwd).join(".claude").join("commands");
-    scan_commands_dir(&proj_cmds, &proj_cmds, "project", &mut out, &mut seen);
-
+    scan_commands_dir(&proj_cmds, &proj_cmds, "project", proj_name.as_deref(), None, &mut out, &mut seen_cmd);
     let user_cmds = home().join(".claude").join("commands");
-    scan_commands_dir(&user_cmds, &user_cmds, "user", &mut out, &mut seen);
+    scan_commands_dir(&user_cmds, &user_cmds, "user", None, None, &mut out, &mut seen_cmd);
+    for (plugin, install) in &plugins {
+        let dir = install.join("commands");
+        let badge = prettify_name(plugin);
+        scan_commands_dir(&dir, &dir, "plugin", Some(&badge), Some(plugin), &mut out, &mut seen_cmd);
+    }
 
-    scan_user_invocable_skills(&home().join(".claude").join("skills"), &mut out, &mut seen);
+    // ---- 技能 ----
+    let proj_skills = Path::new(cwd).join(".claude").join("skills");
+    scan_skills_dir(&proj_skills, "project", proj_name.as_deref(), None, &mut out, &mut seen_skill);
+    scan_skills_dir(&home().join(".claude").join("skills"), "user", None, None, &mut out, &mut seen_skill);
+    for (plugin, install) in &plugins {
+        let badge = prettify_name(plugin);
+        scan_skills_dir(&install.join("skills"), "plugin", Some(&badge), Some(plugin), &mut out, &mut seen_skill);
+    }
 
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+    // 排序：先按 kind（命令在前、技能在后），同 kind 内**按来源聚拢**（项目 > 用户 > 插件，
+    // 插件再按插件名归堆），最后组内按展示名不分大小写 —— 同一来源的项排在一起，不再交错。
+    out.sort_by(|a, b| {
+        kind_rank(&a.kind)
+            .cmp(&kind_rank(&b.kind))
+            .then_with(|| origin_rank(&a.origin).cmp(&origin_rank(&b.origin)))
+            .then_with(|| a.origin_name.cmp(&b.origin_name))
+            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+    });
     out
 }
 
-/// 递归扫 `.claude/commands` 下的 `*.md`。命名空间 = 相对 `root` 的路径去扩展名、`/`→`:`
-/// （如 `git/commit.md` → `git:commit`），对齐 Claude 自身的命令命名。
+/// 分组排序权重：命令在前(0)，技能在后(1)。
+fn kind_rank(kind: &str) -> u8 {
+    if kind == "command" { 0 } else { 1 }
+}
+
+/// 同 kind 内的来源聚拢顺序：项目(0) > 用户(1) > 插件(2)（与去重优先级一致）。
+fn origin_rank(origin: &str) -> u8 {
+    match origin {
+        "project" => 0,
+        "user" => 1,
+        _ => 2,
+    }
+}
+
+/// cwd 末段作为项目展示名（来源角标用）。
+fn project_basename(cwd: &str) -> Option<String> {
+    Path::new(cwd)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// kebab / snake / 空格分词后每段首字母大写：`animejs`→`Animejs`、
+/// `create-promo-video`→`Create Promo Video`。
+fn prettify_name(name: &str) -> String {
+    name.split(['-', '_', ' '])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 读 `~/.claude/plugins/installed_plugins.json` + `settings.json` 的 `enabledPlugins`，返回
+/// 当前 cwd 下「已启用」插件的 (插件名, 安装目录)。判定一个插件已启用且可用：
+///   · 用户全局启用（settings.enabledPlugins[key]==true）→ 取其 user 作用域安装记录；或
+///   · 某条安装记录 projectPath==cwd（项目 / local 作用域）→ 该项目下自动启用。
+/// 取不到安装路径的跳过。**插件名 = key 里 `@` 前一段**（= plugin.json 的 name），命令/技能调用
+/// 要靠它加 `<plugin>:` 命名空间前缀（如 `/codex:review`）—— 故这里返回**原始名**而非美化名，
+/// 美化只在显示角标时做。
+fn enabled_plugins(cwd: &str) -> Vec<(String, PathBuf)> {
+    let claude = home().join(".claude");
+    let installed: Value =
+        fs::read_to_string(claude.join("plugins").join("installed_plugins.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(Value::Null);
+    let settings: Value = fs::read_to_string(claude.join("settings.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+    let enabled_map = settings.get("enabledPlugins").and_then(|v| v.as_object());
+    let Some(map) = installed.get("plugins").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for (key, records) in map {
+        let Some(recs) = records.as_array() else { continue };
+        let globally_enabled = enabled_map
+            .and_then(|m| m.get(key))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        let install = if globally_enabled {
+            recs.iter()
+                .find(|r| r.get("scope").and_then(Value::as_str) == Some("user"))
+                .or_else(|| recs.first())
+                .and_then(|r| r.get("installPath").and_then(Value::as_str))
+        } else {
+            recs.iter()
+                .find(|r| r.get("projectPath").and_then(Value::as_str) == Some(cwd))
+                .and_then(|r| r.get("installPath").and_then(Value::as_str))
+        };
+        let Some(install) = install else { continue };
+        let name = key.split('@').next().unwrap_or(key);
+        out.push((name.to_string(), PathBuf::from(install)));
+    }
+    out
+}
+
+/// 递归扫 `commands` 下的 `*.md`（项目 / 用户 / 插件同一套）。基础名 = 相对 `root` 的路径去
+/// 扩展名、`/`→`:`（如 `git/commit.md` → `git:commit`），对齐 Claude 命令命名。
+/// `namespace=Some("codex")`（插件）时再前置 `codex:` → `/codex:review`，这才是 CLI 认的真实调用名。
 fn scan_commands_dir(
     dir: &Path,
     root: &Path,
-    source: &str,
+    origin: &str,
+    origin_name: Option<&str>,
+    namespace: Option<&str>,
     out: &mut Vec<crate::types::SlashCommand>,
     seen: &mut std::collections::HashSet<String>,
 ) {
@@ -1047,51 +1417,98 @@ fn scan_commands_dir(
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            scan_commands_dir(&path, root, source, out, seen);
+            scan_commands_dir(&path, root, origin, origin_name, namespace, out, seen);
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
         let Ok(rel) = path.strip_prefix(root) else { continue };
-        let name = rel
+        let base = rel
             .with_extension("")
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, ":");
-        if name.is_empty() || !seen.insert(name.clone()) {
+        if base.is_empty() {
+            continue;
+        }
+        let name = match namespace {
+            Some(ns) => format!("{ns}:{base}"),
+            None => base,
+        };
+        if !seen.insert(name.clone()) {
             continue;
         }
         let description = md_description(&path).unwrap_or_default();
-        out.push(crate::types::SlashCommand { name, description, source: source.to_string() });
+        let argument_hint = read_frontmatter(&path)
+            .get("argument-hint")
+            .filter(|s| !s.is_empty())
+            .map(|s| cap_desc(s));
+        out.push(crate::types::SlashCommand {
+            title: format!("/{name}"),
+            name,
+            description,
+            kind: "command".to_string(),
+            origin: origin.to_string(),
+            origin_name: origin_name.map(str::to_string),
+            argument_hint,
+        });
     }
 }
 
-/// 扫 `~/.claude/skills/*/SKILL.md`，只收 frontmatter 标了 `user-invocable: true` 的。
-fn scan_user_invocable_skills(
+/// 扫 `skills/*/SKILL.md`（项目 / 用户 / 插件），收**全部**技能（不再过滤 `user-invocable`）。
+/// 基础名取 frontmatter `name`、回退目录名；`namespace=Some("codex")`（插件）时调用名前置
+/// `codex:` → `/codex:obsidian-cli`（与命令一致，对齐 Claude 的 `plugin:skill` 命名）。
+/// 展示名（title）美化**基础名**，描述优先 frontmatter `description`。
+fn scan_skills_dir(
     skills_dir: &Path,
+    origin: &str,
+    origin_name: Option<&str>,
+    namespace: Option<&str>,
     out: &mut Vec<crate::types::SlashCommand>,
     seen: &mut std::collections::HashSet<String>,
 ) {
     let Ok(entries) = fs::read_dir(skills_dir) else { return };
     for entry in entries.flatten() {
-        let skill_md = entry.path().join("SKILL.md");
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let skill_md = dir.join("SKILL.md");
         if !skill_md.is_file() {
             continue;
         }
         let fm = read_frontmatter(&skill_md);
-        if fm.get("user-invocable").map(|v| v.as_str()) != Some("true") {
-            continue;
-        }
-        // name 取 frontmatter name，回退目录名。
-        let name = fm
+        let base = fm
             .get("name")
+            .filter(|s| !s.is_empty())
             .cloned()
             .unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
-        if name.is_empty() || !seen.insert(name.clone()) {
+        if base.is_empty() {
             continue;
         }
-        let description = fm.get("description").cloned().unwrap_or_default();
-        out.push(crate::types::SlashCommand { name, description, source: "skill".to_string() });
+        let title = prettify_name(&base);
+        let name = match namespace {
+            Some(ns) => format!("{ns}:{base}"),
+            None => base,
+        };
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let description = fm
+            .get("description")
+            .filter(|s| !s.is_empty())
+            .map(|d| cap_desc(d))
+            .or_else(|| md_description(&skill_md))
+            .unwrap_or_default();
+        out.push(crate::types::SlashCommand {
+            title,
+            name,
+            description,
+            kind: "skill".to_string(),
+            origin: origin.to_string(),
+            origin_name: origin_name.map(str::to_string),
+            argument_hint: None,
+        });
     }
 }
 
@@ -1139,18 +1556,35 @@ fn parse_frontmatter(content: &str) -> std::collections::HashMap<String, String>
     if !trimmed.starts_with("---") {
         return map;
     }
-    let mut lines = trimmed.lines();
+    let mut lines = trimmed.lines().peekable();
     lines.next(); // 开头的 ---
-    for line in lines {
+    while let Some(line) = lines.next() {
         if line.trim() == "---" {
             break;
         }
-        if let Some((k, v)) = line.split_once(':') {
-            let key = k.trim();
-            if key.is_empty() || key.starts_with('#') {
-                continue;
+        let Some((k, v)) = line.split_once(':') else { continue };
+        let key = k.trim();
+        if key.is_empty() || key.starts_with('#') {
+            continue;
+        }
+        let vt = v.trim();
+        // YAML 块标量 `key: |` / `key: >`（含 |- >- |+ 等）：值是后续更深缩进的行，
+        // 折叠空白后并成一行（description 常这么写多行，否则会取到字面 "|"）。
+        if vt.starts_with('|') || vt.starts_with('>') {
+            let mut buf: Vec<String> = Vec::new();
+            while let Some(next) = lines.peek() {
+                if next.trim() == "---" {
+                    break;
+                }
+                if next.is_empty() || next.starts_with([' ', '\t']) {
+                    buf.push(lines.next().unwrap().trim().to_string());
+                } else {
+                    break; // 顶格的下一个键 → 块结束
+                }
             }
-            let val = v.trim().trim_matches(['"', '\'']).trim();
+            map.insert(key.to_string(), buf.join(" ").split_whitespace().collect::<Vec<_>>().join(" "));
+        } else {
+            let val = vt.trim_matches(['"', '\'']).trim();
             map.insert(key.to_string(), val.to_string());
         }
     }
@@ -1551,6 +1985,155 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn fork_jsonl_clones_with_fresh_ids_and_title() {
+        // 两条链式记录（child.parentUuid 指向 parent.uuid）+ 原标题。
+        let content = [
+            r#"{"type":"user","sessionId":"old-sess","uuid":"u1","parentUuid":null,"message":{"role":"user","content":"hi"}}"#,
+            r#"{"type":"assistant","sessionId":"old-sess","uuid":"u2","parentUuid":"u1","message":{"role":"assistant","content":"hello"}}"#,
+        ]
+        .join("\n");
+        let out = fork_jsonl(&content, "new-sess", "Chat fork");
+        let rows: Vec<Value> = out
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).expect("valid json"))
+            .collect();
+        // 2 条原记录 + custom-title + agent-name。
+        assert_eq!(rows.len(), 4);
+        // 所有 sessionId 都改成新 id；不再出现旧 id。
+        assert!(rows.iter().all(|r| r["sessionId"] == json!("new-sess")));
+        assert!(!out.contains("old-sess"));
+        // uuid 全部换新（不复用 u1/u2），且 child.parentUuid 仍指向 parent 的**新** uuid。
+        let u1_new = rows[0]["uuid"].as_str().unwrap();
+        let u2_parent = rows[1]["parentUuid"].as_str().unwrap();
+        assert_ne!(u1_new, "u1");
+        assert_ne!(rows[1]["uuid"].as_str().unwrap(), "u2");
+        assert_eq!(u2_parent, u1_new, "parentUuid 应重映射到父记录的新 uuid");
+        // 标题成对写入。
+        assert_eq!(rows[2]["type"], json!("custom-title"));
+        assert_eq!(rows[2]["customTitle"], json!("Chat fork"));
+        assert_eq!(rows[3]["type"], json!("agent-name"));
+        assert_eq!(rows[3]["agentName"], json!("Chat fork"));
+    }
+
+    #[test]
+    fn chat_command_fork_adds_fork_session_flag() {
+        // btw 侧聊：续聊 + fork → --resume <id> --fork-session（继承上下文、派生新 id）。
+        let cmd = ClaudeSource
+            .chat_command(Some("abc-123"), "plan", None, None, true)
+            .expect("claude chat command");
+        let args = cmd.args();
+        assert!(args.iter().any(|a| a == "--resume"));
+        assert!(args.iter().any(|a| a == "abc-123"));
+        assert!(args.iter().any(|a| a == "--fork-session"));
+    }
+
+    #[test]
+    fn chat_command_no_fork_omits_fork_session_flag() {
+        let cmd = ClaudeSource
+            .chat_command(Some("abc-123"), "acceptEdits", None, None, false)
+            .expect("claude chat command");
+        assert!(!cmd.args().iter().any(|a| a == "--fork-session"));
+    }
+
+    #[test]
+    fn chat_command_fork_without_session_has_no_fork_flag() {
+        // 新开会话（无 session_id）无可派生对象 → 即便 fork=true 也不下发 --fork-session。
+        let cmd = ClaudeSource
+            .chat_command(None, "acceptEdits", None, None, true)
+            .expect("claude chat command");
+        assert!(!cmd.args().iter().any(|a| a == "--fork-session"));
+        assert!(!cmd.args().iter().any(|a| a == "--resume"));
+    }
+
+    #[test]
+    fn file_ref_quoted_path_becomes_file_block() {
+        let (files, body) =
+            extract_file_refs("@\"/Users/wuchao/Downloads/仓库管理列表20260409163454.xlsx\"\nhi");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].kind, "file");
+        assert_eq!(
+            files[0].file_path.as_deref(),
+            Some("/Users/wuchao/Downloads/仓库管理列表20260409163454.xlsx")
+        );
+        assert_eq!(body, "hi");
+    }
+
+    #[test]
+    fn file_ref_directory_marked_is_dir() {
+        // 真实存在的目录 → is_dir=Some(true)（历史会话的文件夹 chip 才显示文件夹图标）。
+        let dir = std::env::temp_dir();
+        let dir = dir.to_string_lossy();
+        let dir = dir.trim_end_matches('/');
+        let (files, _) = extract_file_refs(&format!("@\"{dir}\" hi"));
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].is_dir, Some(true));
+    }
+
+    #[test]
+    fn file_ref_nonexistent_path_not_marked_dir() {
+        // 不存在的路径 → is_dir 留 None（退化成文件图标，不臆测）。
+        let (files, _) = extract_file_refs("@\"/no/such/path/here.xyz\" hi");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].is_dir, None);
+    }
+
+    #[test]
+    fn file_ref_unquoted_absolute_path() {
+        let (files, body) =
+            extract_file_refs("@/Users/wuchao/Downloads/仓库管理列表20260409163454.xlsx\nhi");
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].file_path.as_deref(),
+            Some("/Users/wuchao/Downloads/仓库管理列表20260409163454.xlsx")
+        );
+        assert_eq!(body, "hi");
+    }
+
+    #[test]
+    fn file_ref_multiple_files_one_message() {
+        let (files, body) = extract_file_refs("@/a/one.txt @/b/two.md please review");
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].file_path.as_deref(), Some("/a/one.txt"));
+        assert_eq!(files[1].file_path.as_deref(), Some("/b/two.md"));
+        assert!(body.contains("please review"));
+    }
+
+    #[test]
+    fn file_ref_relative_repo_files() {
+        // Claude `@` 选仓库文件的常见形态：无目录前缀的 `name.ext`，也要抽成 file 块。
+        let (files, body) =
+            extract_file_refs("@main_driver.dart @package.json @analysis_options.yaml hi");
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].file_path.as_deref(), Some("main_driver.dart"));
+        assert_eq!(files[1].file_path.as_deref(), Some("package.json"));
+        assert_eq!(files[2].file_path.as_deref(), Some("analysis_options.yaml"));
+        assert_eq!(body, "hi");
+    }
+
+    #[test]
+    fn file_ref_skips_plain_at_mention() {
+        // 不像路径的 `@token`（无 `/`、非绝对路径）当普通文字，不抽成文件。
+        let (files, body) = extract_file_refs("ping @teammate to review");
+        assert!(files.is_empty());
+        assert_eq!(body, "ping @teammate to review");
+    }
+
+    #[test]
+    fn lift_file_refs_only_real_user_message() {
+        let v = json!({
+            "type": "user",
+            "message": { "content": "@\"/tmp/report.xlsx\"\n看看这个" },
+        });
+        let msg = record_to_msg(&v).expect("user msg");
+        assert_eq!(msg.blocks.len(), 2);
+        assert_eq!(msg.blocks[0].kind, "file");
+        assert_eq!(msg.blocks[0].file_path.as_deref(), Some("/tmp/report.xlsx"));
+        assert_eq!(msg.blocks[1].kind, "text");
+        assert_eq!(msg.blocks[1].text.as_deref(), Some("看看这个"));
+    }
+
+    #[test]
     fn extracts_text_queued_command() {
         let v = json!({
             "type": "attachment",
@@ -1599,6 +2182,97 @@ mod tests {
         });
         let blocks = text_blocks("This session is being continued...");
         assert_eq!(classify_meta_kind(&v, &blocks).as_deref(), Some("compact"));
+    }
+
+    #[test]
+    fn meta_kind_flags_compaction_summary_by_preamble_without_flag() {
+        // GUI chat 的 headless stream-json 续聊摘要事件不带 isCompactSummary flag，
+        // 只能靠 Claude Code 固定的续聊开场白识别 —— 否则会渲染成「Me」气泡。
+        let v = json!({ "type": "user", "message": { "content": "" } });
+        let blocks = text_blocks(
+            "This session is being continued from a previous conversation that ran out of context. The summary below...",
+        );
+        assert_eq!(classify_meta_kind(&v, &blocks).as_deref(), Some("compact"));
+    }
+
+    #[test]
+    fn read_reorders_compact_summary_after_the_compact_command() {
+        // Claude Code 把续聊摘要记录写在文件**开头**（早于触发它的 /compact 命令），但摘要的
+        // timestamp 其实晚于命令（压缩完成时刻）。read() 应按 timestamp 稳定排序把摘要归位 ——
+        // 否则「结果」会渲染到用户的 /compact 之上。
+        let p = write_temp(
+            "compact-order.jsonl",
+            &[
+                r#"{"type":"user","isCompactSummary":true,"timestamp":"2026-06-29T09:32:42.834Z","message":{"content":"This session is being continued from a previous conversation that ran out of context. The summary below..."}}"#,
+                r#"{"type":"user","timestamp":"2026-06-29T09:31:55.402Z","message":{"content":"<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>"}}"#,
+                r#"{"type":"user","timestamp":"2026-06-29T09:32:42.953Z","message":{"content":"<local-command-stdout>Compacted </local-command-stdout>"}}"#,
+            ],
+        );
+        let msgs = read(p.to_str().unwrap()).unwrap();
+        let cmd = msgs
+            .iter()
+            .position(|m| {
+                m.blocks
+                    .iter()
+                    .any(|b| b.text.as_deref().unwrap_or("").contains("<command-name>/compact"))
+            })
+            .expect("/compact command record");
+        let summary = msgs
+            .iter()
+            .position(|m| m.meta_kind.as_deref() == Some("compact"))
+            .expect("compact summary record");
+        assert!(
+            cmd < summary,
+            "压缩摘要 (idx {summary}) 应排在 /compact 命令 (idx {cmd}) 之后"
+        );
+    }
+
+    #[test]
+    fn read_revives_context_local_command_as_command_output() {
+        // on-disk 的 /context 一轮 = user 命令 + system/local_command(带壳 stdout) +
+        // assistant「No response requested.」占位。read() 应：把 local_command 当 user 记录
+        // 交给既有逻辑 → command-output 折叠块（前端 contextUsageOf 再升级成卡片），且**不**
+        // 造 model=<synthetic> 的 assistant（否则带歪模型选择器）；并丢掉「No response requested.」。
+        let p = write_temp(
+            "context-local-command.jsonl",
+            &[
+                r#"{"type":"user","timestamp":"2026-06-29T10:00:07.214Z","message":{"content":"<command-name>/context</command-name>\n<command-message>context</command-message>\n<command-args></command-args>"}}"#,
+                r#"{"type":"system","subtype":"local_command","timestamp":"2026-06-29T10:00:18.715Z","content":"<local-command-stdout>## Context Usage\n\n**Model:** claude-opus-4-8[1m]\n**Tokens:** 26.8k / 400k (7%)\n\n### Estimated usage by category\n\n| Category | Tokens | Percentage |\n|----------|--------|------------|\n| Messages | 10k | 2.5% |\n| Free space | 339.9k | 85.0% |</local-command-stdout>"}"#,
+                r#"{"type":"assistant","timestamp":"2026-06-29T10:16:19.000Z","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]}}"#,
+            ],
+        );
+        let msgs = read(p.to_str().unwrap()).unwrap();
+        let cmd = msgs
+            .iter()
+            .position(|m| {
+                m.blocks
+                    .iter()
+                    .any(|b| b.text.as_deref().unwrap_or("").contains("<command-name>/context"))
+            })
+            .expect("/context command record");
+        let card = msgs
+            .iter()
+            .position(|m| {
+                m.blocks.iter().any(|b| {
+                    b.text.as_deref().unwrap_or("").contains("## Context Usage")
+                })
+            })
+            .expect("revived /context breakdown record");
+        // command-output 折叠块（user 角色 + meta_kind），正文保留 <local-command-stdout> 外壳
+        // （前端 cleanMetaText 去壳后再渲染 / 升级成卡片）。绝不能是 model=<synthetic> 的 assistant。
+        assert_eq!(msgs[card].role, "user");
+        assert_eq!(msgs[card].meta_kind.as_deref(), Some("command-output"));
+        assert!(msgs.iter().all(|m| m.model.as_deref() != Some("<synthetic>")));
+        assert!(cmd < card, "卡片块 (idx {card}) 应排在 /context 命令 (idx {cmd}) 之后");
+        // 「No response requested.」占位被丢弃，不残留任何气泡。
+        assert!(
+            !msgs.iter().any(|m| {
+                m.blocks
+                    .iter()
+                    .any(|b| b.text.as_deref().map(str::trim) == Some("No response requested."))
+            }),
+            "synthetic「No response requested.」占位不该出现在离线回看里",
+        );
     }
 
     #[test]
@@ -2208,13 +2882,17 @@ mod tests {
         let root = std::env::temp_dir().join("csv-claude-slash-scan");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("git")).unwrap();
-        fs::write(root.join("review.md"), "---\ndescription: Review code\n---\n").unwrap();
+        fs::write(
+            root.join("review.md"),
+            "---\ndescription: Review code\nargument-hint: '[--wait|--background] [--base <ref>]'\n---\n",
+        )
+        .unwrap();
         fs::write(root.join("git").join("commit.md"), "Make a commit").unwrap();
         fs::write(root.join("notes.txt"), "ignored, not md").unwrap();
 
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        scan_commands_dir(&root, &root, "project", &mut out, &mut seen);
+        scan_commands_dir(&root, &root, "project", Some("my-proj"), None, &mut out, &mut seen);
 
         let names: std::collections::HashSet<_> = out.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains("review"), "{names:?}");
@@ -2222,12 +2900,93 @@ mod tests {
         assert!(!names.iter().any(|n| n.contains("notes")), "non-md ignored");
         let review = out.iter().find(|c| c.name == "review").unwrap();
         assert_eq!(review.description, "Review code");
-        assert_eq!(review.source, "project");
+        assert_eq!(review.title, "/review", "命令展示名带前导 /");
+        assert_eq!(review.kind, "command");
+        assert_eq!(review.origin, "project");
+        assert_eq!(review.origin_name.as_deref(), Some("my-proj"));
+        // frontmatter argument-hint 去引号后原样带出（选中命令后作 ghost 占位）。
+        assert_eq!(review.argument_hint.as_deref(), Some("[--wait|--background] [--base <ref>]"));
+        // 无 frontmatter 的命令没有 hint。
+        let commit = out.iter().find(|c| c.name == "git:commit").unwrap();
+        assert_eq!(commit.argument_hint, None);
 
         // 同名再扫一次（如用户级）不应重复加入。
         let before = out.len();
-        scan_commands_dir(&root, &root, "user", &mut out, &mut seen);
+        scan_commands_dir(&root, &root, "user", None, None, &mut out, &mut seen);
         assert_eq!(out.len(), before, "已 seen 的名字不重复");
+
+        // 插件命令带 `<plugin>:` 命名空间 —— 调用名 = `codex:review`、展示名 = `/codex:review`
+        // （= CLI 认的真实命令，不能是裸 `/review`）；角标显示美化名，不参与命名空间。
+        let mut pout = Vec::new();
+        let mut pseen = std::collections::HashSet::new();
+        scan_commands_dir(&root, &root, "plugin", Some("Codex"), Some("codex"), &mut pout, &mut pseen);
+        let pnames: std::collections::HashSet<_> = pout.iter().map(|c| c.name.as_str()).collect();
+        assert!(pnames.contains("codex:review"), "插件命令需 codex: 前缀: {pnames:?}");
+        assert!(pnames.contains("codex:git:commit"), "嵌套插件命令: {pnames:?}");
+        assert!(!pnames.contains("review"), "插件命令不应是裸名");
+        let preview = pout.iter().find(|c| c.name == "codex:review").unwrap();
+        assert_eq!(preview.title, "/codex:review");
+        assert_eq!(preview.origin_name.as_deref(), Some("Codex"));
+    }
+
+    #[test]
+    fn scan_skills_dir_collects_all_with_prettified_title() {
+        let root = std::env::temp_dir().join("csv-claude-skill-scan");
+        let _ = fs::remove_dir_all(&root);
+        // 一个带 frontmatter name + description，一个只有目录名、无 user-invocable。
+        fs::create_dir_all(root.join("animejs")).unwrap();
+        fs::write(
+            root.join("animejs").join("SKILL.md"),
+            "---\nname: animejs\ndescription: Anime.js adapter\n---\nbody",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("create-promo-video")).unwrap();
+        fs::write(root.join("create-promo-video").join("SKILL.md"), "no frontmatter body line").unwrap();
+        // 没有 SKILL.md 的目录应被忽略。
+        fs::create_dir_all(root.join("empty")).unwrap();
+
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        scan_skills_dir(&root, "user", None, None, &mut out, &mut seen);
+
+        let anime = out.iter().find(|c| c.name == "animejs").unwrap();
+        assert_eq!(anime.title, "Animejs");
+        assert_eq!(anime.kind, "skill");
+        assert_eq!(anime.description, "Anime.js adapter");
+        assert_eq!(anime.origin, "user");
+        assert!(anime.origin_name.is_none(), "user 来源不带 origin_name");
+        assert_eq!(anime.argument_hint, None, "技能不带 argument-hint");
+        // 无 frontmatter name → 回退目录名；展示名美化为 Title Case。
+        let promo = out.iter().find(|c| c.name == "create-promo-video").unwrap();
+        assert_eq!(promo.title, "Create Promo Video");
+        assert!(!out.iter().any(|c| c.name == "empty"), "无 SKILL.md 的目录忽略");
+
+        // 插件技能同样带 `<plugin>:` 命名空间：调用名 = `codex:animejs`，展示名（title）仍是美化基础名。
+        let mut pout = Vec::new();
+        let mut pseen = std::collections::HashSet::new();
+        scan_skills_dir(&root, "plugin", Some("Codex"), Some("codex"), &mut pout, &mut pseen);
+        let panime = pout.iter().find(|c| c.name == "codex:animejs").unwrap();
+        assert_eq!(panime.title, "Animejs", "title 美化基础名，不含命名空间");
+        assert_eq!(panime.origin_name.as_deref(), Some("Codex"));
+        assert!(!pout.iter().any(|c| c.name == "animejs"), "插件技能不应是裸名");
+    }
+
+    #[test]
+    fn parse_frontmatter_unfolds_block_scalar_description() {
+        let fm = parse_frontmatter(
+            "---\nname: humanizer\ndescription: |\n  Remove signs of AI writing\n  from a draft.\nallowed-tools: \"Read\"\n---\nbody",
+        );
+        assert_eq!(fm.get("name").map(String::as_str), Some("humanizer"));
+        assert_eq!(fm.get("description").map(String::as_str), Some("Remove signs of AI writing from a draft."));
+        // 块标量后顶格的下一个键照常解析。
+        assert_eq!(fm.get("allowed-tools").map(String::as_str), Some("Read"));
+    }
+
+    #[test]
+    fn prettify_name_title_cases_tokens() {
+        assert_eq!(prettify_name("animejs"), "Animejs");
+        assert_eq!(prettify_name("create-promo-video"), "Create Promo Video");
+        assert_eq!(prettify_name("planning_with-files"), "Planning With Files");
     }
 
 }

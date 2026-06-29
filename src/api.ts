@@ -7,6 +7,7 @@ import type {
   ClaudeRuntimeInfo,
   ChatStartInfo,
   SlashCommand,
+  ProjectFileEntry,
   ProjectInfo,
   SessionPage,
   Msg,
@@ -121,6 +122,15 @@ export function nextSearchRequestId(): number {
 export const renameSession = (agent: Agent, path: string, name: string) =>
   invoke<void>('rename_session', { agent, path, name })
 
+/** `/fork`：把 `sourceId` 会话克隆成全新独立 transcript（新 session id），打上 `title`，
+ *  返回新 session id。`projectKey` = 项目目录名（ChatSession.projectKey）。 */
+export const forkSession = (
+  agent: Agent,
+  projectKey: string,
+  sourceId: string,
+  title: string,
+) => invoke<string>('fork_session', { agent, projectKey, sourceId, title })
+
 export const softDeleteSession = (
   agent: Agent,
   path: string,
@@ -146,6 +156,14 @@ export const openLocalPath = (path: string) =>
 
 /** 在系统默认浏览器中打开一个外部链接（仅 http/https）。 */
 export const openUrl = (url: string) => invoke<void>('open_url', { url })
+
+/**
+ * 用系统默认程序打开聊天里的文件（相对 / 部分路径按会话 cwd 解析）。
+ * 传了 `line`（可选 `col`）时，若装了支持跳行的编辑器（VS Code/Cursor/Zed/Sublime/Android
+ * Studio 等）则在其中打开并跳到对应行；否则退回默认程序仅打开。
+ */
+export const openPathExternal = (path: string, cwd?: string, line?: number, col?: number) =>
+  invoke<void>('open_path_external', { path, cwd, line, col })
 
 /** 写入用户指定的绝对路径（覆盖同名）。返回最终路径以便后续 reveal。 */
 export const writeFile = (path: string, content: string) =>
@@ -271,6 +289,8 @@ export const agentChatStart = (
   permissionMode?: string,
   model?: string,
   effort?: string,
+  /** btw 侧聊：续聊既有会话时从它**派生**一份独立 session（继承上下文、不污染原 transcript）。 */
+  fork?: boolean,
 ) =>
   invoke<ChatStartInfo>('agent_chat_start', {
     agent,
@@ -279,6 +299,7 @@ export const agentChatStart = (
     permissionMode,
     model,
     effort,
+    fork,
   })
 
 /** 向某个 chat 子进程发送一条用户消息（含可选图片附件 + 本轮 model/effort/权限）。
@@ -300,6 +321,22 @@ export const agentChatSend = (
     effort,
     permissionMode,
   })
+
+/** 读取本地图片文件为 base64（系统选择器只给路径，这里取字节做缩略图 + 视觉块）。 */
+export const readFileBase64 = (path: string) =>
+  invoke<ChatImageInput>('read_file_base64', { path })
+
+/** 判断本地路径是否为目录（拖拽到输入框的附件可能是文件或文件夹，据此选图标 + 提示）。 */
+export const pathIsDir = (path: string) => invoke<boolean>('path_is_dir', { path })
+
+/** 会话 cwd 所在仓库的当前 git 分支名；无仓库 / 读不到时为 null（chat 头部展示用）。 */
+export const gitCurrentBranch = (cwd: string) =>
+  invoke<string | null>('git_current_branch', { cwd })
+
+/** GUI chat 输入框 `@` 文件浮层：列出会话 cwd 下的目录/文件（相对路径）。
+ *  `query` 空 → 顶层直接子项；非空 → 递归子串匹配（大小写不敏感）。 */
+export const listProjectFiles = (cwd: string, query: string, limit = 200) =>
+  invoke<ProjectFileEntry[]>('list_project_files', { cwd, query, limit })
 
 /** 结束一个 chat 子进程（kill + 回收）。幂等。 */
 export const agentChatStop = (id: number) => invoke<void>('agent_chat_stop', { id })

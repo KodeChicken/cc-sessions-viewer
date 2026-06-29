@@ -14,16 +14,28 @@ use serde::{Deserialize, Serialize};
 /// `data` 是去掉 `data:` 前缀的纯 base64；`media_type` 如 `image/png`。
 /// 放在 types.rs（而非 agent_chat.rs）：`SessionSource::chat_encode_input` 要用到它，
 /// 类型住在共享层，避免 trait 反向依赖驱动模块。
-/// GUI chat 可用的一条 slash 指令（自定义命令 / user-invocable skill）。`name` 不含
-/// 前导 `/`；前端按输入过滤、选中后按 `/<name>` 透传给 CLI（CLI 自己展开）。
-/// 不含 TUI 内置命令（headless 下不展开，会报「not available」）。
+/// GUI chat `/` 浮层里的一条可用项 —— 命令（自定义 / 插件）或技能。`name` 是不含前导 `/`
+/// 的调用 token（命令命名空间名 `git:commit` / 技能名 `animejs`），选中后按 `/<name>` 透传给
+/// CLI（CLI 自己展开）。**不含 TUI 内置指令**（headless 不展开、会报「not available」）。
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SlashCommand {
+    /// 调用 token（无前导 `/`）。
     pub name: String,
+    /// 浮层展示名：命令 = `/name`；技能 = 由 name 美化的 Title Case（如 `animejs`→`Animejs`）。
+    pub title: String,
     pub description: String,
-    /// 来源：project（项目 .claude/commands）/ user（~/.claude/commands）/ skill。给 UI 角标。
-    pub source: String,
+    /// 分组 + 图标依据：`"command"` | `"skill"`。
+    pub kind: String,
+    /// 来源类别：`"user"`（→ UI 显示「Personal」）/ `"project"` / `"plugin"`。
+    pub origin: String,
+    /// 来源名：项目名 / 插件名（`user` 来源省略，前端回落到本地化「Personal」）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_name: Option<String>,
+    /// 命令 frontmatter 的 `argument-hint`（如 `[--wait] [--base <ref>]`）：选中命令后在输入框里
+    /// 作为暗色 ghost 占位提示参数格式（对齐 Claude TUI）。技能 / 无此字段的命令省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
 }
 
 /// `agent_chat_start` 的返回：内部 chat id + 该 agent 的进程模型标识。前端据
@@ -48,6 +60,10 @@ pub struct ClaudeRuntimeInfo {
     /// `"none"` = 订阅/OAuth 登录（5h/周限额 + effort 生效）；`"ANTHROPIC_API_KEY"` /
     /// `"apiKeyHelper"` = API key 计费；`None` = 判不出（UI 保持保守，等 init）。
     pub api_key_source: Option<String>,
+    /// settings.json 里的 `effortLevel`（用户在 CLI 选的全局 reasoning effort 默认档）。
+    /// transcript 不记录 effort，CLI 在不带 `--effort` 时即用这个值 —— 故它是 GUI chat
+    /// effort 选择器在用户未显式改档前应当展示的「真实生效默认」（而非假的 levels[0]）。
+    pub effort_level: Option<String>,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -59,11 +75,23 @@ pub struct ClaudeAliasTargets {
     pub fable: Option<String>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatImageInput {
     pub media_type: String,
     pub data: String,
+}
+
+/// GUI chat 输入框 `@` 文件浮层的一条目录/文件项。`rel_path` 相对会话 `cwd`（统一用
+/// `/` 分隔），`name` 是末段名字，`is_dir` 决定图标 + 钻取行为。`has_children` 仅对目录
+/// 有意义：是否含可见子项（空目录 = false → 前端隐藏「进入」chevron / 禁用下钻）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFileEntry {
+    pub rel_path: String,
+    pub name: String,
+    pub is_dir: bool,
+    pub has_children: bool,
 }
 
 /// 流式增量（`--include-partial-messages` → `stream_event`）归一后的一帧。
@@ -157,6 +185,11 @@ pub struct Block {
     pub is_error: bool,
     /// 文件改动类工具结果携带的目标文件路径。
     pub file_path: Option<String>,
+    /// file 块：该 `@path` 引用是目录而非文件。前端据此用文件夹图标 +「打开文件夹」。
+    /// 仅在确为目录时才置 `Some(true)`（普通文件留 None），让历史会话的文件夹 chip 与
+    /// 实时回显一致，而不至于全都显示成文件图标。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_dir: Option<bool>,
     /// 文件改动的结构化 diff（如 Claude 的 structuredPatch）。
     pub diff: Option<Vec<DiffHunk>>,
     /// 图片源：通常为 data:<mime>;base64,<...> 的内联 URL 或 http(s) URL。

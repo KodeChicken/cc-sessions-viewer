@@ -138,6 +138,7 @@ fn build_piped_command(cwd: &str, command: &AgentCommand) -> std::process::Comma
 /// 按该 agent 的 [`ChatProcessModel`] 选驱动路径：
 ///   - LongLivedStdin：spawn 一个长驻进程 + reader/stderr/waiter 线程（现状）。
 ///   - OneShotResume：**不 spawn**，只登记会话；首条 `send` 才起「这一轮」的进程。
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     app: AppHandle,
     agent: String,
@@ -146,6 +147,7 @@ pub fn start(
     permission_mode: String,
     model: Option<String>,
     effort: Option<String>,
+    fork: bool,
 ) -> Result<u64, String> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err("项目目录已不存在，无法启动聊天".into());
@@ -162,6 +164,7 @@ pub fn start(
                     &permission_mode,
                     model.as_deref(),
                     effort.as_deref(),
+                    fork,
                 )
                 .ok_or_else(|| format!("{agent} 暂不支持 GUI 聊天模式"))?;
 

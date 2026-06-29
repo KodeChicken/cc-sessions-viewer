@@ -53,6 +53,8 @@ ureq = { version = "2", features = ["json"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# `/fork`：克隆会话时给新 transcript 生成全新 session id / 消息 uuid（v4）。
+uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = ["dev-mcp"]

@@ -100,6 +100,7 @@ const shortcutGroups = [
       { key: k([mod, 'W']), label: 'settings.shortcut.closeTab' },
       { key: k([mod, 'R']), label: 'settings.shortcut.renameTab' },
       { key: k([mod, 'E']), label: 'settings.shortcut.exportSession' },
+      { key: k([mod, 'U']), label: 'settings.shortcut.attachFiles' },
     ],
   },
 ]
@@ -302,6 +303,8 @@ async function installClaudeHooks() {
           <span>{{ t(n.key) }}</span>
           <span v-if="n.id === 'updates' && updateAvailable" class="set-nav-dot" aria-hidden="true" />
         </button>
+        <!-- 左栏底部：当前 app 版本号（margin-top:auto 顶到底） -->
+        <div class="set-nav-version">v{{ version }}</div>
       </nav>
 
       <button
