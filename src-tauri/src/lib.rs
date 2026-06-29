@@ -21,6 +21,8 @@ mod pty;
 pub mod stats;
 #[cfg(target_os = "macos")]
 mod tray;
+#[cfg(target_os = "windows")]
+mod tray_windows;
 mod trash;
 mod turn;
 mod types;
@@ -1064,6 +1066,7 @@ pub fn run() {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.set_decorations(false);
                 }
+                tray_windows::build(app.handle())?;
             }
 
             #[cfg(target_os = "macos")]
