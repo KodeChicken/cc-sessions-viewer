@@ -487,11 +487,13 @@ mod tests {
         assert_eq!(lo, Some(expected));
         assert!(hi.is_none());
 
-        // 跟 days30 不重合 —— 否则就是按 30 天滚动了。
+        // month.lo 不应等于 days30.lo —— 否则就是把「本月」错算成了 30 天滚动窗口。
+        // days30.lo = 今天 − 29 天，唯一会与本月 1 号天然重合的日子是「本月第 30 天」
+        // （1 + 29 = 30）。于是：两者不同属正常；若相同，则今天必须正好是 30 号 ——
+        // 否则就是真的退化成滚动 30 天了。这样写不依赖运行当天，不会偶发 flaky。
         let (lo30, _) = parse_range("days30").unwrap();
-        if n.day() != 1 {
-            // 月初 1 号那天才会重合，那天本来就两个都 = 今天。
-            assert_ne!(lo, lo30, "month must NOT equal days30 except on the 1st");
+        if lo == lo30 {
+            assert_eq!(n.day(), 30, "month.lo 仅应在本月第 30 天与 days30.lo 重合");
         }
     }
 }
