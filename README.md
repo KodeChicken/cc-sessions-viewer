@@ -25,11 +25,13 @@
 
 - **Faithful replay** — thinking chains, tool-call pairings, structured diffs, and inline screenshots
 - **Global search** — cross-project instant search (⌘⇧F) jumps to the exact message
+- **In-app chat** — start or resume a session in a built-in chat with live model, reasoning-effort (incl. Opus **Ultracode**), and permission-mode pickers — no terminal required
 - **One-click resume** — resume or start a session in an embedded terminal or external app — supports **Terminal.app**, **cmux**, **iTerm2**, **Ghostty**, and **Warp**
 - **Shell terminal tabs** — open pure shell tabs alongside agent sessions for running arbitrary commands in the project directory; tabs persist across restarts
 - **cmux deep integration** — auto-reuses existing workspace by cwd, locates running sessions with blue flash, smart split direction, and directory-named tabs
 - **Launch arguments** — per-agent CLI flags (e.g. `--dangerously-skip-permissions`) appended on resume / new session
 - **Jump to prompt** — locate button lists all user prompts; click to scroll and flash the target message
+- **Views history** — per-project, searchable history of every view you've opened, with favorites; jump back to any past read or chat view in one click
 - **Deep stats** — aggregate token spend and cost with live model pricing from LiteLLM; slice by project, model, or tool
 - **Menu bar stats** — macOS tray icon shows at-a-glance Today / 7d / 30d cost and tokens per agent
 - **Live model pricing** — browseable pricing table for Claude / Codex / Gemini, auto-updated from upstream

@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, defineAsyncComponent } from 'vue'
 import type { Agent, Msg, SessionMeta, Block } from '../types'
-import { renderText, formatTime, isCaveatOnlyMsg, parseSystemEvent, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage } from '../format'
+import { renderText, formatTime, isCaveatOnlyMsg, parseSystemEvent, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage, stripImagePlaceholders, parseFileRef } from '../format'
 import type { MetaField } from '../format'
 import { prettifyAndHighlightJson } from '../jsonHighlight'
 import { renderAllMermaid, resetMermaidForTheme } from '../mermaid'
 import { highlightAllCodeBlocks, rehighlightAllCodeBlocks } from '../shikiHighlight'
+import { decorateCodeBlocks } from '../codeCopy'
 import { theme } from '../settings'
 import { t } from '../i18n'
 import ToolResult from '../components/ToolResult.vue'
 import CollapsibleBox from '../components/CollapsibleBox.vue'
-import VueEasyLightbox from 'vue-easy-lightbox'
+import ContextWindowCard from '../components/ContextWindowCard.vue'
+import { parseContextUsage, type ContextUsage } from '../contextUsage'
+// 图片灯箱只在点开预览时用 —— 懒加载，不进首屏（vue-easy-lightbox 不算大但能省一点）。
+const VueEasyLightbox = defineAsyncComponent(() => import('vue-easy-lightbox'))
 import { highlightDiff, looksLikeDiff } from '../diffHighlight'
 import { renderCodexApplyPatchHtml } from '../codexApplyPatch'
 import {
@@ -33,6 +37,7 @@ import {
   IconChevronRight,
   IconPencil,
   IconCopy,
+  IconCheck,
   IconDownload,
   IconMarkdown,
   IconHtml,
@@ -43,28 +48,64 @@ import {
   IconLocate,
   IconEyeOff,
   IconEye,
+  IconChat,
+  IconReader,
+  IconStar,
+  IconStop,
+  IconGitBranch,
+  fileIconFor,
   agentIcons,
 } from '../components/icons'
+import ChatComposer from '../components/ChatComposer.vue'
+import ChatPermissionPrompt from '../components/ChatPermissionPrompt.vue'
+import ChatQuestionPrompt from '../components/ChatQuestionPrompt.vue'
+import {
+  now as chatNow,
+  interruptChat,
+  respondPermission,
+  respondQuestion,
+  type ChatSession,
+} from '../chatSessions'
+import type { PermissionChoice } from '../chatPermission'
+import type { QuestionSelection } from '../chatQuestion'
+import { openPathExternal, agentChatSlashCommands } from '../api'
+import { useGitBranch } from '../gitBranch'
+import { showTooltipFor, hideTooltip } from '../tooltip'
 
 const props = defineProps<{
   agent: Agent
   session: SessionMeta
   messages: Msg[]
-  /** 会话来自回收站 —— 只读查看，隐藏 重命名/恢复终端/删除/导出 等操作。 */
+  /** 会话来自回收站 —— 只读查看，隐藏 重命名/恢复终端/删除/导出/统计 等操作。 */
   trashed?: boolean
   /** Live tail 状态：后端正在追这条 JSONL；为 true 时显示 "● Live" 徽章。 */
   live?: boolean
   /** Resume CLI 时使用的 cwd。空字符串时禁用「在窗口内对话」按钮。 */
   cwd?: string
+  /** 非空 = live GUI chat 模式：底部挂 ChatComposer、隐藏只读专属操作按钮，
+   *  `messages` 由父组件传入活跃会话的 reactive `msgs`。 */
+  liveSession?: ChatSession | null
+  /** live 模式下是否有「来源只读会话」可回看 —— 有才显示头部「切到 read」按钮。 */
+  hasReadView?: boolean
+  /** 当前会话是否已收藏进「Views」历史 —— 决定头部星标实心 / 空心。 */
+  favorited?: boolean
+  /** 是否允许收藏（普通项目会话才可；回收站 / 导出历史 / 无 path 的 live chat 不可）。 */
+  canFavorite?: boolean
 }>()
 
 defineEmits<{
   back: []
   refresh: []
   delete: []
-  /** 点 Resume —— 让父组件 openOrFocusTui，开（或聚焦已有）一个 TUI tab。 */
+  /** 入口 2：让父组件 openOrFocusTui，开（或聚焦已有）一个 TUI tab。 */
   resumeHere: []
+  /** 入口 3：把当前只读会话就地切到 GUI chat 模式。 */
+  switchToChat: []
+  /** live chat 头部：切回来源会话的只读详情（read 模式），进程不停。 */
+  switchToRead: []
   rename: []
+  /** `/fork` 指令：把当前 live chat clone 成独立新会话并切过去（仅 live 模式、Claude）。 */
+  fork: []
   reveal: []
   copyId: []
   exportMd: []
@@ -74,7 +115,31 @@ defineEmits<{
   /** 打开会话统计页 —— 原本住在 ChatTopbar 里，现挪进 chat-head 减少
    *  topbar + chat-head 两排 icon-only 按钮重叠的扫描负担。 */
   openSessionStats: []
+  /** 头部星标：把当前会话收藏 / 取消收藏到「Views」历史。 */
+  toggleFavorite: []
 }>()
+
+/** live 模式当前轮已运行秒数（由 chatSessions 的模块时钟驱动）。 */
+const runningElapsedSec = computed(() => {
+  const s = props.liveSession
+  if (!s || s.turnState !== 'running') return 0
+  return Math.max(0, Math.floor((chatNow.value - s.turnStartedAt) / 1000))
+})
+/** 进行中状态动词：网络重试时 → 「请求失败 · 重试中 (n/N)」；流式 thinking → 「思考中」；
+ *  否则「处理中」（参考 Claude 客户端）。 */
+const runningVerb = computed(() => {
+  const r = props.liveSession?.retry
+  if (r) {
+    return r.attempt && r.max
+      ? t('chat.running.retryingN', { n: r.attempt, max: r.max })
+      : t('chat.running.retrying')
+  }
+  return props.liveSession?.live?.kind === 'thinking' ? t('chat.running.thinking') : t('chat.running.working')
+})
+
+// 头部分支展示：会话 cwd 所在仓库的当前 git 分支（共用 useGitBranch，与 ChatComposer 底栏一致）。
+// cwd 取 props.cwd（resume 用的工作目录）兜 session.cwd（解析出的会话工作目录）。
+const gitBranch = useGitBranch(() => props.cwd || props.session.cwd)
 
 function toggleTools() {
   toolsCollapsed.value = !toolsCollapsed.value
@@ -209,6 +274,37 @@ function isInlinedResult(b: Block): boolean {
   return b.kind === 'tool_result' && !!b.toolId && inlinedResultIds.value.has(b.toolId)
 }
 
+// 文件改动型 tool_result（structuredPatch diff）整块挂回发起它的 assistant tool_use 行内：
+// 渲染在气泡下方、时间行上方，让「Tool call · Edit + File change + 时间」成为同一条消息的
+// 整体（之前 diff 自成一行、时间夹在调用卡与 diff 之间，看着像断开两段）。其独立 tool-only
+// 行随之隐藏。与 inlinedResult* 互斥：非文件改动型仍内嵌进调用卡。
+const attachedResultIds = computed(() => {
+  const set = new Set<string>()
+  for (const m of props.messages) {
+    for (const b of m.blocks) {
+      if (
+        b.kind === 'tool_use' &&
+        b.toolId &&
+        FILE_MUTATING_TOOLS.has(b.toolName ?? '') &&
+        resultByToolId.value.has(b.toolId)
+      ) {
+        set.add(b.toolId)
+      }
+    }
+  }
+  return set
+})
+
+function attachedResultFor(b: Block): Block | undefined {
+  if (b.kind !== 'tool_use' || !b.toolId) return undefined
+  if (!attachedResultIds.value.has(b.toolId)) return undefined
+  return resultByToolId.value.get(b.toolId)
+}
+
+function isAttachedResult(b: Block): boolean {
+  return b.kind === 'tool_result' && !!b.toolId && attachedResultIds.value.has(b.toolId)
+}
+
 function shouldHideToolResult(b: Block): boolean {
   if (b.kind !== 'tool_result' || !b.toolId) return false
   const toolUse = toolUseById.value.get(b.toolId)
@@ -219,8 +315,131 @@ function rowHasContent(m: Msg): boolean {
   // Local-command caveat user messages are pure plumbing — hide the row entirely.
   if (isCaveatOnlyMsg(m)) return false
   if (!isToolOnly(m)) return true
-  return m.blocks.some((b) => !isInlinedResult(b) && !shouldHideToolResult(b))
+  return m.blocks.some((b) => !isInlinedResult(b) && !isAttachedResult(b) && !shouldHideToolResult(b))
 }
+
+// ---- 图片：缩略图浮在气泡上方（参考 Claude 客户端），不进灰底气泡 ----
+function imageBlocks(m: Msg): Block[] {
+  return m.blocks.filter((b) => b.kind === 'image' && b.imageSrc)
+}
+// 带图消息的正文要滤掉 [Image #n] 占位符（缩略图已单独展示）；无图消息原样渲染，
+// 免得误删正文里对图片的文字引用。
+function bubbleText(m: Msg, raw: string): string {
+  return imageBlocks(m).length ? stripImagePlaceholders(raw) : raw
+}
+// 用户消息以 /命令 开头时，把开头那段 /token 标蓝（对齐输入框命令高亮 + 官方客户端渲染）。
+// 只处理开头：renderText 把首段文本包成 <div class="text-run">，正则只命中首段开头的 /token
+// （[^\s<]+ 到空白或下一个标签为止），不碰正文里别处的斜杠；非 / 开头的消息原样返回。
+function renderBubble(m: Msg, raw: string): string {
+  const text = bubbleText(m, raw)
+  let html = renderText(text)
+  if (m.role === 'user' && /^\/\S/.test(text)) {
+    html = html.replace(
+      /(<div class="text-run">)(\/[^\s<]+)/,
+      '$1<span class="cmd-name">$2</span>',
+    )
+  }
+  return injectCmdDesc(html)
+}
+
+// ---- 命令描述：hover 蓝色命令 token 时显示其描述 ----
+// 描述来自扫描当前项目可用的 commands/skills（与输入框 slash 列表同源；codex/gemini 暂为空）。
+// 内置命令（/config、/clear 等）不在扫描列表里 → 无描述、hover 即无提示。
+const cmdDesc = ref<Record<string, string>>({})
+async function loadCmdDescriptions() {
+  const cwd = props.cwd || props.session.cwd || ''
+  try {
+    const list = await agentChatSlashCommands(props.agent, cwd)
+    const map: Record<string, string> = {}
+    for (const c of list) if (c.description) map[c.name] = c.description
+    cmdDesc.value = map
+  } catch {
+    cmdDesc.value = {}
+  }
+}
+watch(
+  () => [props.agent, props.cwd, props.session.path],
+  () => void loadCmdDescriptions(),
+  { immediate: true },
+)
+// 给已识别命令的 cmd-name 注入 data-cmd-desc（hover 读它显示 tip）。覆盖 <code>（转录
+// <command-name>）与 <span>（纯文本开头 token）两种载体；无描述的不加。读 cmdDesc 建立响应依赖，
+// 描述异步加载完后气泡自动重渲染。
+function injectCmdDesc(html: string): string {
+  const map = cmdDesc.value
+  if (!html.includes('cmd-name') || !Object.keys(map).length) return html
+  return html.replace(
+    /<(code|span)([^>]*\bcmd-name\b[^>]*)>(\/[^<\s]+)<\/\1>/g,
+    (full, tag, attrs, name) => {
+      const desc = map[name.slice(1)]
+      return desc ? `<${tag}${attrs} data-cmd-desc="${escapeAttr(desc)}">${name}</${tag}>` : full
+    },
+  )
+}
+function escapeAttr(s: string): string {
+  const t = s.length > 200 ? s.slice(0, 200) + '…' : s
+  return t
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+// ---- 文件附件：文件 chip 浮在气泡上方（参考目标样式），点击用系统默认程序打开 ----
+// 栅格图扩展名：这类附件已作为缩略图展示，同条消息里不再重复出文件 chip。
+const IMAGE_CHIP_EXTS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'heic', 'heif', 'avif', 'tiff', 'ico',
+])
+function isImagePath(path: string): boolean {
+  return IMAGE_CHIP_EXTS.has(path.split('.').pop()?.toLowerCase() ?? '')
+}
+function fileBlocks(m: Msg): Block[] {
+  // 同条消息已有图片缩略图时，跳过图片类文件 chip —— 避免和上方缩略图重复（如 Codex 的
+  // 「Files mentioned」会把贴的图也列进文件清单，Claude 贴图同理）。
+  const hasThumbs = m.blocks.some((b) => b.kind === 'image' && b.imageSrc)
+  return m.blocks.filter(
+    (b) => b.kind === 'file' && b.filePath && !(hasThumbs && isImagePath(b.filePath)),
+  )
+}
+// 文件名 = 路径 basename（兼容 `/` 与 `\`）；空则回退整段路径。
+function fileName(path: string): string {
+  const norm = path.replace(/[/\\]+$/, '')
+  const base = norm.split(/[/\\]/).pop() ?? ''
+  return base || path
+}
+function openFile(b: Block) {
+  if (!b.filePath) return
+  // 相对路径按会话 cwd 解析；后端校验存在性并用系统默认程序打开。
+  void openPathExternal(b.filePath, props.session?.cwd).catch((e) => {
+    console.warn('[chat] open file failed:', e)
+  })
+}
+
+// `/context` 报告（`## Context Usage` markdown）有两条来源：① live stream —— 一条
+// assistant 消息（model `<synthetic>`），正文是裸 markdown；② 刷新/离线回看 —— 落盘的
+// system/local_command 记录被还原成 command-output 折叠块，正文外面包着 <local-command-stdout>。
+// 两者都先经 cleanMetaText 去壳（裸文本则原样返回），命中 `## Context Usage` 就升级成可折叠的
+// ContextWindowCard。先用 startsWith 廉价过滤，再 parseContextUsage 严格确认；按文本缓存避免重解析。
+const ctxUsageCache = new Map<string, ContextUsage | null>()
+function contextUsageOf(m: Msg): ContextUsage | null {
+  if (m.role !== 'assistant' && m.metaKind !== 'command-output') return null
+  // 廉价子串过滤在前（每行 class 绑定都会调本函数）；命中的极少数块才去壳 + 严格确认结构。
+  const b = m.blocks.find((x) => x.kind === 'text' && x.text && x.text.includes('## Context Usage'))
+  if (!b?.text) return null
+  const txt = cleanMetaText(b.text)
+  if (!txt.startsWith('## Context Usage')) return null
+  if (!ctxUsageCache.has(txt)) ctxUsageCache.set(txt, parseContextUsage(txt))
+  return ctxUsageCache.get(txt)!
+}
+
+// 气泡是否还有非图片 / 非文件正文 —— 纯图片 / 纯文件消息不渲染空灰泡，只留上方缩略图 / chip。
+function hasBubbleBody(m: Msg): boolean {
+  return m.blocks.some((b) => {
+    if (b.kind === 'image' || b.kind === 'file') return false
+    if (b.kind === 'text') return bubbleText(m, b.text ?? '').trim().length > 0
+    return true
+  })
+}
+
 
 // ---- 消息右键隐藏 ----
 // 按 session path 在 localStorage 中存一组隐藏的消息标识（uuid 或索引）。
@@ -269,6 +488,32 @@ function toggleHideMsg(m: Msg, idx: number) {
   saveHiddenSet(set)
 }
 
+// 当前悬停的消息键。用 JS 状态而非纯 CSS :hover 来驱动操作行的显隐——live chat 流式
+// 重渲染时 Chromium 的 :hover 伪类可能「粘」在旧行上，导致多行操作行同时常亮、移走也不
+// 收（用户反馈：hover A 再 hover 别的都不自动隐藏）。改成 mouseenter/leave 维护单一键，
+// 任一时刻只有一行 row-active，互斥且确定性收起。
+const hoveredKey = ref<string | null>(null)
+
+// ---- 消息悬停操作：复制原文 ----
+// 复制成功后短暂把对应消息的图标切成对勾（按 msgKey 记一个键，避免影响其它消息）。
+const copiedMsgKey = ref<string | null>(null)
+let copiedResetTimer = 0
+function copyMsg(m: Msg, idx: number) {
+  const text = m.blocks
+    .filter((b) => b.kind === 'text')
+    .map((b) => b.text ?? '')
+    .join('\n\n')
+    .trim()
+  if (!text) return
+  void navigator.clipboard?.writeText(text)
+  const key = msgKey(m, idx)
+  copiedMsgKey.value = key
+  window.clearTimeout(copiedResetTimer)
+  copiedResetTimer = window.setTimeout(() => {
+    if (copiedMsgKey.value === key) copiedMsgKey.value = null
+  }, 1200)
+}
+
 // 切换会话时重新加载隐藏集合
 watch(
   () => props.session.path,
@@ -279,29 +524,8 @@ watch(
   { immediate: true },
 )
 
-// ---- 消息右键菜单 ----
-interface MsgCtx { x: number; y: number; msg: Msg; idx: number }
-const msgCtx = ref<MsgCtx | null>(null)
-
-function onMsgContextMenu(e: MouseEvent, m: Msg, idx: number) {
-  if (systemEventLabel(m)) return
-  e.preventDefault()
-  const W = 180
-  const H = 44
-  const x = Math.min(e.clientX, window.innerWidth - W - 8)
-  const y = Math.min(e.clientY, window.innerHeight - H - 8)
-  msgCtx.value = { x, y, msg: m, idx }
-}
-
-function closeMsgCtx() {
-  msgCtx.value = null
-}
-
-function ctxToggleHide() {
-  if (!msgCtx.value) return
-  toggleHideMsg(msgCtx.value.msg, msgCtx.value.idx)
-  closeMsgCtx()
-}
+// 隐藏消息现由气泡下方的悬停操作行接管；右键恢复浏览器默认行为（选中复制等），
+// 不再弹自定义菜单。
 
 const assistantName = computed(() =>
   props.agent === 'codex'
@@ -364,9 +588,12 @@ const stats = computed(() => {
 })
 
 const lightboxVisible = ref(false)
-const lightboxSrc = ref('')
-function openLightbox(src: string) {
-  lightboxSrc.value = src
+const lightboxImgs = ref<string[]>([])
+const lightboxIndex = ref(0)
+// 同一条消息的多张图片整组进灯箱，点哪张就从哪张开始，可左右翻看。
+function openLightbox(imgs: string[], index = 0) {
+  lightboxImgs.value = imgs
+  lightboxIndex.value = index
   lightboxVisible.value = true
 }
 
@@ -376,11 +603,50 @@ const scrollEl = ref<HTMLElement>()
 // 每帧又触发大段 reflow，所以 420 条消息时就会卡。这里用固定时长 + ease-out，
 // 并在用户滚动/再次点击时打断。
 let scrollRAF = 0
+let pinRAF = 0
 function cancelScroll() {
   if (scrollRAF) {
     cancelAnimationFrame(scrollRAF)
     scrollRAF = 0
   }
+  if (pinRAF) {
+    cancelAnimationFrame(pinRAF)
+    pinRAF = 0
+  }
+}
+
+// live GUI chat 专用：把视口「钉」在底部一小段时间。进入会话（预载历史）/ 新消息
+// 到达后，代码高亮 / DiffBlock / 图片会异步把内容撑高 —— 单次 scrollToBottom 会
+// 因为 scrollHeight 还在涨而停在半路。这里每帧重读 scrollHeight 跳到底，持续 ms 毫秒，
+// 直到高度稳定。用户一旦主动滚动（wheel/touch）立即放手，绝不和用户抢滚动条。
+function pinToBottomFor(ms: number) {
+  const el = scrollEl.value
+  if (!el) return
+  cancelScroll()
+  const until = performance.now() + ms
+  const release = () => {
+    cancelScroll()
+    el.removeEventListener('wheel', release)
+    el.removeEventListener('touchmove', release)
+  }
+  const stick = () => {
+    const e = scrollEl.value
+    if (!e) {
+      pinRAF = 0
+      return
+    }
+    e.scrollTop = e.scrollHeight
+    if (performance.now() < until) {
+      pinRAF = requestAnimationFrame(stick)
+    } else {
+      pinRAF = 0
+      el.removeEventListener('wheel', release)
+      el.removeEventListener('touchmove', release)
+    }
+  }
+  el.addEventListener('wheel', release, { passive: true, once: true })
+  el.addEventListener('touchmove', release, { passive: true, once: true })
+  pinRAF = requestAnimationFrame(stick)
 }
 function smoothScrollTo(target: number) {
   const el = scrollEl.value
@@ -593,6 +859,9 @@ function updateEdges() {
   if (!el) return
   atTop.value = el.scrollTop <= 8
   atBottom.value = el.scrollTop + el.clientHeight >= el.scrollHeight - 8
+  if (atBottom.value && newCount.value > 0) {
+    newCount.value = 0
+  }
 }
 let rafEdge = 0
 function onScroll() {
@@ -602,13 +871,53 @@ function onScroll() {
     updateEdges()
   })
 }
+// 悬浮 tip：事件委托挂在滚动容器上（v-html 动态节点挂不上指令）。两类目标共用：
+// 命令 token（.cmd-name，描述来自 data-cmd-desc）与文件引用（.file-ref，固定提示「打开文件」）。
+// 只在「进入新目标」时触发，避免在同一元素内移动反复重置延时。
+let cmdHoverEl: HTMLElement | null = null
+function onCmdOver(e: MouseEvent) {
+  const el = (e.target as HTMLElement)?.closest?.(
+    '.cmd-name[data-cmd-desc], .file-ref[data-file-ref]',
+  ) as HTMLElement | null
+  if (el === cmdHoverEl) return
+  cmdHoverEl = el
+  if (!el) {
+    hideTooltip()
+    return
+  }
+  showTooltipFor(el, el.dataset.cmdDesc != null ? el.dataset.cmdDesc || '' : t('chat.file.open'))
+}
+function onCmdLeave() {
+  cmdHoverEl = null
+  hideTooltip()
+}
+
+// 文件引用 code（形如 a/b.ts:12，见 format.ts 的 .file-ref）点击：在外部编辑器打开。
+// 相对 / 部分路径按会话 cwd 解析；末尾 :行[:列] 拆出来传给后端 —— 装了支持跳行的编辑器就跳到该行。
+function onContentClick(e: MouseEvent) {
+  const el = (e.target as HTMLElement)?.closest?.('.file-ref[data-file-ref]') as HTMLElement | null
+  if (!el) return
+  const raw = el.dataset.fileRef || ''
+  if (!raw) return
+  e.preventDefault()
+  const { path, line, col } = parseFileRef(raw)
+  void openPathExternal(path, props.cwd || props.session?.cwd, line, col).catch((err) => {
+    console.warn('[chat] open file ref failed:', err)
+  })
+}
 onMounted(() => {
   scrollEl.value?.addEventListener('scroll', onScroll, { passive: true })
+  scrollEl.value?.addEventListener('mouseover', onCmdOver)
+  scrollEl.value?.addEventListener('mouseleave', onCmdLeave)
+  scrollEl.value?.addEventListener('click', onContentClick)
   // 内容渲染完再算一次（长消息列表挂载后 scrollHeight 才稳定）
   requestAnimationFrame(updateEdges)
 })
 onUnmounted(() => {
   scrollEl.value?.removeEventListener('scroll', onScroll)
+  scrollEl.value?.removeEventListener('mouseover', onCmdOver)
+  scrollEl.value?.removeEventListener('mouseleave', onCmdLeave)
+  scrollEl.value?.removeEventListener('click', onContentClick)
   if (rafEdge) cancelAnimationFrame(rafEdge)
   cancelScroll()
   cancelFlashStick()
@@ -758,6 +1067,16 @@ watch(searchScope, () => {
 })
 
 // 消息变化（切换会话 / 刷新）后重新建立标记 + 重新 sweep 折叠态 + 渲染 mermaid 占位符
+// live GUI chat 自动跟随：必须在「消息变化导致 DOM 撑高之前」判断用户是否贴底，
+// 否则新消息一来 scrollHeight 立刻变大、isNearBottom 误判为 false，就再也不跟随了。
+// flush:'pre' 的 watcher 在 re-render 前跑，此刻 scrollTop/scrollHeight 还是旧值。
+let wasAtBottomBeforeUpdate = true
+watch(
+  () => props.messages,
+  () => {
+    if (props.liveSession) wasAtBottomBeforeUpdate = isNearBottom()
+  },
+)
 watch(
   () => props.messages,
   () => {
@@ -766,9 +1085,49 @@ watch(
       if (search.value) applySearch()
       renderAllMermaid(innerEl.value ?? null)
       highlightAllCodeBlocks(innerEl.value ?? null)
+      decorateCodeBlocks(innerEl.value ?? null)
+      // 聊天进行中：变化前贴底 → 钉到最新消息（钉一小段，扛住高亮/图片异步撑高）。
+      if (props.liveSession && wasAtBottomBeforeUpdate) {
+        pinToBottomFor(220)
+      }
     })
   },
   { flush: 'post' },
+)
+
+// §10.6 流式即时渲染：把正在生成的文本走与定稿气泡同一个 markdown 渲染器（renderText），
+// 逐 delta 重渲染 → 标题 / 粗体 / 列表 / 行内代码即时成型，而非等结束才把 md 语法转成格式
+// （对齐 VSCode 插件）。代码块语法高亮 / mermaid 仍只在权威记录定稿后由 DOM 扫描 watcher
+// 处理（与正常气泡一致）。computed 只在 live.text 变化时重 parse —— `now` 计时每 250ms 的
+// 重渲染命中缓存、不会重复 parse。
+const streamingHtml = computed(() => {
+  const lv = props.liveSession?.live
+  return lv ? renderText(lv.text) : ''
+})
+
+// §10.6 流式：delta 逐 token 撑高时跟随贴底。默认 flush 'pre' → 回调先于 DOM 更新跑，
+// 此刻 isNearBottom() 读的是「撑高前」的滚动位置（= 用户是否在跟读）；nextTick 后 DOM
+// 已撑高再钉底。只读 liveSession.live.text，不触发整列表 mermaid/高亮重算。
+watch(
+  () => props.liveSession?.live?.text,
+  () => {
+    if (!props.liveSession?.live) return
+    if (isNearBottom()) nextTick(() => pinToBottomFor(120))
+  },
+)
+
+// 用户发起一轮（turnState idle→running 仅由 sendPrompt 触发）→ **无视当前滚动位置**，
+// 强制跳到底部并跟随这一轮的最新消息（用户回显 + agent 回复）。这是聊天的标准行为：
+// 发消息总该看到自己刚发的那条 + 随后的回答，哪怕之前滚到了中间。之后若用户手动上滑读
+// 历史，isNearBottom() 转 false，message/delta watcher 自动停止跟随、不打扰。
+watch(
+  () => props.liveSession?.turnState,
+  (ts, prev) => {
+    if (ts === 'running' && prev !== 'running') {
+      wasAtBottomBeforeUpdate = true
+      nextTick(() => pinToBottomFor(500))
+    }
+  },
 )
 
 // 主题切换：mermaid 不能运行时换色，要把已渲染节点 reset 再 redraw。
@@ -787,8 +1146,27 @@ onMounted(() => {
   nextTick(() => {
     renderAllMermaid(innerEl.value ?? null)
     highlightAllCodeBlocks(innerEl.value ?? null)
+    decorateCodeBlocks(innerEl.value ?? null)
+    // live GUI chat：进入时（含入口 3 切换 / 列表续聊的预载历史）钉到底部一会儿，
+    // 露出最新上下文 + composer，扛住代码高亮/图片异步撑高。
+    if (props.liveSession) {
+      wasAtBottomBeforeUpdate = true
+      pinToBottomFor(600)
+    }
   })
 })
+
+// live ChatView 可能复用读模式的实例（同为 <ChatView> 组件），patch-in-place 时
+// onMounted 不会重跑 —— 监听 liveSession 由空变有，确保「切换进 chat」也钉到底。
+watch(
+  () => props.liveSession,
+  (ls) => {
+    if (ls) {
+      wasAtBottomBeforeUpdate = true
+      nextTick(() => pinToBottomFor(600))
+    }
+  },
+)
 onUnmounted(() => {
   setSearchNavigator(null)
   window.clearTimeout(searchDebounce)
@@ -802,6 +1180,11 @@ const exportMenuEl = ref<HTMLElement>()
 function toggleExportMenu(e: Event) {
   e.stopPropagation()
   exportMenuOpen.value = !exportMenuOpen.value
+  locateMenuOpen.value = false
+}
+// composer 的 `/model`/`/export` 等客户端指令：`/export` 展开右上角导出下拉（与点导出按钮等效）。
+function openExportFromComposer() {
+  exportMenuOpen.value = true
   locateMenuOpen.value = false
 }
 
@@ -871,10 +1254,6 @@ function onDocClick(e: MouseEvent) {
       locateMenuOpen.value = false
     }
   }
-  if (msgCtx.value) {
-    const target = e.target as HTMLElement | null
-    if (!target || !target.closest('.msg-ctx-menu')) closeMsgCtx()
-  }
 }
 </script>
 
@@ -922,13 +1301,29 @@ function onDocClick(e: MouseEvent) {
             <IconCopy />
           </button>
         </span>
+        <span v-if="gitBranch" class="git-branch" v-tooltip="t('chat.branch') + ': ' + gitBranch">
+          <IconGitBranch class="git-branch-ic" />
+          <span class="git-branch-name">{{ gitBranch }}</span>
+        </span>
       </div>
     </div>
+    <!-- 收藏星标：把当前会话收藏进「Views」历史（List/View 之间的下拉），收藏后实心。
+         仅普通项目会话可收藏，回收站 / 导出历史 / 无 path 的新建 GUI chat 不显示。 -->
+    <button
+      v-if="canFavorite"
+      class="icon-btn fav-btn"
+      :class="{ active: favorited }"
+      v-tooltip="favorited ? t('chat.action.unfavorite') : t('chat.action.favorite')"
+      @click="$emit('toggleFavorite')"
+    >
+      <IconStar class="fav-star" :class="{ filled: favorited }" />
+    </button>
     <!-- 会话统计 + 折叠 Tool calls：原本住在 ChatTopbar.ct-actions 里，
          与 chat-head 的 5 个会话级 icon 隔一行 40px topbar 在同一垂直线上。
          挪进 chat-head 后顶栏只剩 scope+search 一条横线。toolsCollapsed
          走 chatToolbar 模块 ref 共享，原 ChatTopbar 的对应按钮已删除。 -->
     <button
+      v-if="!trashed"
       class="icon-btn"
       v-tooltip="t('chat.tb.sessionStats')"
       @click="$emit('openSessionStats')"
@@ -994,8 +1389,9 @@ function onDocClick(e: MouseEvent) {
       <span class="hidden-badge">{{ hiddenCount }}</span>
     </button>
     <span class="chat-head-sep" />
+    <!-- 在窗口内 resume（TUI）：仅只读详情。live chat 里已在对话中，无需再开 TUI tab。 -->
     <button
-      v-if="!trashed"
+      v-if="!liveSession && !trashed"
       class="icon-btn"
       :class="{ disabled: !canResumeHere }"
       v-tooltip="canResumeHere ? t('chat.action.resumeHere') : t('chat.action.resumeUnavailable')"
@@ -1004,6 +1400,7 @@ function onDocClick(e: MouseEvent) {
     >
       <IconPlay />
     </button>
+    <!-- 打开目录 / 导出：read 与 live chat 两种模式都需要。 -->
     <button
       v-if="!trashed"
       class="icon-btn"
@@ -1012,8 +1409,9 @@ function onDocClick(e: MouseEvent) {
     >
       <IconFolder />
     </button>
+    <!-- 刷新：仅只读详情。live chat 是实时流，无需手动刷新。 -->
     <button
-      v-if="!trashed"
+      v-if="!liveSession && !trashed"
       class="icon-btn"
       v-tooltip="t('chat.action.refresh')"
       @click="$emit('refresh')"
@@ -1057,6 +1455,7 @@ function onDocClick(e: MouseEvent) {
         </button>
       </div>
     </div>
+    <!-- 删除：read 与 live chat 两种模式都有（chat 里删 = 软删并停掉当前会话）。 -->
     <button
       v-if="!trashed"
       class="icon-btn danger"
@@ -1066,7 +1465,7 @@ function onDocClick(e: MouseEvent) {
       <IconTrash />
     </button>
     <button
-      v-if="trashed"
+      v-if="!liveSession && trashed"
       class="icon-btn chat-restore-btn"
       v-tooltip="t('trash.restore')"
       @click="$emit('restore')"
@@ -1075,7 +1474,7 @@ function onDocClick(e: MouseEvent) {
     </button>
   </div>
 
-  <div ref="scrollEl" class="chat-scroll">
+  <div ref="scrollEl" class="chat-scroll" :class="{ 'has-composer': !!liveSession }">
     <div ref="innerEl" class="chat-inner">
       <div
         v-for="(m, i) in messages"
@@ -1083,17 +1482,22 @@ function onDocClick(e: MouseEvent) {
         v-show="rowHasContent(m) && (!isHidden(m, i) || showHidden)"
         class="msg-row"
         :class="[
-          systemEventLabel(m) ? 'system' : m.metaKind ? 'meta' : isToolOnly(m) ? 'tool-only' : m.role,
-          { 'msg-flash': flashIdx === i, 'msg-hidden': isHidden(m, i) && showHidden },
+          contextUsageOf(m) ? 'assistant' : systemEventLabel(m) ? 'system' : m.metaKind ? 'meta' : isToolOnly(m) ? 'tool-only' : m.role,
+          { 'msg-flash': flashIdx === i, 'msg-hidden': isHidden(m, i) && showHidden, 'row-active': hoveredKey === msgKey(m, i) },
         ]"
         :data-search-scope="rowScope(m)"
         :data-msg-idx="i"
         :data-msg-uuid="m.uuid ?? ''"
-        @contextmenu="onMsgContextMenu($event, m, i)"
+        @mouseenter="hoveredKey = msgKey(m, i)"
+        @mouseleave="hoveredKey === msgKey(m, i) && (hoveredKey = null)"
       >
+        <!-- /context 的可视化面板：放在最前，无论它来自 live 的 assistant 消息还是离线回看的
+             command-output 落盘记录，都升级成可折叠卡片（而非灰泡里的原始 markdown 表 / 命令输出框）。 -->
+        <ContextWindowCard v-if="contextUsageOf(m)" :usage="contextUsageOf(m)!" />
+
         <!-- System events (e.g. /rename) render as a small centered line,
              not a "Me" bubble — they're meta facts, not user prose. -->
-        <div v-if="systemEventLabel(m)" class="system-event">
+        <div v-else-if="systemEventLabel(m)" class="system-event">
           {{ systemEventLabel(m) }}
         </div>
 
@@ -1107,7 +1511,6 @@ function onDocClick(e: MouseEvent) {
               <component :is="agentIcons[agent]" class="agent-icon" :class="agent" />
               {{ assistantName }}
             </span>
-            <span>{{ formatTime(m.timestamp) }}</span>
           </div>
           <details class="block-card">
             <summary class="block-summary">
@@ -1133,11 +1536,44 @@ function onDocClick(e: MouseEvent) {
 
         <div v-else-if="isToolOnly(m)" style="max-width: 86%; min-width: 0">
           <template v-for="(b, bi) in m.blocks" :key="bi">
-            <ToolResult v-if="!isInlinedResult(b) && !shouldHideToolResult(b)" :block="b" />
+            <ToolResult
+              v-if="!isInlinedResult(b) && !isAttachedResult(b) && !shouldHideToolResult(b)"
+              :block="b"
+            />
           </template>
         </div>
 
-        <div v-else class="bubble" :class="m.role">
+        <template v-else>
+          <!-- 图片缩略图：浮在气泡上方、页面背景上（不进灰底气泡），小缩略图自适应比例、
+               点击放大。参考 Claude 客户端：用户图片在「Me」气泡之上独立成排。 -->
+          <div v-if="imageBlocks(m).length" class="msg-images">
+            <button
+              v-for="(b, bi) in imageBlocks(m)"
+              :key="'img' + bi"
+              type="button"
+              class="msg-image-thumb"
+              @click="openLightbox(imageBlocks(m).map((x) => x.imageSrc!), bi)"
+            >
+              <img :src="b.imageSrc" loading="lazy" alt="" />
+            </button>
+          </div>
+
+          <!-- 文件附件 chip：浮在气泡上方，点击用系统默认程序外部打开。 -->
+          <div v-if="fileBlocks(m).length" class="msg-files">
+            <button
+              v-for="(b, bi) in fileBlocks(m)"
+              :key="'file' + bi"
+              type="button"
+              class="msg-file-chip"
+              v-tooltip="b.isDir ? t('chat.folder.open') : t('chat.file.open')"
+              @click="openFile(b)"
+            >
+              <component :is="b.isDir ? IconFolder : fileIconFor(b.filePath!)" class="msg-file-icon" />
+              <span class="msg-file-name">{{ fileName(b.filePath!) }}</span>
+            </button>
+          </div>
+
+          <div v-if="hasBubbleBody(m)" class="bubble" :class="m.role">
           <div class="role-tag">
             <span class="name">
               <component
@@ -1152,25 +1588,13 @@ function onDocClick(e: MouseEvent) {
             <span v-if="m.sidechain" class="sidechain-badge">
               {{ t('chat.badge.subtask') }}
             </span>
-            <span>{{ formatTime(m.timestamp) }}</span>
           </div>
 
           <CollapsibleBox :enabled="m.role === 'user'" :max-height="320">
             <template v-for="(b, bi) in m.blocks" :key="bi">
-              <div v-if="b.kind === 'text'" class="text-run" v-html="renderText(b.text ?? '')" />
+              <div v-if="b.kind === 'text'" class="text-run" v-html="renderBubble(m, b.text ?? '')" />
 
-              <div
-                v-else-if="b.kind === 'image' && b.imageSrc"
-                class="inline-image-wrap"
-                @click="openLightbox(b.imageSrc)"
-              >
-                <img
-                  :src="b.imageSrc"
-                  class="inline-image"
-                  loading="lazy"
-                  alt=""
-                />
-              </div>
+              <!-- image 块已渲染在气泡上方，正文里跳过 -->
 
               <details
                 v-else-if="b.kind === 'thinking'"
@@ -1215,60 +1639,176 @@ function onDocClick(e: MouseEvent) {
               </details>
 
               <ToolResult
-                v-else-if="b.kind === 'tool_result' && !isInlinedResult(b) && !shouldHideToolResult(b)"
+                v-else-if="
+                  b.kind === 'tool_result' &&
+                  !isInlinedResult(b) &&
+                  !isAttachedResult(b) &&
+                  !shouldHideToolResult(b)
+                "
                 :block="b"
                 :in-user="m.role === 'user'"
               />
             </template>
           </CollapsibleBox>
-        </div>
+          </div>
+
+          <!-- 文件改动型 tool_result：作为本条消息的一部分整块展示在气泡下方、时间行上方，
+               与发起它的「Tool call · Edit」同属一条消息（diff 自成卡片便于一眼看改动）。 -->
+          <template v-for="(b, bi) in m.blocks" :key="'fc' + bi">
+            <div
+              v-if="b.kind === 'tool_use' && attachedResultFor(b)"
+              class="attached-result"
+              data-search-scope="tools-edit"
+            >
+              <ToolResult :block="attachedResultFor(b)!" />
+            </div>
+          </template>
+
+          <!-- 悬停操作行：与气泡平级、在「气泡下方」按行内排布（不再绝对定位贴边，
+               故不会压到紧随其后的 tool-only 结果卡上）。时间统一藏起，hover 才露出。 -->
+          <div class="msg-actions">
+            <span class="msg-time">{{ formatTime(m.timestamp) }}</span>
+            <button
+              class="msg-action-btn"
+              type="button"
+              v-tooltip="copiedMsgKey === msgKey(m, i) ? t('chat.action.copied') : t('chat.action.copyMsg')"
+              @click="copyMsg(m, i)"
+            >
+              <component :is="copiedMsgKey === msgKey(m, i) ? IconCheck : IconCopy" />
+            </button>
+            <!-- 隐藏消息仅在只读详情里出现：直播 chat 进行中无需隐藏自己刚发的消息。 -->
+            <button
+              v-if="!liveSession"
+              class="msg-action-btn"
+              type="button"
+              v-tooltip="isHidden(m, i) ? t('chat.action.unhideMsg') : t('chat.action.hideMsg')"
+              @click="toggleHideMsg(m, i)"
+            >
+              <component :is="isHidden(m, i) ? IconEye : IconEyeOff" />
+            </button>
+          </div>
+        </template>
       </div>
 
-      <div v-if="!messages.length" class="empty" style="height: 200px">
+      <!-- §10.6 流式预览：正在生成的文本块打字机（仅 Claude 产 delta；Codex 永不出现）。
+           权威 assistant 记录到达即清空 live、真气泡入列表 —— 同位替换，无闪。 -->
+      <div v-if="liveSession && liveSession.live" class="msg-row assistant">
+        <div class="bubble assistant">
+          <div class="role-tag">
+            <span class="name">
+              <component :is="agentIcons[agent]" class="agent-icon" :class="agent" />
+              {{ assistantName }}
+            </span>
+          </div>
+          <!-- 即时 markdown（v-html）：与定稿气泡同款渲染，定稿时同位无缝替换。 -->
+          <div class="text-run" v-html="streamingHtml" />
+        </div>
+      </div>
+      <!-- live 模式：本轮正在运行的状态行（参考 Claude 客户端：闪烁动词 + 计时 + 可中断） -->
+      <div
+        v-if="liveSession && liveSession.turnState === 'running'"
+        class="chat-running-row"
+        :class="{ retrying: liveSession.retry }"
+      >
+        <component :is="agentIcons[agent]" class="chat-running-star" :class="agent" />
+        <span class="chat-running-label" :data-text="runningVerb">{{ runningVerb }}</span>
+        <span class="chat-running-time">{{ runningElapsedSec }}s</span>
+        <button
+          class="chat-running-stop"
+          type="button"
+          v-tooltip="t('chat.composer.stop')"
+          @click="interruptChat(liveSession)"
+        >
+          <IconStop />
+          <span>{{ t('chat.composer.stop') }}</span>
+        </button>
+      </div>
+
+      <!-- live 模式：交互式工具权限对话框（Claude `--permission-prompt-tool stdio`）。
+           CLI 门控某个工具时入队一条，用户在此放行 / 拒绝；应答或本轮结束即出队。 -->
+      <ChatPermissionPrompt
+        v-for="req in (liveSession ? liveSession.pendingPermissions : [])"
+        :key="req.requestId"
+        :request="req"
+        @choose="(c: PermissionChoice) => liveSession && respondPermission(liveSession, req, c)"
+      />
+
+      <!-- live 模式：模型向用户提的结构化选择题（Claude `AskUserQuestion`）。
+           作答 / 取消都经 respondQuestion 回写控制协议；应答或本轮结束即出队。 -->
+      <ChatQuestionPrompt
+        v-for="q in (liveSession ? liveSession.pendingQuestions : [])"
+        :key="q.requestId"
+        :request="q"
+        @submit="(sel: QuestionSelection[]) => liveSession && respondQuestion(liveSession, q, sel)"
+        @cancel="liveSession && respondQuestion(liveSession, q, null)"
+      />
+
+      <div v-if="!messages.length && !liveSession" class="empty" style="height: 200px">
         <div>{{ t('chat.empty') }}</div>
       </div>
     </div>
   </div>
 
-  <div v-if="messages.length" class="scroll-fab">
+  <div v-if="messages.length" class="scroll-fab" :class="{ 'has-composer': !!liveSession }">
+    <!-- read ⇄ chat 切到对方模式的开关：两个方向共用底部同一个 FAB 位置，按模式二选一显示，
+         图标就地在 book（→read）/ 气泡（→chat）间切换 —— 同位置即可，不需要过渡飞线动画。 -->
     <button
-      v-if="newCount > 0"
-      class="new-pill"
-      @click="jumpToNewest"
+      v-if="liveSession && hasReadView"
+      class="fab fab-accent"
+      v-tooltip="t('chat.action.switchToRead')"
+      @click="$emit('switchToRead')"
     >
-      {{ t('chat.newMessages', { n: newCount }) }}
+      <IconReader />
     </button>
+    <!-- 切到 chat（GUI live chat）目前只有 claude 支持；codex / gemini 不显示这个 FAB。 -->
     <button
-      v-if="!atTop"
-      class="fab"
-      v-tooltip="t('chat.action.top')"
-      @click="scrollToTop"
+      v-else-if="!liveSession && !trashed && canResumeHere && agent === 'claude'"
+      class="fab fab-accent"
+      v-tooltip="t('chat.action.switchToChat')"
+      @click="$emit('switchToChat')"
     >
-      <IconArrowUp />
+      <IconChat />
     </button>
-    <button
-      v-if="!atBottom"
-      class="fab"
-      v-tooltip="t('chat.action.bottom')"
-      @click="scrollToBottom"
-    >
-      <IconArrowDown />
-    </button>
+    <div v-if="newCount > 0 || !atTop || !atBottom" class="scroll-arrow-stack">
+      <button
+        v-if="newCount > 0"
+        class="new-pill"
+        @click="jumpToNewest"
+      >
+        {{ t('chat.newMessages', { n: newCount }) }}
+      </button>
+      <button
+        v-if="!atTop"
+        class="fab"
+        v-tooltip="t('chat.action.top')"
+        @click="scrollToTop"
+      >
+        <IconArrowUp />
+      </button>
+      <button
+        v-if="!atBottom"
+        class="fab"
+        v-tooltip="t('chat.action.bottom')"
+        @click="scrollToBottom"
+      >
+        <IconArrowDown />
+      </button>
+    </div>
   </div>
+
+  <!-- live GUI chat：底部输入框（Claude 客户端样式） -->
+  <ChatComposer
+    v-if="liveSession"
+    :session="liveSession"
+    @open-export="openExportFromComposer"
+    @rename="$emit('rename')"
+    @fork="$emit('fork')"
+  />
 
   <VueEasyLightbox
     :visible="lightboxVisible"
-    :imgs="lightboxSrc"
+    :imgs="lightboxImgs"
+    :index="lightboxIndex"
     @hide="lightboxVisible = false"
   />
-
-  <!-- 消息右键菜单 -->
-  <Teleport to="body">
-    <div v-if="msgCtx" class="ctx-menu msg-ctx-menu" :style="{ left: msgCtx.x + 'px', top: msgCtx.y + 'px' }">
-      <button class="ctx-item" @click="ctxToggleHide">
-        <component :is="isHidden(msgCtx.msg, msgCtx.idx) ? IconEye : IconEyeOff" />
-        {{ isHidden(msgCtx.msg, msgCtx.idx) ? t('chat.action.unhideMsg') : t('chat.action.hideMsg') }}
-      </button>
-    </div>
-  </Teleport>
 </template>

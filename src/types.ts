@@ -35,7 +35,7 @@ export interface SessionPage {
   sessions: SessionMeta[]
 }
 
-export type BlockKind = 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image'
+export type BlockKind = 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image' | 'file'
 
 export interface DiffLine {
   kind: 'ctx' | 'add' | 'del'
@@ -58,6 +58,9 @@ export interface Block {
   toolId?: string
   isError: boolean
   filePath?: string
+  /** file 块：该路径是目录（GUI chat 的「Add folder」附件）。决定 chip 用文件夹图标 +
+   *  「打开文件夹」提示，而非文件图标 +「打开文件」。 */
+  isDir?: boolean
   diff?: DiffHunk[]
   imageSrc?: string
 }
@@ -213,6 +216,157 @@ export interface StatsDone {
 export interface StatsError {
   requestId: number
   error: string
+}
+
+// ============================ GUI chat（程序化聊天）============================
+
+/** 一轮问答的运行状态。 */
+export type ChatTurnState = 'idle' | 'running'
+
+/** 输入框里的图片附件（粘贴 / 拖拽 / 选择）。`dataUrl` 供预览与本地回显，
+ *  `data` 是去掉 `data:` 前缀的纯 base64，发送给后端时用。 */
+export interface ChatImageAttachment {
+  dataUrl: string
+  mediaType: string
+  data: string
+  /** 文件名（来自文件选择/拖拽；粘贴的截图回退 image.png）。仅前端展示用。 */
+  name?: string
+}
+
+/** agent_chat_send 透传给后端的图片输入（与 Rust ChatImageInput 同形）。 */
+export interface ChatImageInput {
+  mediaType: string
+  data: string
+}
+
+/**
+ * 非图片附件（文件 / 文件夹）。由系统选择器选出，发送时以 `@"path"` 追加到 prompt，
+ * 让 agent 自己按路径读取。`isDir` 仅影响 chip 图标（文件夹用 folder 图标）。
+ */
+export interface ChatFileAttachment {
+  path: string
+  name: string
+  isDir: boolean
+}
+
+/** GUI chat `@` 文件浮层的一条目录/文件项（与 Rust ProjectFileEntry 同形）。
+ *  `relPath` 相对会话 cwd（`/` 分隔）；`name` 是末段名字；`isDir` 决定图标 + 钻取行为。 */
+export interface ProjectFileEntry {
+  relPath: string
+  name: string
+  isDir: boolean
+  /** 仅目录有意义：是否含可见子项。空目录 = false → 不显示「进入」chevron、禁用下钻。 */
+  hasChildren: boolean
+}
+
+/** GUI chat `/` 浮层的一条可用项（命令 / 技能，与 Rust SlashCommand 同形）。 */
+export interface SlashCommand {
+  /** 调用 token（无前导 `/`）：命令命名空间名 / 技能名。 */
+  name: string
+  /** 展示名：命令 = `/name`；技能 = 美化后的 Title Case。 */
+  title: string
+  description: string
+  /** 分组 + 图标依据。`system` = 前端注入的客户端内置指令（不来自磁盘扫描）。 */
+  kind: 'command' | 'skill' | 'system'
+  /** 来源类别：user → UI 显示「Personal」；project / plugin → 用 originName；system → 无角标。 */
+  origin: 'user' | 'project' | 'plugin' | 'system'
+  /** 项目名 / 插件名（user 来源省略）。 */
+  originName?: string
+  /** 命令 `argument-hint`（如 `[--wait] [--base <ref>]`）：选中后在输入框作为 ghost 参数提示。 */
+  argumentHint?: string
+}
+
+/** GUI chat 的进程模型：长驻 stdin（Claude，切设置需 restart-with-resume）
+ *  vs 一轮一进程 resume（Codex/Gemini，切设置改下轮 flag 即生效）。 */
+export type ChatProcessModel = 'longLivedStdin' | 'oneShotResume'
+
+/** agent_chat_start 的返回（与 Rust ChatStartInfo 同形）。 */
+export interface ChatStartInfo {
+  chatId: number
+  processModel: ChatProcessModel
+}
+
+export interface ClaudeRuntimeInfo {
+  hasCustomBaseUrl: boolean
+  aliasTargets: {
+    opus?: string
+    sonnet?: string
+    haiku?: string
+    fable?: string
+  }
+  /** init 事件回来前对鉴权方式的预判：'none' = 订阅/OAuth；其它 = API key；缺省 = 判不出。 */
+  apiKeySource?: string
+  /** settings.json 的 `effortLevel`：用户全局 reasoning effort 默认档。CLI 不带 --effort
+   *  时即用它 —— effort 选择器在用户未改档前展示这个「真实生效默认」，而非假的 levels[0]。 */
+  effortLevel?: string
+}
+
+/** agent-chat://* 事件 payload（与 Rust 端同形）。 */
+export interface ChatEventPayload { chatId: number; msg: Msg }
+export interface ChatInitPayload { chatId: number; sessionId?: string; apiKeySource?: string }
+export interface ChatResultPayload { chatId: number; ok: boolean; usage?: UsageSummary }
+export interface ChatStderrPayload { chatId: number; line: string }
+export interface ChatExitPayload { chatId: number; code: number }
+
+/** token 级流式增量（仅 Claude --include-partial-messages）。 */
+export interface ChatDelta {
+  index: number
+  /** 'start' | 'delta' | 'stop' —— 内容块生命周期。 */
+  phase: string
+  /** 块类型 text | thinking | tool_use（start 必有；delta 也带，前端兜底建块）。 */
+  kind?: string
+  /** 仅 delta：本次追加的文本片段。 */
+  text?: string
+}
+export interface ChatDeltaPayload { chatId: number; delta: ChatDelta }
+
+/** 交互式工具权限请求（Claude 控制协议 `can_use_tool`，与 Rust ChatPermissionRequest 同形）。
+ *  `input` 是工具参数原文（Bash 的 `command`、文件工具的 `file_path` 等）；
+ *  `permissionSuggestions` 是「始终允许」的规则建议（`addRules`，含 destination）。 */
+export interface ChatPermissionRequest {
+  requestId: string
+  toolName: string
+  input: unknown
+  description?: string
+  permissionSuggestions?: unknown
+}
+export interface ChatPermissionPayload { chatId: number; request: ChatPermissionRequest }
+
+/** AskUserQuestion 的单个选项。`preview` 是可选的等宽预览内容（mock / 代码 / 配置），
+ *  仅单选题用得上 —— 渲染成左列选项、右栏预览的并排布局。 */
+export interface ChatQuestionOption {
+  label: string
+  description?: string
+  preview?: string
+}
+/** AskUserQuestion 的单条提问。`multiSelect` 为真时允许多选（答案逗号拼接）。 */
+export interface ChatQuestionItem {
+  question: string
+  header?: string
+  multiSelect?: boolean
+  options: ChatQuestionOption[]
+}
+/** 模型向用户提的结构化选择题（Claude `AskUserQuestion`，与 Rust ChatQuestionRequest 同形）。
+ *  与工具权限同走 `can_use_tool` 控制协议，回写时把 `questions` 原样带回 `updatedInput`。 */
+export interface ChatQuestionRequest {
+  requestId: string
+  questions: ChatQuestionItem[]
+}
+export interface ChatQuestionPayload { chatId: number; request: ChatQuestionRequest }
+
+/** 单个额度窗口（与 Rust usage_api::UsageWindow 同形）。来自 OAuth 用量接口。 */
+export interface UsageWindow {
+  /** 利用率百分比 0–100。 */
+  utilization: number
+  /** ISO8601 重置时间（用 `new Date()` 解析）。 */
+  resetsAt?: string
+}
+/** 账号额度快照（与 Rust usage_api::AccountUsage 同形）。 */
+export interface AccountUsage {
+  fiveHour?: UsageWindow | null
+  sevenDay?: UsageWindow | null
+  sevenDayOpus?: UsageWindow | null
+  sevenDaySonnet?: UsageWindow | null
 }
 
 export interface TrashItem {

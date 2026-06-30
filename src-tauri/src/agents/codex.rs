@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use serde_json::{json, Map};
 
-use super::SessionSource;
+use super::{ChatEvent, ChatProcessModel, SessionSource};
 use crate::agent_command::AgentCommand;
 use crate::stats::{
     pricing, shell as shell_util,
@@ -665,6 +665,51 @@ fn agent_message_phase(payload: &Value) -> Option<&str> {
     payload.get("phase").and_then(Value::as_str)
 }
 
+/// Codex Desktop 用户带文件提问时，message 文本是一段固定结构（见 rollout JSONL 原文）：
+///
+/// ```text
+/// # Files mentioned by the user:
+///
+/// ## devtools_options.yaml: /abs/path/devtools_options.yaml
+///
+/// ## My request for Codex:
+/// hi
+/// ```
+///
+/// 把每个 `## <name>: <path>` 抽成 `file` 块（点击外部打开），正文换成 `## My request for
+/// Codex:` 之后的真实请求。没有这个结构就原样返回（文件块为空）。
+fn extract_codex_files(text: &str) -> (Vec<Block>, String) {
+    const HEADER: &str = "# Files mentioned by the user:";
+    const REQUEST: &str = "## My request for Codex:";
+    let (Some(hidx), Some(ridx)) = (text.find(HEADER), text.find(REQUEST)) else {
+        return (Vec::new(), text.to_string());
+    };
+    if ridx < hidx {
+        return (Vec::new(), text.to_string());
+    }
+    let mut files = Vec::new();
+    for line in text[hidx + HEADER.len()..ridx].lines() {
+        let Some(rest) = line.trim().strip_prefix("## ") else {
+            continue;
+        };
+        // `<name>: <path>` —— 取第一个 `: ` 之后的整段当 path（name 即 basename，一般不含冒号）。
+        if let Some((_, path)) = rest.split_once(": ") {
+            let path = path.trim();
+            if !path.is_empty() {
+                files.push(Block {
+                    kind: "file".to_string(),
+                    file_path: Some(path.to_string()),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    if files.is_empty() {
+        return (Vec::new(), text.to_string());
+    }
+    (files, text[ridx + REQUEST.len()..].trim().to_string())
+}
+
 fn user_message_has_content(payload: &Value) -> bool {
     payload
         .get("message")
@@ -786,7 +831,9 @@ fn scan(
             }
             if first_user_title.is_empty() && pt == "user_message" {
                 if let Some(msg) = p.get("message").and_then(|x| x.as_str()) {
-                    let clean = clean_title(msg);
+                    // 带文件提问时标题取真实请求，而非「# Files mentioned…」文件头。
+                    let (_, body) = extract_codex_files(msg);
+                    let clean = clean_title(&body);
                     if !clean.is_empty() {
                         first_user_title = clean;
                     }
@@ -908,15 +955,19 @@ fn read_with_title_index(
             }
             ("event_msg", "user_message") => {
                 let text = p.get("message").and_then(|x| x.as_str()).unwrap_or("");
+                // 带文件提问的 message 是「# Files mentioned…」固定结构：抽出 file 块，
+                // 正文换成真实请求（标题也用真实请求，别把文件头当标题）。
+                let (file_blocks, body) = extract_codex_files(text);
                 let mut blocks: Vec<Block> = std::mem::take(&mut pending_user_images);
                 if first_user_title.is_empty() {
-                    let clean = clean_title(text);
+                    let clean = clean_title(&body);
                     if !clean.is_empty() {
                         first_user_title = clean;
                     }
                 }
-                if !text.trim().is_empty() {
-                    blocks.push(text_block("text", text));
+                blocks.extend(file_blocks);
+                if !body.trim().is_empty() {
+                    blocks.push(text_block("text", &body));
                 }
                 if !blocks.is_empty() {
                     msgs.push(Msg {
@@ -1081,6 +1132,150 @@ fn read_with_title_index(
 fn read(path: &str) -> Result<Vec<Msg>, String> {
     let title_index = load_title_index();
     read_with_title_index(path, &title_index)
+}
+
+// ---- GUI chat（codex exec --json 实时事件流）---------------------------------
+//
+// 注意：这跟浏览模式（read_with_title_index 读落盘 rollout）是**两套完全不同的事件
+// 形状**。GUI chat 走 `codex exec [resume <id>] --json` 的实时流：
+//   {"type":"thread.started","thread_id":"<uuid>"}      → Init（回填 session id 供下轮 resume）
+//   {"type":"turn.started"} / {"type":"item.started",…} → 忽略（进行中，不渲染半成品）
+//   {"type":"item.completed","item":{"type":"agent_message","text":…}}                  → 助手文本
+//   {"type":"item.completed","item":{"type":"command_execution","command",
+//        "aggregated_output","exit_code",…}}                                            → shell 工具块
+//   {"type":"turn.completed","usage":{…}}               → Result（一轮结束 + usage）
+//
+// 进程模型：codex exec 一轮一进程（跑完即退），靠 thread_id resume 续上下文 —— 对应
+// §9 的 OneShotResume 路径。某轮异常退出而没发 Result 时，由 agent_chat.rs 兜底补失败。
+
+/// 未识别 item 通用兜底时，tool_input 的 JSON 摘要最长字符数（避免巨型 blob，如整文件内容）。
+const CHAT_ITEM_FALLBACK_CAP: usize = 1200;
+
+/// codex exec `usage` → UsageSummary。codex 的 `input_tokens` 已含 `cached_input_tokens`，
+/// `output_tokens` 通常已含 `reasoning_output_tokens`，所以 headline `total` 只取
+/// input+output，不重复累加 cached / reasoning（后两者仅作明细保留）。
+fn parse_exec_usage(u: &Value) -> UsageSummary {
+    let input = u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let cached = u
+        .get("cached_input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output = u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let reasoning = u
+        .get("reasoning_output_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    UsageSummary {
+        input_tokens: input,
+        output_tokens: output,
+        cache_creation_input_tokens: 0,
+        cache_creation_1h_input_tokens: 0,
+        cache_read_input_tokens: cached,
+        reasoning_output_tokens: reasoning,
+        total: input + output,
+    }
+}
+
+/// 一个 `item.completed` 的 item → 一条 Msg。`agent_message` 是助手文本，
+/// `command_execution` 渲染成 shell 工具块（命令 + 输出），`reasoning` 与浏览模式一致
+/// 不单独渲染；其它类型（file_change / mcp_tool_call / web_search …）走通用兜底，
+/// 渲染成截断的 tool_use 块 —— 宁可粗糙也不静默丢掉 codex 的动作。
+fn chat_item_to_msg(item: &Value) -> Option<Msg> {
+    match item.get("type").and_then(Value::as_str).unwrap_or("") {
+        "agent_message" => {
+            let text = item.get("text").and_then(Value::as_str).unwrap_or("");
+            if text.trim().is_empty() {
+                return None;
+            }
+            Some(simple_msg("assistant", None, text_block("text", text)))
+        }
+        "reasoning" => None,
+        "command_execution" => {
+            let command = item.get("command").and_then(Value::as_str).unwrap_or("");
+            let output = item
+                .get("aggregated_output")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let exit_code = item.get("exit_code").and_then(Value::as_i64);
+            let id = item.get("id").and_then(Value::as_str).map(str::to_string);
+            let mut blocks = vec![Block {
+                kind: "tool_use".to_string(),
+                tool_name: Some("shell".to_string()),
+                tool_input: Some(command.to_string()),
+                tool_id: id.clone(),
+                ..Default::default()
+            }];
+            if !output.trim().is_empty() || exit_code.is_some() {
+                blocks.push(Block {
+                    kind: "tool_result".to_string(),
+                    text: Some(output.to_string()),
+                    tool_id: id,
+                    is_error: exit_code.map(|c| c != 0).unwrap_or(false),
+                    ..Default::default()
+                });
+            }
+            Some(Msg {
+                uuid: None,
+                role: "assistant".to_string(),
+                timestamp: None,
+                model: None,
+                sidechain: false,
+                blocks,
+                meta_kind: None,
+            })
+        }
+        other if !other.is_empty() => {
+            let mut summary = serde_json::to_string(item).unwrap_or_default();
+            if summary.chars().count() > CHAT_ITEM_FALLBACK_CAP {
+                summary = summary.chars().take(CHAT_ITEM_FALLBACK_CAP).collect::<String>() + " …";
+            }
+            Some(simple_msg(
+                "assistant",
+                None,
+                Block {
+                    kind: "tool_use".to_string(),
+                    tool_name: Some(other.to_string()),
+                    tool_input: Some(summary),
+                    ..Default::default()
+                },
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// 解析 codex exec `--json` 的一行事件 → 归一的 ChatEvent。
+pub(crate) fn parse_chat_line(line: &str) -> ChatEvent {
+    let line = line.trim();
+    if line.is_empty() {
+        return ChatEvent::Ignore;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return ChatEvent::Ignore;
+    };
+    match v.get("type").and_then(Value::as_str).unwrap_or("") {
+        "thread.started" => ChatEvent::Init {
+            session_id: v
+                .get("thread_id")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            // Codex 无 apiKeySource 概念（5h/周限额角标是 Claude 专属）。
+            api_key_source: None,
+        },
+        "item.completed" => match v.get("item").and_then(chat_item_to_msg) {
+            Some(msg) => ChatEvent::Message(msg),
+            None => ChatEvent::Ignore,
+        },
+        "turn.completed" => ChatEvent::Result {
+            ok: true,
+            usage: v.get("usage").map(parse_exec_usage),
+        },
+        "turn.failed" | "error" => ChatEvent::Result {
+            ok: false,
+            usage: None,
+        },
+        _ => ChatEvent::Ignore,
+    }
 }
 
 impl SessionSource for CodexSource {
@@ -1314,6 +1509,56 @@ impl SessionSource for CodexSource {
 
     fn read_turns(&self, path: &str) -> Result<Vec<Turn>, String> {
         Ok(read_turns(Path::new(path)))
+    }
+
+    fn chat_process_model(&self) -> ChatProcessModel {
+        // codex exec 一轮一进程 + resume 续上下文。
+        ChatProcessModel::OneShotResume
+    }
+
+    fn chat_turn_command(
+        &self,
+        session_id: Option<&str>,
+        prompt: &str,
+        permission_mode: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Option<AgentCommand> {
+        // 首轮 `codex exec`，续轮 `codex exec resume <id>`（id 紧跟 resume，prompt 收尾）。
+        let mut cmd = AgentCommand::new("codex").arg("exec");
+        if let Some(id) = session_id {
+            cmd = cmd.arg("resume").arg(id);
+        }
+        cmd = cmd.arg("--json").arg("--skip-git-repo-check");
+        // 模型 / effort：每轮重新下发即免费即时生效。model 走 `-m`；effort 是
+        // reasoning 档位，经 `-c model_reasoning_effort=`（minimal|low|medium|high）。
+        // None 走 config.toml 默认（不下发）。
+        if let Some(m) = model {
+            cmd = cmd.arg("-m").arg(m);
+        }
+        if let Some(e) = effort {
+            cmd = cmd.arg("-c").arg(format!("model_reasoning_effort=\"{e}\""));
+        }
+        // 权限模式 → codex sandbox。统一用 `-c sandbox_mode=`：`exec` / `exec resume` 两个
+        // 子命令都接受它，而 `-s/--sandbox` 在 `exec resume` 上并不存在。codex exec 无内联
+        // 审批，sandbox 即唯一闸门。
+        match permission_mode {
+            "bypassPermissions" => {
+                cmd = cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+            }
+            "plan" => {
+                cmd = cmd.arg("-c").arg("sandbox_mode=\"read-only\"");
+            }
+            // default / acceptEdits / 其它 → 可写工作区
+            _ => {
+                cmd = cmd.arg("-c").arg("sandbox_mode=\"workspace-write\"");
+            }
+        }
+        Some(cmd.arg(prompt))
+    }
+
+    fn parse_chat_line(&self, line: &str) -> ChatEvent {
+        parse_chat_line(line)
     }
 }
 
@@ -1656,6 +1901,36 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    #[test]
+    fn codex_files_mentioned_block_extracts_files_and_request() {
+        let text = "\n# Files mentioned by the user:\n\n## devtools_options.yaml: /Users/wuchao/develop/flutter/sales-app/devtools_options.yaml\n\n## My request for Codex:\nhi\n";
+        let (files, body) = extract_codex_files(text);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].kind, "file");
+        assert_eq!(
+            files[0].file_path.as_deref(),
+            Some("/Users/wuchao/develop/flutter/sales-app/devtools_options.yaml")
+        );
+        assert_eq!(body, "hi");
+    }
+
+    #[test]
+    fn codex_files_mentioned_multiple_files() {
+        let text = "# Files mentioned by the user:\n\n## a.yaml: /p/a.yaml\n## b.json: /p/b.json\n\n## My request for Codex:\ncompare them\n";
+        let (files, body) = extract_codex_files(text);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].file_path.as_deref(), Some("/p/a.yaml"));
+        assert_eq!(files[1].file_path.as_deref(), Some("/p/b.json"));
+        assert_eq!(body, "compare them");
+    }
+
+    #[test]
+    fn codex_plain_message_untouched() {
+        let (files, body) = extract_codex_files("just a normal question\n");
+        assert!(files.is_empty());
+        assert_eq!(body, "just a normal question\n");
+    }
+
     fn write_temp(name: &str, lines: &[&str]) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join("csv-codex-usage-tests");
         let _ = std::fs::create_dir_all(&dir);
@@ -1665,6 +1940,229 @@ mod tests {
             writeln!(f, "{l}").unwrap();
         }
         p
+    }
+
+    // ---- GUI chat（codex exec --json 实时事件流）协议解析 ----
+
+    #[test]
+    fn chat_thread_started_becomes_init_with_thread_id() {
+        let line = r#"{"type":"thread.started","thread_id":"019f01ae-6cd3-7493-b29c-243ab87ecf28"}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Init { session_id, .. } => {
+                assert_eq!(session_id.as_deref(), Some("019f01ae-6cd3-7493-b29c-243ab87ecf28"));
+            }
+            _ => panic!("expected Init"),
+        }
+    }
+
+    #[test]
+    fn chat_agent_message_item_becomes_assistant_text() {
+        let line =
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"banana42"}}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Message(m) => {
+                assert_eq!(m.role, "assistant");
+                assert_eq!(m.blocks.len(), 1);
+                assert_eq!(m.blocks[0].kind, "text");
+                assert_eq!(m.blocks[0].text.as_deref(), Some("banana42"));
+            }
+            _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn chat_command_execution_item_becomes_shell_tool_use_plus_result() {
+        let line = r#"{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"echo hi","aggregated_output":"hi\n","exit_code":0,"status":"completed"}}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Message(m) => {
+                assert_eq!(m.role, "assistant");
+                assert_eq!(m.blocks.len(), 2);
+                assert_eq!(m.blocks[0].kind, "tool_use");
+                assert_eq!(m.blocks[0].tool_name.as_deref(), Some("shell"));
+                assert_eq!(m.blocks[0].tool_input.as_deref(), Some("echo hi"));
+                assert_eq!(m.blocks[0].tool_id.as_deref(), Some("item_0"));
+                assert_eq!(m.blocks[1].kind, "tool_result");
+                assert_eq!(m.blocks[1].text.as_deref(), Some("hi\n"));
+                assert!(!m.blocks[1].is_error);
+                assert_eq!(m.blocks[1].tool_id.as_deref(), Some("item_0"));
+            }
+            _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn chat_command_execution_nonzero_exit_marks_error() {
+        let line = r#"{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"false","aggregated_output":"","exit_code":1,"status":"completed"}}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Message(m) => {
+                // 输出为空但 exit_code 存在 → 仍补一条 tool_result，并标记 is_error。
+                assert_eq!(m.blocks.len(), 2);
+                assert!(m.blocks[1].is_error);
+            }
+            _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn chat_unknown_item_falls_back_to_tool_use_not_dropped() {
+        let line =
+            r#"{"type":"item.completed","item":{"id":"i","type":"file_change","status":"completed"}}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Message(m) => {
+                assert_eq!(m.blocks[0].kind, "tool_use");
+                assert_eq!(m.blocks[0].tool_name.as_deref(), Some("file_change"));
+            }
+            _ => panic!("expected fallback Message"),
+        }
+    }
+
+    #[test]
+    fn chat_reasoning_item_is_ignored() {
+        let line = r#"{"type":"item.completed","item":{"type":"reasoning","text":"thinking..."}}"#;
+        assert!(matches!(parse_chat_line(line), ChatEvent::Ignore));
+    }
+
+    #[test]
+    fn chat_turn_completed_is_ok_with_mapped_usage() {
+        let line = r#"{"type":"turn.completed","usage":{"input_tokens":25790,"cached_input_tokens":14080,"output_tokens":335,"reasoning_output_tokens":197}}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Result { ok, usage } => {
+                assert!(ok);
+                let u = usage.expect("usage present");
+                assert_eq!(u.input_tokens, 25790);
+                assert_eq!(u.output_tokens, 335);
+                assert_eq!(u.cache_read_input_tokens, 14080);
+                assert_eq!(u.reasoning_output_tokens, 197);
+                // headline total 不重复计 cached（含于 input）/ reasoning（含于 output）。
+                assert_eq!(u.total, 25790 + 335);
+            }
+            _ => panic!("expected Result"),
+        }
+    }
+
+    #[test]
+    fn chat_turn_started_and_garbage_are_ignored() {
+        assert!(matches!(
+            parse_chat_line(r#"{"type":"turn.started"}"#),
+            ChatEvent::Ignore
+        ));
+        assert!(matches!(
+            parse_chat_line(r#"{"type":"item.started","item":{"type":"command_execution"}}"#),
+            ChatEvent::Ignore
+        ));
+        assert!(matches!(parse_chat_line("not json"), ChatEvent::Ignore));
+        assert!(matches!(parse_chat_line(""), ChatEvent::Ignore));
+    }
+
+    #[test]
+    fn chat_turn_command_new_turn_uses_exec_with_workspace_write() {
+        let cmd = <CodexSource as crate::agents::SessionSource>::chat_turn_command(
+            &CodexSource,
+            None,
+            "hello world",
+            "acceptEdits",
+            None,
+            None,
+        )
+        .expect("codex supports chat");
+        let shell = cmd.to_posix_shell();
+        assert!(shell.contains("'exec'"), "{shell}");
+        assert!(!shell.contains("'resume'"), "new turn must not resume: {shell}");
+        assert!(shell.contains("'--json'"));
+        assert!(shell.contains("'--skip-git-repo-check'"));
+        assert!(shell.contains(r#"'sandbox_mode="workspace-write"'"#), "{shell}");
+        assert!(
+            shell.ends_with("'hello world'"),
+            "prompt is the trailing positional: {shell}"
+        );
+    }
+
+    #[test]
+    fn chat_turn_command_resume_puts_id_before_prompt() {
+        let cmd = <CodexSource as crate::agents::SessionSource>::chat_turn_command(
+            &CodexSource,
+            Some("019f-abc"),
+            "again",
+            "acceptEdits",
+            None,
+            None,
+        )
+        .expect("codex supports chat");
+        let args = cmd.args();
+        // exec resume <id> …options… <prompt>
+        assert_eq!(args[0], "exec");
+        assert_eq!(args[1], "resume");
+        assert_eq!(args[2], "019f-abc");
+        assert_eq!(args.last().unwrap(), "again");
+    }
+
+    #[test]
+    fn chat_turn_command_permission_mode_maps_to_sandbox() {
+        let plan = <CodexSource as crate::agents::SessionSource>::chat_turn_command(
+            &CodexSource,
+            None,
+            "p",
+            "plan",
+            None,
+            None,
+        )
+        .unwrap()
+        .to_posix_shell();
+        assert!(plan.contains(r#"'sandbox_mode="read-only"'"#), "{plan}");
+
+        let bypass = <CodexSource as crate::agents::SessionSource>::chat_turn_command(
+            &CodexSource,
+            None,
+            "p",
+            "bypassPermissions",
+            None,
+            None,
+        )
+        .unwrap()
+        .to_posix_shell();
+        assert!(
+            bypass.contains("'--dangerously-bypass-approvals-and-sandbox'"),
+            "{bypass}"
+        );
+        assert!(
+            !bypass.contains("sandbox_mode"),
+            "bypass uses no sandbox_mode: {bypass}"
+        );
+    }
+
+    #[test]
+    fn chat_turn_command_model_and_effort_emit_flags() {
+        let cmd = <CodexSource as crate::agents::SessionSource>::chat_turn_command(
+            &CodexSource,
+            None,
+            "hi",
+            "acceptEdits",
+            Some("gpt-5.1-codex-max"),
+            Some("high"),
+        )
+        .unwrap()
+        .to_posix_shell();
+        assert!(cmd.contains("'-m' 'gpt-5.1-codex-max'"), "{cmd}");
+        assert!(cmd.contains(r#"'model_reasoning_effort="high"'"#), "{cmd}");
+    }
+
+    #[test]
+    fn chat_turn_command_no_model_effort_emits_no_flags() {
+        let cmd = <CodexSource as crate::agents::SessionSource>::chat_turn_command(
+            &CodexSource,
+            None,
+            "hi",
+            "acceptEdits",
+            None,
+            None,
+        )
+        .unwrap()
+        .to_posix_shell();
+        assert!(!cmd.contains("'-m'"), "no model flag when None: {cmd}");
+        assert!(
+            !cmd.contains("model_reasoning_effort"),
+            "no effort flag when None: {cmd}"
+        );
     }
 
     #[test]

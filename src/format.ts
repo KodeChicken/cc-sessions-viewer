@@ -17,6 +17,24 @@ function escapeHtmlAttr(s: string): string {
 const URL_RE = /https?:\/\/[^\s<>&)}\]`]+/g
 const MD_LINK_RE = /\[([^\]\n]+)\]\((<[^>\n]+>|[^)\n]+)\)/g
 
+// 「文件引用」inline code：形如 lib/a/b.dart:371、./src/x.ts、/abs/y.rs:3:7、C:\p\z.cs。
+// 必须含至少一个路径分隔符（否则 obj.method / package.json 之类会被误判），末段是
+// name.ext，可带 :行 或 :行:列。命中后渲染成可点 code —— ChatView 按会话 cwd 解析、
+// 在外部编辑器打开。`https://…/a.ts` 这种以 `scheme:` 开头的不会命中（冒号断掉首段）。
+const FILE_REF_RE =
+  /^(?:~\/|\.{1,2}[\\/]|\/|[A-Za-z]:[\\/])?(?:[\w.@~-]+[\\/])+[\w.@-]+\.[A-Za-z][\w-]*(?::\d+(?::\d+)?)?$/
+
+/**
+ * 把文件引用拆成「路径 + 可选 行 / 列」。末尾的 `:行` 或 `:行:列` 是定位信息（点击后用于在
+ * 支持跳转的编辑器里定位），路径本身交给后端按 cwd 解析。Windows 盘符冒号（`C:\…`）不在末尾，
+ * 不会被误拆。
+ */
+export function parseFileRef(raw: string): { path: string; line?: number; col?: number } {
+  const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(raw)
+  if (!m) return { path: raw }
+  return { path: m[1], line: Number(m[2]), col: m[3] ? Number(m[3]) : undefined }
+}
+
 function isExternalUrl(target: string): boolean {
   return /^https?:\/\//i.test(target)
 }
@@ -68,11 +86,21 @@ function inline(text: string): string {
   s = s.replace(/^##\s+(.+)$/gm, '<h3>$1</h3>')
   s = s.replace(/^#\s+(.+)$/gm, '<h3>$1</h3>')
   s = s.replace(/\n/g, '<br>')
+  // 标题已是块级元素（自带上下 margin）。紧贴它的 <br> 会再叠空行 → 标题前后空一大段。
+  // 去掉与标题相邻的整段 <br>（不止一个），让标题间距完全交给 CSS margin 控制。
+  s = s.replace(/(?:<br>\s*)+(<h[34]>)/g, '$1')
+  s = s.replace(/(<\/h[34]>)(?:\s*<br>)+/g, '$1')
   // Restore code spans (escaped, so contents stay literal) BEFORE links, so a link
   // placeholder captured inside a code span still gets expanded by the link pass.
   if (codes.length) {
     const codeRe = new RegExp(`${SENT}CODE(\\d+)${SENT}`, 'g')
-    s = s.replace(codeRe, (_m, n) => `<code>${escapeHtml(codes[Number(n)] ?? '')}</code>`)
+    s = s.replace(codeRe, (_m, n) => {
+      const code = codes[Number(n)] ?? ''
+      if (FILE_REF_RE.test(code)) {
+        return `<code class="file-ref" data-file-ref="${escapeHtmlAttr(code)}">${escapeHtml(code)}</code>`
+      }
+      return `<code>${escapeHtml(code)}</code>`
+    })
   }
   if (links.length) {
     s = s.replace(/\u0001LINK(\d+)\u0001/g, (_m, n) => links[Number(n)] ?? '')
@@ -219,15 +247,30 @@ export function parseTeammateMessage(text: string): MetaField[] | null {
   }
   return fields.length ? fields : null
 }
-function extractCommandTags(raw: string): { text: string; codes: string[] } {
-  const codes: string[] = []
+const COMMAND_NAME_RE = /<command-name>([\s\S]*?)<\/command-name>/
+const COMMAND_ARGS_RE = /<command-args>([\s\S]*?)<\/command-args>/
+
+/** 把 slash 命令的伪 XML（<command-name>/effort</…> + <command-message>…</…> +
+ *  <command-args>…</…>）还原成用户当初敲的那行纯文本（"/effort" 或 "/review src/x"）。
+ *  供历史回填 / 导出用 —— 把那坨标签收回成干净命令。非命令标记返回 null。 */
+export function commandInputFromMarkup(text: string): string | null {
+  const name = COMMAND_NAME_RE.exec(text)?.[1]?.trim()
+  if (!name) return null
+  const args = COMMAND_ARGS_RE.exec(text)?.[1]?.trim()
+  return args ? `${name} ${args}` : name
+}
+
+type CmdCode = { isName: boolean; inner: string }
+function extractCommandTags(raw: string): { text: string; codes: CmdCode[] } {
+  const codes: CmdCode[] = []
   const stripped = raw.replace(COMMAND_MESSAGE_RE, '')
-  const text = stripped.replace(COMMAND_TAG_RE, (_m, _tag, inner) => {
+  const text = stripped.replace(COMMAND_TAG_RE, (_m, tag, inner) => {
     // 无参 slash 命令（`/clear` / `/init` 等）会带一个空的 <command-args></…>。
     // 留着就会渲染出一个只有 padding+背景的空 chip —— 像个小色块挂在命令后面。
     // inner 是空 / 全空白时直接吞掉整个标签。
     if (!inner.trim()) return ''
-    const idx = codes.push(inner) - 1
+    // 命令名（command-name，形如 /review）单独标记 → 渲染成蓝色；参数（command-args）走普通文本。
+    const idx = codes.push({ isName: tag === 'command-name', inner }) - 1
     return `CMD${idx}`
   })
   return { text, codes }
@@ -287,6 +330,11 @@ function renderTableHtml(
   return `<div class="md-table-wrap"><table class="md-table"><thead>${head}</thead><tbody>${body}</tbody></table></div>`
 }
 
+// 主题分隔线（thematic break）：整行只有 3+ 个 - / * / _（可夹空白）。
+// 之前没有处理，`---` 会被当字面量渲染成一行 "---"；这里识别出来发 <hr>。
+// 注意要排在 table 检测之后：表格分隔行 `|---|---|` 带竖线，不会命中本正则。
+const HR_RE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/
+
 const BULLET_ITEM_RE = /^\s*[-*]\s+(.+?)\s*$/
 
 function isBulletItem(line: string): boolean {
@@ -306,6 +354,7 @@ function renderBulletListHtml(items: string[]): string {
 type MdSegment =
   | { kind: 'table'; html: string }
   | { kind: 'list'; html: string }
+  | { kind: 'rule' }
   | { kind: 'text'; text: string }
 
 /** 把一段非代码块文本按 markdown table / bullet list 切片。未命中的部分保留原换行，
@@ -341,6 +390,12 @@ function extractMarkdownBlocks(text: string): MdSegment[] {
       i = j
       continue
     }
+    if (HR_RE.test(line)) {
+      flushBuf()
+      segs.push({ kind: 'rule' })
+      i++
+      continue
+    }
     if (isBulletItem(line)) {
       flushBuf()
       const items: string[] = [bulletItemText(line)]
@@ -360,17 +415,69 @@ function extractMarkdownBlocks(text: string): MdSegment[] {
   return segs
 }
 
+/** 用户粘贴图片时，各 CLI 会在用户文本里留下 `[Image #1]` 这样的占位符。既然缩略图
+ *  已单独渲染在气泡上方，正文里这些占位符就是重复噪音 —— 滤掉它们并清理残留空白。
+ *  仅对「带图片块的消息」调用（见 ChatView / export），避免误删正文里对图片的文字引用。 */
+export function stripImagePlaceholders(raw: string): string {
+  return raw
+    .replace(/[ \t]*\[Image #\d+\][ \t]*/gi, ' ') // 占位符 + 紧邻空格 → 单空格
+    .replace(/[ \t]+\n/g, '\n') // 行尾残留空格
+    .replace(/\n[ \t]+/g, '\n') // 行首残留空格
+    .replace(/\n{3,}/g, '\n\n') // 占位符独占行被删后压多余空行
+    .trim()
+}
+
 /** 渲染 Markdown 子集：围栏代码块 + 行内强调 + GFM table。 */
 export function renderText(raw: string): string {
   const { text: pre, codes } = extractCommandTags(raw)
-  const parts = pre.split('```')
+  // 按行扫围栏，而不是 split('```')：围栏长度由开围栏决定，闭围栏必须 ≥ 开围栏长度，
+  // 更短的反引号串算作代码内容。这样 ````markdown 里嵌的 ```js 不会被误判成围栏。
   let html = ''
-  parts.forEach((part, i) => {
-    if (i % 2 === 1) {
-      const nl = part.indexOf('\n')
-      const lang = nl >= 0 ? part.slice(0, nl).trim().toLowerCase() : ''
-      const code = nl >= 0 ? part.slice(nl + 1) : part
-      const src = code.replace(/\n$/, '')
+  const lines = pre.split('\n')
+  let textBuf: string[] = []
+
+  const flushText = () => {
+    if (!textBuf.length) return
+    const part = textBuf.join('\n')
+    textBuf = []
+    if (!part) return
+    for (const seg of extractMarkdownBlocks(part)) {
+      if (seg.kind === 'table') html += seg.html
+      else if (seg.kind === 'list') html += seg.html
+      else if (seg.kind === 'rule') html += '<hr class="md-hr">'
+      else if (seg.kind === 'text') {
+        // 去掉文本段首尾的空行、并把 3+ 连续空行压成最多一行 —— 标题/代码块/表格
+        // 前后常跟着空行，原样转 <br> 会叠成大段空白（用户反馈的「间距过大」）。
+        const trimmed = seg.text
+          .replace(/^\n+/, '')
+          .replace(/\n+$/, '')
+          .replace(/\n{3,}/g, '\n\n')
+        if (trimmed) html += `<div class="text-run">${inline(trimmed)}</div>`
+      }
+    }
+  }
+
+  let i = 0
+  while (i < lines.length) {
+    // 开围栏：缩进 ≤3、≥3 个连续反引号、信息串里不含反引号（CommonMark）。
+    const open = lines[i].match(/^( {0,3})(`{3,})(.*)$/)
+    if (open && !open[3].includes('`')) {
+      const fenceLen = open[2].length
+      const lang = open[3].trim().toLowerCase()
+      const body: string[] = []
+      let j = i + 1
+      let closed = false
+      for (; j < lines.length; j++) {
+        // 闭围栏：纯反引号行（无信息串）、缩进 ≤3、长度 ≥ 开围栏。更短的 ``` 当内容。
+        const close = lines[j].match(/^ {0,3}(`{3,})[ \t]*$/)
+        if (close && close[1].length >= fenceLen) {
+          closed = true
+          break
+        }
+        body.push(lines[j])
+      }
+      flushText()
+      const src = body.join('\n')
       if (lang === 'mermaid') {
         // mermaid 块用占位符发出去，渲染管线（ChatView 那边的 hookMermaidRender）
         // 后置扫描 .md-mermaid 调 mermaid.render() 替换。原文存 data-source，主题
@@ -379,18 +486,23 @@ export function renderText(raw: string): string {
       } else {
         html += `<pre class="code-block"${lang ? ` data-lang="${escapeHtml(lang)}"` : ''}><code>${escapeHtml(src)}</code></pre>`
       }
-    } else if (part) {
-      for (const seg of extractMarkdownBlocks(part)) {
-        if (seg.kind === 'table') html += seg.html
-        else if (seg.kind === 'list') html += seg.html
-        else if (seg.text) html += `<div class="text-run">${inline(seg.text)}</div>`
-      }
+      i = closed ? j + 1 : j // 未闭合则扫到文件尾（j === lines.length）
+      continue
     }
-  })
+    textBuf.push(lines[i])
+    i++
+  }
+  flushText()
   if (codes.length) {
     html = html.replace(
       /CMD(\d+)/g,
-      (_m, n) => `<code class="cmd-tag">${escapeHtml(codes[Number(n)])}</code>`,
+      (_m, n) => {
+        const c = codes[Number(n)]
+        // 命令名加 cmd-name（蓝色），并补一个真实空格 —— 去灰底后命令名会和参数贴死
+        // （/configtui=default）；真实空格而非 margin，复制粘贴也保留分隔。参数只用 cmd-tag。
+        if (c.isName) return `<code class="cmd-tag cmd-name">${escapeHtml(c.inner)}</code> `
+        return `<code class="cmd-tag">${escapeHtml(c.inner)}</code>`
+      },
     )
   }
   return html

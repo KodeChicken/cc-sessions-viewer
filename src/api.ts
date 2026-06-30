@@ -1,7 +1,13 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
+  AccountUsage,
   Agent,
   AgentStats,
+  ChatImageInput,
+  ClaudeRuntimeInfo,
+  ChatStartInfo,
+  SlashCommand,
+  ProjectFileEntry,
   ProjectInfo,
   SessionPage,
   Msg,
@@ -27,6 +33,10 @@ export const listProjects = (
     includeCodexInternal: options.includeCodexInternal ?? false,
     includeCodexArchived: options.includeCodexArchived ?? false,
   })
+
+/** 把原生窗口外观（标题栏 / 失焦红绿灯灰圈）钉到 App 主题。null = 跟随系统。 */
+export const setTitlebarTheme = (theme: 'dark' | 'light' | null) =>
+  invoke<void>('set_titlebar_theme', { theme })
 
 export const addBookmark = (agent: Agent, path: string) =>
   invoke<void>('add_bookmark', { agent, path })
@@ -57,6 +67,10 @@ export const readSession = (agent: Agent, path: string) =>
  *  后端按 (path, mtime) 缓存，重复调用不会重复扫描文件。 */
 export const sessionUsage = (agent: Agent, path: string) =>
   invoke<UsageSummary>('session_usage', { agent, path })
+
+/** 续聊种子：会话最后一条 usage（≈当前上下文规模），区别于 sessionUsage 的累加。 */
+export const sessionContextUsage = (agent: Agent, path: string) =>
+  invoke<UsageSummary>('session_context_usage', { agent, path })
 
 /** 当前 agent 的统计概览。**兼容入口**，前端 stats 页面默认走 `startAgentStats` 流式
  *  接口；这里保留仅作老回退。 */
@@ -108,6 +122,15 @@ export function nextSearchRequestId(): number {
 export const renameSession = (agent: Agent, path: string, name: string) =>
   invoke<void>('rename_session', { agent, path, name })
 
+/** `/fork`：把 `sourceId` 会话克隆成全新独立 transcript（新 session id），打上 `title`，
+ *  返回新 session id。`projectKey` = 项目目录名（ChatSession.projectKey）。 */
+export const forkSession = (
+  agent: Agent,
+  projectKey: string,
+  sourceId: string,
+  title: string,
+) => invoke<string>('fork_session', { agent, projectKey, sourceId, title })
+
 export const softDeleteSession = (
   agent: Agent,
   path: string,
@@ -134,6 +157,14 @@ export const openLocalPath = (path: string) =>
 /** 在系统默认浏览器中打开一个外部链接（仅 http/https）。 */
 export const openUrl = (url: string) => invoke<void>('open_url', { url })
 
+/**
+ * 用系统默认程序打开聊天里的文件（相对 / 部分路径按会话 cwd 解析）。
+ * 传了 `line`（可选 `col`）时，若装了支持跳行的编辑器（VS Code/Cursor/Zed/Sublime/Android
+ * Studio 等）则在其中打开并跳到对应行；否则退回默认程序仅打开。
+ */
+export const openPathExternal = (path: string, cwd?: string, line?: number, col?: number) =>
+  invoke<void>('open_path_external', { path, cwd, line, col })
+
 /** 写入用户指定的绝对路径（覆盖同名）。返回最终路径以便后续 reveal。 */
 export const writeFile = (path: string, content: string) =>
   invoke<string>('write_file', { path, content })
@@ -153,6 +184,7 @@ export const terminalTurnSignal = (
 ) => invoke<void>('terminal_turn_signal', { agent, path, state })
 
 export const installClaudeTurnHooks = () => invoke<string>('install_claude_turn_hooks')
+export const claudeRuntimeInfo = () => invoke<ClaudeRuntimeInfo>('claude_runtime_info')
 
 export const watchSessionTurn = (agent: Agent, path: string, catchUp = false) =>
   invoke<void>('watch_session_turn', { agent, path, catchUp })
@@ -243,7 +275,98 @@ export const ptyResize = (id: number, cols: number, rows: number) =>
 /** 强杀子进程并清理 PTY；幂等，已死的 id 也安全。 */
 export const ptyKill = (id: number) => invoke<void>('pty_kill', { id })
 
+// ---------- GUI chat（程序化聊天：管道子进程跑 stream-json）----------
+
+/** 启动一个 GUI chat 子进程，返回 { chatId, processModel }。`sessionId` 给出时续聊既有
+ *  会话；`permissionMode` 走后端允许列表（default | acceptEdits | plan | bypassPermissions），
+ *  缺省 acceptEdits。`model` / `effort` 缺省走 CLI 自身默认。`processModel` 让前端决定切
+ *  设置走 restart-with-resume（长驻）还是下轮 flag（one-shot）。后续通过
+ *  `agent-chat://event|init|result|delta|exit|stderr` 事件接收。 */
+export const agentChatStart = (
+  agent: Agent,
+  cwd: string,
+  sessionId?: string,
+  permissionMode?: string,
+  model?: string,
+  effort?: string,
+  /** btw 侧聊：续聊既有会话时从它**派生**一份独立 session（继承上下文、不污染原 transcript）。 */
+  fork?: boolean,
+) =>
+  invoke<ChatStartInfo>('agent_chat_start', {
+    agent,
+    cwd,
+    sessionId,
+    permissionMode,
+    model,
+    effort,
+    fork,
+  })
+
+/** 向某个 chat 子进程发送一条用户消息（含可选图片附件 + 本轮 model/effort/权限）。
+ *  one-shot agent（Codex）据此每轮切换；长驻 agent（Claude）后端忽略这三者（在 start
+ *  已定型，切换走 restart）。 */
+export const agentChatSend = (
+  id: number,
+  text: string,
+  images?: ChatImageInput[],
+  model?: string,
+  effort?: string,
+  permissionMode?: string,
+) =>
+  invoke<void>('agent_chat_send', {
+    id,
+    text,
+    images: images ?? [],
+    model,
+    effort,
+    permissionMode,
+  })
+
+/** 读取本地图片文件为 base64（系统选择器只给路径，这里取字节做缩略图 + 视觉块）。 */
+export const readFileBase64 = (path: string) =>
+  invoke<ChatImageInput>('read_file_base64', { path })
+
+/** 判断本地路径是否为目录（拖拽到输入框的附件可能是文件或文件夹，据此选图标 + 提示）。 */
+export const pathIsDir = (path: string) => invoke<boolean>('path_is_dir', { path })
+
+/** 会话 cwd 所在仓库的当前 git 分支名；无仓库 / 读不到时为 null（chat 头部展示用）。 */
+export const gitCurrentBranch = (cwd: string) =>
+  invoke<string | null>('git_current_branch', { cwd })
+
+/** GUI chat 输入框 `@` 文件浮层：列出会话 cwd 下的目录/文件（相对路径）。
+ *  `query` 空 → 顶层直接子项；非空 → 递归子串匹配（大小写不敏感）。 */
+export const listProjectFiles = (cwd: string, query: string, limit = 200) =>
+  invoke<ProjectFileEntry[]>('list_project_files', { cwd, query, limit })
+
+/** 结束一个 chat 子进程（kill + 回收）。幂等。 */
+export const agentChatStop = (id: number) => invoke<void>('agent_chat_stop', { id })
+/** 仅中断当前一轮生成；Claude 长驻 chat 会话继续保活。 */
+export const agentChatInterrupt = (id: number) => invoke<void>('agent_chat_interrupt', { id })
+
+/** 回写一次交互式工具权限决定（应答 `agent-chat://permission`）。`decision` 由前端按
+ *  CLI 控制协议构造：允许 = `{behavior:'allow',updatedInput,[updatedPermissions]}`；
+ *  拒绝 = `{behavior:'deny',message,interrupt}`。仅 Claude（长驻 stdin）支持。 */
+export const agentChatRespondPermission = (
+  id: number,
+  requestId: string,
+  decision: unknown,
+) => invoke<void>('agent_chat_respond_permission', { id, requestId, decision })
+
+/** 回写一次结构化提问（AskUserQuestion）的答案决定（应答 `agent-chat://question`）。 */
+export const agentChatRespondQuestion = (
+  id: number,
+  requestId: string,
+  decision: unknown,
+) => invoke<void>('agent_chat_respond_question', { id, requestId, decision })
+
+/** 拉 GUI chat `/` 浮层的动态指令（磁盘上的自定义命令 / user-invocable skills）。 */
+export const agentChatSlashCommands = (agent: Agent, cwd: string) =>
+  invoke<SlashCommand[]>('agent_chat_slash_commands', { agent, cwd })
+
 export const trayQuickStats = () => invoke<TrayStats>('tray_quick_stats')
+
+/** 账号额度（5 小时 / 周 / 各模型分项）—— 走 OAuth 用量接口，每窗口含精确利用率 + 重置时间。 */
+export const accountUsage = (force = false) => invoke<AccountUsage>('account_usage', { force })
 
 export interface UpdateInfo {
   current: string

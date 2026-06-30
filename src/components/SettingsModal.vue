@@ -24,10 +24,13 @@ import {
   visibleAgents,
   setAgentEnabled,
   ALL_AGENTS,
+  quickOpenTarget,
+  setQuickOpenTarget,
   type Lang,
   type Theme,
   type FontScale,
   type TerminalApp,
+  type QuickOpenTarget,
 } from '../settings'
 import { formatSize } from '../format'
 import {
@@ -71,23 +74,35 @@ const mod = isMac ? '⌘' : 'Ctrl'
 const shift = isMac ? '⇧' : 'Shift'
 const sep = isMac ? '' : '+'
 const k = (parts: string[]) => parts.join(sep)
-const shortcuts = [
-  { key: k([mod, shift, 'F']), label: 'settings.shortcut.globalSearch' },
-  { key: k([mod, 'F']), label: 'settings.shortcut.findInSession' },
-  { key: k([mod, 'G']), label: 'settings.shortcut.findNext' },
-  { key: k([mod, shift, 'G']), label: 'settings.shortcut.findPrev' },
-  { key: k([mod, 'N']), label: 'settings.shortcut.newSession' },
-  { key: k([mod, 'T']), label: 'settings.shortcut.newTab' },
-  { key: k([mod, 'W']), label: 'settings.shortcut.closeTab' },
-  { key: k([mod, 'R']), label: 'settings.shortcut.renameTab' },
-  { key: k([mod, 'O']), label: 'settings.shortcut.addFolder' },
-  { key: k([mod, 'E']), label: 'settings.shortcut.exportSession' },
-  { key: k([mod, 'B']), label: 'settings.shortcut.toggleSidebar' },
-  { key: k([mod, shift, 'S']), label: 'settings.shortcut.stats' },
-  { key: k([mod, shift, 'T']), label: 'settings.shortcut.trash' },
-  { key: k([mod, ',']), label: 'settings.shortcut.settings' },
-  { key: k([mod, '/']), label: 'settings.shortcut.shortcuts' },
-  { key: 'Esc', label: 'settings.shortcut.escape' },
+// 分两组展示：全局（应用级，随处可用）/ 会话（作用于当前会话或其 tab）。
+const shortcutGroups = [
+  {
+    title: 'settings.shortcut.groupGlobal',
+    items: [
+      { key: k([mod, shift, 'F']), label: 'settings.shortcut.globalSearch' },
+      { key: k([mod, 'N']), label: 'settings.shortcut.newSession' },
+      { key: k([mod, 'T']), label: 'settings.shortcut.newTab' },
+      { key: k([mod, 'O']), label: 'settings.shortcut.addFolder' },
+      { key: k([mod, 'B']), label: 'settings.shortcut.toggleSidebar' },
+      { key: k([mod, shift, 'S']), label: 'settings.shortcut.stats' },
+      { key: k([mod, shift, 'T']), label: 'settings.shortcut.trash' },
+      { key: k([mod, ',']), label: 'settings.shortcut.settings' },
+      { key: k([mod, '/']), label: 'settings.shortcut.shortcuts' },
+      { key: 'Esc', label: 'settings.shortcut.escape' },
+    ],
+  },
+  {
+    title: 'settings.shortcut.groupSession',
+    items: [
+      { key: k([mod, 'F']), label: 'settings.shortcut.findInSession' },
+      { key: k([mod, 'G']), label: 'settings.shortcut.findNext' },
+      { key: k([mod, shift, 'G']), label: 'settings.shortcut.findPrev' },
+      { key: k([mod, 'W']), label: 'settings.shortcut.closeTab' },
+      { key: k([mod, 'R']), label: 'settings.shortcut.renameTab' },
+      { key: k([mod, 'E']), label: 'settings.shortcut.exportSession' },
+      { key: k([mod, 'U']), label: 'settings.shortcut.attachFiles' },
+    ],
+  },
 ]
 
 const agentLabel = (a: Agent) =>
@@ -210,6 +225,13 @@ const fontScaleOptions: FontScaleOpt[] = [
   { v: 'large', key: 'settings.fontSize.large' },
 ]
 
+type QuickOpenOpt = { v: QuickOpenTarget; key: string }
+const quickOpenOptions: QuickOpenOpt[] = [
+  { v: 'session', key: 'settings.quickOpen.session' },
+  { v: 'terminal', key: 'settings.quickOpen.terminal' },
+  { v: 'chat', key: 'settings.quickOpen.chat' },
+]
+
 const currentLangLabel = computed(() => {
   const o = langOptions.find(o => o.v === lang.value)
   return o ? t(o.key) : lang.value
@@ -281,6 +303,8 @@ async function installClaudeHooks() {
           <span>{{ t(n.key) }}</span>
           <span v-if="n.id === 'updates' && updateAvailable" class="set-nav-dot" aria-hidden="true" />
         </button>
+        <!-- 左栏底部：当前 app 版本号（margin-top:auto 顶到底） -->
+        <div class="set-nav-version">v{{ version }}</div>
       </nav>
 
       <button
@@ -474,6 +498,27 @@ async function installClaudeHooks() {
             </div>
           </div>
 
+          <!-- 双击 / 新建快捷键默认打开什么 -->
+          <div class="set-group">
+            <div class="set-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.section.quickOpen') }}</div>
+                <p class="set-row-desc">{{ t('settings.quickOpenDesc') }}</p>
+              </div>
+              <div class="set-segment set-row-control">
+                <button
+                  v-for="o in quickOpenOptions"
+                  :key="o.v"
+                  class="set-segment-btn"
+                  :class="{ active: quickOpenTarget === o.v }"
+                  @click="setQuickOpenTarget(o.v)"
+                >
+                  {{ t(o.key) }}
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- 启动参数 -->
           <div class="set-group">
             <div class="set-group-head">
@@ -616,9 +661,12 @@ async function installClaudeHooks() {
 
         <template v-else>
           <div class="set-shortcuts">
-            <div class="set-shortcut-row" v-for="s in shortcuts" :key="s.key">
-              <span class="set-shortcut-label">{{ t(s.label) }}</span>
-              <kbd class="set-shortcut-key">{{ s.key }}</kbd>
+            <div class="set-shortcut-group" v-for="g in shortcutGroups" :key="g.title">
+              <div class="set-shortcut-group-title">{{ t(g.title) }}</div>
+              <div class="set-shortcut-row" v-for="s in g.items" :key="s.key">
+                <span class="set-shortcut-label">{{ t(s.label) }}</span>
+                <kbd class="set-shortcut-key">{{ s.key }}</kbd>
+              </div>
             </div>
           </div>
         </template>

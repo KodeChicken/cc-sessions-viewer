@@ -8,7 +8,141 @@
 
 #![allow(dead_code)]
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// 前端发送一条 GUI chat 用户消息时附带的图片附件（粘贴 / 拖拽 / 选择）。
+/// `data` 是去掉 `data:` 前缀的纯 base64；`media_type` 如 `image/png`。
+/// 放在 types.rs（而非 agent_chat.rs）：`SessionSource::chat_encode_input` 要用到它，
+/// 类型住在共享层，避免 trait 反向依赖驱动模块。
+/// GUI chat `/` 浮层里的一条可用项 —— 命令（自定义 / 插件）或技能。`name` 是不含前导 `/`
+/// 的调用 token（命令命名空间名 `git:commit` / 技能名 `animejs`），选中后按 `/<name>` 透传给
+/// CLI（CLI 自己展开）。**不含 TUI 内置指令**（headless 不展开、会报「not available」）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SlashCommand {
+    /// 调用 token（无前导 `/`）。
+    pub name: String,
+    /// 浮层展示名：命令 = `/name`；技能 = 由 name 美化的 Title Case（如 `animejs`→`Animejs`）。
+    pub title: String,
+    pub description: String,
+    /// 分组 + 图标依据：`"command"` | `"skill"`。
+    pub kind: String,
+    /// 来源类别：`"user"`（→ UI 显示「Personal」）/ `"project"` / `"plugin"`。
+    pub origin: String,
+    /// 来源名：项目名 / 插件名（`user` 来源省略，前端回落到本地化「Personal」）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_name: Option<String>,
+    /// 命令 frontmatter 的 `argument-hint`（如 `[--wait] [--base <ref>]`）：选中命令后在输入框里
+    /// 作为暗色 ghost 占位提示参数格式（对齐 Claude TUI）。技能 / 无此字段的命令省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
+}
+
+/// `agent_chat_start` 的返回：内部 chat id + 该 agent 的进程模型标识。前端据
+/// `process_model`（"longLivedStdin" / "oneShotResume"）决定切模型 / effort / 权限时
+/// 是要 restart-with-resume（长驻）还是改下轮 flag 即可（one-shot）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatStartInfo {
+    pub chat_id: u64,
+    pub process_model: String,
+}
+
+/// Claude GUI chat 需要知道当前本机配置是否挂了自定义 Anthropic 兼容端点。
+/// 一旦 `has_custom_base_url=true`，前端就不应显示订阅专属的 5h/周限额，也不应暴露
+/// effort 这种可能被第三方端点拒绝的参数。
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeRuntimeInfo {
+    pub has_custom_base_url: bool,
+    pub alias_targets: ClaudeAliasTargets,
+    /// 进会话前对 Claude 鉴权方式的**预判**（init 事件回来前的种子；init 一到以其为准）：
+    /// `"none"` = 订阅/OAuth 登录（5h/周限额 + effort 生效）；`"ANTHROPIC_API_KEY"` /
+    /// `"apiKeyHelper"` = API key 计费；`None` = 判不出（UI 保持保守，等 init）。
+    pub api_key_source: Option<String>,
+    /// settings.json 里的 `effortLevel`（用户在 CLI 选的全局 reasoning effort 默认档）。
+    /// transcript 不记录 effort，CLI 在不带 `--effort` 时即用这个值 —— 故它是 GUI chat
+    /// effort 选择器在用户未显式改档前应当展示的「真实生效默认」（而非假的 levels[0]）。
+    pub effort_level: Option<String>,
+}
+
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeAliasTargets {
+    pub opus: Option<String>,
+    pub sonnet: Option<String>,
+    pub haiku: Option<String>,
+    pub fable: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatImageInput {
+    pub media_type: String,
+    pub data: String,
+}
+
+/// GUI chat 输入框 `@` 文件浮层的一条目录/文件项。`rel_path` 相对会话 `cwd`（统一用
+/// `/` 分隔），`name` 是末段名字，`is_dir` 决定图标 + 钻取行为。`has_children` 仅对目录
+/// 有意义：是否含可见子项（空目录 = false → 前端隐藏「进入」chevron / 禁用下钻）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFileEntry {
+    pub rel_path: String,
+    pub name: String,
+    pub is_dir: bool,
+    pub has_children: bool,
+}
+
+/// 流式增量（`--include-partial-messages` → `stream_event`）归一后的一帧。
+/// 仅 LongLivedStdin（Claude）会产出；前端据此驱动「正在生成」气泡的打字机效果。
+/// `phase`：`start`(块开始) | `delta`(追加) | `stop`(块结束)。
+/// `kind`：块类型 `text` | `thinking` | `tool_use`（start 必有；delta 带上便于前端兜底建块）。
+/// `text`：仅 delta —— 本次追加的文本片段。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatDelta {
+    pub index: u64,
+    pub phase: String,
+    pub kind: Option<String>,
+    pub text: Option<String>,
+}
+
+/// GUI chat 交互式工具权限请求 —— Claude headless 控制协议里 `can_use_tool` 的归一形状
+/// （`--permission-prompt-tool stdio`）。CLI 在工具被门控时把它从 stdout 发来，前端弹
+/// 「允许 Claude 运行 X？」对话框，用户的选择经 `agent_chat_respond_permission` 回写。
+///
+/// `input` / `permission_suggestions` 是任意 JSON：前者原样回传给 `updatedInput`（允许），
+/// 后者是 CLI 给出的「永久允许」规则建议（`addRules`，含 `destination` 如 localSettings =
+/// 截图里的「Project (local)」），勾「始终允许」时原样回传 `updatedPermissions`。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPermissionRequest {
+    /// 控制协议的关联 id —— 回写 `control_response` 时必须原样带回。
+    pub request_id: String,
+    /// 工具名（如 "Bash" / "Write" / "Edit"）。
+    pub tool_name: String,
+    /// 工具参数原文（Bash 的 `command`、文件工具的 `file_path` 等都在里面）。
+    pub input: serde_json::Value,
+    /// CLI 给的人类可读说明（可能为空）。
+    pub description: Option<String>,
+    /// 「始终允许」的规则建议（`addRules` 数组）；None / 空 = 不提供「始终允许」。
+    pub permission_suggestions: Option<serde_json::Value>,
+}
+
+/// AskUserQuestion 工具的结构化提问 —— 与工具权限同走控制协议 `can_use_tool`，只是
+/// `tool_name == "AskUserQuestion"`，参数里带的是 `questions` 而非工具入参。前端据此弹
+/// 「选择题」卡片（单选 / 多选 / Other 自填 / 并排预览），用户的选择经
+/// `agent_chat_respond_question` 回写 `control_response` 送回同一 stdin。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatQuestionRequest {
+    /// 控制协议的关联 id —— 回写 `control_response` 时必须原样带回。
+    pub request_id: String,
+    /// 提问数组原文：每项 `{question, header?, multiSelect?, options:[{label, description?, preview?}]}`。
+    /// 原样透传给前端（回写 decision 的 `updatedInput.questions` 要把它带回去）。
+    pub questions: serde_json::Value,
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,6 +221,11 @@ pub struct Block {
     pub is_error: bool,
     /// 文件改动类工具结果携带的目标文件路径。
     pub file_path: Option<String>,
+    /// file 块：该 `@path` 引用是目录而非文件。前端据此用文件夹图标 +「打开文件夹」。
+    /// 仅在确为目录时才置 `Some(true)`（普通文件留 None），让历史会话的文件夹 chip 与
+    /// 实时回显一致，而不至于全都显示成文件图标。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_dir: Option<bool>,
     /// 文件改动的结构化 diff（如 Claude 的 structuredPatch）。
     pub diff: Option<Vec<DiffHunk>>,
     /// 图片源：通常为 data:<mime>;base64,<...> 的内联 URL 或 http(s) URL。

@@ -7,6 +7,7 @@ import {
   highlightSegments,
   isCaveatOnlyMsg,
   metaKindIsPre,
+  parseFileRef,
   parseMetaFields,
   parseSystemEvent,
   parseTeammateMessage,
@@ -24,6 +25,27 @@ const block = (kind: string, text?: string) => ({ kind, text })
 const userMsg = (...blocks: Array<{ kind: string; text?: string }>) => ({
   role: 'user',
   blocks,
+})
+
+describe('parseFileRef', () => {
+  it('splits off a trailing :line and :line:col', () => {
+    expect(parseFileRef('lib/a/b.dart')).toEqual({ path: 'lib/a/b.dart' })
+    expect(parseFileRef('lib/a/b.dart:371')).toEqual({
+      path: 'lib/a/b.dart',
+      line: 371,
+      col: undefined,
+    })
+    expect(parseFileRef('src/x.ts:10:5')).toEqual({ path: 'src/x.ts', line: 10, col: 5 })
+  })
+
+  it('does not mistake a Windows drive colon for a line number', () => {
+    expect(parseFileRef('C:\\proj\\x.ts')).toEqual({ path: 'C:\\proj\\x.ts' })
+    expect(parseFileRef('C:\\proj\\x.ts:42')).toEqual({
+      path: 'C:\\proj\\x.ts',
+      line: 42,
+      col: undefined,
+    })
+  })
 })
 
 describe('renderText', () => {
@@ -67,6 +89,35 @@ describe('renderText', () => {
     expect(html).not.toContain('</code>"')
   })
 
+  // 文件路径形态的 inline code 渲染成可点 .file-ref（ChatView 委托点击在外部编辑器打开）。
+  it('turns a file-path inline code into a clickable file-ref', () => {
+    const html = renderText('see `lib/pages/home/todo_workbench_screen.dart:371` here')
+    expect(html).toContain('class="file-ref"')
+    expect(html).toContain('data-file-ref="lib/pages/home/todo_workbench_screen.dart:371"')
+    expect(html).toContain('>lib/pages/home/todo_workbench_screen.dart:371</code>')
+  })
+
+  it('treats absolute paths and :line:col suffixes as file-refs', () => {
+    expect(renderText('`/Users/me/proj/src/x.ts:5:3`')).toContain(
+      'data-file-ref="/Users/me/proj/src/x.ts:5:3"',
+    )
+    expect(renderText('`./src/index.ts`')).toContain('data-file-ref="./src/index.ts"')
+  })
+
+  it('does not treat object.method, bare filenames or dirs as file-refs', () => {
+    // 无路径分隔符 → 普通 code（避免 obj.method / package.json 误判）。
+    expect(renderText('`array.map`')).toContain('<code>array.map</code>')
+    expect(renderText('`array.map`')).not.toContain('file-ref')
+    expect(renderText('`package.json`')).not.toContain('file-ref')
+    // 末段无扩展名（目录）→ 不是文件引用。
+    expect(renderText('`src/components`')).not.toContain('file-ref')
+  })
+
+  it('does not treat a URL inside backticks as a file-ref', () => {
+    expect(renderText('`https://x.com/a.ts`')).not.toContain('file-ref')
+    expect(renderText('`https://x.com/a.ts`')).toContain('<code>https://x.com/a.ts</code>')
+  })
+
   it('renders a fenced code block with a language line', () => {
     const html = renderText('```js\nconst x = 1\n```')
     expect(html).toContain('<pre class="code-block" data-lang="js"><code>const x = 1</code></pre>')
@@ -78,6 +129,24 @@ describe('renderText', () => {
 
   it('escapes HTML inside fenced code blocks', () => {
     expect(renderText('```\n<a> & b\n```')).toContain('&lt;a&gt; &amp; b')
+  })
+
+  // 回归用户反馈：外层用 4 个反引号包住内含 ```js 围栏的 markdown 时，内层的 ``` 被
+  // 当成围栏拆掉了。围栏长度应由开围栏决定，更短的反引号串只是代码内容。
+  it('keeps inner ``` as content inside a longer 4-backtick fence', () => {
+    const html = renderText('````markdown\n```js\nx()\n```\n````')
+    // 整段是一个 markdown 代码块
+    expect(html).toContain('<pre class="code-block" data-lang="markdown">')
+    // 内层围栏作为文本内容保留（不另起 code-block）
+    expect(html).toContain('```js')
+    // 只有一个 code-block —— 内层没有被错误拆成第二个
+    expect(html.match(/class="code-block"/g)?.length).toBe(1)
+  })
+
+  // 未闭合围栏：从开围栏一直吃到文末，仍算一个代码块（与旧 split 行为一致）。
+  it('treats an unclosed fence as a single code block to end of text', () => {
+    const html = renderText('```js\nconst x = 1')
+    expect(html).toContain('<pre class="code-block" data-lang="js"><code>const x = 1</code></pre>')
   })
 
   it('wraps plain prose in a text-run div', () => {
@@ -156,15 +225,15 @@ describe('renderText', () => {
     expect(html).toContain('after</div>')
   })
 
-  it('drops <command-message> and emits <command-name> as a code chip', () => {
+  it('drops <command-message> and emits <command-name> as a blue command chip', () => {
     const html = renderText(
       '<command-message>init</command-message><command-name>/init</command-name>',
     )
     expect(html).not.toContain('command-message')
-    expect(html).toContain('<code class="cmd-tag">/init</code>')
+    expect(html).toContain('<code class="cmd-tag cmd-name">/init</code>')
   })
 
-  it('emits <command-args> as a code chip and escapes its content', () => {
+  it('emits <command-args> as a plain code chip (no cmd-name) and escapes its content', () => {
     const html = renderText('<command-args><x></command-args>')
     expect(html).toContain('<code class="cmd-tag">&lt;x&gt;</code>')
   })
@@ -173,7 +242,7 @@ describe('renderText', () => {
     const html = renderText(
       '<command-name>/clear</command-name><command-args></command-args>',
     )
-    expect(html).toContain('<code class="cmd-tag">/clear</code>')
+    expect(html).toContain('<code class="cmd-tag cmd-name">/clear</code>')
     // No empty chip after the /clear pill
     expect(html).not.toMatch(/<code class="cmd-tag"><\/code>/)
   })
@@ -187,6 +256,40 @@ describe('renderText', () => {
 
   it('returns an empty string for empty input', () => {
     expect(renderText('')).toBe('')
+  })
+
+  // 用户反馈：`---` 被渲染成字面量 "---"，而不是分隔线。
+  it('renders --- as a horizontal rule, not literal dashes', () => {
+    const html = renderText('above\n\n---\n\nbelow')
+    expect(html).toContain('<hr class="md-hr">')
+    expect(html).toContain('<div class="text-run">above</div>')
+    expect(html).toContain('<div class="text-run">below</div>')
+    expect(html).not.toContain('---')
+  })
+
+  it('treats *** and ___ as horizontal rules too', () => {
+    expect(renderText('***')).toContain('<hr class="md-hr">')
+    expect(renderText('___')).toContain('<hr class="md-hr">')
+  })
+
+  it('does not mistake a GFM table separator row for a horizontal rule', () => {
+    const html = renderText('| A | B |\n|---|---|\n| 1 | 2 |')
+    expect(html).toContain('<table class="md-table">')
+    expect(html).not.toContain('<hr')
+  })
+
+  // 用户反馈：标题/代码块前后空行叠成大段空白。空行应被压扁，标题间距交给 CSS。
+  it('collapses stacked blank lines around a heading', () => {
+    const html = renderText('## Heading\n\n\n\nbody')
+    expect(html).toContain('<h3>Heading</h3>')
+    expect(html).not.toContain('<br><h3>')
+    expect(html).not.toContain('</h3><br>')
+  })
+
+  it('trims blank lines between prose and a fenced code block', () => {
+    const html = renderText('intro\n\n\n```js\nx\n```')
+    // the prose run must not carry a trailing run of <br> before the code block
+    expect(html).not.toContain('<br></div>')
   })
 })
 

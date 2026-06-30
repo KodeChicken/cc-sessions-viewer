@@ -30,6 +30,16 @@ function ensureTipEl(): HTMLDivElement {
   return el
 }
 
+/**
+ * body 上挂着字号缩放 `zoom`（来自设置，见 settings.ts）。tipEl 是 body 的子节点，
+ * 其 `position: fixed` 坐标会被这个 zoom 整体缩放，而我们用 getBoundingClientRect 算出的
+ * 是**视觉像素**（已含 zoom）。所以最终写 style 时要 / zoom 抵消，否则 tip 会朝左上角漂。
+ */
+function currentZoom(): number {
+  const z = parseFloat(getComputedStyle(document.body).zoom || '1')
+  return Number.isFinite(z) && z > 0 ? z : 1
+}
+
 function showFor(target: HTMLElement, text: string, placement: Placement) {
   const el = ensureTipEl()
   el.textContent = text
@@ -41,6 +51,7 @@ function showFor(target: HTMLElement, text: string, placement: Placement) {
   const rect = el.getBoundingClientRect()
   const gap = 6
   const margin = 6
+  const zoom = currentZoom()
 
   // 'right'：浮在目标右侧、垂直居中；右侧放不下则翻到左侧
   if (placement === 'right') {
@@ -54,8 +65,8 @@ function showFor(target: HTMLElement, text: string, placement: Placement) {
       margin,
       Math.min(window.innerHeight - rect.height - margin, top),
     )
-    el.style.left = `${Math.round(left)}px`
-    el.style.top = `${Math.round(top)}px`
+    el.style.left = `${Math.round(left / zoom)}px`
+    el.style.top = `${Math.round(top / zoom)}px`
     el.dataset.placement = 'right'
     requestAnimationFrame(() => el.classList.add('is-visible'))
     return
@@ -80,8 +91,8 @@ function showFor(target: HTMLElement, text: string, placement: Placement) {
   }
   let left = targetRect.left + targetRect.width / 2 - rect.width / 2
   left = Math.max(margin, Math.min(window.innerWidth - rect.width - margin, left))
-  el.style.left = `${Math.round(left)}px`
-  el.style.top = `${Math.round(top)}px`
+  el.style.left = `${Math.round(left / zoom)}px`
+  el.style.top = `${Math.round(top / zoom)}px`
   el.dataset.placement = placeAbove ? 'top' : 'bottom'
   requestAnimationFrame(() => el.classList.add('is-visible'))
 }
@@ -93,6 +104,20 @@ function hide() {
   }
   activeEl = null
   tipEl?.classList.remove('is-visible')
+}
+
+// 程序化触发：用于 v-html 动态生成、挂不上指令的元素（如聊天气泡里的命令 token）。
+// 复用同一个单例 tip 节点与 250ms 延迟；hideTooltip 收起。
+export function showTooltipFor(el: HTMLElement, text: string) {
+  if (!text) return
+  activeEl = el
+  if (showTimer) clearTimeout(showTimer)
+  showTimer = window.setTimeout(() => {
+    if (activeEl === el) showFor(el, text, 'auto')
+  }, 250)
+}
+export function hideTooltip() {
+  hide()
 }
 
 function bind(el: HTMLElement, text: string, placement: Placement) {

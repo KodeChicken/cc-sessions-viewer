@@ -207,22 +207,30 @@ describe('SessionsView', () => {
         b.attributes('aria-label')?.startsWith(label),
       )!
 
-    it('emits "new-session" when the agent session menu item is clicked', async () => {
+    it('emits "new-session" (TUI) when the first menu item is clicked', async () => {
       const wrapper = factory()
       // Click the "+" button to open the dropdown
       await findByLabel(wrapper, 'New session').trigger('click')
-      // Click the "New agent session" menu item
+      // Menu now has three items: TUI / GUI / Terminal.
       const items = wrapper.findAll('.new-menu-item')
-      expect(items.length).toBe(2)
+      expect(items.length).toBe(3)
       await items[0].trigger('click')
       expect(wrapper.emitted('new-session')).toHaveLength(1)
+    })
+
+    it('emits "new-gui-session" when the GUI menu item is clicked', async () => {
+      const wrapper = factory()
+      await findByLabel(wrapper, 'New session').trigger('click')
+      const items = wrapper.findAll('.new-menu-item')
+      await items[1].trigger('click')
+      expect(wrapper.emitted('new-gui-session')).toHaveLength(1)
     })
 
     it('emits "new-shell" when the terminal menu item is clicked', async () => {
       const wrapper = factory()
       await findByLabel(wrapper, 'New session').trigger('click')
       const items = wrapper.findAll('.new-menu-item')
-      await items[1].trigger('click')
+      await items[2].trigger('click')
       expect(wrapper.emitted('new-shell')).toHaveLength(1)
     })
 
@@ -338,7 +346,8 @@ describe('SessionsView', () => {
     it('keeps every card action when the directory exists', () => {
       const wrapper = factory()
       expect(wrapper.find('.title-rename-ic').exists()).toBe(true)
-      expect(wrapper.findAll('.session-actions .icon-btn')).toHaveLength(5)
+      // chat(claude) / resume / reveal / refresh / export / delete
+      expect(wrapper.findAll('.session-actions .icon-btn')).toHaveLength(6)
     })
   })
 
