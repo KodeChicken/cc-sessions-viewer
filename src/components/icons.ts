@@ -40,6 +40,7 @@ import IconChevronUpRaw from '~icons/lucide/chevron-up'
 import IconChevronDownRaw from '~icons/lucide/chevron-down'
 import IconFoldRaw from '~icons/lucide/chevrons-down-up'
 import IconUnfoldRaw from '~icons/lucide/chevrons-up-down'
+import IconMinimizeRaw from '~icons/lucide/minus'
 import IconDownloadRaw from '~icons/lucide/download'
 import IconMarkdownRaw from '~icons/lucide/file-text'
 import IconFileRaw from '~icons/lucide/file'
@@ -123,6 +124,7 @@ export const IconChevronUp = IconChevronUpRaw
 export const IconChevronDown = IconChevronDownRaw
 export const IconFold = IconFoldRaw
 export const IconUnfold = IconUnfoldRaw
+export const IconMinimize = IconMinimizeRaw
 export const IconDownload = IconDownloadRaw
 export const IconMarkdown = IconMarkdownRaw
 export const IconFile = IconFileRaw

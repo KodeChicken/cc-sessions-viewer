@@ -102,6 +102,20 @@ struct ExitPayload {
     code: i32,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PermissionPayload {
+    chat_id: u64,
+    request: crate::types::ChatPermissionRequest,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct QuestionPayload {
+    chat_id: u64,
+    request: crate::types::ChatQuestionRequest,
+}
+
 /// 按 OS 组装管道子进程命令。与 `pty.rs::build_shell_command` 同款 PATH 策略，只是
 /// 改用 `std::process::Command` + 三路管道（无 PTY）。
 #[cfg(unix)]
@@ -277,6 +291,12 @@ fn reader_loop(app: AppHandle, id: u64, agent: String, stdout: std::process::Chi
                 .is_ok(),
             ChatEvent::Delta(delta) => app
                 .emit("agent-chat://delta", DeltaPayload { chat_id: id, delta })
+                .is_ok(),
+            ChatEvent::Permission(request) => app
+                .emit("agent-chat://permission", PermissionPayload { chat_id: id, request })
+                .is_ok(),
+            ChatEvent::Question(request) => app
+                .emit("agent-chat://question", QuestionPayload { chat_id: id, request })
                 .is_ok(),
             ChatEvent::Ignore => true,
         };
@@ -464,6 +484,9 @@ fn oneshot_turn_reader(
             ChatEvent::Delta(delta) => app
                 .emit("agent-chat://delta", DeltaPayload { chat_id: id, delta })
                 .is_ok(),
+            // 交互式权限请求 / 结构化提问只在长驻 stdin 模型（Claude）出现；OneShot 没有可
+            // 回写的长驻 stdin，故这里不该收到 —— 忽略即可（保持穷尽匹配）。
+            ChatEvent::Permission(_) | ChatEvent::Question(_) => true,
             ChatEvent::Ignore => true,
         };
         if !emit_ok {
@@ -534,4 +557,60 @@ pub fn interrupt(id: u64) -> Result<(), String> {
         }
         ChatHandle::OneShot { .. } => stop(id),
     }
+}
+
+/// 回写一次控制协议决定（响应 `can_use_tool`，覆盖工具权限与 AskUserQuestion 两类请求）。
+/// 把前端构造好的 `decision`（`{behavior:"allow",updatedInput,...}` /
+/// `{behavior:"deny",message,interrupt}`）包进 `control_response`，写进长驻进程的同一条 stdin
+/// （与用户消息、Esc 同管道）：
+///   `{"type":"control_response","response":{"subtype":"success","request_id":<id>,"response":<decision>}}`
+/// 只有长驻 stdin 模型（Claude）有这条回路；OneShot 不产生此类请求，调用即报错。
+fn respond_control(
+    id: u64,
+    request_id: &str,
+    decision: serde_json::Value,
+) -> Result<(), String> {
+    let arc = {
+        let m = map().lock().map_err(|e| e.to_string())?;
+        m.get(&id).cloned().ok_or_else(|| "chat not found".to_string())?
+    };
+    match &*arc {
+        ChatHandle::LongLived { stdin, .. } => {
+            let line = serde_json::json!({
+                "type": "control_response",
+                "response": {
+                    "subtype": "success",
+                    "request_id": request_id,
+                    "response": decision,
+                }
+            })
+            .to_string();
+            let mut w = stdin.lock().map_err(|e| e.to_string())?;
+            w.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+            w.write_all(b"\n").map_err(|e| e.to_string())?;
+            w.flush().map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        ChatHandle::OneShot { .. } => Err("此 agent 不支持交互式控制响应".into()),
+    }
+}
+
+/// 回写一次交互式工具权限决定（响应 `agent-chat://permission`）。
+pub fn respond_permission(
+    id: u64,
+    request_id: &str,
+    decision: serde_json::Value,
+) -> Result<(), String> {
+    respond_control(id, request_id, decision)
+}
+
+/// 回写一次结构化提问的答案决定（响应 `agent-chat://question`）。`decision` 已由前端构造成
+/// `{behavior:"allow",updatedInput:{questions,answers,response?}}`（作答）或
+/// `{behavior:"deny",message,interrupt:false}`（取消，反馈给模型但不打断本轮）。
+pub fn respond_question(
+    id: u64,
+    request_id: &str,
+    decision: serde_json::Value,
+) -> Result<(), String> {
+    respond_control(id, request_id, decision)
 }

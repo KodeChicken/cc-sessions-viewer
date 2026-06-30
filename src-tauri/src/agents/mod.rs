@@ -125,6 +125,14 @@ pub enum ChatEvent {
     /// token 级流式增量（`--include-partial-messages` 的 `stream_event`）。
     /// 仅长驻 stdin 模型产出；权威 `Message` 仍会随后到达定稿。
     Delta(crate::types::ChatDelta),
+    /// 交互式工具权限请求（Claude 控制协议 `can_use_tool`，`--permission-prompt-tool stdio`）。
+    /// 前端据此弹「允许 Claude 运行 X？」对话框；用户选择经回写命令送回同一 stdin。
+    /// 仅长驻 stdin 模型（Claude）产出。
+    Permission(crate::types::ChatPermissionRequest),
+    /// 模型向用户提的结构化选择题（Claude 的 `AskUserQuestion` 工具，同走 `can_use_tool`
+    /// 控制协议）。前端据此弹「选择题」卡片；用户的选择经回写 `control_response` 送回同一
+    /// stdin。仅长驻 stdin 模型（Claude）产出。
+    Question(crate::types::ChatQuestionRequest),
     /// 与 UI 无关的行（诊断 / 未知类型）—— 直接丢弃。
     Ignore,
 }

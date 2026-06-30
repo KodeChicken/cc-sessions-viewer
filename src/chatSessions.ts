@@ -15,6 +15,12 @@ import { reactive, ref } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import * as api from './api'
 import { defaultModel, defaultEffort, effectiveEffort } from './chatComposerOptions'
+import { buildPermissionDecision, type PermissionChoice } from './chatPermission'
+import {
+  buildQuestionCancelDecision,
+  buildQuestionDecision,
+  type QuestionSelection,
+} from './chatQuestion'
 import { bumpUsage } from './usage'
 import type {
   Agent,
@@ -26,6 +32,10 @@ import type {
   ChatImageAttachment,
   ChatFileAttachment,
   ChatInitPayload,
+  ChatPermissionPayload,
+  ChatPermissionRequest,
+  ChatQuestionPayload,
+  ChatQuestionRequest,
   ChatProcessModel,
   ChatResultPayload,
   ChatStderrPayload,
@@ -37,6 +47,14 @@ import type {
 // Claude Code 给 /context、/compact、/model 等本地命令的 synthetic 记录打的「伪模型」标记 ——
 // 它不是真实模型，绝不能让它流进底栏模型选择器（模型只应在用户手动调整时变动）。
 const SYNTHETIC_MODEL = '<synthetic>'
+
+/** 一条待发消息（带可选图片 + 文件附件），形参与 sendPrompt 对齐 —— 出队时原样转发。 */
+export interface QueuedMessage {
+  id: number
+  text: string
+  images: ChatImageAttachment[]
+  files: ChatFileAttachment[]
+}
 
 export interface ChatSession {
   /** 本地稳定 id（v-for / 选中用），与后端 chatId 是两套号。 */
@@ -97,6 +115,29 @@ export interface ChatSession {
   applied?: { permissionMode: string; model?: string; effort?: string }
   /** 前端主动 stop/restart 旧进程时暂时屏蔽那次 exit，避免把新进程会话误标为 ended。 */
   suppressNextExit?: boolean
+  /**
+   * 待处理的交互式工具权限请求（Claude `--permission-prompt-tool stdio`）。CLI 在工具被
+   * 门控时发来，ChatView 据此弹「允许 Claude 运行 X？」对话框。用户应答 / 该轮结束即出队。
+   * 通常一次一个，但模型可连发多个工具调用，故用数组（FIFO）。
+   */
+  pendingPermissions: ChatPermissionRequest[]
+  /**
+   * 待处理的结构化提问（Claude `AskUserQuestion`，同走 `--permission-prompt-tool stdio`）。
+   * 模型提问时 CLI 发来，ChatView 据此弹「选择题」卡片。用户作答 / 取消 / 该轮结束即出队。
+   * 同样用数组（模型可一次提多组），但实际通常一次一个。
+   */
+  pendingQuestions: ChatQuestionRequest[]
+  /**
+   * 待发消息队列：一轮进行中（或队列非空）时回车不立即发送，而是入队，待本轮 `result`
+   * 结束后按 FIFO 逐条出队发送。队列项不进 `msgs`（尚未发出），单独渲染为「待发」行，
+   * 发出前可移除；带完整图片 / 文件附件。三种进程模型（长驻 / one-shot）通吃。
+   */
+  queue: QueuedMessage[]
+  /**
+   * drainQueue 正在发起一条发送（含 restart-with-resume 的异步窗口，此间 turnState 仍 idle）——
+   * 守护并发出队，避免同一轮起两条。仅 drainQueue 内部读写，不参与渲染。
+   */
+  pendingSend?: boolean
 }
 
 function claudeApiKeyDisablesEffort(s: Pick<ChatSession, 'agent' | 'apiKeySource'>): boolean {
@@ -119,6 +160,7 @@ export const activeChatUiId = ref<number | null>(null)
 /** 模块级时钟 —— 任一会话 running 时每 250ms 跳一次，驱动「✳ 4s」计时显示。 */
 export const now = ref<number>(0)
 let nextUiId = 1
+let nextQueueId = 1
 
 // ============================ 事件路由 ============================
 
@@ -189,6 +231,12 @@ async function ensureListeners(): Promise<void> {
     await listen<ChatStderrPayload>('agent-chat://stderr', (e) =>
       routeOrBuffer(e.payload.chatId, (s) => onStderr(s, e.payload)),
     ),
+    await listen<ChatPermissionPayload>('agent-chat://permission', (e) =>
+      routeOrBuffer(e.payload.chatId, (s) => onPermission(s, e.payload.request)),
+    ),
+    await listen<ChatQuestionPayload>('agent-chat://question', (e) =>
+      routeOrBuffer(e.payload.chatId, (s) => onQuestion(s, e.payload.request)),
+    ),
   )
 }
 
@@ -251,6 +299,8 @@ function onResult(s: ChatSession, p: ChatResultPayload) {
   endTurn(s)
   // 一轮结束 → 账号 5h/周额度刚被这次对话消耗、值会变 → 事件驱动强制刷新（慢轮询之外的实时补位）。
   bumpUsage()
+  // 本轮结束 → 若有待发消息，按序发下一条（type-while-running 队列）。
+  drainQueue(s)
 }
 
 function onExit(s: ChatSession, p: ChatExitPayload) {
@@ -260,6 +310,7 @@ function onExit(s: ChatSession, p: ChatExitPayload) {
   }
   s.live = null
   endTurn(s)
+  clearQueue(s) // 进程真退出（非 restart/中断的受抑 exit）→ 待发队列作废。
   if (s.status !== 'error') s.status = 'exited'
   if (p.code !== 0 && !s.errorMessage) {
     s.errorMessage = s.stderrTail.slice(-3).join('\n') || `exited (${p.code})`
@@ -277,6 +328,18 @@ function onStderr(s: ChatSession, p: ChatStderrPayload) {
     const r = parseRetryLine(p.line)
     if (r) s.retry = r
   }
+}
+
+/** 交互式工具权限请求到达 —— 入队让 ChatView 弹框。同 requestId 重复到达去重（幂等）。 */
+function onPermission(s: ChatSession, request: ChatPermissionRequest) {
+  if (s.pendingPermissions.some((p) => p.requestId === request.requestId)) return
+  s.pendingPermissions = [...s.pendingPermissions, request]
+}
+
+/** 结构化提问到达 —— 入队让 ChatView 弹选择题卡片。同 requestId 重复到达去重（幂等）。 */
+function onQuestion(s: ChatSession, request: ChatQuestionRequest) {
+  if (s.pendingQuestions.some((q) => q.requestId === request.requestId)) return
+  s.pendingQuestions = [...s.pendingQuestions, request]
 }
 
 function appendInterruptedMarker(s: ChatSession) {
@@ -313,6 +376,8 @@ function startTurn(s: ChatSession) {
   s.turnState = 'running'
   s.turnStartedAt = Date.now()
   s.retry = null // 新一轮重置重试态。
+  s.pendingPermissions = [] // 新一轮不带上一轮残留的权限请求。
+  s.pendingQuestions = [] // 同理，残留的提问也清掉。
   now.value = Date.now()
   ensureTicking()
 }
@@ -323,6 +388,67 @@ function endTurn(s: ChatSession) {
   }
   s.turnState = 'idle'
   s.retry = null // 一轮结束撤掉「重试中」。
+  // 一轮结束（含 result / exit / 中断 / 清屏）→ 任何还没应答的权限请求 / 提问都已失效，清掉。
+  if (s.pendingPermissions.length) s.pendingPermissions = []
+  if (s.pendingQuestions.length) s.pendingQuestions = []
+}
+
+// ============================ 消息队列 ============================
+// type-while-running：一轮进行中时回车把消息入队，待本轮 result 结束后按序逐条发出
+//（对齐 Claude CLI 的消息队列）。纯前端实现、后端零改动：sendPrompt 仍是「发一条」原语，
+// 队列只决定何时调它，故长驻（Claude）与 one-shot（Codex/Gemini）通吃。
+
+/** 会话是否可发送（进程在、未退出 / 未出错）。 */
+function chatUsable(s: ChatSession): boolean {
+  return s.chatId !== null && s.status !== 'exited' && s.status !== 'error'
+}
+
+/**
+ * 入队 / 直发一条用户消息（可带图片 + 文件附件）。统一入口：ChatComposer 回车走这里。
+ * 空闲且无待发时 drainQueue 会立即发出（= 现状的即时发送）；正在生成 / 队列非空时则排队，
+ * 待本轮 `result` 结束后按 FIFO 逐条发出。空消息（无文本 / 图片 / 文件）忽略。
+ */
+export function enqueuePrompt(
+  session: ChatSession,
+  text: string,
+  images: ChatImageAttachment[] = [],
+  files: ChatFileAttachment[] = [],
+): void {
+  if (!text.trim() && images.length === 0 && files.length === 0) return
+  if (!chatUsable(session)) return
+  session.queue = [
+    ...session.queue,
+    { id: nextQueueId++, text, images: [...images], files: [...files] },
+  ]
+  drainQueue(session)
+}
+
+/**
+ * 出队下一条并发送 —— 入队后 / 每轮 `result` 结束后调用。仅当会话空闲、无正在发起的发送、
+ * 队列非空且进程健康时才发；发出即进入下一轮（startTurn）。`pendingSend` 守护
+ * restart-with-resume 的异步窗口（此间 turnState 仍 idle），避免同一轮并发起两条。
+ */
+function drainQueue(session: ChatSession): void {
+  if (session.turnState !== 'idle' || session.pendingSend) return
+  if (session.queue.length === 0 || !chatUsable(session)) return
+  const [next, ...rest] = session.queue
+  session.queue = rest
+  session.pendingSend = true
+  void sendPrompt(session, next.text, next.images, next.files).finally(() => {
+    session.pendingSend = false
+  })
+}
+
+/** 移除一条待发消息（用户在待发列表点 ×）。 */
+export function removeQueued(session: ChatSession, id: number): void {
+  if (session.queue.some((q) => q.id === id)) {
+    session.queue = session.queue.filter((q) => q.id !== id)
+  }
+}
+
+/** 清空待发队列（中断 / 清屏 / 停止 / 进程退出时调用 —— 「停就是停」，可预测）。 */
+function clearQueue(session: ChatSession): void {
+  if (session.queue.length) session.queue = []
 }
 
 // ============================ 查找 ============================
@@ -405,9 +531,12 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
     turnStartedAt: 0,
     lastTurnMs: 0,
     status: 'spawning',
+    queue: [],
     stderrTail: [],
     retry: null,
     live: null,
+    pendingPermissions: [],
+    pendingQuestions: [],
     permissionMode: opts.permissionMode ?? 'acceptEdits',
     // 「不存在 default」：每个会话起步即带一个明确模型 + effort（用户可改）。
     model: opts.model ?? defaultModel(opts.agent),
@@ -566,6 +695,7 @@ async function restartChat(s: ChatSession): Promise<boolean> {
 /** 中止当前轮 / 结束会话进程，但**保留**会话与已有 transcript（不从列表移除）。
  *  MVP 没有「不杀进程的软中断」，stop = kill 子进程 → 会话进入 exited，输入禁用。 */
 export async function stopChat(session: ChatSession): Promise<void> {
+  clearQueue(session) // 停进程 → 待发队列作废。
   if (session.chatId !== null) {
     try {
       await api.agentChatStop(session.chatId)
@@ -580,6 +710,7 @@ export async function stopChat(session: ChatSession): Promise<void> {
 /** 中断当前这一轮回复，但保留 chat 会话继续可发。Claude 映射到 CLI 的 Esc。 */
 export async function interruptChat(session: ChatSession): Promise<void> {
   if (session.chatId === null) return
+  clearQueue(session) // 中断 = 「停就是停」：丢弃所有待发消息，不让它们随后自动续上。
   if (session.processModel === 'longLivedStdin') {
     const old = session.chatId
     try {
@@ -649,6 +780,7 @@ export async function clearChat(session: ChatSession): Promise<void> {
   session.live = null
   session.usage = undefined
   session.retry = null
+  clearQueue(session) // 清屏 = 重置上下文 → 待发队列也清空。
 
   if (session.chatId === null || session.status === 'exited' || session.status === 'error') {
     // 进程已不在：纯视觉清屏即可（没有可重置的上下文）。
@@ -710,4 +842,56 @@ export async function closeChat(uiId: number): Promise<void> {
 
 export function setActiveChat(uiId: number | null) {
   activeChatUiId.value = uiId
+}
+
+// ============================ 交互式工具权限 ============================
+
+/**
+ * 应答一个待处理的权限请求：构造 decision → 回写后端 → 出队。无论成败都先出队（让对话框
+ * 立即消失，避免用户连点重复回写同一个 requestId）。回写失败置 error。
+ */
+export async function respondPermission(
+  session: ChatSession,
+  request: ChatPermissionRequest,
+  choice: PermissionChoice,
+): Promise<void> {
+  session.pendingPermissions = session.pendingPermissions.filter(
+    (p) => p.requestId !== request.requestId,
+  )
+  if (session.chatId === null) return
+  try {
+    await api.agentChatRespondPermission(
+      session.chatId,
+      request.requestId,
+      buildPermissionDecision(request, choice),
+    )
+  } catch (err) {
+    session.status = 'error'
+    session.errorMessage = String(err)
+  }
+}
+
+/**
+ * 回写一次结构化提问（AskUserQuestion）的应答 —— 先出队（无论成败，避免卡死的卡片），
+ * 再把决定写回 CLI。`selections` 为 null = 用户点了取消（deny）；否则按选择构造 allow 决定。
+ */
+export async function respondQuestion(
+  session: ChatSession,
+  request: ChatQuestionRequest,
+  selections: QuestionSelection[] | null,
+): Promise<void> {
+  session.pendingQuestions = session.pendingQuestions.filter(
+    (q) => q.requestId !== request.requestId,
+  )
+  if (session.chatId === null) return
+  const decision =
+    selections === null
+      ? buildQuestionCancelDecision()
+      : buildQuestionDecision(request, selections)
+  try {
+    await api.agentChatRespondQuestion(session.chatId, request.requestId, decision)
+  } catch (err) {
+    session.status = 'error'
+    session.errorMessage = String(err)
+  }
 }

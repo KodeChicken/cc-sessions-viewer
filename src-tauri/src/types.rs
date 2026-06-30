@@ -108,6 +108,42 @@ pub struct ChatDelta {
     pub text: Option<String>,
 }
 
+/// GUI chat 交互式工具权限请求 —— Claude headless 控制协议里 `can_use_tool` 的归一形状
+/// （`--permission-prompt-tool stdio`）。CLI 在工具被门控时把它从 stdout 发来，前端弹
+/// 「允许 Claude 运行 X？」对话框，用户的选择经 `agent_chat_respond_permission` 回写。
+///
+/// `input` / `permission_suggestions` 是任意 JSON：前者原样回传给 `updatedInput`（允许），
+/// 后者是 CLI 给出的「永久允许」规则建议（`addRules`，含 `destination` 如 localSettings =
+/// 截图里的「Project (local)」），勾「始终允许」时原样回传 `updatedPermissions`。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPermissionRequest {
+    /// 控制协议的关联 id —— 回写 `control_response` 时必须原样带回。
+    pub request_id: String,
+    /// 工具名（如 "Bash" / "Write" / "Edit"）。
+    pub tool_name: String,
+    /// 工具参数原文（Bash 的 `command`、文件工具的 `file_path` 等都在里面）。
+    pub input: serde_json::Value,
+    /// CLI 给的人类可读说明（可能为空）。
+    pub description: Option<String>,
+    /// 「始终允许」的规则建议（`addRules` 数组）；None / 空 = 不提供「始终允许」。
+    pub permission_suggestions: Option<serde_json::Value>,
+}
+
+/// AskUserQuestion 工具的结构化提问 —— 与工具权限同走控制协议 `can_use_tool`，只是
+/// `tool_name == "AskUserQuestion"`，参数里带的是 `questions` 而非工具入参。前端据此弹
+/// 「选择题」卡片（单选 / 多选 / Other 自填 / 并排预览），用户的选择经
+/// `agent_chat_respond_question` 回写 `control_response` 送回同一 stdin。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatQuestionRequest {
+    /// 控制协议的关联 id —— 回写 `control_response` 时必须原样带回。
+    pub request_id: String,
+    /// 提问数组原文：每项 `{question, header?, multiSelect?, options:[{label, description?, preview?}]}`。
+    /// 原样透传给前端（回写 decision 的 `updatedInput.questions` 要把它带回去）。
+    pub questions: serde_json::Value,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectInfo {

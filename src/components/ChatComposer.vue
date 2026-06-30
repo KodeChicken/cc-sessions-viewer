@@ -7,7 +7,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { t } from '../i18n'
 import * as api from '../api'
-import { sendPrompt, interruptChat, clearChat, now, type ChatSession } from '../chatSessions'
+import { enqueuePrompt, removeQueued, interruptChat, clearChat, now, type ChatSession, type QueuedMessage } from '../chatSessions'
 import { buildChatHistory, type ChatHistoryEntry } from '../chatInputHistory'
 import { parseChatSlashAction } from '../chatSlashActions'
 import { systemSlashCommands } from '../chatSystemCommands'
@@ -17,7 +17,7 @@ import type { ChatImageAttachment, ChatFileAttachment, SlashCommand, ProjectFile
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { IconPlus, IconSend, IconStop, IconClose, IconFolder, IconPaperclip, IconSlashSquare, IconSkill, IconChevronRight, IconZap, IconGitBranch, fileIconFor } from './icons'
+import { IconPlus, IconSend, IconStop, IconClose, IconFolder, IconPaperclip, IconSlashSquare, IconSkill, IconChevronRight, IconZap, IconGitBranch, IconCornerDownLeft, fileIconFor } from './icons'
 import ChatModeMenu from './ChatModeMenu.vue'
 import ChatModelMenu from './ChatModelMenu.vue'
 import ChatEffortSlider from './ChatEffortSlider.vue'
@@ -64,6 +64,7 @@ const claudeRuntimeApiKeySource = ref<string | undefined>(undefined)
 const claudeRuntimeEffortLevel = ref<string | undefined>(undefined)
 
 // ⌘U / Ctrl+U 全局唤起文件选择器 —— 挂在 window 上（而非 textarea），未聚焦输入框时也响应。
+const isMac = /Mac/i.test(navigator.platform)
 function onGlobalKeydown(e: KeyboardEvent) {
   if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'u' || e.key === 'U')) {
     if (ended.value) return
@@ -71,6 +72,11 @@ function onGlobalKeydown(e: KeyboardEvent) {
     void pickFilesOrPhotos()
   }
 }
+
+// 占位符顺带提示上传快捷键（mac ⌘U / 其它 Ctrl+U）。
+const composerPlaceholder = computed(() =>
+  t('chat.composer.placeholder', { key: isMac ? '⌘U' : 'Ctrl+U' }),
+)
 
 // 系统文件拖拽：Tauri 默认 dragDropEnabled，OS 拖入的文件不会走 HTML5 drop（拿不到 File），
 // 而是发 webview 级 drag-drop 事件（带文件**路径**）。会话窗口开着时把拖入的文件按和选择器
@@ -749,6 +755,10 @@ function caretAtMentionEnd(): boolean {
 
 // 光标移动（方向键松开 / 点击）后重新探测，让 `@` / `/` 浮层在任意位置都能跟随光标。
 function onCaretMove() {
+  // 浏览历史回填态下不自动弹 `/` / `@` 浮层：回填进来的 `/context`、`@file` 等会让浮层张开，
+  // 而浮层一开，↑/↓ 就被它抢去选菜单，历史从此翻不动（用户报的「走到 /context 上下键失效」）。
+  // 用户真正动手编辑（onInput → exitHistory）即恢复检测。
+  if (histPos.value !== null) return
   detectMention()
   detectSlash()
 }
@@ -1029,8 +1039,9 @@ function removeFile(i: number) {
 
 // ---------- 发送 / 停止 ----------
 async function submit() {
-  if (running.value) return
-  if (!canSend.value) return
+  // running 时**不再拦截**：有内容就走 enqueuePrompt —— 空闲即发，运行中则入队（type-while-running）。
+  if (ended.value) return
+  if (!text.value.trim() && images.value.length === 0 && files.value.length === 0) return
   const body = text.value
   exitHistory()
   // 客户端 slash 指令：在输入框里**拦截**、不发进主聊。/fork 仅 Claude（--fork-session）有意义；
@@ -1075,7 +1086,7 @@ async function submit() {
   files.value = []
   closeSlash()
   nextTick(autosize)
-  await sendPrompt(props.session, body, imgs, fls)
+  enqueuePrompt(props.session, body, imgs, fls)
 }
 
 /** 打开 btw 侧聊：fork 主聊上下文（仅 Claude 主聊有 sessionId 时），可带首句提示词。 */
@@ -1098,6 +1109,16 @@ function onPrimary() {
     void submit()
   }
 }
+
+/** 待发消息的单行预览：优先正文，纯附件（无正文）时回退为附件计数描述。 */
+function queuedLabel(q: QueuedMessage): string {
+  const body = q.text.trim()
+  if (body) return body
+  const parts: string[] = []
+  if (q.images.length) parts.push(t('chat.composer.queue.nImages', { n: q.images.length }))
+  if (q.files.length) parts.push(t('chat.composer.queue.nFiles', { n: q.files.length }))
+  return parts.join(' · ')
+}
 </script>
 
 <template>
@@ -1111,6 +1132,31 @@ function onPrimary() {
         </button>
       </div>
     </Teleport>
+
+    <!-- 待发队列：一轮进行中时回车把消息入队，按 result 顺序逐条发出；× 可在发出前移除 -->
+    <div v-if="session.queue.length" class="cc-queue" role="list">
+      <div
+        v-for="q in session.queue"
+        :key="q.id"
+        class="cc-queue-item"
+        role="listitem"
+        v-tooltip="t('chat.composer.queue.hint')"
+      >
+        <IconCornerDownLeft class="cc-queue-ic" />
+        <span class="cc-queue-text">{{ queuedLabel(q) }}</span>
+        <span v-if="q.text.trim() && (q.images.length || q.files.length)" class="cc-queue-attach">
+          <IconPaperclip />{{ q.images.length + q.files.length }}
+        </span>
+        <button
+          type="button"
+          class="cc-queue-x"
+          v-tooltip="t('chat.composer.queue.remove')"
+          @click="removeQueued(session, q.id)"
+        >
+          <IconClose />
+        </button>
+      </div>
+    </div>
 
     <!-- 输入框：单个 div 容器 —— 框内含 slash 浮层 + 图片缩略图 + 文本行（图片在框内、不再单列在框外） -->
     <div ref="wrapEl" class="cc-input-wrap" :class="{ disabled: ended }" @click="onWrapClick">
@@ -1229,7 +1275,7 @@ function onPrimary() {
             class="cc-textarea"
             :class="{ 'cc-textarea--hl': highlightActive }"
             rows="1"
-            :placeholder="ended ? t('chat.composer.ended') : t('chat.composer.placeholder')"
+            :placeholder="ended ? t('chat.composer.ended') : composerPlaceholder"
             :disabled="ended"
             @input="onInput"
             @keydown="onKeydown"
@@ -1488,6 +1534,73 @@ function onPrimary() {
 .cc-preview-x :deep(svg) {
   width: 16px;
   height: 16px;
+}
+
+/* 待发队列：输入框上方的「将发送」消息行，每轮结束后按序逐条发出（type-while-running） */
+.cc-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.cc-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-mute);
+  font-size: 13px;
+}
+.cc-queue-ic {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  opacity: 0.65;
+}
+.cc-queue-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cc-queue-attach {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+.cc-queue-attach :deep(svg) {
+  width: 12px;
+  height: 12px;
+}
+.cc-queue-x {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-mute);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.cc-queue-x:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.cc-queue-x :deep(svg) {
+  width: 12px;
+  height: 12px;
 }
 
 /* 输入框：div 容器，纵向 [缩略图] + [文本行]；图片在框内 */

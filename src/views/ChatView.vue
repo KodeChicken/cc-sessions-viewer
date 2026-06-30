@@ -57,7 +57,17 @@ import {
   agentIcons,
 } from '../components/icons'
 import ChatComposer from '../components/ChatComposer.vue'
-import { now as chatNow, interruptChat, type ChatSession } from '../chatSessions'
+import ChatPermissionPrompt from '../components/ChatPermissionPrompt.vue'
+import ChatQuestionPrompt from '../components/ChatQuestionPrompt.vue'
+import {
+  now as chatNow,
+  interruptChat,
+  respondPermission,
+  respondQuestion,
+  type ChatSession,
+} from '../chatSessions'
+import type { PermissionChoice } from '../chatPermission'
+import type { QuestionSelection } from '../chatQuestion'
 import { openPathExternal, agentChatSlashCommands } from '../api'
 import { useGitBranch } from '../gitBranch'
 import { showTooltipFor, hideTooltip } from '../tooltip'
@@ -1713,6 +1723,25 @@ function onDocClick(e: MouseEvent) {
           <span>{{ t('chat.composer.stop') }}</span>
         </button>
       </div>
+
+      <!-- live 模式：交互式工具权限对话框（Claude `--permission-prompt-tool stdio`）。
+           CLI 门控某个工具时入队一条，用户在此放行 / 拒绝；应答或本轮结束即出队。 -->
+      <ChatPermissionPrompt
+        v-for="req in (liveSession ? liveSession.pendingPermissions : [])"
+        :key="req.requestId"
+        :request="req"
+        @choose="(c: PermissionChoice) => liveSession && respondPermission(liveSession, req, c)"
+      />
+
+      <!-- live 模式：模型向用户提的结构化选择题（Claude `AskUserQuestion`）。
+           作答 / 取消都经 respondQuestion 回写控制协议；应答或本轮结束即出队。 -->
+      <ChatQuestionPrompt
+        v-for="q in (liveSession ? liveSession.pendingQuestions : [])"
+        :key="q.requestId"
+        :request="q"
+        @submit="(sel: QuestionSelection[]) => liveSession && respondQuestion(liveSession, q, sel)"
+        @cancel="liveSession && respondQuestion(liveSession, q, null)"
+      />
 
       <div v-if="!messages.length && !liveSession" class="empty" style="height: 200px">
         <div>{{ t('chat.empty') }}</div>

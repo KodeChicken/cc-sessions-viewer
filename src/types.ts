@@ -320,6 +320,40 @@ export interface ChatDelta {
 }
 export interface ChatDeltaPayload { chatId: number; delta: ChatDelta }
 
+/** 交互式工具权限请求（Claude 控制协议 `can_use_tool`，与 Rust ChatPermissionRequest 同形）。
+ *  `input` 是工具参数原文（Bash 的 `command`、文件工具的 `file_path` 等）；
+ *  `permissionSuggestions` 是「始终允许」的规则建议（`addRules`，含 destination）。 */
+export interface ChatPermissionRequest {
+  requestId: string
+  toolName: string
+  input: unknown
+  description?: string
+  permissionSuggestions?: unknown
+}
+export interface ChatPermissionPayload { chatId: number; request: ChatPermissionRequest }
+
+/** AskUserQuestion 的单个选项。`preview` 是可选的等宽预览内容（mock / 代码 / 配置），
+ *  仅单选题用得上 —— 渲染成左列选项、右栏预览的并排布局。 */
+export interface ChatQuestionOption {
+  label: string
+  description?: string
+  preview?: string
+}
+/** AskUserQuestion 的单条提问。`multiSelect` 为真时允许多选（答案逗号拼接）。 */
+export interface ChatQuestionItem {
+  question: string
+  header?: string
+  multiSelect?: boolean
+  options: ChatQuestionOption[]
+}
+/** 模型向用户提的结构化选择题（Claude `AskUserQuestion`，与 Rust ChatQuestionRequest 同形）。
+ *  与工具权限同走 `can_use_tool` 控制协议，回写时把 `questions` 原样带回 `updatedInput`。 */
+export interface ChatQuestionRequest {
+  requestId: string
+  questions: ChatQuestionItem[]
+}
+export interface ChatQuestionPayload { chatId: number; request: ChatQuestionRequest }
+
 /** 单个额度窗口（与 Rust usage_api::UsageWindow 同形）。来自 OAuth 用量接口。 */
 export interface UsageWindow {
   /** 利用率百分比 0–100。 */

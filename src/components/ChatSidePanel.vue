@@ -8,14 +8,14 @@ import { renderText } from '../format'
 import { now, sendPrompt, interruptChat, type ChatSession } from '../chatSessions'
 import { closeSideChat } from '../sideChat'
 import type { Block, Msg } from '../types'
-import { IconChevronRight, IconClose, IconSend, IconStop, IconZap } from './icons'
+import { IconChevronRight, IconClose, IconMinimize, IconSend, IconStop, IconZap } from './icons'
 
 const props = defineProps<{ session: ChatSession }>()
 
-// ---------- 浮框尺寸（左边缘横向拖拽改宽） ----------
+// ---------- 浮框宽度（右下角拖拽改宽；上限只受视口约束，能一直跟着鼠标走） ----------
 const W_KEY = 'sideChatWidth'
 const MIN_W = 320
-const MAX_W = 640
+const MAX_W = 2000 // 实际上限由「右缘 ≤ 视口 − 8px」决定，这里只兜底
 function clampWidth(w: number): number {
   const max = Math.min(MAX_W, window.innerWidth - 32)
   return Math.min(Math.max(MIN_W, w), max)
@@ -63,6 +63,41 @@ function persistPos() {
   }
 }
 
+// ---------- 浮框高度（右下角拖拽改高；null = 自适应内容，受 max-height 约束） ----------
+const H_KEY = 'sideChatHeight'
+const MIN_H = 240
+function clampHeight(h: number): number {
+  const max = Math.max(MIN_H, window.innerHeight - pos.value.top - 8)
+  return Math.min(Math.max(MIN_H, h), max)
+}
+function readHeight(): number | null {
+  try {
+    const raw = localStorage.getItem(H_KEY)
+    if (raw) {
+      const h = JSON.parse(raw)
+      if (typeof h === 'number') return clampHeight(h)
+    }
+  } catch {
+    /* ignore */
+  }
+  return null
+}
+const height = ref<number | null>(readHeight())
+
+// 显式高度时撑满到指定高度并解除 max-height；否则保持自适应。
+const panelStyle = computed<Record<string, string>>(() => {
+  const s: Record<string, string> = {
+    right: pos.value.right + 'px',
+    top: pos.value.top + 'px',
+    width: width.value + 'px',
+  }
+  if (height.value != null) {
+    s.height = height.value + 'px'
+    s.maxHeight = 'none'
+  }
+  return s
+})
+
 // 整框拖动（从标题栏起拽）
 let dragRight0 = 0
 let dragTop0 = 0
@@ -86,26 +121,49 @@ function onDragEnd() {
   persistPos()
 }
 
-// 右边缘横向拖拽改宽：左缘锚定不动，右缘跟光标。
-let resizeLeftX = 0 // 拖拽期间固定的「左缘屏幕 x」
+// 右下角拖拽（纯增量，左上角锚定不动）：宽 += dx、高 += dy，pos.right 抵消宽度增量。
+// 全程只用光标位移，绝不碰 window.innerWidth —— 否则会和真实布局坐标差一个滚动条宽度，
+// 表现为「一按下就缩一下、之后恒定偏移」。
+const panelEl = ref<HTMLElement | null>(null)
+let startX = 0
+let startY = 0
+let startW = 0
+let startH = 0
+let startRight = 0
+let startTop = 0
 function onResizeStart(e: PointerEvent) {
   e.stopPropagation()
   e.preventDefault()
-  resizeLeftX = window.innerWidth - pos.value.right - width.value
+  const rect = panelEl.value?.getBoundingClientRect()
+  startX = e.clientX
+  startY = e.clientY
+  startW = width.value
+  startH = height.value ?? rect?.height ?? MIN_H
+  startRight = pos.value.right
+  startTop = pos.value.top
+  // 之前高度自适应的话，先用当前真实高度作起点，避免一拖就跳。
+  if (height.value == null) height.value = startH
   window.addEventListener('pointermove', onResizeMove)
   window.addEventListener('pointerup', onResizeEnd, { once: true })
 }
 function onResizeMove(e: PointerEvent) {
-  // 约束右缘 ≥ 8px。
-  const maxW = Math.min(MAX_W, window.innerWidth - 8 - resizeLeftX)
-  const newW = Math.min(Math.max(MIN_W, e.clientX - resizeLeftX), maxW)
+  const dx = e.clientX - startX
+  const dy = e.clientY - startY
+  // 宽：左缘固定，右缘最多到「视口右 − 8」（即 pos.right ≥ 8）。
+  const maxW = Math.min(MAX_W, startW + startRight - 8)
+  const newW = Math.min(Math.max(MIN_W, startW + dx), maxW)
+  // 高：上缘固定，下缘不出视口底部 8px。
+  const maxH = Math.max(MIN_H, document.documentElement.clientHeight - 8 - startTop)
+  const newH = Math.min(Math.max(MIN_H, startH + dy), maxH)
   width.value = newW
-  pos.value = { right: window.innerWidth - resizeLeftX - newW, top: pos.value.top }
+  height.value = newH
+  pos.value = { right: startRight - (newW - startW), top: startTop }
 }
 function onResizeEnd() {
   window.removeEventListener('pointermove', onResizeMove)
   try {
     localStorage.setItem(W_KEY, JSON.stringify(width.value))
+    localStorage.setItem(H_KEY, JSON.stringify(height.value))
     localStorage.setItem(POS_KEY, JSON.stringify(pos.value))
   } catch {
     /* ignore */
@@ -122,6 +180,14 @@ const errored = computed(() => props.session.status === 'error' || props.session
 const contextLabel = computed(() =>
   props.session.sessionId ? t('chat.btw.ctxForked') : t('chat.btw.ctxFresh'),
 )
+
+// ---------- 最小化：折叠成纯标题条（消息/输入隐藏，运行态仍在头部转圈） ----------
+const minimized = ref(false)
+function toggleMin(e: Event) {
+  e.stopPropagation() // 别触发标题栏拖动
+  minimized.value = !minimized.value
+  if (!minimized.value) scrollToBottom()
+}
 
 // ---------- 消息呈现（精简版：只取 text / thinking / 工具行） ----------
 function textHtml(blocks: Block[]): string {
@@ -207,19 +273,24 @@ defineExpose({ focusInput: () => taEl.value?.focus() })
 
 <template>
   <Teleport to="body">
-    <div
-      class="side-chat"
-      :style="{ right: pos.right + 'px', top: pos.top + 'px', width: width + 'px' }"
-    >
-      <!-- 右边缘：横向拖拽改宽 -->
+    <div v-show="!minimized" ref="panelEl" class="side-chat" :style="panelStyle">
+      <!-- 右下角：拖拽同时改宽 + 改高 -->
       <div class="sc-resize" @pointerdown="onResizeStart" />
 
-      <!-- 头部：拖动手柄 + 标题 + 上下文标记 + 关闭 -->
+      <!-- 头部：拖动手柄 + 标题 + 上下文标记 + 最小化 + 关闭 -->
       <div class="sc-head" @pointerdown="onDragStart">
         <span class="sc-brand"><IconZap /></span>
         <span class="sc-title">btw</span>
         <span class="sc-ctx">{{ contextLabel }}</span>
-        <button class="sc-x" v-tooltip="t('common.close')" @click="closeSideChat">
+        <button
+          class="sc-x"
+          v-tooltip="t('chat.btw.minimize')"
+          @pointerdown.stop
+          @click="toggleMin"
+        >
+          <IconMinimize />
+        </button>
+        <button class="sc-x" v-tooltip="t('common.close')" @pointerdown.stop @click="closeSideChat">
           <IconClose />
         </button>
       </div>
@@ -286,6 +357,20 @@ defineExpose({ focusInput: () => taEl.value?.focus() })
         </button>
       </div>
     </div>
+
+    <!-- 最小化：缩到右下角的悬浮球；运行中显示转圈 + 计时，点一下还原 -->
+    <button
+      v-if="minimized"
+      class="sc-fab"
+      :class="{ running }"
+      v-tooltip="t('chat.btw.restore')"
+      @click="toggleMin"
+    >
+      <span class="sc-spinner" v-if="running" />
+      <span class="sc-fab-ic" v-else><IconZap /></span>
+      <span class="sc-fab-label">btw</span>
+      <span v-if="running" class="sc-fab-sec">{{ elapsedSec }}s</span>
+    </button>
   </Teleport>
 </template>
 
@@ -306,30 +391,31 @@ defineExpose({ focusInput: () => taEl.value?.focus() })
 }
 .sc-resize {
   position: absolute;
-  top: 0;
   right: 0;
-  width: 8px;
-  height: 100%;
-  cursor: ew-resize;
-  z-index: 2;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  z-index: 3;
   touch-action: none;
 }
+/* 右下角 "⌟" 形抓手：默认淡，hover 高亮 */
 .sc-resize::before {
   content: '';
   position: absolute;
-  right: 2px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 36px;
-  border-radius: 3px;
-  background: var(--border);
-  opacity: 0;
-  transition: opacity 0.15s ease;
+  right: 4px;
+  bottom: 4px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--border);
+  border-bottom: 2px solid var(--border);
+  border-bottom-right-radius: 3px;
+  opacity: 0.65;
+  transition: border-color 0.15s ease, opacity 0.15s ease;
 }
 .sc-resize:hover::before {
   opacity: 1;
-  background: var(--accent);
+  border-color: var(--accent);
 }
 
 /* ---------- 头部 ---------- */
@@ -389,6 +475,56 @@ defineExpose({ focusInput: () => taEl.value?.focus() })
 .sc-x :deep(svg) {
   width: 15px;
   height: 15px;
+}
+
+/* ---------- 最小化：右下角悬浮球 ---------- */
+.sc-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 1200;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 40px;
+  padding: 0 15px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 12px 32px -10px rgba(0, 0, 0, 0.34);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+}
+.sc-fab:hover {
+  background: var(--surface-hover);
+  transform: translateY(-1px);
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.08),
+    0 16px 40px -10px rgba(0, 0, 0, 0.4);
+}
+.sc-fab.running {
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--border));
+}
+.sc-fab-ic {
+  display: inline-flex;
+  color: var(--brand);
+}
+.sc-fab-ic :deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+.sc-fab-label {
+  font-weight: 650;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+.sc-fab-sec {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---------- 消息区 ---------- */

@@ -2204,6 +2204,7 @@ async function forkLiveChat() {
     })
     liveChat.value = session
     chatPeekRead.value = false
+    notify(t('toast.forked', { title }))
     // 侧栏项目计数 +1：克隆文件已落盘，刷新一下让计数即时反映。
     void loadProjects()
   } catch (e) {

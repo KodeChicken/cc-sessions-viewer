@@ -23,6 +23,8 @@ mod pty;
 pub mod stats;
 #[cfg(target_os = "macos")]
 mod tray;
+#[cfg(target_os = "windows")]
+mod tray_windows;
 mod trash;
 mod turn;
 mod types;
@@ -496,6 +498,44 @@ fn agent_chat_stop(id: u64) -> Result<(), String> {
 #[tauri::command]
 fn agent_chat_interrupt(id: u64) -> Result<(), String> {
     agent_chat::interrupt(id)
+}
+
+/// 回写一次交互式工具权限决定（应答 `agent-chat://permission`）。`request_id` 来自该次
+/// 请求；`decision` 是前端构造好的 `{behavior:"allow"|"deny",...}`（结构由 CLI 控制协议
+/// 决定，后端只做透传校验：必须是 JSON 对象且 behavior 合法）。
+#[tauri::command]
+fn agent_chat_respond_permission(
+    id: u64,
+    request_id: String,
+    decision: serde_json::Value,
+) -> Result<(), String> {
+    if request_id.is_empty() {
+        return Err("Invalid request id".to_string());
+    }
+    match decision.get("behavior").and_then(|b| b.as_str()) {
+        Some("allow") | Some("deny") => {}
+        _ => return Err("Invalid permission decision".to_string()),
+    }
+    agent_chat::respond_permission(id, &request_id, decision)
+}
+
+/// 回写一次结构化提问（AskUserQuestion）的答案（应答 `agent-chat://question`）。`decision`
+/// 是前端构造好的 `{behavior:"allow",updatedInput:{questions,answers,response?}}`（作答）或
+/// `{behavior:"deny",...}`（取消），后端只做透传校验：必须带合法 behavior。
+#[tauri::command]
+fn agent_chat_respond_question(
+    id: u64,
+    request_id: String,
+    decision: serde_json::Value,
+) -> Result<(), String> {
+    if request_id.is_empty() {
+        return Err("Invalid request id".to_string());
+    }
+    match decision.get("behavior").and_then(|b| b.as_str()) {
+        Some("allow") | Some("deny") => {}
+        _ => return Err("Invalid question decision".to_string()),
+    }
+    agent_chat::respond_question(id, &request_id, decision)
 }
 
 /// GUI chat 输入框 `/` 浮层的动态指令列表（扫磁盘自定义命令 / user-invocable skills）。
@@ -1474,6 +1514,8 @@ pub fn run() {
             agent_chat_send,
             agent_chat_stop,
             agent_chat_interrupt,
+            agent_chat_respond_permission,
+            agent_chat_respond_question,
             agent_chat_slash_commands,
             reveal_in_finder,
             open_local_path,
@@ -1508,6 +1550,7 @@ pub fn run() {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.set_decorations(false);
                 }
+                tray_windows::build(app.handle())?;
             }
 
             #[cfg(target_os = "macos")]

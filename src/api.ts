@@ -343,6 +343,22 @@ export const agentChatStop = (id: number) => invoke<void>('agent_chat_stop', { i
 /** 仅中断当前一轮生成；Claude 长驻 chat 会话继续保活。 */
 export const agentChatInterrupt = (id: number) => invoke<void>('agent_chat_interrupt', { id })
 
+/** 回写一次交互式工具权限决定（应答 `agent-chat://permission`）。`decision` 由前端按
+ *  CLI 控制协议构造：允许 = `{behavior:'allow',updatedInput,[updatedPermissions]}`；
+ *  拒绝 = `{behavior:'deny',message,interrupt}`。仅 Claude（长驻 stdin）支持。 */
+export const agentChatRespondPermission = (
+  id: number,
+  requestId: string,
+  decision: unknown,
+) => invoke<void>('agent_chat_respond_permission', { id, requestId, decision })
+
+/** 回写一次结构化提问（AskUserQuestion）的答案决定（应答 `agent-chat://question`）。 */
+export const agentChatRespondQuestion = (
+  id: number,
+  requestId: string,
+  decision: unknown,
+) => invoke<void>('agent_chat_respond_question', { id, requestId, decision })
+
 /** 拉 GUI chat `/` 浮层的动态指令（磁盘上的自定义命令 / user-invocable skills）。 */
 export const agentChatSlashCommands = (agent: Agent, cwd: string) =>
   invoke<SlashCommand[]>('agent_chat_slash_commands', { agent, cwd })

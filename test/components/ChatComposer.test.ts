@@ -55,12 +55,15 @@ const baseSession = (over: Partial<ChatSession> = {}): ChatSession =>
     turnStartedAt: 0,
     lastTurnMs: 0,
     status: 'running',
+    queue: [],
     usage: undefined,
     lastModel: undefined,
     apiKeySource: 'none',
     errorMessage: undefined,
     stderrTail: [],
     live: null,
+    pendingPermissions: [],
+    pendingQuestions: [],
     permissionMode: 'acceptEdits',
     model: 'claude-opus-4-8',
     effort: 'high',
@@ -382,6 +385,41 @@ describe('ChatComposer /btw side chat', () => {
     await wrapper.vm.$nextTick()
     expect(el.value).toBe('')
     expect(wrapper.text()).not.toContain('History')
+  })
+
+  it('keeps cycling history when a recalled entry is a slash command (no popup hijack)', async () => {
+    setLang('en')
+    const userMsg = (s: string) => ({
+      role: 'user' as const,
+      sidechain: false,
+      blocks: [{ kind: 'text' as const, text: s, isError: false }],
+    })
+    // 最新一条是 `/context`（一个会被 slash 浮层识别的内置命令）。
+    const wrapper = mount(ChatComposer, {
+      props: { session: baseSession({ msgs: [userMsg('older'), userMsg('/context')] }) },
+      global: { directives: { tooltip: vTooltip } },
+    })
+    // 等内置 slash 列表（含 `context`）加载完，否则浮层根本不会开，测不到劫持。
+    await flushPromises()
+    const ta = wrapper.find('textarea')
+    const el = ta.element as HTMLTextAreaElement
+
+    // ↑ 回填最新一条 `/context`
+    await ta.trigger('keydown', { key: 'ArrowUp' })
+    await wrapper.vm.$nextTick()
+    expect(el.value).toBe('/context')
+    expect(wrapper.text()).toContain('History 2/2')
+
+    // 方向键松开会触发 onCaretMove —— 历史浏览态下不该弹出 slash 浮层（否则 ↑/↓ 被它抢走）。
+    await ta.trigger('keyup', { key: 'ArrowUp' })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.cc-slash').exists()).toBe(false)
+
+    // 再按 ↑ 仍能翻到更旧一条，而不是去选浮层菜单。
+    await ta.trigger('keydown', { key: 'ArrowUp' })
+    await wrapper.vm.$nextTick()
+    expect(el.value).toBe('older')
+    expect(wrapper.text()).toContain('History 1/2')
   })
 
   it('does not hijack ↑ when there is no message history', async () => {

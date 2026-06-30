@@ -243,6 +243,12 @@ impl SessionSource for ClaudeSource {
             // token 级流式：额外吐 `stream_event`（content_block_delta 等）；
             // 权威 `assistant` 记录仍随后到达，故只是叠加、不破坏现有解析。
             .arg("--include-partial-messages")
+            // 交互式工具审批：`stdio` 是哨兵值（非 MCP 工具名），让被门控的工具走控制协议
+            // 发 `can_use_tool` 请求到 stdout，由 GUI 弹框、用户决定后经 stdin 回 `control_response`。
+            // 与 `--permission-mode` 正交：default 全程问、acceptEdits 仅放行编辑（Bash 等仍问）、
+            // bypassPermissions 全程不问（不产生该请求）。
+            .arg("--permission-prompt-tool")
+            .arg("stdio")
             .arg("--permission-mode")
             .arg(permission_mode);
         // model 为别名（opus / sonnet / haiku / fable）或全名；effort 取
@@ -1648,9 +1654,55 @@ pub(crate) fn parse_chat_line(line: &str) -> ChatEvent {
         }
         // token 级流式：`stream_event` 包裹标准 Anthropic SSE，payload 在 `.event`。
         "stream_event" => parse_stream_event(v.get("event")),
+        // 交互式工具审批：`--permission-prompt-tool stdio` 把被门控工具的请求以控制协议
+        // 发来（`{"type":"control_request","request_id":...,"request":{"subtype":"can_use_tool",...}}`）。
+        // 只认 `can_use_tool`（无 MCP/hook 时这是唯一会出现的 control_request）；其余忽略。
+        "control_request" => parse_can_use_tool(&v),
         // 限额事件不走流解析了：额度改由 OAuth 用量接口（usage_api）随时全量拉取。
         _ => ChatEvent::Ignore,
     }
+}
+
+/// 把一条 `control_request`/`can_use_tool` 归一成 [`ChatEvent::Permission`]。非该子类型
+/// （或缺 `request_id` / `tool_name`）→ `Ignore`。`input` / `permission_suggestions` 原样
+/// 透传给前端（回写时 `updatedInput` / `updatedPermissions` 用得到）。
+fn parse_can_use_tool(v: &Value) -> ChatEvent {
+    let req = v.get("request");
+    if req.and_then(|r| r.get("subtype")).and_then(Value::as_str) != Some("can_use_tool") {
+        return ChatEvent::Ignore;
+    }
+    let (Some(request_id), Some(req)) = (
+        v.get("request_id").and_then(Value::as_str),
+        req,
+    ) else {
+        return ChatEvent::Ignore;
+    };
+    let Some(tool_name) = req.get("tool_name").and_then(Value::as_str) else {
+        return ChatEvent::Ignore;
+    };
+    // AskUserQuestion 同走 can_use_tool，但语义是「向用户提问」而非「门控工具」——
+    // 拆成独立事件，前端弹选择题卡片而非权限对话框。`questions` 原样透传（回写 decision
+    // 的 updatedInput 要带回它）；缺/非数组也照发，前端渲染空卡 + 取消按钮以免 CLI 卡死。
+    if tool_name == "AskUserQuestion" {
+        return ChatEvent::Question(crate::types::ChatQuestionRequest {
+            request_id: request_id.to_string(),
+            questions: req
+                .get("input")
+                .and_then(|i| i.get("questions"))
+                .cloned()
+                .unwrap_or(Value::Null),
+        });
+    }
+    ChatEvent::Permission(crate::types::ChatPermissionRequest {
+        request_id: request_id.to_string(),
+        tool_name: tool_name.to_string(),
+        input: req.get("input").cloned().unwrap_or(Value::Null),
+        description: req
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        permission_suggestions: req.get("permission_suggestions").cloned(),
+    })
 }
 
 /// 把一个 `stream_event.event`（标准 Anthropic 流式事件）归一成 `ChatEvent::Delta`。
@@ -2842,6 +2894,51 @@ mod tests {
         // 关键：开了 --include-partial-messages 后，权威 assistant 记录照旧到达并解析成 Message。
         let line = r#"{"type":"assistant","message":{"id":"m","role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"done"}]},"session_id":"s1"}"#;
         assert!(matches!(parse_chat_line(line), ChatEvent::Message(_)));
+    }
+
+    // ---- 交互式工具权限：control_request / can_use_tool → ChatEvent::Permission ----
+
+    #[test]
+    fn chat_command_enables_stdio_permission_prompt() {
+        // 没有这个 flag，被门控的工具不会发 can_use_tool 请求 —— GUI 弹框就无从触发。
+        let cmd = ClaudeSource
+            .chat_command(None, "default", None, None, false)
+            .expect("claude chat command");
+        let args = cmd.args();
+        let pos = args
+            .iter()
+            .position(|a| a == "--permission-prompt-tool")
+            .expect("--permission-prompt-tool present");
+        assert_eq!(args.get(pos + 1).map(String::as_str), Some("stdio"));
+    }
+
+    #[test]
+    fn parse_chat_line_can_use_tool_becomes_permission() {
+        let line = r#"{"type":"control_request","request_id":"req-7","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"rm -rf build"},"description":"Delete build dir","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash"}],"behavior":"allow","destination":"localSettings"}]}}"#;
+        match parse_chat_line(line) {
+            ChatEvent::Permission(p) => {
+                assert_eq!(p.request_id, "req-7");
+                assert_eq!(p.tool_name, "Bash");
+                assert_eq!(p.input.get("command").and_then(|c| c.as_str()), Some("rm -rf build"));
+                assert_eq!(p.description.as_deref(), Some("Delete build dir"));
+                assert!(p.permission_suggestions.as_ref().is_some_and(|s| s.is_array()));
+            }
+            _ => panic!("expected Permission"),
+        }
+    }
+
+    #[test]
+    fn parse_chat_line_other_control_request_subtypes_ignored() {
+        // 无 MCP/hook 时只有 can_use_tool 会出现；其它 control_request（如 initialize）不弹框。
+        assert!(matches!(
+            parse_chat_line(r#"{"type":"control_request","request_id":"i","request":{"subtype":"initialize"}}"#),
+            ChatEvent::Ignore
+        ));
+        // 缺 tool_name 的畸形 can_use_tool 也安全降级为 Ignore（不构造半成品请求）。
+        assert!(matches!(
+            parse_chat_line(r#"{"type":"control_request","request_id":"i","request":{"subtype":"can_use_tool","input":{}}}"#),
+            ChatEvent::Ignore
+        ));
     }
 
     // ---- §10.1 slash 指令磁盘发现 ----
