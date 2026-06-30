@@ -54,6 +54,7 @@ import {
   openReleasePage,
   relaunchApp,
   updateDownloaded,
+  updateDownloading,
   updateProgress,
   updateAvailable,
   updaterUpdate,
@@ -125,7 +126,6 @@ const cacheLabel = computed(() =>
 const version = ref('—')
 const updateMsg = ref('')
 const checking = ref(false)
-const installingUpdate = ref(false)
 const installingClaudeHooks = ref(false)
 const claudeHooksMsg = ref('')
 
@@ -258,16 +258,14 @@ async function doCheck() {
 }
 
 async function installUpdate() {
-  if (installingUpdate.value) return
-  installingUpdate.value = true
+  // 模块级守卫：下载中（哪怕是上次开着 modal 时点的）直接忽略，绝不开第二个。
+  if (updateDownloading.value) return
   updateMsg.value = t('settings.updateDownloading')
   try {
     await downloadAndInstallUpdate()
     updateMsg.value = t('settings.updateReady')
   } catch (e) {
     updateMsg.value = t('settings.updateInstallFail', { e: String(e) })
-  } finally {
-    installingUpdate.value = false
   }
 }
 
@@ -620,11 +618,11 @@ async function installClaudeHooks() {
                 <button
                   v-else-if="updaterUpdate"
                   class="btn primary"
-                  :disabled="installingUpdate"
+                  :disabled="updateDownloading"
                   @click="installUpdate"
                 >
-                  <IconRefresh v-if="installingUpdate" />
-                  {{ installingUpdate ? t('settings.updateDownloading') : t('settings.installUpdate') }}
+                  <IconRefresh v-if="updateDownloading" />
+                  {{ updateDownloading ? t('settings.updateDownloading') : t('settings.installUpdate') }}
                 </button>
                 <button
                   v-else
@@ -639,7 +637,7 @@ async function installClaudeHooks() {
             </div>
 
             <!-- 下载进度条 -->
-            <div v-if="installingUpdate && updateProgress !== null" class="set-update-progress">
+            <div v-if="updateDownloading && updateProgress !== null" class="set-update-progress">
               <span class="set-update-progress-track">
                 <span class="set-update-progress-fill" :style="{ width: updateProgress + '%' }" />
               </span>
@@ -647,7 +645,7 @@ async function installClaudeHooks() {
             </div>
 
             <!-- 检查结果 / 错误信息（无新版本、非下载中时显示，如"已是最新"或失败原因） -->
-            <p v-if="updateMsg && !updateAvailable && !installingUpdate" class="set-update-status">
+            <p v-if="updateMsg && !updateAvailable && !updateDownloading" class="set-update-status">
               {{ updateMsg }}
             </p>
 

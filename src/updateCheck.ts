@@ -34,6 +34,9 @@ export const releaseUrl = ref<string | null>(null)
 export const updaterUpdate = shallowRef<Update | null>(null)
 export const updateDownloaded = ref(false)
 export const updateProgress = ref<number | null>(null)
+/** 下载/安装是否进行中。**模块级**状态 —— 关掉再打开 SettingsModal 不会丢，
+ *  UI 据此把按钮置灰显示「下载中」，避免重复点出第二个下载进程。 */
+export const updateDownloading = ref(false)
 
 function loadCache(): Cached | null {
   try {
@@ -140,27 +143,44 @@ export async function checkAppUpdate(): Promise<UpdateInfo> {
   }
 }
 
-export async function downloadAndInstallUpdate(): Promise<void> {
-  if (!updaterUpdate.value) throw new Error('No update available')
+// 同一次下载只跑一个 promise —— 期间任何重复调用都复用它，绝不会并发开第二个下载。
+let inFlightDownload: Promise<void> | null = null
+
+export function downloadAndInstallUpdate(): Promise<void> {
+  if (inFlightDownload) return inFlightDownload
+  const upd = updaterUpdate.value
+  if (!upd) return Promise.reject(new Error('No update available'))
+
+  updateDownloading.value = true
   updateDownloaded.value = false
   updateProgress.value = 0
   let downloaded = 0
   let total: number | undefined
 
-  await updaterUpdate.value.downloadAndInstall((event) => {
-    if (event.event === 'Started') {
-      downloaded = 0
-      total = event.data.contentLength
-      updateProgress.value = total ? 0 : null
-    } else if (event.event === 'Progress') {
-      downloaded += event.data.chunkLength
-      updateProgress.value = total ? Math.min(100, Math.round((downloaded / total) * 100)) : null
-    } else if (event.event === 'Finished') {
-      updateProgress.value = 100
+  inFlightDownload = (async () => {
+    try {
+      await upd.downloadAndInstall((event) => {
+        if (event.event === 'Started') {
+          downloaded = 0
+          total = event.data.contentLength
+          updateProgress.value = total ? 0 : null
+        } else if (event.event === 'Progress') {
+          downloaded += event.data.chunkLength
+          updateProgress.value = total
+            ? Math.min(100, Math.round((downloaded / total) * 100))
+            : null
+        } else if (event.event === 'Finished') {
+          updateProgress.value = 100
+        }
+      })
+      updateDownloaded.value = true
+    } finally {
+      updateDownloading.value = false
+      inFlightDownload = null
     }
-  })
+  })()
 
-  updateDownloaded.value = true
+  return inFlightDownload
 }
 
 export async function relaunchApp(): Promise<void> {
