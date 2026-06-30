@@ -174,6 +174,16 @@ describe('renderText', () => {
     expect(html).toContain('text-align:right')
   })
 
+  // 回归：分隔格按 GFM 只需 ≥1 个连字符，对齐列常写成 `--:`（2 个）。之前要求
+  // `-{3,}` 会让整张表当普通文本渲染（用户反馈的 "table 没渲染成功"）。
+  it('renders a table whose alignment cells use fewer than three dashes', () => {
+    const html = renderText('| # | Lang |\n|--:|------|\n| 1 | Rust |')
+    expect(html).toContain('<table class="md-table">')
+    expect(html).toContain('text-align:right')
+    expect(html).toContain('<th style="text-align:right">#</th>')
+    expect(html).not.toContain('|--:|')
+  })
+
   it('honors inline formatting inside table cells', () => {
     const html = renderText('| name | path |\n|---|---|\n| **bold** | `code` |')
     expect(html).toContain('<td><strong>bold</strong></td>')

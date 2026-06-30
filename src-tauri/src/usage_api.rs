@@ -92,6 +92,61 @@ fn oauth_access_token() -> Result<String, String> {
         .ok_or_else(|| "凭证里缺少 claudeAiOauth.accessToken".into())
 }
 
+/// 给 curl 配置补一行 `proxy = "..."`（缺省返回空串，curl 行为不变）。
+///
+/// `tauri dev` 从终端继承了 `HTTPS_PROXY`，curl 自己会读，这里返回空、路径不变。
+/// 打包后的 .app 由 Finder/launchd 启动，环境里没有任何 `*_proxy`，curl 只能直连 ——
+/// 而本接口对直连 IP 会按地区/风控直接 403。故进程环境无代理时，回落到 macOS「系统代理」
+/// （scutil --proxy），把它显式喂给 curl，让打包版也能走代理拿到 200。
+fn proxy_config_line() -> String {
+    // curl 原生就读环境里的 *_proxy；进程环境已有就别重复注入，保持 dev 路径完全不变。
+    for k in ["https_proxy", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"] {
+        if std::env::var(k).is_ok_and(|v| !v.trim().is_empty()) {
+            return String::new();
+        }
+    }
+    match system_https_proxy() {
+        Some(p) => format!("proxy = \"{p}\"\n"),
+        None => String::new(),
+    }
+}
+
+/// 从 macOS 系统网络设置读「HTTPS 代理」（scutil --proxy 输出的 HTTPSEnable/HTTPSProxy/HTTPSPort）。
+/// 未启用 / 解析不出主机端口 → None。非 macOS 一律 None（curl 仍只认环境变量，行为不变）。
+#[cfg(target_os = "macos")]
+fn system_https_proxy() -> Option<String> {
+    let out = std::process::Command::new("scutil")
+        .arg("--proxy")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (mut enabled, mut host, mut port) = (false, None, None);
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("HTTPSEnable :") {
+            enabled = v.trim() == "1";
+        } else if let Some(v) = line.strip_prefix("HTTPSProxy :") {
+            host = Some(v.trim().to_string());
+        } else if let Some(v) = line.strip_prefix("HTTPSPort :") {
+            port = Some(v.trim().to_string());
+        }
+    }
+    if !enabled {
+        return None;
+    }
+    let host = host.filter(|h| !h.is_empty())?;
+    let port = port.filter(|p| !p.is_empty())?;
+    Some(format!("http://{host}:{port}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_https_proxy() -> Option<String> {
+    None
+}
+
 /// 真正打接口：带 OAuth header GET 一次 → 解析 → 转成 AccountUsage。
 ///
 /// 用系统 `curl`（而非 ureq）发请求：这个接口挡在 Cloudflare 机器人识别后面，会按 TLS
@@ -101,15 +156,19 @@ fn oauth_access_token() -> Result<String, String> {
 fn fetch_blocking() -> Result<AccountUsage, String> {
     let token = oauth_access_token()?;
     // curl 配置走 stdin（--config -）：silent + 出错可见 + 15s 超时 + 末尾追加 HTTP 状态码。
+    // 代理：见 proxy_config_line —— 打包后的 .app 拿不到 shell 的 HTTPS_PROXY，得显式补上系统代理，
+    // 否则这个接口对「直连 IP」会按地区/风控返回 403（系统 curl 也照样 403），徽标在打包版整块消失。
     let config = format!(
         "silent\nshow-error\nmax-time = 15\n\
+         {proxy}\
          url = \"{USAGE_URL}\"\n\
          header = \"Authorization: Bearer {token}\"\n\
          header = \"anthropic-beta: oauth-2025-04-20\"\n\
          header = \"anthropic-version: 2023-06-01\"\n\
          header = \"Accept: application/json\"\n\
          header = \"User-Agent: claude-cli/2.1.0 (external)\"\n\
-         write-out = \"\\n%{{http_code}}\"\n"
+         write-out = \"\\n%{{http_code}}\"\n",
+        proxy = proxy_config_line(),
     );
     let mut child = Command::new("curl")
         .arg("--config")

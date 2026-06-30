@@ -25,6 +25,7 @@ import AutoModeConfirmModal from './AutoModeConfirmModal.vue'
 import {
   hasModelChoice,
   modelSupportsEffort,
+  modelMenuFor,
   fallbackPermissionMode,
   fallbackEffort,
   type ModelMenuOptions,
@@ -62,6 +63,8 @@ const claudeRuntimeApiKeySource = ref<string | undefined>(undefined)
 // settings.json 的全局 effortLevel。transcript 不记录 effort、CLI 不带 --effort 即用它，
 // 故续聊未改档前 effort 选择器展示它（真实生效默认），而不是滑杆假定的 levels[0]。
 const claudeRuntimeEffortLevel = ref<string | undefined>(undefined)
+// runtime info（含是否走 alias）是否已就位。非 claude 没有这步，直接视为已就位。
+const runtimeLoaded = ref(props.session.agent !== 'claude')
 
 // ⌘U / Ctrl+U 全局唤起文件选择器 —— 挂在 window 上（而非 textarea），未聚焦输入框时也响应。
 const isMac = /Mac/i.test(navigator.platform)
@@ -121,6 +124,9 @@ onMounted(() => {
         claudeAliasTargets.value = {}
         claudeRuntimeApiKeySource.value = undefined
         claudeRuntimeEffortLevel.value = undefined
+      })
+      .finally(() => {
+        runtimeLoaded.value = true
       })
   }
   focusInput()
@@ -216,12 +222,33 @@ const modelMenuOptions = computed<ModelMenuOptions>(() => ({
   claudeAliasTargets: claudeAliasTargets.value,
 }))
 const showModelPicker = computed(() => hasModelChoice(agent.value, modelMenuOptions.value))
+// 生效中的模型：用户没显式选过时（新会话 session.model=undefined）回落到运行时实际模型
+// （lastModel，来自 assistant 记录）。模型菜单展示名、effort 档位（含 Opus 4.7/4.8 在 max
+// 之后那一格 ultracode）都以它为准 —— 否则刚进会话没选过模型时滑杆拿不到模型、显示不出
+// ultracode，非得手动切一下模型才出来。
+const effectiveModel = computed(() => props.session.model ?? props.session.lastModel)
+
+// 全新 claude 会话默认选中一个明确的「标准上下文」模型。否则 session.model 为空 → 后端不带
+// --model → CLI 回落到 settings 里的默认模型（常被映射成 1M 上下文，需额度）→ 首条消息直接
+// 「API Error: Usage credits required for 1M context」。等 runtime info 就位后再选，alias 模式
+// 选别名（opus…，让 settings 映射接管），订阅模式选完整 id（claude-opus-4-8）。续聊（有历史
+// 或已选过模型）不强选 —— 模型随历史/用户选择。
+watch(
+  [runtimeLoaded, () => props.session.model, () => props.session.lastModel],
+  () => {
+    if (props.session.agent !== 'claude' || !runtimeLoaded.value) return
+    if (props.session.model || props.session.lastModel || props.session.msgs.length > 0) return
+    const first = modelMenuFor(agent.value, modelMenuOptions.value).primary[0]?.value
+    if (first) onPickModel(first)
+  },
+  { immediate: true },
+)
 // effort 是「按模型」的能力：Haiku 不支持 effort，选中它就不展示滑杆（对齐 Claude 客户端）。
 const showEffortPicker = computed(() =>
   (agent.value !== 'claude' || effectiveApiKeySource.value === 'none') &&
   !usingCustomClaudeEndpoint.value &&
   !usingApiKey.value &&
-  modelSupportsEffort(agent.value, props.session.model),
+  modelSupportsEffort(agent.value, effectiveModel.value),
 )
 
 // 切到 auto（自动）模式前的二次确认门控：本工作区还没确认过就先弹框，确认后才真正生效
@@ -1377,14 +1404,14 @@ function queuedLabel(q: QueuedMessage): string {
           ref="modelMenuRef"
           :agent="session.agent"
           :selected="session.model"
-          :display-value="session.model ?? session.lastModel"
+          :display-value="effectiveModel"
           :menu-options="modelMenuOptions"
           @pick="onPickModel"
         />
         <ChatEffortSlider
           v-if="showEffortPicker"
           :agent="session.agent"
-          :model="session.model"
+          :model="effectiveModel"
           :selected="session.effort"
           :default-level="claudeRuntimeEffortLevel"
           @pick="onPickEffort"

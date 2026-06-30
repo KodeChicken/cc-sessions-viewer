@@ -285,7 +285,9 @@ function extractCommandTags(raw: string): { text: string; codes: CmdCode[] } {
 //   - 表体行：跟表头同形态
 // 单元格内容仍走 inline()，所以行内强调 / inline code / 链接照常生效。
 // 转义 `\|` 不处理（罕见，遇到再加）。
-const TABLE_SEP_CELL_RE = /^\s*:?-{3,}:?\s*$/
+// 分隔格按 GFM：至少 1 个连字符即合法（`-` / `:-` / `-:` / `:-:`）。之前误写成
+// `-{3,}`，导致对齐列只用 `--:`（2 个连字符）的表格整张当普通文本渲染。
+const TABLE_SEP_CELL_RE = /^\s*:?-+:?\s*$/
 
 function isTableSeparator(line: string): boolean {
   const cells = line.trim().replace(/^\||\|$/g, '').split('|')

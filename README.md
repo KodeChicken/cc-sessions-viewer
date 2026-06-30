@@ -55,6 +55,16 @@
   </tr>
   <tr>
     <td width="50%">
+      <img src="docs/screenshots/chat-preview.png" alt="In-app chat — Mermaid, tables, file mentions and image attachments" />
+      <p align="center"><em>In-app chat — Mermaid & tables, @-mention files, attach images</em></p>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/chat-preview-2.png" alt="Interactive prompts answered inside the chat" />
+      <p align="center"><em>Interactive prompts — answer Claude's questions right in the chat</em></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
       <img src="docs/screenshots/session-resume.png" alt="Embedded terminal resume" />
       <p align="center"><em>Embedded terminal — one-click resume or new session</em></p>
     </td>

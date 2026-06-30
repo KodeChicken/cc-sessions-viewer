@@ -163,6 +163,52 @@ describe('ChatComposer', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.findComponent({ name: 'ChatEffortSlider' }).exists()).toBe(false)
   })
+
+  it('auto-selects a standard-context model for a brand-new subscription chat', async () => {
+    // 空 model → 后端不带 --model → CLI 回落到 settings 默认（常被映射成 1M 上下文，需额度）
+    // → 首条消息直接 1M API Error。进会话该自动选一个标准上下文模型避免它。
+    claudeRuntimeInfoMock.mockResolvedValueOnce({ hasCustomBaseUrl: false, apiKeySource: 'none' })
+    const session = baseSession({ model: undefined, lastModel: undefined, msgs: [] })
+    mount(ChatComposer, {
+      props: { session },
+      global: { directives: { tooltip: vTooltip } },
+    })
+    expect(session.model).toBeUndefined() // runtime info 就位前先不乱选
+    await flushPromises()
+    expect(session.model).toBe('claude-opus-4-8') // 标准上下文，不是会触发 1M 报错的默认别名
+  })
+
+  it('auto-selects the alias model for a brand-new API-key chat so settings.json mapping applies', async () => {
+    claudeRuntimeInfoMock.mockResolvedValueOnce({ hasCustomBaseUrl: false })
+    const session = baseSession({
+      model: undefined,
+      lastModel: undefined,
+      msgs: [],
+      apiKeySource: 'ANTHROPIC_API_KEY',
+    })
+    mount(ChatComposer, {
+      props: { session },
+      global: { directives: { tooltip: vTooltip } },
+    })
+    await flushPromises()
+    expect(session.model).toBe('opus') // 别名模式选 opus，让 settings.json 的模型映射接管
+  })
+
+  it('does not force a model on a chat that already has history', async () => {
+    // 续聊（有历史）模型应随历史/lastModel，不该被默认值覆盖。
+    claudeRuntimeInfoMock.mockResolvedValueOnce({ hasCustomBaseUrl: false, apiKeySource: 'none' })
+    const session = baseSession({
+      model: undefined,
+      lastModel: undefined,
+      msgs: [{ role: 'user', blocks: [{ kind: 'text', text: 'hi' }], ts: 1 } as never],
+    })
+    mount(ChatComposer, {
+      props: { session },
+      global: { directives: { tooltip: vTooltip } },
+    })
+    await flushPromises()
+    expect(session.model).toBeUndefined()
+  })
 })
 
 describe('ChatComposer @ file mention', () => {

@@ -55,6 +55,16 @@
   </tr>
   <tr>
     <td width="50%">
+      <img src="docs/screenshots/chat-preview.png" alt="アプリ内チャット — Mermaid、表、ファイル メンション、画像添付" />
+      <p align="center"><em>アプリ内チャット — Mermaid・表の描画、@ファイル メンション、画像添付</em></p>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/chat-preview-2.png" alt="チャット内で Claude の質問に直接回答" />
+      <p align="center"><em>対話式プロンプト — Claude の質問にチャット内で直接回答</em></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
       <img src="docs/screenshots/session-resume.png" alt="埋め込みターミナルでセッション再開" />
       <p align="center"><em>埋め込みターミナル — ワンクリックで再開・新規作成</em></p>
     </td>

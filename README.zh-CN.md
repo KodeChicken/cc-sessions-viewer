@@ -55,6 +55,16 @@
   </tr>
   <tr>
     <td width="50%">
+      <img src="docs/screenshots/chat-preview.png" alt="应用内聊天 — Mermaid、表格、@ 提及文件与图片附件" />
+      <p align="center"><em>应用内聊天 — Mermaid 与表格渲染、@ 提及文件、粘贴图片</em></p>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/chat-preview-2.png" alt="在聊天中直接回答 Claude 的提问" />
+      <p align="center"><em>交互式提问 — 直接在聊天里回答 Claude 的选择题</em></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
       <img src="docs/screenshots/session-resume.png" alt="内嵌终端恢复会话" />
       <p align="center"><em>内嵌终端 — 一键恢复或新建会话</em></p>
     </td>
