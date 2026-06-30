@@ -13,11 +13,9 @@
 
 <p align="center">A native desktop browser for <strong>Claude Code</strong>, <strong>Codex</strong>, and <strong>Gemini CLI</strong>.<br/>Read, search, and manage local session transcripts from all three in one place.</p>
 
-<br />
-
-<img src="docs/screenshots/session.gif" alt="Claude Session Viewer — unified browser for Claude Code, Codex and Gemini CLI sessions" width="820" />
-
 </div>
+
+https://github.com/user-attachments/assets/9bcb92a8-e5b8-40e5-b492-af252162309b
 
 ---
 
@@ -153,6 +151,34 @@ PRs welcome. Please use [Conventional Commits](https://www.conventionalcommits.o
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jerrywu001/cc-sessions-viewer&type=date&legend=top-left" />
  </picture>
 </a>
+
+## Sponsorship Support
+Maintaining an open-source project requires significant time and resources. Your sponsorship will directly support:
+
+- 🛠️ Continuous development and updates
+
+- 🐛 Swift bug fixes and issue resolution
+
+- 📚 Documentation improvements and expanded examples
+
+### Ways to contribute:
+
+- GitHub Sponsors
+  
+[GitHub Sponsors](https://github.com/sponsors/jerrywu001) (Recommended · Zero fees)
+
+- Alipay/Wechat
+  
+<table style="display: flex; width: 500px;">
+  <tr>
+    <td style="margin-right: 16px;">
+      <img style="width: 150px;" src="https://www.js-bridge.com/alipay.jpg" />
+    </td>
+    <td style="margin-right: 16px;">
+      <img style="width: 150px;" src="https://www.js-bridge.com/wechat.jpg" />
+    </td>
+  </tr>
+</table>
 
 ## License
 

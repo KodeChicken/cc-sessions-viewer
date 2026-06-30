@@ -13,11 +13,9 @@
 
 <p align="center"><strong>Claude Code</strong>、<strong>Codex</strong>、<strong>Gemini CLI</strong> 専用のネイティブデスクトップブラウザ。<br/>3 つの CLI のローカルセッション履歴を一元的に読み取り、検索し、管理します。</p>
 
-<br />
-
-<img src="docs/screenshots/session.gif" alt="Claude Session Viewer — Claude Code・Codex・Gemini CLI セッションの統合ブラウザ" width="820" />
-
 </div>
+
+https://github.com/user-attachments/assets/9bcb92a8-e5b8-40e5-b492-af252162309b
 
 ---
 
@@ -153,6 +151,34 @@ PR 歓迎。[Conventional Commits](https://www.conventionalcommits.org/)（`feat
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jerrywu001/cc-sessions-viewer&type=date&legend=top-left" />
  </picture>
 </a>
+
+## スポンサー支援
+オープンソースプロジェクトの維持には多くの時間とリソースが必要です。あなたのスポンサーシップは以下に直接役立てられます：
+
+- 🛠️ 継続的な開発とアップデート
+
+- 🐛 迅速なバグ修正と問題解決
+
+- 📚 ドキュメントの改善とサンプルの拡充
+
+### 支援方法：
+
+- GitHub Sponsors
+  
+[GitHub Sponsors](https://github.com/sponsors/jerrywu001)（推奨 · 手数料無料）
+
+- Alipay / WeChat
+  
+<table style="display: flex; width: 500px;">
+  <tr>
+    <td style="margin-right: 16px;">
+      <img style="width: 150px;" src="https://www.js-bridge.com/alipay.jpg" />
+    </td>
+    <td style="margin-right: 16px;">
+      <img style="width: 150px;" src="https://www.js-bridge.com/wechat.jpg" />
+    </td>
+  </tr>
+</table>
 
 ## ライセンス
 

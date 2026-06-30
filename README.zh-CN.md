@@ -13,11 +13,9 @@
 
 <p align="center">一个专为 <strong>Claude Code</strong>、<strong>Codex</strong> 和 <strong>Gemini CLI</strong> 打造的原生桌面浏览器。<br/>在一处读取、搜索并管理三个 CLI 的本地会话记录。</p>
 
-<br />
-
-<img src="docs/screenshots/session.gif" alt="Claude Session Viewer — Claude Code、Codex、Gemini CLI 会话统一浏览器" width="820" />
-
 </div>
+
+https://github.com/user-attachments/assets/9bcb92a8-e5b8-40e5-b492-af252162309b
 
 ---
 
@@ -153,6 +151,34 @@ npm run tauri build    # 打包
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jerrywu001/cc-sessions-viewer&type=date&legend=top-left" />
  </picture>
 </a>
+
+## 赞助支持
+维护一个开源项目需要投入大量时间与精力。你的赞助将直接用于：
+
+- 🛠️ 持续开发与更新
+
+- 🐛 快速修复 Bug、解决问题
+
+- 📚 完善文档、补充更多示例
+
+### 赞助方式：
+
+- GitHub Sponsors
+  
+[GitHub Sponsors](https://github.com/sponsors/jerrywu001)（推荐 · 零手续费）
+
+- 支付宝 / 微信
+  
+<table style="display: flex; width: 500px;">
+  <tr>
+    <td style="margin-right: 16px;">
+      <img style="width: 150px;" src="https://www.js-bridge.com/alipay.jpg" />
+    </td>
+    <td style="margin-right: 16px;">
+      <img style="width: 150px;" src="https://www.js-bridge.com/wechat.jpg" />
+    </td>
+  </tr>
+</table>
 
 ## License
 
