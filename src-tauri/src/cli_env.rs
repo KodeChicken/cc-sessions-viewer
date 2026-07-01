@@ -6,7 +6,11 @@ struct CliSpec {
     name: &'static str,
     binary: &'static str,
     npm_package: &'static str,
-    upgrade_cmd: &'static str,
+    /// Arguments for `brew upgrade` when installed via Homebrew Cask.
+    brew_upgrade: Option<&'static str>,
+    /// Built-in update subcommand (e.g. "claude update"), tried when the CLI
+    /// wasn't installed via brew or npm.
+    builtin_update: Option<&'static str>,
 }
 
 const CLI_SPECS: &[CliSpec] = &[
@@ -14,19 +18,22 @@ const CLI_SPECS: &[CliSpec] = &[
         name: "claude",
         binary: "claude",
         npm_package: "@anthropic-ai/claude-code",
-        upgrade_cmd: "claude update",
+        brew_upgrade: Some("claude-code@latest"),
+        builtin_update: Some("claude update"),
     },
     CliSpec {
         name: "codex",
         binary: "codex",
         npm_package: "@openai/codex",
-        upgrade_cmd: "codex update",
+        brew_upgrade: Some("--cask codex"),
+        builtin_update: Some("codex update"),
     },
     CliSpec {
         name: "gemini",
         binary: "gemini",
         npm_package: "@google/gemini-cli",
-        upgrade_cmd: "npm install -g @google/gemini-cli@latest",
+        brew_upgrade: None,
+        builtin_update: None,
     },
 ];
 
@@ -179,39 +186,114 @@ pub fn check_all_versions() -> Vec<CliVersionInfo> {
 
 // ---- upgrade ----
 
-/// For npm-based CLIs, resolve the correct upgrade command by:
-/// 1. Finding the CLI binary's bin directory
-/// 2. Using the sibling npm binary from that same directory
-/// 3. Setting NPM_CONFIG_PREFIX to the node root so npm writes to the right
-///    global — without this, a user-level .npmrc `prefix=` can redirect
-///    installs to a different node manager's tree.
+/// Detect how the CLI was installed and return the appropriate upgrade command.
+///
+/// Priority:
+/// 1. Homebrew / Homebrew Cask → `brew upgrade <cask>`
+/// 2. npm (nvm / fnm / volta / system npm) → sibling npm install -g <pkg>@latest
+/// 3. Built-in update subcommand (e.g. `claude update`) as fallback
+/// 4. Plain `npm install -g <pkg>@latest` as last resort
 fn resolve_upgrade_cmd(spec: &CliSpec) -> String {
-    if spec.upgrade_cmd.starts_with("npm ") {
-        if let Some(first) = find_all_paths(spec.binary).into_iter().next() {
-            if let Some(bin_dir) = first.rsplit_once('/').map(|(d, _)| d) {
-                let sibling_npm = format!("{bin_dir}/npm");
-                if std::path::Path::new(&sibling_npm).exists() {
-                    let node_root = bin_dir.rsplit_once('/').map(|(d, _)| d).unwrap_or(bin_dir);
-                    let npm_part = spec.upgrade_cmd.replacen("npm ", &format!("'{sibling_npm}' "), 1);
-                    return format!("NPM_CONFIG_PREFIX='{node_root}' {npm_part}");
+    let paths = find_all_paths(spec.binary);
+    let first = paths.into_iter().next();
+    let resolved = first.as_deref().and_then(resolve_symlink);
+    let pm = resolved
+        .as_deref()
+        .map(detect_package_manager)
+        .unwrap_or_default();
+
+    match pm.as_str() {
+        "homebrew-cask" => {
+            if let Some(args) = spec.brew_upgrade {
+                return format!("brew upgrade {args}");
+            }
+        }
+        "homebrew" => {
+            return format!("brew upgrade {}", spec.npm_package.rsplit('/').next().unwrap_or(spec.binary));
+        }
+        "nvm" | "fnm" | "volta" | "npm" => {
+            if let Some(ref bin_path) = first {
+                if let Some(cmd) = build_npm_upgrade(bin_path, spec.npm_package) {
+                    return cmd;
                 }
             }
         }
+        _ => {}
     }
-    spec.upgrade_cmd.to_string()
+
+    if let Some(builtin) = spec.builtin_update {
+        return builtin.to_string();
+    }
+
+    format!("npm install -g {}@latest", spec.npm_package)
+}
+
+/// Build an npm upgrade command using the sibling npm binary from the same
+/// bin directory, with NPM_CONFIG_PREFIX set so it writes to the correct tree.
+fn build_npm_upgrade(bin_path: &str, npm_package: &str) -> Option<String> {
+    let bin_dir = bin_path.rsplit_once('/')?.0;
+    let sibling_npm = format!("{bin_dir}/npm");
+    if std::path::Path::new(&sibling_npm).exists() {
+        let node_root = bin_dir.rsplit_once('/').map(|(d, _)| d).unwrap_or(bin_dir);
+        Some(format!(
+            "NPM_CONFIG_PREFIX='{node_root}' '{sibling_npm}' install -g {npm_package}@latest"
+        ))
+    } else {
+        None
+    }
+}
+
+/// Extract a fallback upgrade command from CLI output.
+/// Some CLIs (e.g. `claude update` on Homebrew installs) don't upgrade
+/// directly — they print a command like "brew upgrade claude-code@latest"
+/// and exit 0. We detect that and run the printed command ourselves.
+fn extract_fallback_cmd(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("brew upgrade ")
+            || trimmed.starts_with("brew reinstall ")
+            || trimmed.starts_with("npm install ")
+            || trimmed.starts_with("npm i ")
+        {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
 }
 
 pub fn upgrade_single(cli_name: &str) -> Result<CliUpgradeResult, String> {
     let spec = find_spec(cli_name)?;
+    let prev_version = get_installed_version(spec);
     let cmd = resolve_upgrade_cmd(spec);
     match run_in_login_shell(&cmd) {
-        Ok(_) => {
+        Ok(output) => {
+            if let Some(fallback) = extract_fallback_cmd(&output) {
+                match run_in_login_shell(&fallback) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        return Ok(CliUpgradeResult {
+                            cli: spec.name.to_string(),
+                            success: false,
+                            new_version: None,
+                            error: Some(e),
+                        });
+                    }
+                }
+            }
             let new_version = get_installed_version(spec);
+            let actually_changed = match (&prev_version, &new_version) {
+                (Some(p), Some(n)) => p != n,
+                _ => true,
+            };
             Ok(CliUpgradeResult {
                 cli: spec.name.to_string(),
-                success: true,
+                success: actually_changed,
                 new_version,
-                error: None,
+                error: if actually_changed {
+                    None
+                } else {
+                    Some("version_unchanged".into())
+                },
             })
         }
         Err(e) => Ok(CliUpgradeResult {
@@ -388,5 +470,27 @@ mod tests {
             "npm"
         );
         assert_eq!(detect_package_manager("/usr/bin/claude"), "system");
+    }
+
+    #[test]
+    fn test_extract_fallback_cmd() {
+        let output = "Current version: 2.1.187\n\
+                       Checking for updates to latest version...\n\
+                       \n\
+                       Claude is managed by Homebrew.\n\
+                       Update available: 2.1.187 → 2.1.197\n\
+                       \n\
+                       To update, run:\n\
+                         brew upgrade claude-code@latest\n";
+        assert_eq!(
+            extract_fallback_cmd(output),
+            Some("brew upgrade claude-code@latest".into())
+        );
+
+        assert_eq!(extract_fallback_cmd("Updated successfully!"), None);
+        assert_eq!(
+            extract_fallback_cmd("  npm install -g @google/gemini-cli@latest"),
+            Some("npm install -g @google/gemini-cli@latest".into())
+        );
     }
 }

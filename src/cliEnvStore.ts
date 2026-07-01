@@ -34,21 +34,18 @@ export async function refresh() {
 }
 
 export async function upgrade(cli: string) {
-  const prev = cliVersions.value.find((v) => v.cli === cli)?.currentVersion
   upgrading.value = { ...upgrading.value, [cli]: true }
   upgradeMsg.value = { ...upgradeMsg.value, [cli]: undefined as never }
   try {
     const r = await api.upgradeCli(cli)
     if (r.success) {
-      if (r.newVersion && r.newVersion !== prev) {
-        upgradeMsg.value = { ...upgradeMsg.value, [cli]: { ok: true, text: r.newVersion } }
-      } else {
-        upgradeMsg.value = { ...upgradeMsg.value, [cli]: { ok: false, text: 'version_unchanged' } }
-      }
-      await fetchVersions()
+      upgradeMsg.value = { ...upgradeMsg.value, [cli]: { ok: true, text: r.newVersion || '' } }
+    } else if (r.error === 'version_unchanged') {
+      upgradeMsg.value = { ...upgradeMsg.value, [cli]: { ok: false, text: 'version_unchanged' } }
     } else {
       upgradeMsg.value = { ...upgradeMsg.value, [cli]: { ok: false, text: r.error || 'unknown' } }
     }
+    await fetchVersions()
   } catch (e) {
     upgradeMsg.value = { ...upgradeMsg.value, [cli]: { ok: false, text: String(e) } }
   } finally {
@@ -64,13 +61,10 @@ export async function upgradeAll() {
   try {
     const results = await api.upgradeAllClis()
     for (const r of results) {
-      const prev = targets.find((t) => t.cli === r.cli)?.currentVersion
       if (r.success) {
-        if (r.newVersion && r.newVersion !== prev) {
-          upgradeMsg.value = { ...upgradeMsg.value, [r.cli]: { ok: true, text: r.newVersion } }
-        } else {
-          upgradeMsg.value = { ...upgradeMsg.value, [r.cli]: { ok: false, text: 'version_unchanged' } }
-        }
+        upgradeMsg.value = { ...upgradeMsg.value, [r.cli]: { ok: true, text: r.newVersion || '' } }
+      } else if (r.error === 'version_unchanged') {
+        upgradeMsg.value = { ...upgradeMsg.value, [r.cli]: { ok: false, text: 'version_unchanged' } }
       } else {
         upgradeMsg.value = { ...upgradeMsg.value, [r.cli]: { ok: false, text: r.error || 'unknown' } }
       }
