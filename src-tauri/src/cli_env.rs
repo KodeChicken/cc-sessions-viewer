@@ -48,7 +48,7 @@ fn run_in_login_shell(cmd: &str) -> Result<String, String> {
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string());
     let out = Command::new(&shell)
-        .args(["-l", "-c", cmd])
+        .args(["-l", "-i", "-c", cmd])
         .output()
         .map_err(|e| format!("shell exec: {e}"))?;
     if out.status.success() {
@@ -241,7 +241,7 @@ fn find_all_paths(binary: &str) -> Vec<String> {
         .unwrap_or_default()
         .lines()
         .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
+        .filter(|l| l.starts_with('/'))
         .collect()
 }
 
