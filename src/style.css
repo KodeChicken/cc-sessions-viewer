@@ -3909,9 +3909,9 @@ body.is-tab-reordering * {
 /* ---------- Settings ---------- */
 /* 左右布局：左侧图标导航 + 右侧定高滚动内容（参考 Claude 客户端设置面板）。 */
 .settings-modal {
-  width: 760px;
+  width: 880px;
   max-width: calc(100vw - 48px);
-  height: 560px;
+  height: 640px;
   max-height: calc(100vh - 80px);
   padding: 0;
   display: flex;

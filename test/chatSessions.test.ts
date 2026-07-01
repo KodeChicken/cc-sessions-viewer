@@ -104,6 +104,8 @@ describe('chatSessions Claude API-key compatibility', () => {
       permissionMode: 'acceptEdits',
       model: undefined,
       effort: undefined,
+      fork: undefined,
+      useReclaude: false,
     })
     expect(session.chatId).toBe(8)
     expect(session.status).toBe('running')

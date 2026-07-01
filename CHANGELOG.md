@@ -6,6 +6,22 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.2.1]
+
+### Features
+
+- **CLI Environment Check** — new Settings tab that detects locally installed Claude Code, Codex, and Gemini CLI versions, compares against npm latest, and offers one-click upgrade. Skeleton loading animation during initial scan; spinning refresh icon; per-CLI upgrade spinner. Upgrade results distinguish success from "version unchanged" with actionable error messages. Supports multi-node-manager environments (nvm / hermes / volta / fnm) by resolving the sibling `npm` binary and forcing `NPM_CONFIG_PREFIX` to the correct node root so upgrades write to the right global tree.
+- **Diagnose install conflicts** — a single "Diagnose conflicts" button in the CLI Environment header runs `which -a` across all installed CLIs in parallel, deduplicates by canonical resolved path (filtering temp/shim paths), and reports each installation with its path, version, package manager source (Homebrew Cask / nvm / Volta / fnm / npm / system), and a "Default" badge. Warns when multiple installations are detected.
+- **reclaude process wrapper** — optional "Use reclaude" toggle in Settings; when enabled, both embedded terminal (PTY) and GUI chat sessions prefix the agent command with `reclaude`, routing through the reclaude daemon's auth/proxy chain (same mechanism as IDE "Claude Process Wrapper"). Backend detects reclaude install status and daemon port from `~/.reclaude/state.json`.
+- **TUI tab memory per project** — switching between projects now remembers and restores the active terminal tab for each project, including shell tabs. Persisted to localStorage alongside the existing View tab memory.
+
+### Bug Fixes
+
+- **Settings modal no longer closes on backdrop click** — only the close button (×) dismisses the modal, preventing accidental closure during CLI upgrades or diagnosis
+- **Prevent double-spawn on rapid clicks** — added a `_spawnLock` guard to new-session, new-shell, and new-GUI-chat entry points so fast double-clicks don't open duplicate tabs
+- **Windows console window suppressed** — `CREATE_NO_WINDOW` flag added to `curl` (usage API) and PowerShell (CLI env) subprocess spawns on Windows, preventing flashing console windows
+- **Side chat closed on project/agent switch** — switching projects or agents now properly terminates the side chat subprocess and closes the floating panel
+
 ## [v0.2.0]
 
 ### Features

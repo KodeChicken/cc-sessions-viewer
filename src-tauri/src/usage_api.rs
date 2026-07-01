@@ -170,14 +170,18 @@ fn fetch_blocking() -> Result<AccountUsage, String> {
          write-out = \"\\n%{{http_code}}\"\n",
         proxy = proxy_config_line(),
     );
-    let mut child = Command::new("curl")
-        .arg("--config")
+    let mut cmd = Command::new("curl");
+    cmd.arg("--config")
         .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("spawn curl: {e}"))?;
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("spawn curl: {e}"))?;
     child
         .stdin
         .take()

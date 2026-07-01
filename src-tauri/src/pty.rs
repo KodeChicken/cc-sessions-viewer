@@ -108,6 +108,7 @@ fn build_shell_command(
     cwd: &str,
     command: &AgentCommand,
     color_scheme: PtyColorScheme,
+    use_reclaude: bool,
 ) -> CommandBuilder {
     #[cfg(target_os = "macos")]
     const DEFAULT_SHELL: &str = "/bin/zsh";
@@ -115,8 +116,12 @@ fn build_shell_command(
     const DEFAULT_SHELL: &str = "/bin/bash";
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string());
-    // POSIX sh quoting：单引号字符串里 ' 改成 '\'' 关 + 转义 + 重开。
-    let inner = format!("cd {} && {}", crate::agent_command::posix_quote(cwd), command.to_posix_shell());
+    let cli = if use_reclaude {
+        format!("'reclaude' {}", command.to_posix_shell())
+    } else {
+        command.to_posix_shell()
+    };
+    let inner = format!("cd {} && {}", crate::agent_command::posix_quote(cwd), cli);
 
     let mut cmd = CommandBuilder::new(&shell);
     cmd.arg("-l");
@@ -136,6 +141,7 @@ fn build_shell_command(
     cwd: &str,
     command: &AgentCommand,
     color_scheme: PtyColorScheme,
+    _use_reclaude: bool,
 ) -> CommandBuilder {
     // PowerShell 单引号字面串里 ' 用 '' 转义。
     let mut cmd = CommandBuilder::new("powershell.exe");
@@ -195,8 +201,9 @@ pub fn spawn(
     cols: u16,
     rows: u16,
     color_scheme: Option<&str>,
+    use_reclaude: bool,
 ) -> Result<u64, String> {
-    let cmd = build_shell_command(&cwd, &command, PtyColorScheme::parse(color_scheme));
+    let cmd = build_shell_command(&cwd, &command, PtyColorScheme::parse(color_scheme), use_reclaude);
     spawn_raw(app, &cwd, cmd, cols, rows)
 }
 

@@ -26,6 +26,8 @@ import {
   ALL_AGENTS,
   quickOpenTarget,
   setQuickOpenTarget,
+  useReclaude,
+  setUseReclaude,
   type Lang,
   type Theme,
   type FontScale,
@@ -43,9 +45,11 @@ import {
   IconSliders,
   IconKeyboard,
   IconDownload,
+  IconTerminal,
   agentIcons,
   terminalIcons,
 } from './icons'
+import CliEnvironmentCheck from './CliEnvironmentCheck.vue'
 import * as api from '../api'
 import {
   checkAppUpdate,
@@ -60,12 +64,13 @@ import {
   updaterUpdate,
 } from '../updateCheck'
 
-type SettingsTab = 'general' | 'advanced' | 'shortcuts' | 'updates'
+type SettingsTab = 'general' | 'advanced' | 'cli' | 'shortcuts' | 'updates'
 
 // 左侧导航：图标 + 文案，激活项高亮（参考 Claude 客户端设置面板）。
 const navItems = [
   { id: 'general', icon: IconSettings, key: 'settings.tab.general' },
   { id: 'advanced', icon: IconSliders, key: 'settings.tab.advanced' },
+  { id: 'cli', icon: IconTerminal, key: 'settings.tab.cli' },
   { id: 'shortcuts', icon: IconKeyboard, key: 'settings.tab.shortcuts' },
   { id: 'updates', icon: IconDownload, key: 'settings.tab.updates' },
 ] as const
@@ -128,6 +133,9 @@ const updateMsg = ref('')
 const checking = ref(false)
 const installingClaudeHooks = ref(false)
 const claudeHooksMsg = ref('')
+
+const reclaudeInstalled = ref(false)
+const reclaudeRunning = ref(false)
 
 // custom dropdown state
 const langMenuOpen = ref(false)
@@ -200,6 +208,13 @@ onMounted(async () => {
       v: latestVersion.value,
       cur: version.value,
     })
+  }
+  try {
+    const info = await api.reclaudeInfo()
+    reclaudeInstalled.value = info.installed
+    reclaudeRunning.value = info.daemonRunning
+  } catch {
+    /* ignore */
   }
 })
 
@@ -285,7 +300,7 @@ async function installClaudeHooks() {
 </script>
 
 <template>
-  <div class="overlay" @click.self="emit('close')">
+  <div class="overlay">
     <div class="modal settings-modal">
       <!-- 左侧导航：分组标题 + 图标项，激活项高亮（参考 Claude 客户端设置面板） -->
       <nav class="set-nav">
@@ -585,6 +600,27 @@ async function installClaudeHooks() {
             </label>
           </div>
 
+          <!-- ReClaude -->
+          <div v-if="reclaudeInstalled" class="set-group">
+            <div class="set-group-head">
+              <div class="set-group-title">{{ t('settings.section.reclaude') }}</div>
+              <p class="set-group-desc">{{ t('settings.reclaude.desc') }}</p>
+            </div>
+            <label class="set-row set-row-clickable" @click.prevent="setUseReclaude(!useReclaude)">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.reclaude.toggle') }}</div>
+                <p v-if="useReclaude && !reclaudeRunning" class="set-row-desc" style="color:var(--danger)">{{ t('settings.reclaude.notRunning') }}</p>
+              </div>
+              <span class="set-toggle-track set-row-control" :class="{ on: useReclaude }">
+                <span class="set-toggle-thumb" />
+              </span>
+            </label>
+          </div>
+
+        </template>
+
+        <template v-else-if="activeTab === 'cli'">
+          <CliEnvironmentCheck />
         </template>
 
         <template v-else-if="activeTab === 'updates'">

@@ -6,6 +6,7 @@ import type {
   ChatImageInput,
   ClaudeRuntimeInfo,
   ChatStartInfo,
+  ReclaudeInfo,
   SlashCommand,
   ProjectFileEntry,
   ProjectInfo,
@@ -221,6 +222,7 @@ export const ptySpawn = (
   rows: number,
   extraArgs?: string,
   colorScheme?: 'light' | 'dark',
+  useReclaude?: boolean,
 ) => invoke<number>('pty_spawn', {
   agent,
   sessionId,
@@ -230,6 +232,7 @@ export const ptySpawn = (
   rows,
   extraArgs: extraArgs || '',
   colorScheme: colorScheme || 'light',
+  useReclaude,
 })
 
 /** 启动一个新会话的 PTY（不带 --resume）。 */
@@ -240,6 +243,7 @@ export const ptySpawnNew = (
   rows: number,
   extraArgs?: string,
   colorScheme?: 'light' | 'dark',
+  useReclaude?: boolean,
 ) =>
   invoke<number>('pty_spawn_new', {
     agent,
@@ -248,6 +252,7 @@ export const ptySpawnNew = (
     rows,
     extraArgs: extraArgs || '',
     colorScheme: colorScheme || 'light',
+    useReclaude,
   })
 
 /** 启动一个纯 shell PTY（不跑任何 agent CLI）。 */
@@ -291,6 +296,7 @@ export const agentChatStart = (
   effort?: string,
   /** btw 侧聊：续聊既有会话时从它**派生**一份独立 session（继承上下文、不污染原 transcript）。 */
   fork?: boolean,
+  useReclaude?: boolean,
 ) =>
   invoke<ChatStartInfo>('agent_chat_start', {
     agent,
@@ -300,6 +306,7 @@ export const agentChatStart = (
     model,
     effort,
     fork,
+    useReclaude,
   })
 
 /** 向某个 chat 子进程发送一条用户消息（含可选图片附件 + 本轮 model/effort/权限）。
@@ -363,6 +370,8 @@ export const agentChatRespondQuestion = (
 export const agentChatSlashCommands = (agent: Agent, cwd: string) =>
   invoke<SlashCommand[]>('agent_chat_slash_commands', { agent, cwd })
 
+export const reclaudeInfo = () => invoke<ReclaudeInfo>('reclaude_info')
+
 export const trayQuickStats = () => invoke<TrayStats>('tray_quick_stats')
 
 /** 账号额度（5 小时 / 周 / 各模型分项）—— 走 OAuth 用量接口，每窗口含精确利用率 + 重置时间。 */
@@ -416,3 +425,19 @@ export async function checkUpdate(): Promise<UpdateInfo> {
     htmlUrl: release.html_url ?? RELEASE_PAGE_URL,
   }
 }
+
+// ---- CLI 环境检测 ----
+
+import type { CliVersionInfo, CliDiagnosisResult, CliUpgradeResult } from './types'
+
+export const checkCliVersions = () =>
+  invoke<CliVersionInfo[]>('check_cli_versions')
+
+export const upgradeCli = (cliName: string) =>
+  invoke<CliUpgradeResult>('upgrade_cli', { cliName })
+
+export const upgradeAllClis = () =>
+  invoke<CliUpgradeResult[]>('upgrade_all_clis')
+
+export const diagnoseCli = (cliName: string) =>
+  invoke<CliDiagnosisResult>('diagnose_cli', { cliName })

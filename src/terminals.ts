@@ -26,7 +26,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { Agent, SessionMeta } from './types'
-import { theme, launchArgs } from './settings'
+import { theme, launchArgs, useReclaude } from './settings'
 import * as api from './api'
 import {
   applyPendingTurnState,
@@ -109,6 +109,7 @@ let nextUiId = 1
 const SAVED_TABS_KEY = 'savedTabs:v1'
 const SAVED_NAV_KEY = 'savedNav:v1'
 const SAVED_VIEWS_KEY = 'savedViews:v1'
+const SAVED_ACTIVE_TUI_KEY = 'savedActiveTui:v1'
 
 export interface SavedTab {
   agent: Agent
@@ -160,6 +161,31 @@ export function persistViews(views: SavedView[]) {
   } catch {
     /* 配额满 / 隐私模式：丢了也只是少恢复 View，无所谓 */
   }
+}
+
+export interface SavedActiveTui {
+  agent: Agent
+  dir: string
+  sessionPath: string
+  isShell?: boolean
+}
+
+export function loadSavedActiveTui(): SavedActiveTui[] {
+  try {
+    const raw = localStorage.getItem(SAVED_ACTIVE_TUI_KEY)
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr.filter((v: any) => v && v.agent && v.dir)
+  } catch {
+    return []
+  }
+}
+
+export function persistActiveTui(entries: SavedActiveTui[]) {
+  try {
+    localStorage.setItem(SAVED_ACTIVE_TUI_KEY, JSON.stringify(entries))
+  } catch { /* ignore */ }
 }
 
 export const savedTabs = ref<SavedTab[]>(loadSavedTabs())
@@ -848,8 +874,9 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   try {
     const extra = launchArgs.value[opts.agent as keyof typeof launchArgs.value] || ''
     const colorScheme = terminalColorScheme()
+    const reclaude = opts.agent === 'claude' && useReclaude.value
     ptyId = isNew
-      ? await api.ptySpawnNew(opts.agent, opts.cwd, cols, rows, extra, colorScheme)
+      ? await api.ptySpawnNew(opts.agent, opts.cwd, cols, rows, extra, colorScheme, reclaude)
       : await api.ptySpawn(
           opts.agent,
           opts.sessionId,
@@ -859,6 +886,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
           rows,
           extra,
           colorScheme,
+          reclaude,
         )
   } catch (e) {
     setProcessState(tab, 'error')

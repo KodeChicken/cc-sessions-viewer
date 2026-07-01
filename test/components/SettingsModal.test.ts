@@ -55,11 +55,12 @@ describe('SettingsModal', () => {
     expect(wrapper.emitted('clearCache')).toHaveLength(1)
   })
 
-  it('emits close from the X button and the overlay backdrop', async () => {
+  it('emits close only from the X button, not the overlay backdrop', async () => {
     const wrapper = factory()
-    await wrapper.find('.modal-close').trigger('click')
     await wrapper.find('.overlay').trigger('click')
-    expect(wrapper.emitted('close')).toHaveLength(2)
+    expect(wrapper.emitted('close')).toBeUndefined()
+    await wrapper.find('.modal-close').trigger('click')
+    expect(wrapper.emitted('close')).toHaveLength(1)
   })
 
   it('switches language via the custom dropdown', async () => {

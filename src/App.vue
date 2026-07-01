@@ -100,6 +100,8 @@ import {
   loadSavedNav,
   loadSavedViews,
   persistViews,
+  loadSavedActiveTui,
+  persistActiveTui,
   savedTabs,
   removeSavedTab,
   renameSavedTab,
@@ -108,6 +110,7 @@ import {
   type SavedTab,
   type SavedNav,
   type SavedView,
+  type SavedActiveTui,
 } from './terminals'
 import {
   recordView,
@@ -119,7 +122,7 @@ import {
   type ViewHistoryEntry,
 } from './viewHistory'
 import { startChat, closeChat, type ChatSession } from './chatSessions'
-import { sideChat, openSideChat } from './sideChat'
+import { sideChat, openSideChat, closeSideChat } from './sideChat'
 import { sameProjectClickAction } from './projectSelection'
 
 // ---------- 状态 ----------
@@ -278,6 +281,9 @@ const suppressNextLiveChatNavClose = ref(false)
 // 持久化到 localStorage（savedViews:v1），重启后切到任意项目都能恢复它自己的 View；
 // 键 = agent + dir（用   分隔，dir 含空格也不歧义）。
 const openSessionByProject = new Map<string, { session: SessionMeta; mode: 'read' | 'chat' }>()
+// 每个项目最近活跃的 TUI tab —— 切项目再切回来时据此恢复 TUI 层。
+// 存 sessionPath（跨重启稳定）而非 uiId（重启后变）。
+const activeTuiByProject = new Map<string, { sessionPath: string; isShell?: boolean }>()
 const viewKey = (a: string, dir: string) => a + "\u0000" + dir
 const viewStashKey = (dir: string) => viewKey(agent.value, dir)
 // View 子模式：live GUI chat 正跑且没回看只读 = chat，否则 read。
@@ -292,6 +298,15 @@ function persistViewMap() {
     out.push({ agent: k.slice(0, sep) as Agent, dir: k.slice(sep + 1), session: v.session, mode: v.mode })
   }
   persistViews(out)
+}
+function persistTuiMap() {
+  const out: SavedActiveTui[] = []
+  for (const [k, v] of activeTuiByProject) {
+    const sep = k.indexOf(" ")
+    if (sep < 0) continue
+    out.push({ agent: k.slice(0, sep) as Agent, dir: k.slice(sep + 1), sessionPath: v.sessionPath, ...(v.isShell ? { isShell: true } : {}) })
+  }
+  persistActiveTui(out)
 }
 // 非空表示当前打开的会话来自回收站（只读查看）—— 详情页据此切换为「回收站模式」。
 const openTrashItem = ref<TrashItem | null>(null)
@@ -887,6 +902,7 @@ function switchAgent(a: Agent) {
   // 任何主区视图切换 → 把 TUI 层收起，让用户看到刚切到的视图。TUI tab 不关，
   // 用户在 TerminalStrip 里随时能切回。
   setActiveTui(null)
+  if (sideChat.value) closeSideChat()
   // showStats 不重置 —— 统计是 agent-scoped，切 agent 后 StatsView 自己 refetch。
   loadProjects()
 }
@@ -895,6 +911,8 @@ async function selectProject(dir: string) {
   // 目标项目上次开着的 View —— 必须在下面任何 map 改动 / 清 openSession 之前读出来存好，
   // 这样切换途中即便有别的写 map 也不影响恢复。
   const remembered = activeDir.value !== dir ? openSessionByProject.get(viewStashKey(dir)) : undefined
+  // 目标项目上次活跃的 TUI tab —— 同理先读出来，切换后恢复。
+  const rememberedTui = activeDir.value !== dir ? activeTuiByProject.get(viewStashKey(dir)) : undefined
   // 切到「别的」项目前，先记住当前项目里开着的 View（会话 + read/chat 模式），切回来时恢复，
   // 避免 View tab 在项目间切换时丢失。回收站 / 历史导入的会话不算项目自己的 View，跳过。
   if (activeDir.value && activeDir.value !== dir && !openTrashItem.value && !importedAgent.value) {
@@ -907,9 +925,24 @@ async function selectProject(dir: string) {
       openSessionByProject.delete(viewStashKey(activeDir.value))
     }
     persistViewMap()
+    // 记住当前项目活跃的 TUI tab，切回来时恢复终端层。
+    const curTab = activeUiId.value !== null
+      ? tuiTabs.value.find((t) => t.uiId === activeUiId.value)
+      : undefined
+    if (curTab) {
+      activeTuiByProject.set(viewStashKey(activeDir.value), {
+        sessionPath: curTab.sessionPath,
+        ...(curTab.isShell ? { isShell: true } : {}),
+      })
+    } else {
+      activeTuiByProject.delete(viewStashKey(activeDir.value))
+    }
+    persistTuiMap()
   }
-  // 任何点项目 / 切项目的动作都先把 TUI 层收起，否则用户点了项目却看不到列表。
+  // 切项目前先收起 TUI 层（会话列表 / View 层需要先渲染出来）。
   setActiveTui(null)
+  // btw 侧聊与项目绑定 —— 切项目时终止子进程并关闭浮窗。
+  if (sideChat.value) closeSideChat()
   // 再次点击当前已选中的项目：
   //   - 若当前正看着 View / live chat → 切到会话列表，但保留后台 View tab
   //   - 若当前已在列表 → 收起项目，回到「请选择项目」空状态
@@ -962,6 +995,25 @@ async function selectProject(dir: string) {
     await openChat(remembered.session)
     if (remembered.mode === 'chat' && openSession.value) {
       await resumeChatFromSession(remembered.session)
+    }
+  }
+  // 切回一个之前开着 TUI tab 的项目 → 恢复终端层。
+  if (rememberedTui) {
+    // 优先找已水合的 live tab
+    const liveMatch = rememberedTui.isShell
+      ? tuiTabs.value.find((t) => t.isShell && t.agent === agent.value && t.projectKey === dir)
+      : tuiTabs.value.find((t) => t.sessionPath === rememberedTui.sessionPath)
+    if (liveMatch) {
+      setActiveTui(liveMatch.uiId)
+    } else {
+      // 未水合 → 在 savedTabs 里找到并水合
+      const savedMatch = rememberedTui.isShell
+        ? savedTabs.value.find((s) => s.isShell && s.agent === agent.value && s.projectKey === dir)
+        : savedTabs.value.find((s) => s.sessionPath === rememberedTui.sessionPath)
+      if (savedMatch) {
+        removeSavedTab(savedMatch.sessionPath || savedMatch)
+        await hydrateSavedTab(savedMatch)
+      }
     }
   }
 }
@@ -2145,12 +2197,15 @@ async function chatFromList(s: SessionMeta) {
 
 /** 入口 1(GUI)：在当前项目里新开一个空的 live GUI chat。 */
 function newGuiSession() {
+  if (_spawnLock) return
+  _spawnLock = true
   startLiveChat({
     agent: agent.value,
     projectKey: activeProject.value?.dirName ?? activeDir.value ?? '',
     cwd: activeProject.value?.displayPath || '',
     title: t('list.action.newSessionGui'),
   })
+  _spawnLock = false
 }
 
 /** `/fork`：把当前 live chat **克隆**成一个独立的新会话 —— 后端在磁盘上复制一份 transcript
@@ -2388,9 +2443,11 @@ async function hydrateSavedTab(saved: SavedTab) {
 }
 
 /** 开一个全新会话 —— 根据设置决定走窗口内 TUI 还是外部终端。 */
+let _spawnLock = false
 async function newSession() {
   const cwd = activeProject.value?.displayPath || ''
-  if (!cwd) return
+  if (!cwd || _spawnLock) return
+  _spawnLock = true
   try {
     if (useExternalTerminal.value) {
       await api.newSession(agent.value, cwd, launchArgs.value[agent.value as keyof typeof launchArgs.value] || '', terminalApp.value)
@@ -2407,13 +2464,16 @@ async function newSession() {
     }
   } catch (e) {
     notify(`${e}`, true)
+  } finally {
+    _spawnLock = false
   }
 }
 
 /** 开一个纯 shell tab —— 不跑任何 agent CLI，用于执行任意 shell 命令。 */
 async function newShellSession() {
   const cwd = activeProject.value?.displayPath || ''
-  if (!cwd) return
+  if (!cwd || _spawnLock) return
+  _spawnLock = true
   try {
     await openShellTab({
       agent: agent.value,
@@ -2423,6 +2483,8 @@ async function newShellSession() {
     })
   } catch (e) {
     notify(`${e}`, true)
+  } finally {
+    _spawnLock = false
   }
 }
 
@@ -2652,8 +2714,18 @@ function saveTabState() {
     } else if (!showTrash.value && !showStats.value && !showExportHistory.value && !showPricing.value) {
       openSessionByProject.delete(k)
     }
+    // 同步当前项目活跃的 TUI tab 记忆。
+    if (cur) {
+      activeTuiByProject.set(k, {
+        sessionPath: cur.sessionPath,
+        ...(cur.isShell ? { isShell: true } : {}),
+      })
+    } else {
+      activeTuiByProject.delete(k)
+    }
   }
   persistViewMap()
+  persistTuiMap()
   // sessionPath 为空的 tab（shell / 未匹配新会话）用在 live 列表中的索引定位
   const noPathIdx = cur && !cur.sessionPath
     ? tuiTabs.value.filter((t) => !t.sessionPath).indexOf(cur)
@@ -2687,6 +2759,10 @@ onMounted(() => {
   // 恢复每个项目各自的 View 记忆 —— 切到任意项目（含重启后第一次点）都能拿回它的 View tab。
   for (const v of loadSavedViews()) {
     openSessionByProject.set(viewKey(v.agent, v.dir), { session: v.session, mode: v.mode })
+  }
+  // 恢复每个项目各自的 TUI tab 记忆 —— 切到任意项目时恢复它上次活跃的终端 tab。
+  for (const v of loadSavedActiveTui()) {
+    activeTuiByProject.set(viewKey(v.agent, v.dir), { sessionPath: v.sessionPath, ...(v.isShell ? { isShell: true } : {}) })
   }
 
   loadProjects().then(async () => {

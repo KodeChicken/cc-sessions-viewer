@@ -75,6 +75,15 @@ pub struct ClaudeAliasTargets {
     pub fable: Option<String>,
 }
 
+/// `reclaude_info` 返回：本地 reclaude 守护进程的运行状态，供前端判断能否启用代理。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ReclaudeInfo {
+    pub installed: bool,
+    pub daemon_running: bool,
+    pub daemon_port: Option<u16>,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatImageInput {
@@ -510,4 +519,47 @@ pub struct TrayStats {
     pub total_week_cost: f64,
     pub total_month_tokens: u64,
     pub total_month_cost: f64,
+}
+
+// ---- CLI 环境检测 ----
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CliVersionInfo {
+    pub cli: String,
+    pub npm_package: String,
+    pub current_version: Option<String>,
+    pub latest_version: Option<String>,
+    pub upgradable: bool,
+    pub installed: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CliInstallation {
+    pub path: String,
+    pub version: Option<String>,
+    pub is_default: bool,
+    pub package_manager: String,
+    pub resolved_path: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CliDiagnosisResult {
+    pub cli: String,
+    pub binary_name: String,
+    pub installations: Vec<CliInstallation>,
+    pub has_conflict: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CliUpgradeResult {
+    pub cli: String,
+    pub success: bool,
+    pub new_version: Option<String>,
+    pub error: Option<String>,
 }

@@ -286,6 +286,12 @@ export interface ChatStartInfo {
   processModel: ChatProcessModel
 }
 
+export interface ReclaudeInfo {
+  installed: boolean
+  daemonRunning: boolean
+  daemonPort: number | null
+}
+
 export interface ClaudeRuntimeInfo {
   hasCustomBaseUrl: boolean
   aliasTargets: {
@@ -400,4 +406,39 @@ export interface TrayStats {
   totalWeekCost: number
   totalMonthTokens: number
   totalMonthCost: number
+}
+
+// ---- CLI 环境检测 ----
+
+export interface CliVersionInfo {
+  cli: 'claude' | 'codex' | 'gemini'
+  npmPackage: string
+  currentVersion: string | null
+  latestVersion: string | null
+  upgradable: boolean
+  installed: boolean
+  error: string | null
+}
+
+export interface CliInstallation {
+  path: string
+  version: string | null
+  isDefault: boolean
+  packageManager: string
+  resolvedPath: string | null
+}
+
+export interface CliDiagnosisResult {
+  cli: 'claude' | 'codex' | 'gemini'
+  binaryName: string
+  installations: CliInstallation[]
+  hasConflict: boolean
+  error: string | null
+}
+
+export interface CliUpgradeResult {
+  cli: 'claude' | 'codex' | 'gemini'
+  success: boolean
+  newVersion: string | null
+  error: string | null
 }

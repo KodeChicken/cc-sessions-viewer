@@ -17,6 +17,7 @@ pub mod agents;
 mod agent_command;
 mod bookmarks;
 mod claude_config;
+mod cli_env;
 #[cfg(target_os = "macos")]
 mod menu;
 mod pty;
@@ -316,6 +317,7 @@ fn pty_spawn(
     rows: u16,
     extra_args: String,
     color_scheme: Option<String>,
+    use_reclaude: Option<bool>,
 ) -> Result<u64, String> {
     if !Path::new(&cwd).is_dir() {
         return Err("Project directory no longer exists".to_string());
@@ -328,11 +330,12 @@ fn pty_spawn(
         return Err("Invalid session ID".to_string());
     }
     let command = agents::source(&agent)?.resume_command(&session_id, &path).with_extra_args(&extra_args);
-    pty::spawn(app, cwd, command, cols, rows, color_scheme.as_deref())
+    pty::spawn(app, cwd, command, cols, rows, color_scheme.as_deref(), use_reclaude.unwrap_or(false))
 }
 
 /// 启动一个 “new session” PTY（不带 --resume）。session_id 不需要 —— 由 CLI 自己生成新 id。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn pty_spawn_new(
     app: tauri::AppHandle,
     agent: String,
@@ -341,12 +344,13 @@ fn pty_spawn_new(
     rows: u16,
     extra_args: String,
     color_scheme: Option<String>,
+    use_reclaude: Option<bool>,
 ) -> Result<u64, String> {
     if !Path::new(&cwd).is_dir() {
         return Err("Project directory no longer exists".to_string());
     }
     let command = agents::source(&agent)?.new_session_command().with_extra_args(&extra_args);
-    pty::spawn(app, cwd, command, cols, rows, color_scheme.as_deref())
+    pty::spawn(app, cwd, command, cols, rows, color_scheme.as_deref(), use_reclaude.unwrap_or(false))
 }
 
 /// 启动一个纯 shell PTY（不跑任何 agent CLI），用于在项目目录里执行任意命令。
@@ -414,6 +418,7 @@ fn agent_chat_start(
     model: Option<String>,
     effort: Option<String>,
     fork: Option<bool>,
+    use_reclaude: Option<bool>,
 ) -> Result<crate::types::ChatStartInfo, String> {
     if !Path::new(&cwd).is_dir() {
         return Err("Project directory no longer exists".to_string());
@@ -449,8 +454,14 @@ fn agent_chat_start(
         model,
         effort,
         fork.unwrap_or(false),
+        use_reclaude.unwrap_or(false),
     )?;
     Ok(crate::types::ChatStartInfo { chat_id, process_model })
+}
+
+#[tauri::command]
+fn reclaude_info() -> crate::types::ReclaudeInfo {
+    agent_chat::reclaude_info()
 }
 
 /// 向某个 chat 子进程发送一条用户消息（含可选图片附件 + 本轮的 model/effort/权限）。
@@ -886,6 +897,36 @@ fn remove_bookmark(agent: String, path: String) -> Result<(), String> {
 #[tauri::command]
 fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+// ---- CLI 环境检测 ----
+
+#[tauri::command]
+async fn check_cli_versions() -> Result<Vec<types::CliVersionInfo>, String> {
+    tauri::async_runtime::spawn_blocking(cli_env::check_all_versions)
+        .await
+        .map_err(|e| format!("join: {e}"))
+}
+
+#[tauri::command]
+async fn upgrade_cli(cli_name: String) -> Result<types::CliUpgradeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || cli_env::upgrade_single(&cli_name))
+        .await
+        .map_err(|e| format!("join: {e}"))?
+}
+
+#[tauri::command]
+async fn upgrade_all_clis() -> Result<Vec<types::CliUpgradeResult>, String> {
+    tauri::async_runtime::spawn_blocking(cli_env::upgrade_all)
+        .await
+        .map_err(|e| format!("join: {e}"))?
+}
+
+#[tauri::command]
+async fn diagnose_cli(cli_name: String) -> Result<types::CliDiagnosisResult, String> {
+    tauri::async_runtime::spawn_blocking(move || cli_env::diagnose(&cli_name))
+        .await
+        .map_err(|e| format!("join: {e}"))?
 }
 
 /// 把原生窗口外观（标题栏 / 失焦时的红绿灯灰圈）同步到 App 内主题。
@@ -1516,6 +1557,7 @@ pub fn run() {
             agent_chat_interrupt,
             agent_chat_respond_permission,
             agent_chat_respond_question,
+            reclaude_info,
             agent_chat_slash_commands,
             reveal_in_finder,
             open_local_path,
@@ -1535,6 +1577,10 @@ pub fn run() {
             list_pricing,
             account_usage,
             tray_quick_stats,
+            check_cli_versions,
+            upgrade_cli,
+            upgrade_all_clis,
+            diagnose_cli,
         ])
         .setup(|app| {
             // 启动期后台拉一次 models.dev 模型价格表，新模型上架不必发版。

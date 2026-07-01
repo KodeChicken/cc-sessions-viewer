@@ -21,6 +21,7 @@ import {
   buildQuestionDecision,
   type QuestionSelection,
 } from './chatQuestion'
+import { useReclaude } from './settings'
 import { bumpUsage } from './usage'
 import type {
   Agent,
@@ -562,6 +563,7 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
       session.model,
       eff,
       opts.fork,
+      useReclaude.value,
     )
     session.chatId = info.chatId
     session.processModel = info.processModel
@@ -679,6 +681,8 @@ async function restartChat(s: ChatSession): Promise<boolean> {
       s.permissionMode,
       s.model,
       eff,
+      undefined,
+      useReclaude.value,
     )
     s.chatId = info.chatId
     s.processModel = info.processModel
@@ -735,6 +739,8 @@ export async function interruptChat(session: ChatSession): Promise<void> {
         session.permissionMode,
         session.model,
         eff,
+        undefined,
+        useReclaude.value,
       )
       session.chatId = info.chatId
       session.processModel = info.processModel
@@ -800,6 +806,8 @@ export async function clearChat(session: ChatSession): Promise<void> {
       session.permissionMode,
       session.model,
       eff,
+      undefined,
+      useReclaude.value,
     )
     session.chatId = info.chatId
     session.processModel = info.processModel

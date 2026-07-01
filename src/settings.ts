@@ -17,6 +17,7 @@ const LAUNCH_ARGS_KEY = 'launchArgs:v1'
 const FONT_SCALE_KEY = 'fontScale:v1'
 const ENABLED_AGENTS_KEY = 'enabledAgents:v1'
 const QUICK_OPEN_KEY = 'quickOpenTarget:v1'
+const USE_RECLAUDE_KEY = 'useReclaude:v1'
 
 /**
  * 根据浏览器/系统语言探测默认语言。
@@ -60,6 +61,12 @@ export const terminalApp = ref<TerminalApp>(
 )
 export const codexShowInternalSessions = ref(localStorage.getItem(CODEX_SHOW_INTERNAL_KEY) === '1')
 export const codexShowArchivedSessions = ref(localStorage.getItem(CODEX_SHOW_ARCHIVED_KEY) !== '0')
+
+export const useReclaude = ref(localStorage.getItem(USE_RECLAUDE_KEY) === '1')
+export function setUseReclaude(v: boolean) {
+  useReclaude.value = v
+  localStorage.setItem(USE_RECLAUDE_KEY, v ? '1' : '0')
+}
 
 // ---------- 双击 / 新建快捷键默认打开什么 ----------
 // 双击 tab 条空白处、⌘N / ⌘T 默认都开「会话(session)」。这里让用户改成开

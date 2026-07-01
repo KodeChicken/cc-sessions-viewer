@@ -41,6 +41,7 @@ use crate::agents::{self, ChatEvent, ChatProcessModel};
 use crate::types::{ChatImageInput, UsageSummary};
 
 /// 一个 chat「会话」的句柄。两种进程模型对应两个变体（见 [`ChatProcessModel`]）。
+#[allow(clippy::large_enum_variant)]
 enum ChatHandle {
     /// 长驻进程（Claude）：start 时 spawn，send 写 stdin，waiter 监控退出。
     LongLived {
@@ -61,6 +62,7 @@ enum ChatHandle {
         session_id: Mutex<Option<String>>,
         /// 当前在跑的那一轮子进程（stop 时 kill）。
         current: Mutex<Option<Child>>,
+        use_reclaude: bool,
     },
 }
 
@@ -118,18 +120,26 @@ struct QuestionPayload {
 
 /// 按 OS 组装管道子进程命令。与 `pty.rs::build_shell_command` 同款 PATH 策略，只是
 /// 改用 `std::process::Command` + 三路管道（无 PTY）。
+///
+/// `use_reclaude`：用 reclaude 做进程包装器（`reclaude claude --print ...`），
+/// 走 reclaude 守护进程的鉴权 + 代理链路。与 IDE 插件的 "Claude Process Wrapper" 同理。
 #[cfg(unix)]
-fn build_piped_command(cwd: &str, command: &AgentCommand) -> std::process::Command {
+fn build_piped_command(cwd: &str, command: &AgentCommand, use_reclaude: bool) -> std::process::Command {
     #[cfg(target_os = "macos")]
     const DEFAULT_SHELL: &str = "/bin/zsh";
     #[cfg(not(target_os = "macos"))]
     const DEFAULT_SHELL: &str = "/bin/bash";
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string());
+    let cli = if use_reclaude {
+        format!("'reclaude' {}", command.to_posix_shell())
+    } else {
+        command.to_posix_shell()
+    };
     let inner = format!(
         "cd {} && {}",
         crate::agent_command::posix_quote(cwd),
-        command.to_posix_shell()
+        cli
     );
     let mut cmd = std::process::Command::new(&shell);
     cmd.arg("-l").arg("-i").arg("-c").arg(&inner);
@@ -139,13 +149,45 @@ fn build_piped_command(cwd: &str, command: &AgentCommand) -> std::process::Comma
 }
 
 #[cfg(windows)]
-fn build_piped_command(cwd: &str, command: &AgentCommand) -> std::process::Command {
+fn build_piped_command(cwd: &str, command: &AgentCommand, _use_reclaude: bool) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     let mut cmd = std::process::Command::new("powershell.exe");
     cmd.arg("-NoLogo")
         .arg("-Command")
         .arg(crate::agent_command::powershell_set_location_and_run(cwd, command));
     cmd.current_dir(cwd);
+    cmd.creation_flags(CREATE_NO_WINDOW);
     cmd
+}
+
+fn read_reclaude_port(path: &std::path::Path) -> Option<u16> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let running = v.pointer("/daemon/running")?.as_bool()?;
+    if !running {
+        return None;
+    }
+    v.pointer("/daemon/port")?.as_u64().map(|p| p as u16)
+}
+
+pub fn reclaude_info() -> crate::types::ReclaudeInfo {
+    let base = crate::util::home().join(".reclaude");
+    if !base.is_dir() {
+        return crate::types::ReclaudeInfo {
+            installed: false,
+            daemon_running: false,
+            daemon_port: None,
+        };
+    }
+    let state_path = base.join("state.json");
+    let port = read_reclaude_port(&state_path);
+    crate::types::ReclaudeInfo {
+        installed: true,
+        daemon_running: port.is_some(),
+        daemon_port: port,
+    }
 }
 
 /// 起一个 chat「会话」。`session_id` 给出时续聊既有会话；否则新开。返回内部 chat id。
@@ -162,6 +204,7 @@ pub fn start(
     model: Option<String>,
     effort: Option<String>,
     fork: bool,
+    use_reclaude: bool,
 ) -> Result<u64, String> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err("项目目录已不存在，无法启动聊天".into());
@@ -182,7 +225,7 @@ pub fn start(
                 )
                 .ok_or_else(|| format!("{agent} 暂不支持 GUI 聊天模式"))?;
 
-            let mut cmd = build_piped_command(&cwd, &command);
+            let mut cmd = build_piped_command(&cwd, &command, use_reclaude);
             cmd.stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -225,6 +268,7 @@ pub fn start(
                 cwd: cwd.clone(),
                 session_id: Mutex::new(session_id),
                 current: Mutex::new(None),
+                use_reclaude,
             });
             map().lock().map_err(|e| e.to_string())?.insert(id, handle);
         }
@@ -396,6 +440,7 @@ pub fn send(
             cwd,
             session_id,
             current,
+            use_reclaude,
         } => {
             let source = agents::source(agent)?;
             let sid = session_id.lock().ok().and_then(|g| g.clone());
@@ -405,7 +450,7 @@ pub fn send(
                 .chat_turn_command(sid.as_deref(), text, permission_mode, model, effort)
                 .ok_or_else(|| format!("{agent} 暂不支持 GUI 聊天模式"))?;
 
-            let mut cmd = build_piped_command(cwd, &command);
+            let mut cmd = build_piped_command(cwd, &command, *use_reclaude);
             cmd.stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
