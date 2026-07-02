@@ -42,7 +42,7 @@ use crate::types::{
     AgentStats, ClaudeRuntimeInfo, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, TrayStats, UsageSummary,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use crate::util::is_jsonl;
 
 /// 全局搜索的取消代际 —— 每次新搜索把自己的 `request_id` 写进来，正在跑的搜索循环
@@ -929,6 +929,16 @@ async fn diagnose_cli(cli_name: String) -> Result<types::CliDiagnosisResult, Str
         .map_err(|e| format!("join: {e}"))?
 }
 
+#[tauri::command]
+fn window_hide_to_tray(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.hide().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn window_exit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 /// 把原生窗口外观（标题栏 / 失焦时的红绿灯灰圈）同步到 App 内主题。
 ///
 /// 此前原生外观只跟随 macOS 系统：浅色 App 主题下窗口失焦时，三个交通灯被画成浅灰，
@@ -1572,6 +1582,8 @@ pub fn run() {
             add_bookmark,
             remove_bookmark,
             app_version,
+            window_hide_to_tray,
+            window_exit_app,
             refresh_pricing,
             pricing_status,
             list_pricing,
@@ -1595,6 +1607,13 @@ pub fn run() {
             {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.set_decorations(false);
+                    let win_clone = win.clone();
+                    win.on_window_event(move |e| {
+                        if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+                            api.prevent_close();
+                            let _ = win_clone.emit("window://close-requested", ());
+                        }
+                    });
                 }
                 tray_windows::build(app.handle())?;
             }

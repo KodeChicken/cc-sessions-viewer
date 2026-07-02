@@ -6,6 +6,12 @@ export default {
   'common.close': 'Close',
   'common.confirm': 'Please confirm',
   'common.loading': 'Loading…',
+  'windowClose.title': 'Close window',
+  'windowClose.body': 'Choose what should happen when you close the window.',
+  'windowClose.minimizeToTray': 'Minimize to tray',
+  'windowClose.exitApp': 'Exit app',
+  'windowClose.remember': 'Remember this choice and do not ask again',
+  'windowClose.actionFailed': 'Window close action failed: {e}',
 
   'sidebar.projectsCount': '{count} projects',
   'sidebar.noSessions': 'No {agent} sessions',

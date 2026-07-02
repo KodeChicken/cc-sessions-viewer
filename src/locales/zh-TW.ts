@@ -6,6 +6,12 @@ export default {
   'common.close': '關閉',
   'common.confirm': '請確認',
   'common.loading': '載入中…',
+  'windowClose.title': '關閉視窗',
+  'windowClose.body': '請選擇點擊關閉視窗時要執行的操作。',
+  'windowClose.minimizeToTray': '最小化到系統匣',
+  'windowClose.exitApp': '結束應用程式',
+  'windowClose.remember': '記住此選項，下次不再提示',
+  'windowClose.actionFailed': '關閉視窗操作失敗：{e}',
 
   'sidebar.projectsCount': '{count} 個專案',
   'sidebar.noSessions': '未發現 {agent} 會話',

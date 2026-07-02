@@ -39,6 +39,9 @@ export const listProjects = (
 export const setTitlebarTheme = (theme: 'dark' | 'light' | null) =>
   invoke<void>('set_titlebar_theme', { theme })
 
+export const windowHideToTray = () => invoke<void>('window_hide_to_tray')
+export const windowExitApp = () => invoke<void>('window_exit_app')
+
 export const addBookmark = (agent: Agent, path: string) =>
   invoke<void>('add_bookmark', { agent, path })
 

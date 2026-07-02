@@ -6,6 +6,12 @@ export default {
   'common.close': '閉じる',
   'common.confirm': '確認してください',
   'common.loading': '読み込み中…',
+  'windowClose.title': 'ウィンドウを閉じる',
+  'windowClose.body': 'ウィンドウを閉じるときの動作を選択してください。',
+  'windowClose.minimizeToTray': 'トレイに最小化',
+  'windowClose.exitApp': 'アプリを終了',
+  'windowClose.remember': 'この選択を記憶して次回から表示しない',
+  'windowClose.actionFailed': 'ウィンドウを閉じる操作に失敗しました: {e}',
 
   'sidebar.projectsCount': 'プロジェクト {count} 件',
   'sidebar.noSessions': '{agent} のセッションがありません',
