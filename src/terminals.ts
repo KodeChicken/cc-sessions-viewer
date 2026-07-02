@@ -118,6 +118,7 @@ export interface SavedTab {
   sessionPath: string
   title: string
   cwd: string
+  createdAt?: number
   isShell?: boolean
   userRenamed?: boolean
 }
@@ -196,9 +197,13 @@ function loadSavedTabs(): SavedTab[] {
     if (!raw) return []
     const arr = JSON.parse(raw)
     if (!Array.isArray(arr)) return []
-    return arr.filter(
+    const filtered = arr.filter(
       (t: any) => t && t.agent && t.cwd,
-    )
+    ) as SavedTab[]
+    for (let i = 0; i < filtered.length; i++) {
+      if (!filtered[i].createdAt) filtered[i].createdAt = i + 1
+    }
+    return filtered
   } catch {
     return []
   }
@@ -226,6 +231,7 @@ export function persistTabState(nav: SavedNav) {
       sessionPath: t.sessionPath,
       title: t.title,
       cwd: t.cwd,
+      createdAt: t.createdAt,
       ...(t.isShell ? { isShell: true } : {}),
       ...(t.userRenamed ? { userRenamed: true } : {}),
     }))
@@ -742,6 +748,8 @@ export interface OpenTuiOptions {
   cwd: string
   /** new-session 模式：当前已知 session paths，用于 reconcile 排除旧 session。 */
   knownSessionPaths?: string[]
+  /** 恢复持久化 tab 时保留原创建时间。 */
+  createdAt?: number
   /** 用户手动重命名过 —— reconcile 时保留此标题。 */
   userRenamed?: boolean
 }
@@ -800,7 +808,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     sessionPath: opts.sessionPath,
     title: opts.title,
     cwd: opts.cwd,
-    createdAt: Date.now(),
+    createdAt: opts.createdAt ?? Date.now(),
     term,
     fitAddon,
     container,
@@ -954,6 +962,7 @@ export async function openShellTab(opts: {
   projectKey: string
   title: string
   cwd: string
+  createdAt?: number
 }): Promise<void> {
   if (!opts.cwd) return
 
@@ -986,7 +995,7 @@ export async function openShellTab(opts: {
     sessionPath: '',
     title: opts.title,
     cwd: opts.cwd,
-    createdAt: Date.now(),
+    createdAt: opts.createdAt ?? Date.now(),
     term,
     fitAddon,
     container,

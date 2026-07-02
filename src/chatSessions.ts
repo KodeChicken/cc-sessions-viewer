@@ -9,7 +9,7 @@
 // 可能已经吐出 system/init —— listener 在 start 之前就已 attach（Tauri 不丢已 attach 的
 // 事件），并用 `pendingByChatId` 缓冲「mapping 注册前」到达的事件，注册后回放。
 //
-// 不持久化：webview 刷新 = 所有 chat 子进程被后端回收。
+// webview 刷新时后端进程不杀 —— 前端通过 reconnectChats() 重连。
 
 import { reactive, ref } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -311,10 +311,49 @@ function onExit(s: ChatSession, p: ChatExitPayload) {
   }
   s.live = null
   endTurn(s)
-  clearQueue(s) // 进程真退出（非 restart/中断的受抑 exit）→ 待发队列作废。
-  if (s.status !== 'error') s.status = 'exited'
   if (p.code !== 0 && !s.errorMessage) {
     s.errorMessage = s.stderrTail.slice(-3).join('\n') || `exited (${p.code})`
+  }
+  // 自动重启：进程退出后尝试 restart-with-resume，保持 chat 可用。
+  void autoRestart(s)
+}
+
+const restartCooldown = new WeakMap<ChatSession, number>()
+async function autoRestart(s: ChatSession) {
+  const now = Date.now()
+  const last = restartCooldown.get(s) ?? 0
+  if (now - last < 3000) {
+    if (s.status !== 'error') s.status = 'exited'
+    return
+  }
+  restartCooldown.set(s, now)
+  const old = s.chatId
+  if (old !== null) {
+    sessionsByChatId.delete(old)
+    pendingByChatId.delete(old)
+  }
+  try {
+    const eff = sessionEffectiveEffort(s)
+    const info = await api.agentChatStart(
+      s.agent,
+      s.projectKey,
+      s.cwd,
+      s.sessionId || undefined,
+      s.permissionMode,
+      s.model,
+      eff,
+      undefined,
+      useReclaude.value,
+    )
+    s.chatId = info.chatId
+    s.processModel = info.processModel
+    s.applied = { permissionMode: s.permissionMode, model: s.model, effort: eff }
+    s.errorMessage = undefined
+    s.status = 'running'
+    registerChat(info.chatId, s)
+    drainQueue(s)
+  } catch {
+    if (s.status !== 'error') s.status = 'exited'
   }
 }
 
@@ -500,7 +539,7 @@ export interface StartChatOptions {
 }
 
 /** 预载 transcript 末尾那条带 model 的 assistant 记录的模型全名（续聊时回填 lastModel）。 */
-function lastAssistantModel(msgs: Msg[] | undefined): string | undefined {
+export function lastAssistantModel(msgs: Msg[] | undefined): string | undefined {
   if (!msgs) return undefined
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
@@ -557,6 +596,7 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
     const eff = sessionEffectiveEffort(session)
     const info = await api.agentChatStart(
       opts.agent,
+      opts.projectKey,
       opts.cwd,
       opts.sessionId,
       session.permissionMode,
@@ -676,6 +716,7 @@ async function restartChat(s: ChatSession): Promise<boolean> {
     const eff = sessionEffectiveEffort(s)
     const info = await api.agentChatStart(
       s.agent,
+      s.projectKey,
       s.cwd,
       s.sessionId || undefined,
       s.permissionMode,
@@ -712,65 +753,64 @@ export async function stopChat(session: ChatSession): Promise<void> {
 }
 
 /** 中断当前这一轮回复，但保留 chat 会话继续可发。Claude 映射到 CLI 的 Esc。 */
+const interrupting = new WeakSet<ChatSession>()
 export async function interruptChat(session: ChatSession): Promise<void> {
   if (session.chatId === null) return
-  clearQueue(session) // 中断 = 「停就是停」：丢弃所有待发消息，不让它们随后自动续上。
-  if (session.processModel === 'longLivedStdin') {
-    const old = session.chatId
-    try {
-      // TODO：这里**故意丢弃**当前 live 流式内容，只保留一条 interrupted marker。
-      //
-      // 原因：Claude 的 headless stream-json 模式并不会像交互式 TTY 那样，在用户中断时把
-      // 「已经流出来但尚未定稿」的半成品 assistant 内容可靠地写进 transcript/JSONL。
-      // 如果前端擅自把那段 live 文本塞进 msgs，live 视图看起来像保留住了内容，但一旦切到
-      // read 模式或刷新页面（它们重新 read_session 只认磁盘上的真实 transcript），那段
-      // 内容就会消失，形成前后不一致的“假象”。这里宁可少显示，也要保证 live/read/刷新
-      // 三者都只基于真实可重放的数据。
-      appendInterruptedMarker(session)
-      session.suppressNextExit = true
-      sessionsByChatId.delete(old)
-      pendingByChatId.delete(old)
-      await api.agentChatStop(old)
-      const eff = sessionEffectiveEffort(session)
-      const info = await api.agentChatStart(
-        session.agent,
-        session.cwd,
-        session.sessionId || undefined,
-        session.permissionMode,
-        session.model,
-        eff,
-        undefined,
-        useReclaude.value,
-      )
-      session.chatId = info.chatId
-      session.processModel = info.processModel
-      session.applied = {
-        permissionMode: session.permissionMode,
-        model: session.model,
-        effort: eff,
-      }
-      registerChat(info.chatId, session)
-      endTurn(session)
-      session.live = null
-      session.status = 'running'
-      return
-    } catch (err) {
-      session.suppressNextExit = false
-      session.status = 'error'
-      session.errorMessage = String(err)
-      endTurn(session)
-      return
-    }
-  }
+  if (interrupting.has(session)) return
+  interrupting.add(session)
   try {
+    if (session.processModel === 'longLivedStdin') {
+      const old = session.chatId
+      try {
+        appendInterruptedMarker(session)
+        session.suppressNextExit = true
+        sessionsByChatId.delete(old)
+        pendingByChatId.delete(old)
+        await api.agentChatStop(old)
+        const eff = sessionEffectiveEffort(session)
+        const info = await api.agentChatStart(
+          session.agent,
+          session.projectKey,
+          session.cwd,
+          session.sessionId || undefined,
+          session.permissionMode,
+          session.model,
+          eff,
+          undefined,
+          useReclaude.value,
+        )
+        session.chatId = info.chatId
+        session.processModel = info.processModel
+        session.applied = {
+          permissionMode: session.permissionMode,
+          model: session.model,
+          effort: eff,
+        }
+        registerChat(info.chatId, session)
+        endTurn(session)
+        session.live = null
+        session.status = 'running'
+        drainQueue(session)
+        return
+      } catch (err) {
+        session.suppressNextExit = false
+        session.errorMessage = String(err)
+        endTurn(session)
+        // autoRestart in onExit will recover
+        return
+      }
+    }
     await api.agentChatInterrupt(session.chatId)
     endTurn(session)
     session.live = null
     if (session.status === 'spawning') session.status = 'running'
+    drainQueue(session)
   } catch (err) {
     session.status = 'error'
     session.errorMessage = String(err)
     endTurn(session)
+  } finally {
+    interrupting.delete(session)
   }
 }
 
@@ -801,8 +841,9 @@ export async function clearChat(session: ChatSession): Promise<void> {
     const eff = sessionEffectiveEffort(session)
     const info = await api.agentChatStart(
       session.agent,
+      session.projectKey,
       session.cwd,
-      undefined, // 不续任何会话 → 全新空上下文
+      undefined,
       session.permissionMode,
       session.model,
       eff,
@@ -902,4 +943,51 @@ export async function respondQuestion(
     session.status = 'error'
     session.errorMessage = String(err)
   }
+}
+
+/**
+ * 页面刷新后重连后端仍存活的 chat 进程。
+ * 返回 Map<projectKey, ChatSession> 供 App.vue 按项目恢复 liveChat。
+ */
+export async function reconnectChats(): Promise<ChatSession[]> {
+  await ensureListeners()
+  const running = await api.agentChatListRunning()
+  const result: ChatSession[] = []
+  for (const info of running) {
+    const uiId = nextUiId++
+    const session = reactive<ChatSession>({
+      uiId,
+      chatId: info.chatId,
+      agent: info.agent as Agent,
+      projectKey: info.projectKey,
+      cwd: info.cwd,
+      sessionId: info.sessionId ?? '',
+      title: '',
+      createdAt: new Date().toISOString(),
+      msgs: [],
+      turnState: 'idle',
+      turnStartedAt: 0,
+      lastTurnMs: 0,
+      status: 'running',
+      queue: [],
+      stderrTail: [],
+      retry: null,
+      live: null,
+      pendingPermissions: [],
+      pendingQuestions: [],
+      permissionMode: info.permissionMode,
+      model: info.model ?? defaultModel(info.agent as Agent),
+      effort: info.effort ?? defaultEffort(info.agent as Agent),
+      processModel: info.processModel as ChatProcessModel,
+      applied: {
+        permissionMode: info.permissionMode,
+        model: info.model ?? defaultModel(info.agent as Agent),
+        effort: info.effort ?? defaultEffort(info.agent as Agent),
+      },
+    }) as ChatSession
+    chatSessions.value.push(session)
+    registerChat(info.chatId, session)
+    result.push(session)
+  }
+  return result
 }

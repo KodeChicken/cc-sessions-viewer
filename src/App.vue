@@ -98,8 +98,6 @@ import {
   tabs as tuiTabs,
   persistTabState,
   loadSavedNav,
-  loadSavedViews,
-  persistViews,
   loadSavedActiveTui,
   persistActiveTui,
   savedTabs,
@@ -109,31 +107,35 @@ import {
   type TerminalTab,
   type SavedTab,
   type SavedNav,
-  type SavedView,
   type SavedActiveTui,
 } from './terminals'
 import {
   recordView,
-  setViewMode,
   setViewTitle,
-  toggleViewFavorite,
-  isViewFavorited,
   removeViewEverywhere,
-  type ViewHistoryEntry,
 } from './viewHistory'
-import { startChat, closeChat, type ChatSession } from './chatSessions'
+import { startChat, closeChat, reconnectChats, lastAssistantModel, type ChatSession } from './chatSessions'
 import { sideChat, openSideChat, closeSideChat } from './sideChat'
-import { sameProjectClickAction } from './projectSelection'
+import {
+  type ViewTab,
+  viewTabs,
+  activeViewTabId,
+  activeViewTab,
+  createViewTab,
+  findViewTab,
+  removeViewTab,
+  setActiveViewTab,
+  visibleViewTabs,
+  persistViewTabs,
+  loadSavedViewTabs,
+  type SavedViewTab,
+} from './viewTabs'
 
 // ---------- 状态 ----------
 // 默认进首个可见 agent —— 用户若在设置里关掉了 claude，启动时就不该停在隐藏的 agent 上。
 const agent = ref<Agent>(visibleAgents.value[0] ?? 'claude')
 const projects = ref<ProjectInfo[]>([])
 const activeDir = ref<string | null>(null)
-// 点了「List」meta tab 但当前还开着会话 / live chat 时为 true：露出会话列表，但**不**清掉
-// openSession / liveChat —— View tab 作为后台 tab 常驻，点 View tab（viewingList=false）即可回去。
-// 任何「打开/显示某个 View」的动作都会把它置回 false。
-const viewingList = ref(false)
 const showTrash = ref(false)
 const showStats = ref(false)
 const showExportHistory = ref(false)
@@ -253,13 +255,14 @@ async function refreshAll() {
     )
   }
 
-  // 3. 当前打开的对话（如有）—— 静默替换 messages
-  if (openSession.value) {
+  // 3. 当前打开的 session tab（如有）—— 静默替换 messages
+  const curViewTab = activeViewTab.value
+  if (curViewTab?.type === 'session' && curViewTab.session) {
     tasks.push(
       api
-        .readSession(agent.value, openSession.value.path)
+        .readSession(agent.value, curViewTab.session.path)
         .then((msgs) => {
-          chatMsgs.value = msgs
+          curViewTab.msgs = msgs
         })
         .catch(() => {}),
     )
@@ -279,35 +282,34 @@ const loadingList = ref(false)
 
 const PAGE_SIZE = 40
 
-const openSession = ref<SessionMeta | null>(null)
-const suppressNextLiveChatNavClose = ref(false)
-// 每个项目最近打开的 View（会话 + read/chat 子模式）—— 切到别的项目再切回来时
-// 据此恢复 View tab，行为对齐 terminal tab（切项目不丢，仅手动 × 才关）。
-// 持久化到 localStorage（savedViews:v1），重启后切到任意项目都能恢复它自己的 View；
-// 键 = agent + dir（用   分隔，dir 含空格也不歧义）。
-const openSessionByProject = new Map<string, { session: SessionMeta; mode: 'read' | 'chat' }>()
+// openSession / liveChat / chatMsgs 从 activeViewTab 派生，保持模板层不变
+const openSession = computed<SessionMeta | null>(() => {
+  const tab = activeViewTab.value
+  if (!tab) return null
+  if (tab.type === 'session') return tab.session
+  if (tab.type === 'chat') return tab.sourceSession
+  return null
+})
+const liveChat = computed<ChatSession | null>(() => {
+  const tab = activeViewTab.value
+  return tab?.type === 'chat' ? tab.chatSession : null
+})
+const chatMsgs = computed<Msg[]>(() => {
+  const tab = activeViewTab.value
+  if (!tab) return []
+  if (tab.type === 'session') return tab.msgs
+  if (tab.type === 'chat') return tab.chatSession?.msgs ?? []
+  return []
+})
 // 每个项目最近活跃的 TUI tab —— 切项目再切回来时据此恢复 TUI 层。
 // 存 sessionPath（跨重启稳定）而非 uiId（重启后变）。
-const activeTuiByProject = new Map<string, { sessionPath: string; isShell?: boolean }>()
-const viewKey = (a: string, dir: string) => a + "\u0000" + dir
-const viewStashKey = (dir: string) => viewKey(agent.value, dir)
-// View 子模式：live GUI chat 正跑且没回看只读 = chat，否则 read。
-const currentViewMode = (): 'read' | 'chat' =>
-  liveChat.value && !chatPeekRead.value ? 'chat' : 'read'
-// 把 per-project View 记忆刷到磁盘（拆 key 还原 agent/dir）。
-function persistViewMap() {
-  const out: SavedView[] = []
-  for (const [k, v] of openSessionByProject) {
-    const sep = k.indexOf("\u0000")
-    if (sep < 0) continue
-    out.push({ agent: k.slice(0, sep) as Agent, dir: k.slice(sep + 1), session: v.session, mode: v.mode })
-  }
-  persistViews(out)
-}
+const activeTuiByProject = new Map<string, { uiId?: number; sessionPath: string; isShell?: boolean }>()
+const activeViewByProject = new Map<string, { viewUiId: number | null; wasTui: boolean }>()
+const viewKey = (a: string, dir: string) => a + ' ' + dir
 function persistTuiMap() {
   const out: SavedActiveTui[] = []
   for (const [k, v] of activeTuiByProject) {
-    const sep = k.indexOf(" ")
+    const sep = k.indexOf(' ')
     if (sep < 0) continue
     out.push({ agent: k.slice(0, sep) as Agent, dir: k.slice(sep + 1), sessionPath: v.sessionPath, ...(v.isShell ? { isShell: true } : {}) })
   }
@@ -315,30 +317,21 @@ function persistTuiMap() {
 }
 // 非空表示当前打开的会话来自回收站（只读查看）—— 详情页据此切换为「回收站模式」。
 const openTrashItem = ref<TrashItem | null>(null)
-const chatMsgs = shallowRef<Msg[]>([])
-const loadingChat = ref(false)
 // "● Live" 徽章：仅当会话**确实正在被写入**时为 true。
 //   - 打开时 mtime 距今 < FRESH_MS → 视作"刚才还在跑"，先亮起来
 //   - 收到 session:append 事件 → 文件真的有新增 → 亮起 / 续命
 //   - 安静 STALE_MS 后自动熄灭 —— CLI 进程通常已结束
 // 这与"是否在后端追这个文件"分离：watcher 对所有非回收站会话都开，
 // 否则用户从终端 resume 一个老会话时我们就漏掉了。
-const liveTailing = ref(false)
-// "Live"判定阈值，单位 ms
-const LIVE_FRESH_MS = 3 * 60 * 1000 // 打开时：3 分钟内动过 → 算 live
-const LIVE_STALE_MS = 2 * 60 * 1000 // append 后：2 分钟内没新动静 → 熄灭
-let liveFadeTimer = 0
-function markLive() {
-  liveTailing.value = true
-  window.clearTimeout(liveFadeTimer)
-  liveFadeTimer = window.setTimeout(() => {
-    liveTailing.value = false
-  }, LIVE_STALE_MS)
-}
+const liveTailing = computed(() => activeViewTab.value?.liveTailing ?? false)
+const LIVE_FRESH_MS = 3 * 60 * 1000
+const LIVE_STALE_MS = 2 * 60 * 1000
 function clearLive() {
-  liveTailing.value = false
-  window.clearTimeout(liveFadeTimer)
-  liveFadeTimer = 0
+  const tab = activeViewTab.value
+  if (!tab) return
+  tab.liveTailing = false
+  window.clearTimeout(tab.liveFadeTimer)
+  tab.liveFadeTimer = 0
 }
 
 // 单会话统计目标。非空 → StatsView 切换到 session 模式，scope 锁定到这条 JSONL。
@@ -401,13 +394,9 @@ const topbarContextMeta = computed(() => {
   if (activeProject.value) return t('chat.tui.listTab')
   return ''
 })
-// 从「导出历史」列表打开会话时所属的 agent —— 可能与侧栏当前 agent 不同，
-// 且不该切换整个侧栏。打开普通 / 回收站会话时清空。
-const importedAgent = ref<Agent | null>(null)
-// 详情页用的 agent：回收站会话用条目自己的 agent；导出历史会话用记录自带的 agent；
-// 否则跟随侧栏当前 agent。三者可能彼此不同，优先级：回收站 > 导出历史 > 侧栏。
+// 详情页用的 agent：从 activeViewTab 的 trashAgent / importedAgent / agent 推导。
 const chatAgent = computed<Agent>(
-  () => openTrashItem.value?.agent ?? importedAgent.value ?? agent.value,
+  () => activeViewTab.value?.trashAgent ?? activeViewTab.value?.importedAgent ?? activeViewTab.value?.agent ?? agent.value,
 )
 
 // ChatView 用来 spawn 内嵌 TUI 的 cwd。优先用会话自带的 cwd（Codex / Gemini 可靠），
@@ -557,7 +546,7 @@ function deleteProject(p: ProjectInfo) {
         if (activeDir.value === p.dirName || activeDir.value === counterpart?.dirName) {
           activeDir.value = null
           sessions.value = []
-          openSession.value = null
+          setActiveViewTab(null)
         }
         await loadProjects()
         // 批量删除后刷新回收站，保持顶栏红点准确
@@ -607,9 +596,8 @@ function batchDeleteProjects(dirs: string[]) {
           }
           for (const s of all) {
             try {
-              if (openSession.value?.path === s.path) {
-                openSession.value = null
-                clearLive()
+              for (const vt of [...viewTabs.value]) {
+                if (vt.session?.path === s.path) removeViewTab(vt.uiId)
               }
               await api.softDeleteSession(agent.value, s.path, p.displayPath)
               removeViewEverywhere(agent.value, s.id || s.path)
@@ -620,7 +608,7 @@ function batchDeleteProjects(dirs: string[]) {
         if (activeDir.value && dirs.includes(activeDir.value)) {
           activeDir.value = null
           sessions.value = []
-          openSession.value = null
+          setActiveViewTab(null)
         }
         sidebarRef.value?.exitSelect()
         await loadProjects()
@@ -693,6 +681,8 @@ interface RenameState {
   savedTab?: SavedTab
   /** 全新 GUI live chat（还没有可定位的源文件）：不走后端，只改内存中的 live 标题。 */
   liveChatUiId?: number
+  /** view tab 重命名（无源文件时）：只改内存标题。 */
+  viewTabUiId?: number
 }
 const renameModal = ref<RenameState>({
   show: false,
@@ -769,6 +759,17 @@ async function confirmRename() {
     saveTabState()
     return
   }
+  if (m.viewTabUiId != null) {
+    const vt = viewTabs.value.find(t => t.uiId === m.viewTabUiId)
+    if (vt) {
+      vt.title = name
+      if (vt.chatSession) vt.chatSession.title = name
+    }
+    m.show = false
+    notify(t('toast.renamed'))
+    saveTabState()
+    return
+  }
   if (m.liveChatUiId != null) {
     // 全新 GUI 会话：只改内存里的 live 标题（reactive proxy，原地改即可刷新头部）。
     if (liveChat.value?.uiId === m.liveChatUiId) liveChat.value.title = name
@@ -784,12 +785,19 @@ async function confirmRename() {
     const patch = (s: SessionMeta) =>
       s.path === m.path ? { ...s, title: name } : s
     sessions.value = sessions.value.map(patch)
-    if (openSession.value?.path === m.path) {
-      openSession.value = { ...openSession.value, title: name }
-    }
-    // 续聊中的 live chat 头部读的是 liveChat.title，源文件改名后一并同步过来。
-    if (liveChat.value && openSession.value?.path === m.path) {
-      liveChat.value.title = name
+    // 同步所有指向该 path 的 view tab 标题
+    for (const vt of viewTabs.value) {
+      if (vt.session?.path === m.path) {
+        vt.session = { ...vt.session, title: name }
+        vt.title = name
+      }
+      if (vt.type === 'chat' && vt.sourceSession?.path === m.path) {
+        vt.sourceSession = { ...vt.sourceSession, title: name }
+      }
+      if (vt.type === 'chat' && vt.chatSession && vt.chatSession.sessionId === m.id) {
+        vt.chatSession.title = name
+        vt.title = name
+      }
     }
     // Views 历史里那条同源 view 的标题也跟着更新（按 session id，回退 path）。
     setViewTitle(m.agent, m.id || m.path, name)
@@ -940,7 +948,7 @@ function switchAgent(a: Agent) {
   agent.value = a
   activeDir.value = null
   sessions.value = []
-  openSession.value = null
+  setActiveViewTab(null)
   showTrash.value = false
   showExportHistory.value = false
   showPricing.value = false
@@ -953,59 +961,40 @@ function switchAgent(a: Agent) {
 }
 
 async function selectProject(dir: string) {
-  // 目标项目上次开着的 View —— 必须在下面任何 map 改动 / 清 openSession 之前读出来存好，
-  // 这样切换途中即便有别的写 map 也不影响恢复。
-  const remembered = activeDir.value !== dir ? openSessionByProject.get(viewStashKey(dir)) : undefined
-  // 目标项目上次活跃的 TUI tab —— 同理先读出来，切换后恢复。
-  const rememberedTui = activeDir.value !== dir ? activeTuiByProject.get(viewStashKey(dir)) : undefined
-  // 切到「别的」项目前，先记住当前项目里开着的 View（会话 + read/chat 模式），切回来时恢复，
-  // 避免 View tab 在项目间切换时丢失。回收站 / 历史导入的会话不算项目自己的 View，跳过。
-  if (activeDir.value && activeDir.value !== dir && !openTrashItem.value && !importedAgent.value) {
-    if (openSession.value) {
-      openSessionByProject.set(viewStashKey(activeDir.value), {
-        session: openSession.value,
-        mode: currentViewMode(),
-      })
-    } else {
-      openSessionByProject.delete(viewStashKey(activeDir.value))
-    }
-    persistViewMap()
-    // 记住当前项目活跃的 TUI tab，切回来时恢复终端层。
+  const rememberedTui = activeDir.value !== dir
+    ? activeTuiByProject.get(viewKey(agent.value, dir))
+    : undefined
+  // 记住当前项目活跃的 view tab 和 TUI tab
+  if (activeDir.value && activeDir.value !== dir) {
+    activeViewByProject.set(viewKey(agent.value, activeDir.value), {
+      viewUiId: activeViewTabId.value,
+      wasTui: activeUiId.value !== null,
+    })
     const curTab = activeUiId.value !== null
       ? tuiTabs.value.find((t) => t.uiId === activeUiId.value)
       : undefined
     if (curTab) {
-      activeTuiByProject.set(viewStashKey(activeDir.value), {
+      activeTuiByProject.set(viewKey(agent.value, activeDir.value), {
+        uiId: curTab.uiId,
         sessionPath: curTab.sessionPath,
         ...(curTab.isShell ? { isShell: true } : {}),
       })
     } else {
-      activeTuiByProject.delete(viewStashKey(activeDir.value))
+      activeTuiByProject.delete(viewKey(agent.value, activeDir.value))
     }
     persistTuiMap()
   }
-  // 切项目前先收起 TUI 层（会话列表 / View 层需要先渲染出来）。
   setActiveTui(null)
-  // btw 侧聊与项目绑定 —— 切项目时终止子进程并关闭浮窗。
   if (sideChat.value) closeSideChat()
   // 再次点击当前已选中的项目：
-  //   - 若当前正看着 View / live chat → 切到会话列表，但保留后台 View tab
-  //   - 若当前已在列表 → 收起项目，回到「请选择项目」空状态
+  //   - 有 view tab → 取消 view tab 激活，回到列表
+  //   - 无 view tab → 收起项目
   if (activeDir.value === dir && !showTrash.value && !showStats.value) {
-    if (
-      sameProjectClickAction({
-        viewingList: viewingList.value,
-        hasOpenSession: !!openSession.value,
-        hasLiveChat: !!liveChat.value,
-      }) === 'show-list'
-    ) {
-      viewingList.value = true
+    if (activeViewTab.value) {
+      setActiveViewTab(null)
       return
     }
-    if (liveChat.value) closeLiveChat()
-    else openSession.value = null
     activeDir.value = null
-    viewingList.value = false
     sessions.value = []
     sessionTotal.value = 0
     resetSessionsToolbar()
@@ -1017,9 +1006,21 @@ async function selectProject(dir: string) {
   showPricing.value = false
   sessionStatsTarget.value = null
   activeDir.value = dir
-  viewingList.value = false
   recordRecent(agent.value, dir)
-  openSession.value = null
+  // 切项目后，恢复上次活跃的 view tab（如有）
+  const remembered = activeViewByProject.get(viewKey(agent.value, dir))
+  const projectTabs = visibleViewTabs(agent.value, dir)
+  if (remembered?.wasTui) {
+    // 上次在 TUI tab → 不激活任何 view tab，后面 rememberedTui 会恢复 TUI
+    setActiveViewTab(null)
+  } else if (remembered?.viewUiId != null) {
+    const matched = projectTabs.find(t => t.uiId === remembered.viewUiId)
+    setActiveViewTab(matched ? matched.uiId : (projectTabs.length > 0 ? projectTabs[projectTabs.length - 1].uiId : null))
+  } else if (projectTabs.length > 0) {
+    setActiveViewTab(projectTabs[projectTabs.length - 1].uiId)
+  } else {
+    setActiveViewTab(null)
+  }
   sessions.value = []
   sessionTotal.value = 0
   savedListScroll = 0
@@ -1035,23 +1036,16 @@ async function selectProject(dir: string) {
   } finally {
     loadingList.value = false
   }
-  // 切回一个之前开过 View 的项目 → 恢复它的会话详情（及 chat 模式）。
-  if (remembered) {
-    await openChat(remembered.session)
-    if (remembered.mode === 'chat' && openSession.value) {
-      await resumeChatFromSession(remembered.session)
-    }
-  }
-  // 切回一个之前开着 TUI tab 的项目 → 恢复终端层。
+  // 恢复 TUI tab
   if (rememberedTui) {
-    // 优先找已水合的 live tab
-    const liveMatch = rememberedTui.isShell
-      ? tuiTabs.value.find((t) => t.isShell && t.agent === agent.value && t.projectKey === dir)
-      : tuiTabs.value.find((t) => t.sessionPath === rememberedTui.sessionPath)
+    const liveMatch = rememberedTui.uiId != null
+      ? tuiTabs.value.find((t) => t.uiId === rememberedTui.uiId)
+      : rememberedTui.isShell
+        ? tuiTabs.value.find((t) => t.isShell && t.agent === agent.value && t.projectKey === dir)
+        : tuiTabs.value.find((t) => t.sessionPath === rememberedTui.sessionPath)
     if (liveMatch) {
       setActiveTui(liveMatch.uiId)
     } else {
-      // 未水合 → 在 savedTabs 里找到并水合
       const savedMatch = rememberedTui.isShell
         ? savedTabs.value.find((s) => s.isShell && s.agent === agent.value && s.projectKey === dir)
         : savedTabs.value.find((s) => s.sessionPath === rememberedTui.sessionPath)
@@ -1191,7 +1185,7 @@ function openStats() {
   showExportHistory.value = false
   showPricing.value = false
   activeDir.value = null
-  openSession.value = null
+  setActiveViewTab(null)
   sessions.value = []
   sessionTotal.value = 0
 }
@@ -1204,7 +1198,7 @@ async function loadTrash() {
   showPricing.value = false
   sessionStatsTarget.value = null
   activeDir.value = null
-  openSession.value = null
+  setActiveViewTab(null)
   resetTrashToolbar()
   loadingList.value = true
   try {
@@ -1219,49 +1213,55 @@ async function loadTrash() {
 
 async function openChat(s: SessionMeta) {
   setActiveTui(null)
-  viewingList.value = false
-  loadingChat.value = true
   openTrashItem.value = null
-  importedAgent.value = null
-  openSession.value = s
-  chatMsgs.value = []
-  clearLive()
+  // 已有同 path 的 tab（read 或 chat）→ 切过去；chat tab 就地转回 read
+  const existing = findViewTab(t =>
+    (t.type === 'session' && t.session?.path === s.path) ||
+    (t.type === 'chat' && (t.sourceSession?.path === s.path || t.chatSession?.sessionId === s.id))
+  )
+  if (existing) {
+    if (existing.type === 'chat') {
+      existing.type = 'session'
+      existing.session = s
+      existing.loadingMsgs = true
+      api.readSession(agent.value, s.path).then(msgs => {
+        existing.msgs = msgs
+        existing.loadingMsgs = false
+      }).catch(() => { existing.loadingMsgs = false })
+    }
+    setActiveViewTab(existing.uiId)
+    return
+  }
+  const tab = createViewTab({
+    type: 'session',
+    agent: agent.value,
+    projectKey: activeDir.value ?? '',
+    title: s.title,
+    session: s,
+    loadingMsgs: true,
+  })
   try {
-    chatMsgs.value = await api.readSession(agent.value, s.path)
-    // 整文件读完再开 watcher。watch_session 内部会把当前 Msg 数记为 baseline，
-    // 后续只 emit 新增；read 之前开则可能把整段当 append 推回来。
-    // watcher 始终启用 —— 即使会话当前看似"完成"，用户也可能从终端 resume，
-    // 那一刻文件会重新被写，append 事件会把 Live 徽章亮起来。
+    tab.msgs = await api.readSession(agent.value, s.path)
     try {
       await api.watchSession(agent.value, s.path)
-      // mtime 是毫秒。session.modified 由 agent 模块写入，单位与 now_millis 一致。
       const ageMs = Date.now() - (s.modified ?? 0)
       if (ageMs >= 0 && ageMs < LIVE_FRESH_MS) {
-        markLive()
+        tab.liveTailing = true
+        tab.liveFadeTimer = window.setTimeout(() => {
+          tab.liveTailing = false
+        }, LIVE_STALE_MS)
       }
-    } catch {
-      // watcher 起不来：不显示 Live（也不抛错 —— 只是失去自动刷新而已）
-    }
+    } catch {}
   } catch (e) {
     notify(t('toast.readFail', { e: String(e) }), true)
-    openSession.value = null
+    removeViewTab(tab.uiId)
+    return
   } finally {
-    loadingChat.value = false
+    tab.loadingMsgs = false
   }
-  // 打开成功 → 进「Views」历史（每个 agent+项目独立，按 path 去重，保留收藏）。
-  // 只记普通项目会话；回收站 / 导出历史在它们各自的入口里不会走到这（openTrashItem /
-  // importedAgent 在本函数开头已清空，此处必为普通会话）。
-  if (openSession.value && activeDir.value) {
-    recordView({
-      agent: agent.value,
-      dir: activeDir.value,
-      session: openSession.value,
-      mode: currentViewMode(),
-    })
+  if (activeDir.value) {
+    recordView({ agent: agent.value, dir: activeDir.value, session: s, mode: 'read' })
   }
-  // ⚠️ 这里曾经会顺手拉一次 api.sessionUsage 给顶栏角标用。后端 session_usage
-  // 会全文件再扫一次 JSONL，长会话下明显拖累聊天首屏 —— 已经移到独立的会话
-  // 统计页面，由用户点 ChatTopbar 的「统计」按钮按需触发（流式推送）。
 }
 
 // 导出历史视图入口（侧栏按钮）—— 和回收站 / 统计 / 价格互斥；再点一次同一按钮收起。
@@ -1277,7 +1277,7 @@ function openExportHistory() {
   showPricing.value = false
   sessionStatsTarget.value = null
   activeDir.value = null
-  openSession.value = null
+  setActiveViewTab(null)
   sessions.value = []
   sessionTotal.value = 0
 }
@@ -1295,7 +1295,7 @@ function openPricing() {
   showExportHistory.value = false
   sessionStatsTarget.value = null
   activeDir.value = null
-  openSession.value = null
+  setActiveViewTab(null)
   sessions.value = []
   sessionTotal.value = 0
 }
@@ -1307,10 +1307,8 @@ function openPricing() {
 // true，关闭会话详情时自动回到历史列表（与回收站一致）。
 async function openHistorySession(rec: ExportRecord) {
   setActiveTui(null)
-  loadingChat.value = true
   openTrashItem.value = null
-  importedAgent.value = rec.agent
-  openSession.value = {
+  const meta: SessionMeta = {
     id: rec.sessionId,
     fileName: shortName(rec.path),
     path: rec.path,
@@ -1325,16 +1323,22 @@ async function openHistorySession(rec: ExportRecord) {
     codexInternal: false,
     codexArchived: false,
   }
-  chatMsgs.value = []
-  clearLive()
+  const tab = createViewTab({
+    type: 'session',
+    agent: rec.agent,
+    projectKey: activeDir.value ?? '',
+    title: rec.title,
+    session: meta,
+    importedAgent: rec.agent,
+    loadingMsgs: true,
+  })
   try {
-    chatMsgs.value = await api.readSession(rec.agent, rec.path)
+    tab.msgs = await api.readSession(rec.agent, rec.path)
   } catch (e) {
     notify(t('toast.readFail', { e: String(e) }), true)
-    openSession.value = null
-    importedAgent.value = null
+    removeViewTab(tab.uiId)
   } finally {
-    loadingChat.value = false
+    tab.loadingMsgs = false
   }
 }
 
@@ -1375,8 +1379,6 @@ function closeStats() {
     }
     // 'chat' / null：完整关闭，openSession 还在 → 自动回落到 ChatView
   }
-  // live chat 的「回看统计」也走这条关闭路径：置回 false 即回落到 live chat。
-  chatPeekStats.value = false
   showStats.value = false
   sessionStatsTarget.value = null
   sessionStatsFrom.value = null
@@ -1386,10 +1388,8 @@ function closeStats() {
 // 直接按 trashPath 解析即可；详情页通过 openTrashItem 进入「回收站模式」。
 async function openTrashSession(item: TrashItem) {
   setActiveTui(null)
-  loadingChat.value = true
-  importedAgent.value = null
   openTrashItem.value = item
-  openSession.value = {
+  const meta: SessionMeta = {
     id: '',
     fileName: item.trashFile,
     path: item.trashPath,
@@ -1404,14 +1404,22 @@ async function openTrashSession(item: TrashItem) {
     codexInternal: false,
     codexArchived: false,
   }
-  chatMsgs.value = []
+  const tab = createViewTab({
+    type: 'session',
+    agent: item.agent,
+    projectKey: activeDir.value ?? '__trash__',
+    title: item.title,
+    session: meta,
+    trashAgent: item.agent,
+    loadingMsgs: true,
+  })
   try {
-    chatMsgs.value = await api.readSession(item.agent, item.trashPath)
+    tab.msgs = await api.readSession(item.agent, item.trashPath)
   } catch (e) {
     notify(t('toast.readFail', { e: String(e) }), true)
-    openSession.value = null
+    removeViewTab(tab.uiId)
   } finally {
-    loadingChat.value = false
+    tab.loadingMsgs = false
   }
 }
 
@@ -1461,7 +1469,11 @@ function deleteSession(s: SessionMeta) {
     closeTabBySessionPath(s.path)
     sessions.value = sessions.value.filter((x) => x.path !== s.path)
     sessionTotal.value = Math.max(0, sessionTotal.value - 1)
-    if (openSession.value?.path === s.path) openSession.value = null
+    // 关闭指向被删会话的所有 view tab
+    for (const vt of [...viewTabs.value]) {
+      if (vt.session?.path === s.path) removeViewTab(vt.uiId)
+      if (vt.type === 'chat' && vt.sourceSession?.path === s.path) closeLiveChat(vt.uiId)
+    }
     removeViewEverywhere(deleteAgent, deleteKey)
     if (sessions.value.length === 0 && activeProject.value) {
       const proj = activeProject.value
@@ -1529,7 +1541,7 @@ function restore(item: TrashItem) {
         await api.restoreSession(item.trashFile)
         trash.value = trash.value.filter((x) => x.trashFile !== item.trashFile)
         if (openTrashItem.value?.trashFile === item.trashFile) {
-          openSession.value = null
+          setActiveViewTab(null)
         }
         await loadProjects()
         await nextTick()
@@ -1657,8 +1669,8 @@ function batchDeleteSessions() {
       }
       sessions.value = sessions.value.filter((x) => !deleted.has(x.path))
       sessionTotal.value = Math.max(0, sessionTotal.value - deleted.size)
-      if (openSession.value && deleted.has(openSession.value.path)) {
-        openSession.value = null
+      for (const vt of [...viewTabs.value]) {
+        if (vt.session && deleted.has(vt.session.path)) removeViewTab(vt.uiId)
       }
       if (sessions.value.length === 0 && activeProject.value) {
         const p = activeProject.value
@@ -1807,12 +1819,9 @@ async function copyText(text: string) {
 
 // ---------- TerminalStrip 的 List / View 切换 ----------
 // List → 关闭当前会话 + 退出 TUI（落回 SessionsView）
-// View → 保留当前会话，仅退出 TUI（落回 ChatView）
 async function onTuiListClick() {
-  // 露出会话列表，但保留 openSession / liveChat（View tab 常驻）。不动 openSession →
-  // 导航 watcher 不会误触发 closeLiveChat，正在跑的 live chat 也不会被杀。
-  viewingList.value = true
   setActiveTui(null)
+  setActiveViewTab(null)
   if (activeDir.value) {
     await loadProjects()
     await refreshSessions()
@@ -1825,92 +1834,98 @@ function startTuiTitleSyncTimer() {
     syncTuiTitlesNow()
   }, TUI_TITLE_SYNC_INTERVAL_MS)
 }
-function onTuiViewClick() {
-  viewingList.value = false
+function onTuiViewTabClick(uiId: number) {
   setActiveTui(null)
+  setActiveViewTab(uiId)
 }
 
-// View 的 × —— 手动关闭聊天详情 tab：清掉当前会话。若此刻正看着 View（无活跃终端 tab），
-// 落回会话列表并刷新；若有活跃终端 tab，仅移除 View tab，不打断正在用的终端。
-async function onTuiViewClose() {
-  const wasViewing = activeUiId.value === null
-  viewingList.value = false
-  if (liveChat.value) closeLiveChat()
-  else {
-    openSession.value = null
-    clearLive()
-  }
-  if (wasViewing && activeDir.value && !showTrash.value && !showStats.value) {
+async function onTuiViewClose(tabUiId: number) {
+  const id = tabUiId
+  if (!id) return
+  const tab = viewTabs.value.find(t => t.uiId === id)
+  if (!tab) return
+  if (tab.type === 'chat') closeLiveChat(id)
+  else removeViewTab(id)
+  if (activeUiId.value === null && !activeViewTab.value && activeDir.value && !showTrash.value && !showStats.value) {
     await loadProjects()
     await refreshSessions()
   }
 }
 
-// 当前 View 层正在渲染的那条 view 的 key（live chat 用 sessionId，只读用 id/path）——
-// Views 下拉里据此高亮「正在看的那条」，新建 chat（无 path）也能正确高亮。
-const activeViewKey = computed<string | null>(() => {
-  if (liveChat.value) return liveChat.value.sessionId || null
-  return openSession.value?.id || openSession.value?.path || null
-})
-
-// 「Views」下拉里选了某条历史 View → 渲染回 View tab。和 selectProject 里的
-// remembered 恢复同构：有磁盘 path 的走 openChat 打开只读详情，上次是 chat 模式则 resume；
-// 没有 path 的（新建 chat 历史）直接 resume 成 live chat。已经就是当前会话则只收起 TUI。
-async function onSelectView(entry: ViewHistoryEntry) {
-  const entryKey = entry.session.id || entry.session.path
-  if (entryKey && activeViewKey.value === entryKey) {
-    // 已经是当前这条 view，只需从列表态切回 View（别重开文件 / 重起进程）。
-    viewingList.value = false
-    setActiveTui(null)
-    return
+function onViewCloseOthers(vt: ViewTab) {
+  const others = viewTabs.value.filter(t => t.type === vt.type && t.uiId !== vt.uiId && t.agent === vt.agent && t.projectKey === vt.projectKey)
+  for (const t of others) {
+    if (t.type === 'chat') closeLiveChat(t.uiId)
+    else removeViewTab(t.uiId)
   }
-  // 正开着 live chat 时，先把它收掉再开新 View。否则下面 openChat 改 openSession.path
-  // 会触发「导航离开」watch 自动 closeLiveChat —— 它会把 openSession 一并清空，
-  // 结果落回会话列表而不是打开选中的 View。先 close（此时 liveChat 置空），watch 再触发就是空操作。
-  if (liveChat.value) closeLiveChat()
-  if (entry.session.path) {
-    await openChat(entry.session)
-    if (entry.mode === 'chat' && openSession.value) {
-      await resumeChatFromSession(entry.session)
-    }
+}
+
+function onViewCloseProject(type: 'session' | 'chat') {
+  const targets = viewTabs.value.filter(t => t.type === type && t.agent === agent.value && t.projectKey === (activeDir.value ?? ''))
+  for (const t of [...targets]) {
+    if (t.type === 'chat') closeLiveChat(t.uiId)
+    else removeViewTab(t.uiId)
+  }
+}
+
+function onViewRename(vt: ViewTab) {
+  const session = vt.session ?? vt.sourceSession
+  if (session?.path) {
+    openRenameState(vt.agent, session.path, session.id ?? '', vt.title)
   } else {
-    // 新建 chat 历史的 View 没有磁盘 path，但它的 sessionId 早已落盘。优先按 id 在当前会话
-    // 列表里找到真实条目（绑定时会把新会话刷进 sessions），用真实 path 走 openChat 把**它自己**
-    // 的历史读进 chatMsgs 再 resume——否则会预载到上一个会话的 chatMsgs（数据串台）。找不到才
-    // 退回直接 resume（此时 resumeChatFromSession 的预载守卫会拦住串台，最差只是空历史）。
-    const real = entry.session.id
-      ? sessions.value.find((x) => x.id === entry.session.id && !!x.path)
-      : undefined
-    if (real) {
-      await openChat(real)
-      if (entry.mode === 'chat' && openSession.value) await resumeChatFromSession(real)
-    } else {
-      await resumeChatFromSession(entry.session)
+    renameModal.value = {
+      show: true,
+      agent: vt.agent,
+      path: '',
+      id: '',
+      value: vt.title,
+      defaultTitle: vt.title,
+      viewTabUiId: vt.uiId,
     }
   }
 }
 
-// 收藏：仅普通项目会话可收藏（有 path、非回收站 / 非导出历史）。live chat 的合成 meta
-// 没有 path，故 path 为空时不显示收藏按钮。
-const canFavorite = computed(
-  () => !!openSession.value?.path && !openTrashItem.value && !importedAgent.value,
-)
-const viewFavorited = computed(
-  () =>
-    canFavorite.value && !!activeDir.value
-      ? isViewFavorited(chatAgent.value, activeDir.value, openSession.value!.path)
-      : false,
-)
-function onToggleFavorite() {
-  if (!canFavorite.value || !activeDir.value || !openSession.value) return
-  // 收藏前确保这条已在历史里（理论上 openChat 时已记过；保险起见 upsert 一次）。
-  recordView({
-    agent: chatAgent.value,
-    dir: activeDir.value,
-    session: openSession.value,
-    mode: currentViewMode(),
-  })
-  toggleViewFavorite(chatAgent.value, activeDir.value, openSession.value.path)
+async function onCloseOthersAll(keepUiId: number, keepKind: 'tui' | 'view') {
+  const pk = activeDir.value ?? ''
+  // 关闭所有 view tabs except the kept one
+  for (const t of [...viewTabs.value]) {
+    if (keepKind === 'view' && t.uiId === keepUiId) continue
+    if (t.type === 'chat') closeLiveChat(t.uiId)
+    else removeViewTab(t.uiId)
+  }
+  // 关闭所有终端 tabs except the kept one
+  const visible = tuiTabs.value.filter(t => t.agent === agent.value && t.projectKey === pk)
+  for (const t of visible) {
+    if (keepKind === 'tui' && t.uiId === keepUiId) continue
+    closeTab(t.uiId)
+  }
+  // 关闭所有 saved tabs
+  const visSaved = savedTabs.value.filter(s => s.agent === agent.value && s.projectKey === pk)
+  for (const s of visSaved) removeSavedTab(s.sessionPath ? s.sessionPath : s)
+  await loadProjects()
+  await refreshSessions()
+}
+
+async function onCloseAll() {
+  // 关闭所有 view tabs (read + chat)
+  for (const t of [...viewTabs.value]) {
+    if (t.type === 'chat') closeLiveChat(t.uiId)
+    else removeViewTab(t.uiId)
+  }
+  // 关闭所有终端 tabs
+  const visible = tuiTabs.value.filter(t => t.agent === agent.value && t.projectKey === (activeDir.value ?? ''))
+  for (const t of visible) closeTab(t.uiId)
+  // 关闭所有 saved tabs
+  const visSaved = savedTabs.value.filter(s => s.agent === agent.value && s.projectKey === (activeDir.value ?? ''))
+  for (const s of visSaved) removeSavedTab(s.sessionPath ? s.sessionPath : s)
+  await loadProjects()
+  await refreshSessions()
+}
+
+// 关闭当前活跃的 view/chat tab
+async function closeActiveViewTab() {
+  if (!activeViewTab.value) return
+  await onTuiViewClose(activeViewTab.value.uiId)
 }
 
 // PTY tab 被手动关闭（× 按钮）后，若 TUI 层已空（无更多 tab），刷新数据，
@@ -1928,8 +1943,8 @@ function closeActiveTab() {
   if (tab) {
     closeTab(tab.uiId)
     onTuiTabClosed()
-  } else if (openSession.value) {
-    onTuiViewClose()
+  } else if (activeViewTab.value) {
+    onTuiViewClose(activeViewTab.value.uiId)
   }
 }
 
@@ -1985,22 +2000,13 @@ function openRenameFromSavedTab(saved: SavedTab) {
   }
 }
 
-// ---------- GUI chat（程序化聊天）live 模式 ----------
-// liveChat 非空 = 正处在一个 live GUI 聊天里；view-layer 优先渲染它（高于 openSession）。
-const liveChat = ref<ChatSession | null>(null)
-// 「回看只读」开关：true 时虽然 live chat 仍在跑（进程不停），界面临时切回来源会话的
-// 只读详情（openSession），方便 read ⇄ chat 来回切而不丢对话。chat 头部的「切到 read」
-// 按钮置 true；read 详情的「切到 chat」FAB 置回 false（见 resumeChatFromSession）。
-const chatPeekRead = ref(false)
-
-// 「回看统计」开关：live chat 里点会话统计时置 true，临时盖上 StatsView 但**不停**子进程
-// （和 chatPeekRead 同构）。不走 showStats，避免触发下面 watch 把 live chat 误杀。
-const chatPeekStats = ref(false)
+// ---------- GUI chat（程序化聊天）tab 模式 ----------
+// liveChat / openSession 现在是从 activeViewTab 派生的 computed（见上方定义），
+// 不再是单一 ref。每个 chat 进程对应一个 ViewTab，多 chat 可并存。
 const liveChatSourceSession = computed<SessionMeta | null>(() => {
-  const c = liveChat.value
-  const s = openSession.value
-  if (!c || !s) return null
-  return s.id === c.sessionId ? s : null
+  const tab = activeViewTab.value
+  if (!tab || tab.type !== 'chat') return null
+  return tab.sourceSession
 })
 
 /** 给 ChatView 的 session prop 造一个合成 SessionMeta（live 模式没有真正的列表条目）。 */
@@ -2054,26 +2060,25 @@ function deriveFirstUserTitle(c: ChatSession): string {
   return ''
 }
 
-// 新建 chat 发出第一条消息后，把占位标题（New Chat (GUI)）一次性派生成消息内容标题，
-// 和会话列表显示的标题一致。改的是 c.title → 头部 + Views 条目都会跟着刷新。
+// chat tab 发出第一条消息后，把占位标题派生成消息内容标题。
+// 遍历所有 chat tab 而非只看 active，确保后台 tab 也能派生标题。
 watch(
-  () => liveChat.value?.msgs.length ?? 0,
+  () => viewTabs.value.filter(t => t.type === 'chat').map(t => t.chatSession?.msgs.length ?? 0).join(','),
   () => {
-    const c = liveChat.value
-    if (!c || c.title !== t('list.action.newSessionGui')) return
-    const derived = deriveFirstUserTitle(c)
-    if (derived) c.title = derived
+    for (const tab of viewTabs.value) {
+      if (tab.type !== 'chat' || !tab.chatSession) continue
+      if (tab.chatSession.title !== t('list.action.newSessionGui')) continue
+      const derived = deriveFirstUserTitle(tab.chatSession)
+      if (derived) {
+        tab.chatSession.title = derived
+        tab.title = derived
+      }
+    }
   },
 )
 
-// live chat 一旦拿到 sessionId（新建会话在 init 事件回填、续聊从一开始就有）或标题变化，
-// 就登记/更新「Views」历史。新建 chat 没有磁盘 path 也能进来（按 session id 记录）；之后从
-// 列表打开同一会话会按 id 合并、补上真实 path（recordView 不会用空 path 覆盖已有 path）。
+// chat tab sessionId / 标题变化 → 登记 Views 历史
 watch(
-  // key 里带上来源 path 很关键：新建 chat 在 init 先拿到 sessionId（此刻还没绑定来源、path 为空），
-  // 绑定完成后 liveChatSourceSession.path 才补上。key 不含 path 的话「补 path」不会重新触发，View
-  // 历史就永远停在 path=''——之后从 Views 切回它会走 onSelectView 的「无 path 直接 resume」分支，
-  // 把上一个会话的 chatMsgs 当历史预载进去（串台）。带上 path，绑定后再记一次、把真实 path 合并进来。
   () =>
     liveChat.value
       ? `${liveChat.value.sessionId} ${liveChat.value.title} ${liveChatSourceSession.value?.path ?? ''}`
@@ -2090,56 +2095,31 @@ watch(
   },
 )
 
-/** 启动一个 live GUI chat：新开（无 sessionId）或续聊（带 sessionId + 预载历史）。 */
-function setLiveChatSourceSession(session: SessionMeta | null) {
-  // suppressNextLiveChatNavClose 是「下一次导航 watch 触发时跳过一次自动关 chat」的一次性闸门。
-  // 它只能由导航 watch 的真实触发来消费，而 watch 仅在 openSession.path 变化时才触发。
-  // 因此只有当 path 真的会变（→ watch 必定触发 → 闸门必被消费）时才置真；否则置真会**永久泄漏**：
-  // 下一次真正切到别的会话时被错误吞掉，导致旧 live chat 不关、盖在新会话上（串台）。
-  const samePath = (openSession.value?.path ?? '') === (session?.path ?? '')
-  if (!samePath) suppressNextLiveChatNavClose.value = true
-  openSession.value = session
+/** 关闭 chat tab（停子进程 + 移除 tab）。 */
+function closeLiveChat(tabUiId?: number) {
+  const id = tabUiId ?? activeViewTab.value?.uiId
+  if (!id) return
+  const tab = viewTabs.value.find(t => t.uiId === id)
+  if (!tab || tab.type !== 'chat') return
+  if (tab.chatSession) void closeChat(tab.chatSession.uiId)
+  removeViewTab(id)
 }
 
-async function bindLiveChatSourceSession(c: ChatSession) {
-  if (!c.sessionId || !c.projectKey) return
-  if (liveChatSourceSession.value?.id === c.sessionId && liveChatSourceSession.value.path) return
-  const loaded = sessions.value.find((s) => s.id === c.sessionId)
-  if (loaded) {
-    setLiveChatSourceSession(loaded)
-    return
-  }
-  const limit = Math.max(PAGE_SIZE, sessions.value.length || 0)
-  for (let attempt = 0; attempt < 5; attempt++) {
-    if (!liveChat.value || liveChat.value.uiId !== c.uiId || liveChat.value.sessionId !== c.sessionId) return
-    try {
-      const page = await api.listSessions(c.agent, c.projectKey, 0, limit, sessionListOptions())
-      const found = page.sessions.find((s) => s.id === c.sessionId)
-      if (!liveChat.value || liveChat.value.uiId !== c.uiId || liveChat.value.sessionId !== c.sessionId) return
-      if (c.agent === agent.value && c.projectKey === activeDir.value) {
-        sessions.value = page.sessions
-        sessionTotal.value = page.total
-      }
-      if (found) {
-        setLiveChatSourceSession(found)
-        return
-      }
-    } catch {
-      // 新会话刚落盘时列表端可能暂时还看不到；短暂重试即可。
-    }
-    if (attempt < 4) await new Promise((resolve) => window.setTimeout(resolve, 250))
-  }
+function switchLiveChatToRead() {
+  const tab = activeViewTab.value
+  if (!tab || tab.type !== 'chat') return
+  const source = tab.sourceSession
+  if (!source) return
+  tab.type = 'session'
+  tab.session = source
+  tab.loadingMsgs = true
+  api.readSession(agent.value, source.path).then(msgs => {
+    tab.msgs = msgs
+    tab.loadingMsgs = false
+  }).catch(() => { tab.loadingMsgs = false })
 }
 
-watch(
-  () => (liveChat.value ? `${liveChat.value.uiId}\u0000${liveChat.value.sessionId}` : ''),
-  () => {
-    const c = liveChat.value
-    if (!c || !c.sessionId) return
-    void bindLiveChatSourceSession(c)
-  },
-)
-
+/** 启动一个 live GUI chat，创建为独立的 chat ViewTab。 */
 async function startLiveChat(opts: {
   cwd: string
   projectKey: string
@@ -2154,20 +2134,8 @@ async function startLiveChat(opts: {
     notify(t('toast.resumeNoCwd'), true)
     return
   }
-  // 已在某个 live chat 里又开新的 → 先收掉旧的（停子进程），避免孤儿进程。
-  if (liveChat.value) {
-    const old = liveChat.value
-    liveChat.value = null
-    void closeChat(old.uiId)
-  }
-  // 切回 view-layer（若当前在 TUI tab 上），让 live ChatView 顶到前面。
   activeUiId.value = null
-  viewingList.value = false
   try {
-    if (!opts.sessionId) {
-      // 全新 GUI chat 没有来源 transcript，先断开旧 openSession，避免 read 落到上一条会话。
-      setLiveChatSourceSession(null)
-    }
     const session = await startChat({
       agent: opts.agent,
       projectKey: opts.projectKey,
@@ -2179,34 +2147,39 @@ async function startLiveChat(opts: {
       preloadMsgs: opts.preloadMsgs,
       initialUsage: opts.initialUsage,
     })
-    liveChat.value = session
-    chatPeekRead.value = false
-    // 续聊沿用现成的来源 openSession；全新 chat 先空着，等 sessionId 回填后再绑定真实 transcript。
+    createViewTab({
+      type: 'chat',
+      agent: opts.agent,
+      projectKey: opts.projectKey,
+      title: opts.title,
+      chatSession: session,
+      sourceSession: null,
+    })
   } catch (e) {
     notify(`${e}`, true)
   }
 }
 
-/** 入口 2(GUI) / 入口 3：把某个只读会话作为上下文开 / 切到 live GUI chat。
- *  预载当前已加载的会话消息当历史，避免切过去一片空白。 */
+/** 从会话详情开 / 续聊 live GUI chat（新开 chat tab，预载历史 + 上下文用量种子）。 */
 async function resumeChatFromSession(s: SessionMeta) {
-  // read → chat：read ⇄ chat 的两个切换按钮在头部同一位置就地换图标（无飞线动画）。
-  // 正处在「回看只读」状态 → 直接切回正在跑的 chat，不重开进程，对话与上下文原样保留
-  // （read ⇄ chat 来回切的「切回 chat」一侧）。peek 期间 openSession 恒为该 chat 的来源
-  // 会话（任何切换都会触发导航 watcher 关掉 chat），故 liveChat+chatPeekRead 已足够判定。
-  if (liveChat.value && chatPeekRead.value) {
-    chatPeekRead.value = false
+  // 已有同 sessionId 的 chat tab → 直接切过去
+  const existingChat = findViewTab(t => t.type === 'chat' && t.chatSession?.sessionId === s.id)
+  if (existingChat) {
+    setActiveViewTab(existingChat.uiId)
+    activeUiId.value = null
     return
   }
-  // 续聊种子：先拉原会话末尾的上下文用量，让上下文角标一开始就显示真实占比，
-  // 而不是 0%（首个 result 事件到达后会被真实 usage 覆盖）。失败就不种子化。
-  // 预载历史只在 chatMsgs 确属本会话时才用：从 Views 切回「新建 chat」时（其 View 的 path 已被
-  // 绑定回填，正常会走 onSelectView 的 openChat 分支把 chatMsgs 重载成本会话）这里 openSession
-  // 即本会话；万一仍走到无 openChat 的 resume，chatMsgs 还停在上一个会话——那就别拿它当历史，
-  // 有 path 就从磁盘重载、否则置空，绝不把别的会话内容当本会话历史预载（串台的第二道防线）。
+  // 已有同 sessionId 的 read tab（从 chat 切过来的，进程还在跑）→ 直接恢复
+  const existingRead = findViewTab(t => t.type === 'session' && t.session?.id === s.id)
+  if (existingRead?.chatSession) {
+    existingRead.type = 'chat'
+    setActiveViewTab(existingRead.uiId)
+    activeUiId.value = null
+    return
+  }
   let preload: Msg[] = []
-  if (openSession.value?.id === s.id) {
-    preload = chatMsgs.value
+  if (existingRead) {
+    preload = existingRead.msgs
   } else if (s.path) {
     try {
       preload = await api.readSession(chatAgent.value, s.path)
@@ -2220,23 +2193,39 @@ async function resumeChatFromSession(s: SessionMeta) {
   } catch {
     initialUsage = undefined
   }
-  await startLiveChat({
+  const cwd = s.cwd || activeProject.value?.displayPath || ''
+  const projectKey = activeProject.value?.dirName ?? activeDir.value ?? ''
+  activeUiId.value = null
+  const chatSession = await startChat({
     agent: chatAgent.value,
-    projectKey: activeProject.value?.dirName ?? activeDir.value ?? '',
-    cwd: s.cwd || activeProject.value?.displayPath || '',
+    projectKey,
+    cwd,
     sessionId: s.id,
     title: s.title,
     created: s.created,
+    permissionMode: 'acceptEdits',
     preloadMsgs: preload,
     initialUsage,
   })
+  if (existingRead) {
+    existingRead.type = 'chat'
+    existingRead.chatSession = chatSession
+    existingRead.sourceSession = s
+    setActiveViewTab(existingRead.uiId)
+  } else {
+    createViewTab({
+      type: 'chat',
+      agent: chatAgent.value,
+      projectKey,
+      title: s.title,
+      chatSession: chatSession,
+      sourceSession: s,
+    })
+  }
 }
 
-/** 列表行「chat」图标：把该会话作为 live GUI chat 打开（仅 Claude 显示）。
- *  先 openChat 把历史读进 chatMsgs，再走 resumeChatFromSession 续聊（带 preload 与
- *  上下文用量种子），与「详情页切到 chat」走同一条续聊链路。 */
+/** 列表行「chat」图标：把该会话作为 live GUI chat 打开。 */
 async function chatFromList(s: SessionMeta) {
-  await openChat(s)
   await resumeChatFromSession(s)
 }
 
@@ -2268,13 +2257,11 @@ async function forkLiveChat() {
   const preload = [...c.msgs]
   let newId: string
   try {
-    // 先在磁盘上克隆出新会话文件（立即出现在列表里），拿到新 session id。
     newId = await api.forkSession(c.agent, c.projectKey, c.sessionId, title)
   } catch (e) {
     notify(`${e}`, true)
     return
   }
-  // 与 startLiveChat 同序：先置空 liveChat 收掉旧进程，再 resume 克隆出来的新会话。
   const projectKey = c.projectKey
   const cwd = c.cwd
   const created = c.createdAt
@@ -2282,18 +2269,15 @@ async function forkLiveChat() {
   const model = c.model
   const effort = c.effort
   const usage = c.usage
-  liveChat.value = null
-  void closeChat(c.uiId)
+  // 关掉旧 chat tab
+  closeLiveChat()
   activeUiId.value = null
-  viewingList.value = false
-  // 克隆是独立新会话，先断开旧的来源只读绑定；新 session id 已知，bind watcher 会绑到克隆文件。
-  setLiveChatSourceSession(null)
   try {
     const session = await startChat({
       agent: 'claude',
       projectKey,
       cwd,
-      sessionId: newId, // resume 克隆出来的真实会话（非 --fork-session）
+      sessionId: newId,
       title,
       created,
       preloadMsgs: preload,
@@ -2302,10 +2286,15 @@ async function forkLiveChat() {
       effort,
       initialUsage: usage,
     })
-    liveChat.value = session
-    chatPeekRead.value = false
+    createViewTab({
+      type: 'chat',
+      agent: 'claude',
+      projectKey,
+      title,
+      chatSession: session,
+      sourceSession: null,
+    })
     notify(t('toast.forked', { title }))
-    // 侧栏项目计数 +1：克隆文件已落盘，刷新一下让计数即时反映。
     void loadProjects()
   } catch (e) {
     notify(`${e}`, true)
@@ -2334,55 +2323,18 @@ function toggleBtwSideChat() {
   })
 }
 
-/** 退出 live chat —— MVP：停子进程并回收会话（无 chat tab UI 可返回）。
- *  replace 语义：连同清掉来源的只读详情（openSession），退出后回到会话列表而不是
- *  那一页详情（用户：从详情「切到 chat」是 replace，不是新开页）。从列表/新建入口
- *  进来的 openSession 本就为空，清它是无操作，行为一致。 */
-function closeLiveChat() {
-  const c = liveChat.value
-  liveChat.value = null
-  chatPeekRead.value = false
-  chatPeekStats.value = false
-  openSession.value = null
-  if (c) void closeChat(c.uiId)
-}
 
-/** chat → read：临时切回来源会话的只读详情，但**不停** live chat 进程（chatPeekRead
- *  置真即可，liveChat 仍在）。没有来源只读会话（如全新 GUI 会话）时无 read 可回看，
- *  按钮本就不显示。回到 chat 走头部同一位置的「切到 chat」按钮（resumeChatFromSession）。
- *  read ⇄ chat 的两个切换按钮在头部同一位置就地换图标，故切换无飞线动画。 */
-async function switchLiveToRead() {
-  const c = liveChat.value
-  const src = liveChatSourceSession.value
-  if (!c || !src) return
-  // read 视图的正文来自 chatMsgs（按 path 读盘），live chat 的正文来自内存里的 msgs —— 两套。
-  // 切到 read 必须按来源会话的真实 transcript 重新读盘；否则 chatMsgs 仍是上一个被打开会话
-  // 的残留内容，表现为「标题/ID 对、正文却是别的会话」（尤其全新 chat 从没 openChat 过）。
-  // 用 live chat 自己的 agent 解析（claude / codex / gemini 的 JSONL 格式不同）。
-  loadingChat.value = true
-  chatMsgs.value = []
-  chatPeekRead.value = true
-  try {
-    chatMsgs.value = await api.readSession(c.agent, src.path)
-  } catch (e) {
-    notify(t('toast.readFail', { e: String(e) }), true)
-  } finally {
-    loadingChat.value = false
-  }
-}
+
+
 
 // ---------- live chat 顶栏会话级动作（统计 / 导出 / 删除）----------
-// 这些按钮在 read 与 live chat 两种模式都在；read 走 openSession 系列 handler，
-// live chat 走下面这几个，统一不打断正在跑的子进程（删除除外，删了自然停）。
 
-/** live chat 里看会话统计：用来源会话的文件路径，盖 StatsView 但不停子进程。
- *  全新 GUI 会话（无来源文件）没有可统计的内容，直接忽略。 */
 function openLiveChatStats() {
   const s = liveChatSourceSession.value
   if (!s) return
   sessionStatsTarget.value = { agent: chatAgent.value, path: s.path, title: s.title }
   sessionStatsFrom.value = 'chat'
-  chatPeekStats.value = true
+  showStats.value = true
 }
 
 /** live chat 导出：导的是**实时**消息（liveChat.msgs），比来源会话的 chatMsgs 更全。 */
@@ -2406,35 +2358,6 @@ function deleteFromLiveChat() {
   else closeLiveChat()
 }
 
-// live chat 模式下，侧栏切项目 / 切 agent、顶栏统计 / 回收站等导航会改下面这些状态，
-// 而 liveChat 视图在 view 层里优先级最高、盖在最上层 → 表现成「按钮点了没反应」。
-// 这里监听这些导航状态，一旦变化就退出 live chat（MVP：停子进程），把用户点到的视图露出来。
-// `if (liveChat.value)` 守卫使非聊天态下是空操作。
-// 注意：**不**监听 activeUiId —— 切到 / 新建终端 tab 时 view 层会被 v-show 整层隐去、
-// 终端层顶到最前，live chat 并不挡着终端，没必要杀；杀了反而让 chat 的 View tab 消失。
-// chat 应像 read 一样作为后台 tab 常驻，点 View tab 再回到它（仅手动 × 才真正关）。
-// 用字符串 key 比较，只在**真正**导航（换 agent / 项目 / 会话 / 切到统计·回收站·历史·定价）
-// 时才触发。重命名只是把 openSession 换成同 path 的新对象，key 不变 → 不会误杀 live chat。
-// 切「List」meta tab 走 viewingList、不动这些值，也不会触发。
-watch(
-  () =>
-    [
-      agent.value,
-      activeDir.value,
-      openSession.value?.path ?? '',
-      showStats.value,
-      showTrash.value,
-      showExportHistory.value,
-      showPricing.value,
-    ].join('|'),
-  () => {
-    if (suppressNextLiveChatNavClose.value) {
-      suppressNextLiveChatNavClose.value = false
-      return
-    }
-    if (liveChat.value) closeLiveChat()
-  },
-)
 
 /** Resume 一个会话 —— 根据设置决定走窗口内 TUI 还是外部终端。 */
 async function resumeHere(s: SessionMeta) {
@@ -2469,6 +2392,7 @@ async function hydrateSavedTab(saved: SavedTab) {
         projectKey: saved.projectKey,
         title: saved.title,
         cwd: saved.cwd,
+        createdAt: saved.createdAt,
       })
     } else {
       await openOrFocusTui({
@@ -2478,6 +2402,7 @@ async function hydrateSavedTab(saved: SavedTab) {
         sessionPath: saved.sessionPath,
         title: saved.title,
         cwd: saved.cwd,
+        createdAt: saved.createdAt,
         ...(!saved.sessionId ? { knownSessionPaths: sessions.value.map((s) => s.path) } : {}),
         ...(saved.userRenamed ? { userRenamed: true } : {}),
       })
@@ -2737,10 +2662,7 @@ function onVisibilityChange() {
 
 function saveTabState() {
   const cur = currentActiveTab()
-  // 当前真正顶在前面的层：活跃终端 tab > View(聊天详情) > 列表 > 欢迎。
-  // 终端 tab 盖一切（activeUiId != null）；没有终端 tab 且开着会话 = 停在 View tab。
-  // viewingList=true 时虽然开着会话，但用户当前停在「列表」上（View tab 只是背景常驻）。
-  const onView = !cur && !!openSession.value && !viewingList.value
+  const onView = !cur && !!activeViewTab.value
   const view: SavedNav['view'] = cur
     ? 'tui'
     : onView
@@ -2748,18 +2670,9 @@ function saveTabState() {
       : activeDir.value
         ? 'list'
         : 'welcome'
-  // 同步当前项目的 per-project View 记忆：普通浏览下开着会话就记住（含 read/chat 子模式），
-  // 真的回到列表 / 欢迎就忘掉（用户关了 View）。回收站 / 历史导入 / 统计等覆盖层不动 map。
-  if (activeDir.value && !openTrashItem.value && !importedAgent.value) {
-    const k = viewStashKey(activeDir.value)
-    if (openSession.value) {
-      openSessionByProject.set(k, { session: openSession.value, mode: currentViewMode() })
-      // 同步 Views 历史里这条的 read⇄chat 子模式（不顶起顺序，仅改 mode）。
-      setViewMode(agent.value, activeDir.value, openSession.value.path, currentViewMode())
-    } else if (!showTrash.value && !showStats.value && !showExportHistory.value && !showPricing.value) {
-      openSessionByProject.delete(k)
-    }
-    // 同步当前项目活跃的 TUI tab 记忆。
+  // TUI tab 记忆
+  if (activeDir.value) {
+    const k = viewKey(agent.value, activeDir.value)
     if (cur) {
       activeTuiByProject.set(k, {
         sessionPath: cur.sessionPath,
@@ -2769,9 +2682,8 @@ function saveTabState() {
       activeTuiByProject.delete(k)
     }
   }
-  persistViewMap()
   persistTuiMap()
-  // sessionPath 为空的 tab（shell / 未匹配新会话）用在 live 列表中的索引定位
+  persistViewTabs()
   const noPathIdx = cur && !cur.sessionPath
     ? tuiTabs.value.filter((t) => !t.sessionPath).indexOf(cur)
     : undefined
@@ -2801,10 +2713,6 @@ onMounted(() => {
     agent.value = nav.agent
     activeDir.value = nav.activeDir
   }
-  // 恢复每个项目各自的 View 记忆 —— 切到任意项目（含重启后第一次点）都能拿回它的 View tab。
-  for (const v of loadSavedViews()) {
-    openSessionByProject.set(viewKey(v.agent, v.dir), { session: v.session, mode: v.mode })
-  }
   // 恢复每个项目各自的 TUI tab 记忆 —— 切到任意项目时恢复它上次活跃的终端 tab。
   for (const v of loadSavedActiveTui()) {
     activeTuiByProject.set(viewKey(v.agent, v.dir), { sessionPath: v.sessionPath, ...(v.isShell ? { isShell: true } : {}) })
@@ -2824,19 +2732,117 @@ onMounted(() => {
       if (hydrateTarget) activeDir.value = hydrateTarget.projectKey
     }
     if (activeDir.value) await refreshSessions()
-    // 恢复当前项目的 View tab（背景常驻）——不管退出时停在 View 还是终端 tab，只要该项目
-    // 上次开着会话就拿回来；上次是 chat 模式则 resume 重开 live chat。退出前新建终端/会话
-    // 不应让这条 View tab 丢失。
-    const remembered = activeDir.value
-      ? openSessionByProject.get(viewKey(agent.value, activeDir.value))
-      : undefined
-    if (remembered) {
-      await openChat(remembered.session)
-      if (remembered.mode === 'chat' && openSession.value) {
-        await resumeChatFromSession(remembered.session)
+    // 恢复上次退出时的 view tabs（session read + chat 元数据）
+    const savedVT = loadSavedViewTabs()
+    const savedChatTabs = savedVT.tabs.filter(t => t.type === 'chat')
+    let restoredActiveIdx: number | null = null
+    for (let i = 0; i < savedVT.tabs.length; i++) {
+      const sv = savedVT.tabs[i]
+      if (sv.type === 'chat') continue // chat tabs 由 reconnectChats 处理
+      if (!sv.session) continue
+      const tab = createViewTab({
+        type: 'session',
+        agent: sv.agent,
+        projectKey: sv.projectKey,
+        title: sv.title,
+        createdAt: sv.createdAt,
+        session: sv.session,
+        loadingMsgs: true,
+        trashAgent: sv.trashAgent,
+        importedAgent: sv.importedAgent,
+      })
+      if (i === savedVT.activeIdx) restoredActiveIdx = tab.uiId
+      api.readSession(sv.agent, sv.session.path).then(msgs => {
+        tab.msgs = msgs
+        tab.loadingMsgs = false
+      }).catch(() => {
+        removeViewTab(tab.uiId)
+      })
+    }
+    // 页面刷新后重连后端仍存活的 chat 进程 → 每个重连的 chat 创建一个 chat tab
+    const reconnected = await reconnectChats()
+    for (const session of reconnected) {
+      const saved = savedChatTabs.find(s => s.sessionId && s.sessionId === session.sessionId)
+      const title = saved?.title || session.title
+      session.title = title
+      if (saved?.session?.path) {
+        try {
+          session.msgs = await api.readSession(session.agent, saved.session.path)
+          if (!session.lastModel) session.lastModel = lastAssistantModel(session.msgs)
+        } catch {}
       }
-      // 退出时停在「列表」（View tab 只是背景）→ 恢复成列表态，View tab 仍常驻。
-      if (nav?.view === 'list') viewingList.value = true
+      const tab = createViewTab({
+        type: 'chat',
+        agent: session.agent,
+        projectKey: session.projectKey,
+        title,
+        createdAt: saved?.createdAt,
+        chatSession: session,
+        sourceSession: saved?.session ?? null,
+      })
+      const savedIdx = savedVT.tabs.indexOf(saved!)
+      if (savedIdx >= 0 && savedIdx === savedVT.activeIdx) {
+        restoredActiveIdx = tab.uiId
+      }
+    }
+    // 没被 reconnect 恢复的 chat tab → 重新启动进程恢复为 chat
+    const reconnectedIds = new Set(reconnected.map(s => s.sessionId))
+    const deadChats: { sv: SavedViewTab; idx: number }[] = []
+    for (let i = 0; i < savedVT.tabs.length; i++) {
+      const sv = savedVT.tabs[i]
+      if (sv.type !== 'chat' || !sv.session) continue
+      if (sv.sessionId && reconnectedIds.has(sv.sessionId)) continue
+      deadChats.push({ sv, idx: i })
+    }
+    for (const { sv, idx } of deadChats) {
+      const s = sv.session!
+      let preload: Msg[] = []
+      try { preload = await api.readSession(sv.agent, s.path) } catch {}
+      let initialUsage: UsageSummary | undefined
+      try { initialUsage = await api.sessionContextUsage(sv.agent, s.path) } catch {}
+      const cwd = s.cwd || ''
+      try {
+        const chatSession = await startChat({
+          agent: sv.agent,
+          projectKey: sv.projectKey,
+          cwd,
+          sessionId: s.id,
+          title: sv.title,
+          created: s.created,
+          permissionMode: 'acceptEdits',
+          preloadMsgs: preload,
+          initialUsage,
+        })
+        const tab = createViewTab({
+          type: 'chat',
+          agent: sv.agent,
+          projectKey: sv.projectKey,
+          title: sv.title,
+          createdAt: sv.createdAt,
+          chatSession,
+          sourceSession: s,
+        })
+        if (idx === savedVT.activeIdx) restoredActiveIdx = tab.uiId
+      } catch {
+        // 启动失败 → 降级为 read tab
+        const tab = createViewTab({
+          type: 'session',
+          agent: sv.agent,
+          projectKey: sv.projectKey,
+          title: sv.title,
+          createdAt: sv.createdAt,
+          session: s,
+          loadingMsgs: false,
+          msgs: preload,
+        })
+        if (idx === savedVT.activeIdx) restoredActiveIdx = tab.uiId
+      }
+    }
+    // 所有 tab 恢复完毕后，再统一设置 active（createViewTab 会自动激活最后一个，需要修正）
+    if (restoredActiveIdx != null) {
+      setActiveViewTab(restoredActiveIdx)
+    } else if (savedVT.tabs.length > 0 && nav?.view !== 'view') {
+      setActiveViewTab(null)
     }
     // 退出时停在终端 tab → 水合并激活它（上面的 View tab 仍作为背景 tab 常驻）。
     if (hydrateTarget) {
@@ -2862,13 +2868,8 @@ onMounted(() => {
   }
   const tabCount = computed(() => tuiTabs.value.length)
   const savedCount = computed(() => savedTabs.value.length)
-  // View tab 的恢复信号：开了哪条会话（path）+ 子模式（read/chat）。
-  const viewSig = computed(() =>
-    openSession.value
-      ? `${openSession.value.path}:${liveChat.value && !chatPeekRead.value ? 'chat' : 'read'}`
-      : '',
-  )
-  watch([agent, activeDir, activeUiId, tabCount, savedCount, viewSig], debouncedSave)
+  const viewTabCount = computed(() => viewTabs.value.length)
+  watch([agent, activeDir, activeUiId, tabCount, savedCount, viewTabCount, activeViewTabId], debouncedSave)
   // 后台检查 GitHub release —— 缓存 24h，失败完全静默；结果驱动侧边栏 Settings
   // 按钮上的"有新版本"小红点。
   runBackgroundCheck()
@@ -2997,41 +2998,40 @@ async function installLiveTailListeners() {
   const appendUnlisten = await listen<{ path: string; messages: Msg[] }>(
     'session:append',
     (e) => {
-      const cur = openSession.value
-      if (!cur || cur.path !== e.payload.path) return
+      const tab = viewTabs.value.find(t => t.type === 'session' && t.session?.path === e.payload.path)
+      if (!tab) return
       const added = e.payload.messages
       if (!added.length) return
-      markTabSessionActivity(chatAgent.value, cur.path)
-      chatMsgs.value = chatMsgs.value.concat(added)
-      // 真的有新增 → 标"Live"，并续命 fade 定时器。
-      markLive()
+      markTabSessionActivity(tab.agent, e.payload.path)
+      tab.msgs = tab.msgs.concat(added)
+      tab.liveTailing = true
+      window.clearTimeout(tab.liveFadeTimer)
+      tab.liveFadeTimer = window.setTimeout(() => { tab.liveTailing = false }, LIVE_STALE_MS)
       enqueueLiveNotification({
-        agent: chatAgent.value,
-        sessionTitle: cur.title || shortName(cur.path),
-        sessionPath: cur.path,
+        agent: tab.agent,
+        sessionTitle: tab.session?.title || shortName(e.payload.path),
+        sessionPath: e.payload.path,
         messages: added,
         appVisible: appVisible(),
       })
-      // 等 v-for 把新行挂上 DOM，再交给 ChatView 决定是否自动滚到底。
-      nextTick(() => chatViewRef.value?.onLiveAppend?.(added.length))
+      if (tab.uiId === activeViewTabId.value) {
+        nextTick(() => chatViewRef.value?.onLiveAppend?.(added.length))
+      }
     },
   )
   const resetUnlisten = await listen<{ path: string }>('session:reset', async (e) => {
-    const cur = openSession.value
-    if (!cur || cur.path !== e.payload.path) return
-    // 整段重读 —— 不动 openSession 自身，避免 watch 重置 chat-toolbar 状态。
+    const tab = viewTabs.value.find(t => t.type === 'session' && t.session?.path === e.payload.path)
+    if (!tab) return
     try {
-      markTabSessionActivity(chatAgent.value, cur.path)
-      chatMsgs.value = await api.readSession(chatAgent.value, cur.path)
-    } catch {
-      // 读不出来通常是文件刚被换掉；下一次 emit 会再来一次。
-    }
+      markTabSessionActivity(tab.agent, e.payload.path)
+      tab.msgs = await api.readSession(tab.agent, e.payload.path)
+    } catch {}
   })
   const goneUnlisten = await listen<{ path: string }>('session:gone', (e) => {
-    const cur = openSession.value
-    if (!cur || cur.path !== e.payload.path) return
+    const tab = viewTabs.value.find(t => t.type === 'session' && t.session?.path === e.payload.path)
+    if (!tab) return
     notify(t('toast.sessionGone'))
-    openSession.value = null
+    removeViewTab(tab.uiId)
   })
   liveUnlisteners.push(appendUnlisten, resetUnlisten, goneUnlisten)
 }
@@ -3063,7 +3063,11 @@ onUnmounted(() => {
   tuiTitleSyncTimer = 0
   liveUnlisteners.forEach((u) => u())
   liveUnlisteners = []
-  clearLive()
+  // 清理所有 view tab 的定时器
+  for (const vt of viewTabs.value) {
+    window.clearTimeout(vt.liveFadeTimer)
+    if (vt.type === 'chat' && vt.chatSession) void closeChat(vt.chatSession.uiId)
+  }
   document.body.classList.remove('is-sidebar-resizing')
   window.removeEventListener('resize', onWindowResize)
   window.removeEventListener('pointermove', onSidebarResizePointerMove)
@@ -3151,8 +3155,8 @@ async function onGlobalSearchOpen(hit: SearchHit) {
         <!-- StatsView 自带顶部控制条，这里就让出空间（保持拖动区域）。
              showStats 优先级要高于 openSession，否则进入会话统计模式时
              还会渲染 ChatTopbar 的「会话统计」按钮，造成视觉重复。 -->
-        <div v-if="(showStats || (liveChat && !chatPeekRead)) && !viewingList" />
-        <ChatTopbar v-else-if="openSession && !viewingList" />
+        <div v-if="showStats || (liveChat && activeViewTab?.type === 'chat')" />
+        <ChatTopbar v-else-if="openSession && activeViewTab" />
         <TrashTopbar
           v-else-if="showTrash"
           :items="trash"
@@ -3205,18 +3209,21 @@ async function onGlobalSearchOpen(hit: SearchHit) {
     <!-- 主区 -->
     <main class="main">
       <!-- TUI tab 条：左边 List/View meta tab + 当前项目的 PTY tab。
-           inProjectBrowse 决定 List/View 是否显示；hasOpenSession 决定 View 是否显示。 -->
+           inProjectBrowse + viewTabs 决定 strip 何时显示。 -->
       <TerminalStrip
         :agent="agent"
         :project-key="activeDir"
         :in-project-browse="!!activeDir && !showTrash && !showStats"
-        :has-open-session="!!openSession || !!liveChat"
-        :viewing-list="viewingList"
-        :active-view-key="activeViewKey"
+        :view-tabs="visibleViewTabs(agent, activeDir)"
+        :active-view-tab-id="activeViewTabId"
         @list-click="onTuiListClick"
-        @select-view="onSelectView"
-        @view-click="onTuiViewClick"
+        @view-click="onTuiViewTabClick"
         @view-close="onTuiViewClose"
+        @view-rename="onViewRename"
+        @view-close-others="onViewCloseOthers"
+        @view-close-project="onViewCloseProject"
+        @close-others-all="onCloseOthersAll"
+        @close-all="onCloseAll"
         @tab-closed="onTuiTabClosed"
         @tab-rename="openRenameFromTuiTab"
         @saved-rename="openRenameFromSavedTab"
@@ -3234,25 +3241,21 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       <div class="main-body">
         <!-- 标准视图（聊天 / 列表 / 统计 / 回收站 / 欢迎页） -->
         <div class="view-layer" v-show="activeUiId === null">
-          <!-- live GUI chat（程序化聊天）—— 优先于其它视图；chatPeekRead / chatPeekStats
-               时让位给下面来源会话的只读详情 / 统计页（进程不停，仅切视图）。 -->
+          <!-- live GUI chat tab -->
           <ChatView
-            v-if="liveChat && !chatPeekRead && !chatPeekStats && !viewingList"
+            v-if="activeViewTab?.type === 'chat' && liveChat"
             :agent="liveChat.agent"
             :session="liveChatMeta"
             :messages="liveChat.msgs"
             :live-session="liveChat"
             :cwd="liveChat.cwd"
-            :has-read-view="!!openSession"
-            :favorited="viewFavorited"
-            :can-favorite="canFavorite"
-            @toggle-favorite="onToggleFavorite"
-            @back="closeLiveChat"
-            @switch-to-read="switchLiveToRead"
+            :has-read-view="!!liveChatSourceSession"
+            @back="closeLiveChat()"
             @rename="openRenameLiveChat"
             @fork="forkLiveChat"
+            @switch-to-read="switchLiveChatToRead"
             @open-session-stats="openLiveChatStats"
-            @reveal="reveal(openSession?.path || liveChat.cwd || '')"
+            @reveal="reveal(liveChatSourceSession?.path || liveChat.cwd || '')"
             @export-md="exportLiveChat('md')"
             @export-html="exportLiveChat('html')"
             @export-json="exportLiveChat('json')"
@@ -3260,15 +3263,16 @@ async function onGlobalSearchOpen(hit: SearchHit) {
           />
 
           <StatsView
-            v-else-if="showStats || (liveChat && chatPeekStats)"
+            v-else-if="showStats"
             :session="sessionStatsTarget"
             @close="closeStats"
             @open-project="(dir) => selectProject(dir)"
             @open-session="openSessionStatsFromGlobal"
           />
 
-          <template v-else-if="openSession && !viewingList">
-            <div v-if="loadingChat" class="loading">{{ t('common.loading') }}</div>
+          <!-- session tab（只读查看） -->
+          <template v-else-if="activeViewTab?.type === 'session' && openSession">
+            <div v-if="activeViewTab.loadingMsgs" class="loading">{{ t('common.loading') }}</div>
             <ChatView
               v-else
               ref="chatViewRef"
@@ -3278,10 +3282,7 @@ async function onGlobalSearchOpen(hit: SearchHit) {
               :trashed="!!openTrashItem"
               :live="liveTailing"
               :cwd="chatCwd"
-              :favorited="viewFavorited"
-              :can-favorite="canFavorite"
-              @toggle-favorite="onToggleFavorite"
-              @back="openSession = null"
+              @back="closeActiveViewTab"
               @refresh="openChat(openSession)"
               @delete="deleteSession(openSession)"
               @resume-here="resumeHere(openSession)"

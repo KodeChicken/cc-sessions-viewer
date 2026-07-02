@@ -42,6 +42,7 @@ use crate::types::{
     AgentStats, ClaudeRuntimeInfo, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, TrayStats, UsageSummary,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+#[allow(unused_imports)]
 use tauri::{Emitter, Manager};
 use crate::util::is_jsonl;
 
@@ -412,6 +413,7 @@ fn valid_permission_mode(mode: &str) -> bool {
 fn agent_chat_start(
     app: tauri::AppHandle,
     agent: String,
+    project_key: String,
     cwd: String,
     session_id: Option<String>,
     permission_mode: Option<String>,
@@ -448,6 +450,7 @@ fn agent_chat_start(
     let chat_id = agent_chat::start(
         app,
         agent,
+        project_key,
         cwd,
         session_id,
         mode,
@@ -462,6 +465,11 @@ fn agent_chat_start(
 #[tauri::command]
 fn reclaude_info() -> crate::types::ReclaudeInfo {
     agent_chat::reclaude_info()
+}
+
+#[tauri::command]
+fn agent_chat_list_running() -> Vec<agent_chat::RunningChatInfo> {
+    agent_chat::list_running_chats()
 }
 
 /// 向某个 chat 子进程发送一条用户消息（含可选图片附件 + 本轮的 model/effort/权限）。
@@ -1562,6 +1570,7 @@ pub fn run() {
             pty_resize,
             pty_kill,
             agent_chat_start,
+            agent_chat_list_running,
             agent_chat_send,
             agent_chat_stop,
             agent_chat_interrupt,

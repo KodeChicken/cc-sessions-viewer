@@ -2,11 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   viewHistory,
   recordView,
-  setViewMode,
-  toggleViewFavorite,
   removeView,
   removeViewEverywhere,
-  isViewFavorited,
   sortViewHistory,
   persistViewHistory,
   type ViewHistoryEntry,
@@ -31,7 +28,6 @@ function entry(over: Partial<ViewHistoryEntry>): ViewHistoryEntry {
     dir: '/p',
     session: sess('a'),
     mode: 'read',
-    favorite: false,
     openedAt: 0,
     ...over,
   }
@@ -49,13 +45,12 @@ afterEach(() => {
 })
 
 describe('recordView', () => {
-  it('appends a new entry with favorite=false and openedAt=now', () => {
+  it('appends a new entry with openedAt=now', () => {
     recordView({ agent: 'claude', dir: '/p', session: sess('a.jsonl'), mode: 'read' })
     expect(viewHistory.value).toHaveLength(1)
     expect(viewHistory.value[0]).toMatchObject({
       agent: 'claude',
       dir: '/p',
-      favorite: false,
       openedAt: 1000,
       mode: 'read',
     })
@@ -71,15 +66,6 @@ describe('recordView', () => {
     expect(viewHistory.value[0].session.title).toBe('renamed')
   })
 
-  it('preserves favorite state across re-record', () => {
-    recordView({ agent: 'claude', dir: '/p', session: sess('a.jsonl'), mode: 'read' })
-    toggleViewFavorite('claude', '/p', 'a.jsonl')
-    now = 3000
-    recordView({ agent: 'claude', dir: '/p', session: sess('a.jsonl'), mode: 'read' })
-    expect(viewHistory.value).toHaveLength(1)
-    expect(viewHistory.value[0].favorite).toBe(true)
-  })
-
   it('treats same path under a different agent/dir as a distinct entry', () => {
     recordView({ agent: 'claude', dir: '/p', session: sess('a.jsonl'), mode: 'read' })
     recordView({ agent: 'codex', dir: '/p', session: sess('a.jsonl'), mode: 'read' })
@@ -91,41 +77,6 @@ describe('recordView', () => {
     recordView({ agent: 'claude', dir: '', session: sess('a.jsonl'), mode: 'read' })
     recordView({ agent: 'claude', dir: '/p', session: sess(''), mode: 'read' })
     expect(viewHistory.value).toHaveLength(0)
-  })
-})
-
-describe('setViewMode', () => {
-  it('patches mode without changing openedAt', () => {
-    recordView({ agent: 'claude', dir: '/p', session: sess('a.jsonl'), mode: 'read' })
-    now = 5000
-    setViewMode('claude', '/p', 'a.jsonl', 'chat')
-    expect(viewHistory.value[0].mode).toBe('chat')
-    expect(viewHistory.value[0].openedAt).toBe(1000)
-  })
-
-  it('is a no-op for unknown entries', () => {
-    setViewMode('claude', '/p', 'missing', 'chat')
-    expect(viewHistory.value).toHaveLength(0)
-  })
-})
-
-describe('toggleViewFavorite / isViewFavorited', () => {
-  it('flips favorite and sets/clears favoritedAt; returns new state', () => {
-    recordView({ agent: 'claude', dir: '/p', session: sess('a.jsonl'), mode: 'read' })
-    now = 7000
-    expect(toggleViewFavorite('claude', '/p', 'a.jsonl')).toBe(true)
-    expect(viewHistory.value[0].favorite).toBe(true)
-    expect(viewHistory.value[0].favoritedAt).toBe(7000)
-    expect(isViewFavorited('claude', '/p', 'a.jsonl')).toBe(true)
-
-    expect(toggleViewFavorite('claude', '/p', 'a.jsonl')).toBe(false)
-    expect(viewHistory.value[0].favorite).toBe(false)
-    expect(viewHistory.value[0].favoritedAt).toBeUndefined()
-    expect(isViewFavorited('claude', '/p', 'a.jsonl')).toBe(false)
-  })
-
-  it('returns false for unknown entries', () => {
-    expect(toggleViewFavorite('claude', '/p', 'missing')).toBe(false)
   })
 })
 
@@ -153,15 +104,14 @@ describe('removeViewEverywhere', () => {
 })
 
 describe('sortViewHistory', () => {
-  it('puts favorites first (by favoritedAt desc), then the rest by openedAt desc', () => {
+  it('sorts by openedAt desc', () => {
     const list = [
       entry({ session: sess('r1', 'recent one'), openedAt: 100 }),
       entry({ session: sess('r2', 'recent two'), openedAt: 300 }),
-      entry({ session: sess('f1', 'fav one'), favorite: true, favoritedAt: 50 }),
-      entry({ session: sess('f2', 'fav two'), favorite: true, favoritedAt: 80 }),
+      entry({ session: sess('r3', 'oldest'), openedAt: 50 }),
     ]
     const out = sortViewHistory(list)
-    expect(out.map((v) => v.session.path)).toEqual(['f2', 'f1', 'r2', 'r1'])
+    expect(out.map((v) => v.session.path)).toEqual(['r2', 'r1', 'r3'])
   })
 
   it('filters by case-insensitive title substring', () => {
@@ -177,7 +127,7 @@ describe('sortViewHistory', () => {
   it('does not mutate the input array', () => {
     const list = [
       entry({ session: sess('r1'), openedAt: 100 }),
-      entry({ session: sess('f1'), favorite: true, favoritedAt: 50 }),
+      entry({ session: sess('r2'), openedAt: 50 }),
     ]
     const snapshot = list.map((v) => v.session.path)
     sortViewHistory(list)
@@ -205,7 +155,7 @@ describe('persistence', () => {
     localStorage.setItem(
       'viewHistory:v1',
       JSON.stringify([
-        { agent: 'claude', dir: '/p', session: { path: 'ok' }, mode: 'chat', favorite: true, favoritedAt: 9, openedAt: 5 },
+        { agent: 'claude', dir: '/p', session: { path: 'ok' }, mode: 'chat', openedAt: 5 },
         { agent: 'claude', dir: '/p', session: {} }, // no path → dropped
         { foo: 'bar' }, // garbage → dropped
       ]),
@@ -216,8 +166,6 @@ describe('persistence', () => {
     expect(mod.viewHistory.value[0]).toMatchObject({
       session: { path: 'ok' },
       mode: 'chat',
-      favorite: true,
-      favoritedAt: 9,
       openedAt: 5,
     })
   })

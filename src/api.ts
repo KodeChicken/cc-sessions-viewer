@@ -6,6 +6,7 @@ import type {
   ChatImageInput,
   ClaudeRuntimeInfo,
   ChatStartInfo,
+  RunningChatInfo,
   ReclaudeInfo,
   SlashCommand,
   ProjectFileEntry,
@@ -292,17 +293,18 @@ export const ptyKill = (id: number) => invoke<void>('pty_kill', { id })
  *  `agent-chat://event|init|result|delta|exit|stderr` 事件接收。 */
 export const agentChatStart = (
   agent: Agent,
+  projectKey: string,
   cwd: string,
   sessionId?: string,
   permissionMode?: string,
   model?: string,
   effort?: string,
-  /** btw 侧聊：续聊既有会话时从它**派生**一份独立 session（继承上下文、不污染原 transcript）。 */
   fork?: boolean,
   useReclaude?: boolean,
 ) =>
   invoke<ChatStartInfo>('agent_chat_start', {
     agent,
+    projectKey,
     cwd,
     sessionId,
     permissionMode,
@@ -311,6 +313,9 @@ export const agentChatStart = (
     fork,
     useReclaude,
   })
+
+export const agentChatListRunning = () =>
+  invoke<RunningChatInfo[]>('agent_chat_list_running')
 
 /** 向某个 chat 子进程发送一条用户消息（含可选图片附件 + 本轮 model/effort/权限）。
  *  one-shot agent（Codex）据此每轮切换；长驻 agent（Claude）后端忽略这三者（在 start

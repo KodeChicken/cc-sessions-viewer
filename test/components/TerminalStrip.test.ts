@@ -65,7 +65,8 @@ function factory() {
       agent: 'codex',
       projectKey: 'proj',
       inProjectBrowse: true,
-      hasOpenSession: false,
+      viewTabs: [],
+      activeViewTabId: null,
     },
     global: { directives: { tooltip: vTooltip } },
   })
@@ -90,6 +91,8 @@ describe('TerminalStrip', () => {
       'tab-close',
       'tab-close-others',
       'tab-close-project',
+      undefined, // close others all
+      undefined, // close all
     ])
     expect(wrapper.emitted('tabRename')).toBeUndefined()
   })

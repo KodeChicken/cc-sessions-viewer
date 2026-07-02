@@ -286,6 +286,18 @@ export interface ChatStartInfo {
   processModel: ChatProcessModel
 }
 
+export interface RunningChatInfo {
+  chatId: number
+  agent: Agent
+  projectKey: string
+  cwd: string
+  sessionId: string | null
+  permissionMode: string
+  model: string | null
+  effort: string | null
+  processModel: string
+}
+
 export interface ReclaudeInfo {
   installed: boolean
   daemonRunning: boolean

@@ -50,7 +50,6 @@ import {
   IconEye,
   IconChat,
   IconReader,
-  IconStar,
   IconStop,
   IconGitBranch,
   fileIconFor,
@@ -87,10 +86,6 @@ const props = defineProps<{
   liveSession?: ChatSession | null
   /** live 模式下是否有「来源只读会话」可回看 —— 有才显示头部「切到 read」按钮。 */
   hasReadView?: boolean
-  /** 当前会话是否已收藏进「Views」历史 —— 决定头部星标实心 / 空心。 */
-  favorited?: boolean
-  /** 是否允许收藏（普通项目会话才可；回收站 / 导出历史 / 无 path 的 live chat 不可）。 */
-  canFavorite?: boolean
 }>()
 
 defineEmits<{
@@ -116,7 +111,6 @@ defineEmits<{
    *  topbar + chat-head 两排 icon-only 按钮重叠的扫描负担。 */
   openSessionStats: []
   /** 头部星标：把当前会话收藏 / 取消收藏到「Views」历史。 */
-  toggleFavorite: []
 }>()
 
 /** live 模式当前轮已运行秒数（由 chatSessions 的模块时钟驱动）。 */
@@ -1307,17 +1301,6 @@ function onDocClick(e: MouseEvent) {
         </span>
       </div>
     </div>
-    <!-- 收藏星标：把当前会话收藏进「Views」历史（List/View 之间的下拉），收藏后实心。
-         仅普通项目会话可收藏，回收站 / 导出历史 / 无 path 的新建 GUI chat 不显示。 -->
-    <button
-      v-if="canFavorite"
-      class="icon-btn fav-btn"
-      :class="{ active: favorited }"
-      v-tooltip="favorited ? t('chat.action.unfavorite') : t('chat.action.favorite')"
-      @click="$emit('toggleFavorite')"
-    >
-      <IconStar class="fav-star" :class="{ filled: favorited }" />
-    </button>
     <!-- 会话统计 + 折叠 Tool calls：原本住在 ChatTopbar.ct-actions 里，
          与 chat-head 的 5 个会话级 icon 隔一行 40px topbar 在同一垂直线上。
          挪进 chat-head 后顶栏只剩 scope+search 一条横线。toolsCollapsed

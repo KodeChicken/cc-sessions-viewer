@@ -313,17 +313,20 @@ describe('chatSessions message queue (type-while-running)', () => {
     expect(invokeMock).not.toHaveBeenCalledWith('agent_chat_send', expect.anything())
   })
 
-  it('clears the queue when the current turn is interrupted', async () => {
+  it('preserves the queue when the current turn is interrupted and drains next', async () => {
     const s = await startClaude()
     s.turnState = 'running'
     enqueuePrompt(s, 'pending-1')
     enqueuePrompt(s, 'pending-2')
     expect(s.queue).toHaveLength(2)
-    // 中断（长驻 = restart-with-resume）：先 stop 旧进程，再 start 新进程。
+    // 中断（长驻 = stop + restart）：先 stop 旧进程，再 start 新进程。
     invokeMock.mockReset()
-    invokeMock.mockResolvedValueOnce(undefined)
-    invokeMock.mockResolvedValueOnce({ chatId: 2, processModel: 'longLivedStdin' })
+    invokeMock.mockResolvedValueOnce(undefined) // stop
+    invokeMock.mockResolvedValueOnce({ chatId: 2, processModel: 'longLivedStdin' }) // start
+    invokeMock.mockResolvedValue(undefined) // drain sends
     await interruptChat(s)
-    expect(s.queue).toHaveLength(0)
+    // pending-1 被 drain 发出，pending-2 还在队列
+    expect(s.queue).toHaveLength(1)
+    expect(s.queue[0].text).toBe('pending-2')
   })
 })

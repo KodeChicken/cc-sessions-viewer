@@ -23,7 +23,7 @@
 //   agent-chat://stderr  { chatId, line }             子进程 stderr 诊断行
 //   agent-chat://exit    { chatId, code }             子进程退出
 //
-// 不持久化：webview 刷新 = 所有 chat 子进程被回收（与 TUI tab 语义一致）。
+// webview 刷新时后端进程不杀 —— 前端重连（list_running_chats → reconnect）。
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -66,10 +66,23 @@ enum ChatHandle {
     },
 }
 
-static CHATS: OnceLock<Mutex<HashMap<u64, Arc<ChatHandle>>>> = OnceLock::new();
+struct ChatMeta {
+    agent: String,
+    project_key: String,
+    cwd: String,
+    session_id: Mutex<Option<String>>,
+    permission_mode: String,
+    model: Option<String>,
+    effort: Option<String>,
+    process_model: String,
+}
+
+type ChatEntry = (Arc<ChatHandle>, Arc<ChatMeta>);
+
+static CHATS: OnceLock<Mutex<HashMap<u64, ChatEntry>>> = OnceLock::new();
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-fn map() -> &'static Mutex<HashMap<u64, Arc<ChatHandle>>> {
+fn map() -> &'static Mutex<HashMap<u64, ChatEntry>> {
     CHATS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -198,6 +211,7 @@ pub fn reclaude_info() -> crate::types::ReclaudeInfo {
 pub fn start(
     app: AppHandle,
     agent: String,
+    project_key: String,
     cwd: String,
     session_id: Option<String>,
     permission_mode: String,
@@ -211,10 +225,23 @@ pub fn start(
     }
     let source = agents::source(&agent)?;
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+    let pm_str = match source.chat_process_model() {
+        ChatProcessModel::LongLivedStdin => "longLived",
+        ChatProcessModel::OneShotResume => "oneShot",
+    };
+    let meta = Arc::new(ChatMeta {
+        agent: agent.clone(),
+        project_key,
+        cwd: cwd.clone(),
+        session_id: Mutex::new(session_id.clone()),
+        permission_mode: permission_mode.clone(),
+        model: model.clone(),
+        effort: effort.clone(),
+        process_model: pm_str.to_string(),
+    });
 
     match source.chat_process_model() {
         ChatProcessModel::LongLivedStdin => {
-            // 长驻进程：model / effort 在 start 时定型（切换靠 restart-with-resume）。
             let command = source
                 .chat_command(
                     session_id.as_deref(),
@@ -240,28 +267,23 @@ pub fn start(
                 stdin: Mutex::new(stdin),
                 child: Mutex::new(child),
             });
-            map().lock().map_err(|e| e.to_string())?.insert(id, handle);
+            map().lock().map_err(|e| e.to_string())?.insert(id, (handle, meta.clone()));
 
-            // ---- reader 线程：逐行 stdout → parse_chat_line → emit ----
+            let meta_for_reader = meta;
             let app_for_reader = app.clone();
             let agent_for_reader = agent.clone();
-            thread::spawn(move || reader_loop(app_for_reader, id, agent_for_reader, stdout));
-            // ---- stderr 线程：诊断行透传 ----
+            thread::spawn(move || reader_loop(app_for_reader, id, agent_for_reader, stdout, meta_for_reader));
             spawn_stderr_pump(app.clone(), id, stderr);
-            // ---- waiter 线程：try_wait 退出码后 emit + 清理 ----
             let app_for_wait = app.clone();
             thread::spawn(move || waiter_loop(app_for_wait, id));
         }
         ChatProcessModel::OneShotResume => {
-            // 验证该 agent 真支持 one-shot chat（否则入口该禁用 / start 该失败）。
-            // model / effort / permission 不在 start 定型 —— 每轮 send 自带（免费即时切换）。
             if source
                 .chat_turn_command(session_id.as_deref(), "", &permission_mode, None, None)
                 .is_none()
             {
                 return Err(format!("{agent} 暂不支持 GUI 聊天模式"));
             }
-            // 不 spawn：登记会话配置，首条 send 才起「这一轮」的进程。
             let handle = Arc::new(ChatHandle::OneShot {
                 app: app.clone(),
                 agent: agent.clone(),
@@ -270,7 +292,7 @@ pub fn start(
                 current: Mutex::new(None),
                 use_reclaude,
             });
-            map().lock().map_err(|e| e.to_string())?.insert(id, handle);
+            map().lock().map_err(|e| e.to_string())?.insert(id, (handle, meta));
         }
     }
 
@@ -303,7 +325,7 @@ fn spawn_stderr_pump(app: AppHandle, id: u64, stderr: std::process::ChildStderr)
     });
 }
 
-fn reader_loop(app: AppHandle, id: u64, agent: String, stdout: std::process::ChildStdout) {
+fn reader_loop(app: AppHandle, id: u64, agent: String, stdout: std::process::ChildStdout, meta: Arc<ChatMeta>) {
     let Ok(source) = agents::source(&agent) else {
         return;
     };
@@ -320,8 +342,13 @@ fn reader_loop(app: AppHandle, id: u64, agent: String, stdout: std::process::Chi
             ChatEvent::Init {
                 session_id,
                 api_key_source,
-            } => app
-                .emit(
+            } => {
+                if let Some(s) = session_id.as_ref() {
+                    if let Ok(mut g) = meta.session_id.lock() {
+                        *g = Some(s.clone());
+                    }
+                }
+                app.emit(
                     "agent-chat://init",
                     InitPayload {
                         chat_id: id,
@@ -329,7 +356,8 @@ fn reader_loop(app: AppHandle, id: u64, agent: String, stdout: std::process::Chi
                         api_key_source,
                     },
                 )
-                .is_ok(),
+                .is_ok()
+            }
             ChatEvent::Result { ok, usage } => app
                 .emit("agent-chat://result", ResultPayload { chat_id: id, ok, usage })
                 .is_ok(),
@@ -345,7 +373,6 @@ fn reader_loop(app: AppHandle, id: u64, agent: String, stdout: std::process::Chi
             ChatEvent::Ignore => true,
         };
         if !emit_ok {
-            // emit 失败通常意味着 app 在 teardown —— 直接退出 reader。
             break;
         }
     }
@@ -368,11 +395,10 @@ struct DeltaPayload {
 fn waiter_loop(app: AppHandle, id: u64) {
     loop {
         let res = {
-            let arc = match map().lock().ok().and_then(|m| m.get(&id).cloned()) {
+            let arc = match map().lock().ok().and_then(|m| m.get(&id).map(|(h, _)| h.clone())) {
                 Some(a) => a,
-                None => return, // stop() 已经把它移走，啥也别干。
+                None => return,
             };
-            // waiter 只服务长驻进程；OneShot 没有长驻进程，不该被起 waiter。
             let ChatHandle::LongLived { child, .. } = &*arc else {
                 return;
             };
@@ -418,7 +444,7 @@ pub fn send(
 ) -> Result<(), String> {
     let arc = {
         let m = map().lock().map_err(|e| e.to_string())?;
-        m.get(&id).cloned().ok_or_else(|| "chat not found".to_string())?
+        m.get(&id).map(|(h, _)| h.clone()).ok_or_else(|| "chat not found".to_string())?
     };
     if text.is_empty() && images.is_empty() {
         return Ok(()); // 空消息不发。
@@ -558,11 +584,11 @@ fn oneshot_turn_reader(
 /// 结束一个 chat 会话：先把 entry 拿走（waiter 下一轮发现不见了就 return，
 /// 不再 emit 奇怪的 exit），再 kill + wait 回收，避免僵尸。幂等。
 pub fn stop(id: u64) -> Result<(), String> {
-    let arc = {
+    let entry = {
         let mut m = map().lock().map_err(|e| e.to_string())?;
         m.remove(&id)
     };
-    let Some(arc) = arc else {
+    let Some((arc, _meta)) = entry else {
         return Ok(());
     };
     match &*arc {
@@ -591,7 +617,7 @@ pub fn stop(id: u64) -> Result<(), String> {
 pub fn interrupt(id: u64) -> Result<(), String> {
     let arc = {
         let m = map().lock().map_err(|e| e.to_string())?;
-        m.get(&id).cloned().ok_or_else(|| "chat not found".to_string())?
+        m.get(&id).map(|(h, _)| h.clone()).ok_or_else(|| "chat not found".to_string())?
     };
     match &*arc {
         ChatHandle::LongLived { stdin, .. } => {
@@ -617,7 +643,7 @@ fn respond_control(
 ) -> Result<(), String> {
     let arc = {
         let m = map().lock().map_err(|e| e.to_string())?;
-        m.get(&id).cloned().ok_or_else(|| "chat not found".to_string())?
+        m.get(&id).map(|(h, _)| h.clone()).ok_or_else(|| "chat not found".to_string())?
     };
     match &*arc {
         ChatHandle::LongLived { stdin, .. } => {
@@ -658,4 +684,39 @@ pub fn respond_question(
     decision: serde_json::Value,
 ) -> Result<(), String> {
     respond_control(id, request_id, decision)
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RunningChatInfo {
+    pub chat_id: u64,
+    pub agent: String,
+    pub project_key: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub permission_mode: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub process_model: String,
+}
+
+pub fn list_running_chats() -> Vec<RunningChatInfo> {
+    let guard = match map().lock() {
+        Ok(g) => g,
+        Err(_) => return vec![],
+    };
+    guard
+        .iter()
+        .map(|(id, (_handle, meta))| RunningChatInfo {
+            chat_id: *id,
+            agent: meta.agent.clone(),
+            project_key: meta.project_key.clone(),
+            cwd: meta.cwd.clone(),
+            session_id: meta.session_id.lock().ok().and_then(|g| g.clone()),
+            permission_mode: meta.permission_mode.clone(),
+            model: meta.model.clone(),
+            effort: meta.effort.clone(),
+            process_model: meta.process_model.clone(),
+        })
+        .collect()
 }

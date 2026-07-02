@@ -638,6 +638,11 @@ fn classify_meta_kind(v: &Value, blocks: &[Block]) -> Option<String> {
     if v.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
         return Some("meta".to_string());
     }
+    // sourceToolUseID：工具执行后系统注入的 user 记录（技能正文 / 命令 slash 等）。
+    // stream-json 事件可能不带 isMeta，但 sourceToolUseID 仍然存在。
+    if v.get("sourceToolUseID").is_some_and(|x| x.is_string()) {
+        return Some("meta".to_string());
+    }
     let origin_kind = v.get("origin").and_then(|o| o.get("kind")).and_then(Value::as_str);
     if origin_kind == Some("task-notification") {
         return Some("task-notification".to_string());
@@ -681,6 +686,11 @@ fn classify_meta_kind(v: &Value, blocks: &[Block]) -> Option<String> {
     if head.starts_with("This session is being continued from a previous conversation") {
         return Some("compact".to_string());
     }
+    // 技能注入兜底：stream-json 的技能注入事件可能不带 isMeta flag，靠固定开场白识别。
+    // 否则技能正文里的 `@anthropic-ai/sdk` 等会被 extract_file_refs 误抬成附件 chip。
+    if head.starts_with("Base directory for this skill:") {
+        return Some("meta".to_string());
+    }
     // 多 agent 协作：对方会话发来的消息被注入成 user 记录（无 flag，只能看正文）。
     if head.starts_with("Another Claude session sent a message:") || head.contains("<teammate-message") {
         return Some("teammate-message".to_string());
@@ -698,6 +708,9 @@ fn is_injected_user(v: &Value) -> bool {
     if v.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
         return true;
     }
+    if v.get("sourceToolUseID").is_some_and(|x| x.is_string()) {
+        return true;
+    }
     if v.get("origin").and_then(|o| o.get("kind")).and_then(Value::as_str)
         == Some("task-notification")
     {
@@ -713,6 +726,7 @@ fn is_injected_user(v: &Value) -> bool {
         || head.starts_with("<bash-stderr>")
         || head.starts_with("<task-notification>")
         || head.starts_with("This session is being continued from a previous conversation")
+        || head.starts_with("Base directory for this skill:")
         || head.starts_with("Another Claude session sent a message:")
         || head.contains("<teammate-message")
 }
@@ -2245,6 +2259,29 @@ mod tests {
             "This session is being continued from a previous conversation that ran out of context. The summary below...",
         );
         assert_eq!(classify_meta_kind(&v, &blocks).as_deref(), Some("compact"));
+    }
+
+    #[test]
+    fn meta_kind_flags_source_tool_use_id() {
+        // sourceToolUseID 表示此 user 记录是工具执行后注入的（技能正文等），
+        // 即使不带 isMeta flag（stream-json 常见）也应归为 meta。
+        let v = json!({
+            "type": "user",
+            "sourceToolUseID": "toolu_01Csnf8gVU635bmuM3tHahNw",
+            "message": { "content": "# Git 提交推送命令\n\n自动提交..." },
+        });
+        let blocks = text_blocks("# Git 提交推送命令\n\n自动提交...");
+        assert_eq!(classify_meta_kind(&v, &blocks).as_deref(), Some("meta"));
+    }
+
+    #[test]
+    fn meta_kind_flags_skill_injection_by_preamble() {
+        // 技能注入的固定开场白兜底（连 sourceToolUseID 都没有时）。
+        let v = json!({ "type": "user", "message": { "content": "" } });
+        let blocks = text_blocks(
+            "Base directory for this skill: /private/tmp/claude-501/bundled-skills/2.1.198/xxx/claude-api\n\n# Building LLM",
+        );
+        assert_eq!(classify_meta_kind(&v, &blocks).as_deref(), Some("meta"));
     }
 
     #[test]

@@ -1,11 +1,7 @@
 <script setup lang="ts">
-// TUI tab 栏 —— main 顶部的横条。左边两个"meta tab"固定描述底层 view：
-//   List —— 项目的会话列表（永远显示，前提是处于项目浏览模式）
-//   View —— 当前打开的聊天详情（只在 hasOpenSession 时出现）
-// 之后是当前 (agent, projectKey) 范围内的所有活跃 PTY tab。
-//
-// 隐藏的 PTY tab（别的项目 / 别的 agent）不在这里出现，但 PTY 仍在后台跑 ——
-// 切回对应项目时它们会再次显示，scrollback 全程不丢。
+// TUI tab 栏 —— main 顶部的横条。左边 List 固定，之后是 view tabs（会话查看 / chat），
+// 再后面是当前 (agent, projectKey) 范围内的所有活跃 PTY tab。
+// 隐藏的 PTY/view tab（别的项目 / 别的 agent）不在这里出现，但仍在后台活着。
 
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Agent } from '../types'
@@ -20,46 +16,42 @@ import {
   removeSavedTab,
   moveTab,
 } from '../terminals'
-import type { ViewHistoryEntry } from '../viewHistory'
-import { viewHistory, sortViewHistory, toggleViewFavorite, removeView } from '../viewHistory'
 import { statusKind } from '../tabStatus'
-import { formatTime } from '../format'
+import type { ViewTab } from '../viewTabs'
 import {
   IconClose,
   IconChat,
   IconList,
   IconPlus,
-  IconTerminal,
-  IconHistory,
-  IconStar,
   IconReader,
-  IconChevronDown,
+  IconTerminal,
   agentIcons,
 } from './icons'
 import { t } from '../i18n'
 
 const props = defineProps<{
-  /** 当前侧栏选中的 agent */
   agent: Agent
-  /** 当前选中的项目 dirName；null = 没选项目（欢迎页 / 回收站 / 统计页） */
   projectKey: string | null
-  /** 当前是否处于"项目浏览"模式（活动项目 + 非回收站/统计） */
   inProjectBrowse: boolean
-  /** 当前是否打开了某个会话 —— 用来决定要不要显示 View tab */
-  hasOpenSession: boolean
-  /** 当前 View 层渲染的那条 view 的 key（session id / path）—— Views 下拉里据此高亮"正在看的那条" */
-  activeViewKey: string | null
-  /** 点了 List 但会话/聊天仍常驻（露出列表、View tab 还在）—— 决定 List/View 谁高亮 */
-  viewingList: boolean
+  viewTabs: ViewTab[]
+  activeViewTabId: number | null
 }>()
 
 const emit = defineEmits<{
   /** List —— 关闭当前会话 + 退出 TUI，回到项目会话列表 */
   listClick: []
-  /** View —— 保留当前会话，仅退出 TUI，回到聊天详情 */
-  viewClick: []
-  /** View 的 × —— 手动关闭聊天详情 tab，清掉当前会话，落回会话列表 */
-  viewClose: []
+  /** View tab 被点击 —— 激活指定 view tab */
+  viewClick: [uiId: number]
+  /** View tab × 被点击 —— 关闭指定 view tab */
+  viewClose: [uiId: number]
+  /** View tab 右键菜单操作 */
+  viewRename: [vt: ViewTab]
+  viewCloseOthers: [vt: ViewTab]
+  viewCloseProject: [type: 'session' | 'chat']
+  /** 关闭除指定 tab 外的所有 tab（终端 + view） */
+  closeOthersAll: [keepUiId: number, keepKind: 'tui' | 'view']
+  /** 关闭当前项目所有 tab（终端 + view） */
+  closeAll: []
   /** PTY tab 被手动关闭（点 ×）—— App 据此刷新数据 */
   tabClosed: []
   /** TUI tab 操作菜单 —— 复用会话重命名弹窗 */
@@ -75,8 +67,6 @@ const emit = defineEmits<{
   hydrateSaved: [saved: SavedTab]
   /** saved tab 右键「重命名」—— 复用会话重命名弹窗（saved 分支只改内存标题） */
   savedRename: [saved: SavedTab]
-  /** Views 下拉里点了某条历史 View —— App 据此把它渲染回 View tab */
-  selectView: [entry: ViewHistoryEntry]
 }>()
 
 const visibleTabs = computed(() =>
@@ -90,57 +80,34 @@ const visibleSaved = computed(() =>
   ),
 )
 
-// ---- Views 下拉（List 和 View 之间的历史列表，每个 (agent, 项目) 独立）----
-const viewsMenuOpen = ref(false)
-const viewsMenuEl = ref<HTMLElement>()
-const viewsFilter = ref('')
-const viewsSearchEl = ref<HTMLInputElement>()
-// 本项目历史里所有 View，按 (agent, projectKey) 过滤
-const projectViews = computed(() =>
-  viewHistory.value.filter(
-    (v) => v.agent === props.agent && v.dir === (props.projectKey ?? ''),
-  ),
-)
-// 收藏在前 + 搜索过滤后的列表（纯函数 sortViewHistory）；模板里按 favorite 边界插分组头
-const sortedViews = computed(() => sortViewHistory(projectViews.value, viewsFilter.value))
-// 有历史才显示 Views 控件，避免空项目堆控件
-const hasViews = computed(() => projectViews.value.length > 0)
+type UnifiedTab =
+  | { kind: 'tui'; tab: TerminalTab; order: number }
+  | { kind: 'saved'; saved: SavedTab; index: number; order: number }
+  | { kind: 'view'; vt: ViewTab; order: number }
 
-function toggleViewsMenu(ev?: Event) {
-  ev?.stopPropagation()
-  viewsMenuOpen.value = !viewsMenuOpen.value
-  if (viewsMenuOpen.value) {
-    nextTick(() => viewsSearchEl.value?.focus())
-  } else {
-    viewsFilter.value = ''
+const unifiedTabs = computed<UnifiedTab[]>(() => {
+  const items: UnifiedTab[] = []
+  for (const tab of visibleTabs.value) {
+    items.push({ kind: 'tui', tab, order: tab.createdAt })
   }
-}
-function onPickView(entry: ViewHistoryEntry) {
-  viewsMenuOpen.value = false
-  viewsFilter.value = ''
-  emit('selectView', entry)
-}
-function onToggleViewFav(entry: ViewHistoryEntry, ev: Event) {
-  ev.stopPropagation()
-  toggleViewFavorite(entry.agent, entry.dir, entry.session.id || entry.session.path)
-}
-function onRemoveView(entry: ViewHistoryEntry, ev: Event) {
-  ev.stopPropagation()
-  removeView(entry.agent, entry.dir, entry.session.id || entry.session.path)
-}
-function onViewsMenuDocClick(e: MouseEvent) {
-  if (!viewsMenuOpen.value) return
-  if (viewsMenuEl.value?.contains(e.target as Node)) return
-  viewsMenuOpen.value = false
-}
+  for (let i = 0; i < visibleSaved.value.length; i++) {
+    const saved = visibleSaved.value[i]
+    items.push({ kind: 'saved', saved, index: i, order: saved.createdAt ?? 0 })
+  }
+  for (const vt of props.viewTabs) {
+    items.push({ kind: 'view', vt, order: vt.createdAt })
+  }
+  items.sort((a, b) => a.order - b.order)
+  return items
+})
+
 // 一旦打开了会话（View tab 存在），整条 strip 就保持可见 —— 即使右侧 PTY tab 全部关闭，
 // List / View 两个 meta tab 仍在，View 只能由它自己的 × 手动关闭，不再自动隐藏。
 const visible = computed(
   () =>
     visibleTabs.value.length > 0 ||
     visibleSaved.value.length > 0 ||
-    // 有历史 View 时即便没开会话也显示 strip，让用户能从 List 上拉出 Views 下拉。
-    (props.inProjectBrowse && (props.hasOpenSession || hasViews.value)),
+    (props.inProjectBrowse && props.viewTabs.length > 0),
 )
 
 function onSavedClick(saved: SavedTab) {
@@ -153,14 +120,12 @@ function onSavedClose(saved: SavedTab, ev: Event) {
   removeSavedTab(saved.sessionPath ? saved.sessionPath : saved)
 }
 const listActive = computed(
-  () => activeUiId.value === null && (props.viewingList || !props.hasOpenSession),
-)
-const viewActive = computed(
-  () => activeUiId.value === null && props.hasOpenSession && !props.viewingList,
+  () => activeUiId.value === null && props.activeViewTabId === null,
 )
 const tabCtx = ref<{ x: number; y: number; tab: TerminalTab } | null>(null)
 const savedCtx = ref<{ x: number; y: number; saved: SavedTab } | null>(null)
 const stripCtx = ref<{ x: number; y: number } | null>(null)
+const viewTabCtx = ref<{ x: number; y: number; vt: ViewTab; typeLabel: string } | null>(null)
 const draggingTabUiId = ref<number | null>(null)
 const dropTarget = ref<{ uiId: number; position: 'before' | 'after' } | null>(null)
 const dragPreview = ref<{
@@ -312,11 +277,9 @@ function onNewMenuDocClick(e: MouseEvent) {
 }
 onMounted(() => {
   document.addEventListener('click', onNewMenuDocClick)
-  document.addEventListener('click', onViewsMenuDocClick)
 })
 onUnmounted(() => {
   document.removeEventListener('click', onNewMenuDocClick)
-  document.removeEventListener('click', onViewsMenuDocClick)
 })
 
 function shortTitle(title: string): string {
@@ -343,12 +306,84 @@ function onTabClick(uiId: number, ev?: Event) {
 function onListClick() {
   emit('listClick')
 }
-function onViewClick() {
-  emit('viewClick')
+function onViewTabClick(uiId: number) {
+  emit('viewClick', uiId)
 }
-function onViewClose(ev: Event) {
+function onViewTabClose(uiId: number, ev: Event) {
   ev.stopPropagation()
-  emit('viewClose')
+  emit('viewClose', uiId)
+}
+
+async function onViewTabContextMenu(vt: ViewTab, ev: MouseEvent) {
+  ev.preventDefault()
+  ev.stopPropagation()
+  if (await openNativeViewTabContextMenu(vt, ev)) return
+  openFallbackViewTabContextMenu(vt, ev)
+}
+
+async function openNativeViewTabContextMenu(vt: ViewTab, ev: MouseEvent): Promise<boolean> {
+  if (!nativeMenuSupported) return false
+  try {
+    const [{ Menu }, { LogicalPosition }] = await Promise.all([
+      import('@tauri-apps/api/menu'),
+      import('@tauri-apps/api/dpi'),
+    ])
+    const typeLabel = vt.type === 'chat' ? t('chat.tui.chatTab') : t('chat.tui.viewTab')
+    const menu = await Menu.new({
+      items: [
+        {
+          id: 'vt-rename',
+          text: t('chat.tui.tabRenameView'),
+          action: () => emit('viewRename', vt),
+        },
+        { item: 'Separator' },
+        {
+          id: 'vt-close',
+          text: t('chat.tui.tabClose'),
+          action: () => emit('viewClose', vt.uiId),
+        },
+        {
+          id: 'vt-close-others',
+          text: t('chat.tui.tabCloseOthersView', { type: typeLabel }),
+          action: () => emit('viewCloseOthers', vt),
+        },
+        {
+          id: 'vt-close-project',
+          text: t('chat.tui.tabCloseProjectView', { type: typeLabel }),
+          action: () => emit('viewCloseProject', vt.type),
+        },
+        { item: 'Separator' },
+        {
+          id: 'vt-close-others-all',
+          text: t('chat.tui.tabCloseOthersAll'),
+          action: () => emit('closeOthersAll', vt.uiId, 'view'),
+        },
+        {
+          id: 'vt-close-all',
+          text: t('chat.tui.tabCloseAll'),
+          action: () => emit('closeAll'),
+        },
+      ],
+    })
+    await menu.popup(new LogicalPosition(ev.clientX, ev.clientY))
+    return true
+  } catch {
+    return false
+  }
+}
+
+function openFallbackViewTabContextMenu(vt: ViewTab, ev: MouseEvent) {
+  const typeLabel = vt.type === 'chat' ? t('chat.tui.chatTab') : t('chat.tui.viewTab')
+  viewTabCtx.value = {
+    x: Math.max(8, Math.min(ev.clientX, window.innerWidth - 220 - 8)),
+    y: Math.max(8, Math.min(ev.clientY, window.innerHeight - 200 - 8)),
+    vt,
+    typeLabel,
+  }
+}
+
+function closeViewTabCtx() {
+  viewTabCtx.value = null
 }
 
 function onClose(uiId: number, ev: Event) {
@@ -512,6 +547,12 @@ async function openNativeSavedContextMenu(saved: SavedTab, ev: MouseEvent): Prom
           text: t('chat.tui.tabCloseProject'),
           action: () => closeProjectAllTabs(),
         },
+        { item: 'Separator' },
+        {
+          id: 'saved-close-all',
+          text: t('chat.tui.tabCloseAll'),
+          action: () => emit('closeAll'),
+        },
       ],
     })
     await menu.popup(new LogicalPosition(ev.clientX, ev.clientY))
@@ -574,13 +615,24 @@ async function openNativeTabContextMenu(tab: TerminalTab, ev: MouseEvent): Promi
         },
         {
           id: 'tab-close-others',
-          text: t('chat.tui.tabCloseOthers'),
+          text: t(tab.isShell ? 'chat.tui.tabCloseOthers' : 'chat.tui.tabCloseOthersSession'),
           action: () => closeOtherNativeCtxTabs(tab),
         },
         {
           id: 'tab-close-project',
-          text: t('chat.tui.tabCloseProject'),
-          action: () => closeProjectNativeCtxTabs(),
+          text: t(tab.isShell ? 'chat.tui.tabCloseProject' : 'chat.tui.tabCloseProjectSession'),
+          action: () => closeProjectNativeCtxTabs(tab),
+        },
+        { item: 'Separator' },
+        {
+          id: 'tab-close-others-all',
+          text: t('chat.tui.tabCloseOthersAll'),
+          action: () => emit('closeOthersAll', tab.uiId, 'tui'),
+        },
+        {
+          id: 'tab-close-all',
+          text: t('chat.tui.tabCloseAll'),
+          action: () => emit('closeAll'),
         },
       ],
     })
@@ -654,6 +706,7 @@ function closeTabCtx() {
   tabCtx.value = null
   stripCtx.value = null
   savedCtx.value = null
+  viewTabCtx.value = null
 }
 
 function newSessionFromStripCtx() {
@@ -688,14 +741,15 @@ function closeOtherCtxTabs() {
   closeTabCtx()
   if (!tab) return
   for (const item of visibleTabs.value) {
-    if (item.uiId !== tab.uiId) closeTab(item.uiId)
+    if (item.uiId !== tab.uiId && item.isShell === tab.isShell) closeTab(item.uiId)
   }
   emit('tabClosed')
 }
 
 function closeProjectCtxTabs() {
+  const tab = tabCtx.value?.tab
   closeTabCtx()
-  closeProjectNativeCtxTabs()
+  if (tab) closeProjectNativeCtxTabs(tab)
 }
 
 // ---- saved tab 的 HTML fallback 菜单动作（读 savedCtx）----
@@ -726,21 +780,27 @@ function closeNativeCtxTab(tab: TerminalTab) {
 
 function closeOtherNativeCtxTabs(tab: TerminalTab) {
   for (const item of visibleTabs.value) {
-    if (item.uiId !== tab.uiId) closeTab(item.uiId)
+    if (item.uiId !== tab.uiId && item.isShell === tab.isShell) closeTab(item.uiId)
+  }
+  for (const s of [...visibleSaved.value]) {
+    if (s.isShell === tab.isShell) removeSavedTab(s.sessionPath ? s.sessionPath : s)
   }
   emit('tabClosed')
 }
 
-function closeProjectNativeCtxTabs() {
+function closeProjectNativeCtxTabs(tab: TerminalTab) {
   for (const item of visibleTabs.value) {
-    closeTab(item.uiId)
+    if (item.isShell === tab.isShell) closeTab(item.uiId)
+  }
+  for (const s of [...visibleSaved.value]) {
+    if (s.isShell === tab.isShell) removeSavedTab(s.sessionPath ? s.sessionPath : s)
   }
   emit('tabClosed')
 }
 
 
 function onDocMouseDown(e: MouseEvent) {
-  if (!tabCtx.value && !stripCtx.value && !savedCtx.value) return
+  if (!tabCtx.value && !stripCtx.value && !savedCtx.value && !viewTabCtx.value) return
   const target = e.target as HTMLElement | null
   if (target?.closest('.term-tab-ctx-menu, .term-strip-ctx-menu')) return
   closeTabCtx()
@@ -749,7 +809,6 @@ function onDocMouseDown(e: MouseEvent) {
 function onDocKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
     closeTabCtx()
-    viewsMenuOpen.value = false
   }
 }
 
@@ -794,132 +853,8 @@ onUnmounted(() => {
         <span class="term-tab-title">{{ t('chat.tui.listTab') }}</span>
       </div>
 
-      <!-- Views —— List 和 View 之间的历史下拉：每个 (agent, 项目) 独立，可搜索 + 收藏。
-           选一条历史 View 即渲染回右侧的 View tab；View tab 本身不变。 -->
-      <div v-if="hasViews" ref="viewsMenuEl" class="views-menu-wrap">
-        <div
-          class="term-tab view-tab views-tab"
-          :class="{ active: viewsMenuOpen }"
-          v-tooltip:bottom="t('chat.tui.viewsTabTooltip')"
-          role="button"
-          tabindex="0"
-          @click.stop="toggleViewsMenu"
-          @keydown.enter.prevent="toggleViewsMenu"
-          @keydown.space.prevent="toggleViewsMenu"
-        >
-          <IconHistory class="term-tab-agent" />
-          <span class="term-tab-title">{{ t('chat.tui.viewsTab') }}</span>
-          <IconChevronDown class="views-tab-caret" />
-        </div>
-        <div
-          v-if="viewsMenuOpen"
-          class="views-menu"
-          role="menu"
-          @contextmenu.stop.prevent
-        >
-          <div class="views-menu-search">
-            <input
-              ref="viewsSearchEl"
-              v-model="viewsFilter"
-              class="views-search-input"
-              :placeholder="t('chat.tui.viewsSearchPlaceholder')"
-              @keydown.escape.stop="viewsMenuOpen = false"
-              @click.stop
-            />
-          </div>
-          <div class="views-menu-list">
-            <template v-for="(entry, idx) in sortedViews" :key="entry.session.id || entry.session.path">
-              <div
-                v-if="idx === 0 && entry.favorite"
-                class="views-menu-group"
-              >
-                {{ t('chat.tui.viewsFavorites') }}
-              </div>
-              <div
-                v-if="!entry.favorite && idx > 0 && sortedViews[idx - 1].favorite"
-                class="views-menu-group"
-              >
-                {{ t('chat.tui.viewsRecent') }}
-              </div>
-              <div
-                class="views-menu-item"
-                :class="{ active: (entry.session.id || entry.session.path) === activeViewKey }"
-                role="button"
-                tabindex="0"
-                @click="onPickView(entry)"
-                @keydown.enter.prevent="onPickView(entry)"
-              >
-                <component
-                  :is="entry.mode === 'chat' ? IconChat : IconReader"
-                  class="views-item-mode"
-                  v-tooltip:bottom="
-                    entry.mode === 'chat' ? t('chat.action.switchToChat') : t('list.action.view')
-                  "
-                />
-                <span class="views-item-text">{{
-                  entry.session.title || t('chat.tui.untitled')
-                }}</span>
-                <span class="views-item-time">{{ formatTime(entry.openedAt) }}</span>
-                <span
-                  class="views-item-star"
-                  :class="{ filled: entry.favorite }"
-                  v-tooltip:bottom="
-                    entry.favorite ? t('chat.action.unfavorite') : t('chat.action.favorite')
-                  "
-                  role="button"
-                  tabindex="0"
-                  @click="onToggleViewFav(entry, $event)"
-                  @keydown.enter.prevent="onToggleViewFav(entry, $event)"
-                >
-                  <IconStar />
-                </span>
-                <span
-                  class="views-item-remove"
-                  v-tooltip:bottom="t('chat.tui.viewRemove')"
-                  role="button"
-                  tabindex="0"
-                  @click="onRemoveView(entry, $event)"
-                  @keydown.enter.prevent="onRemoveView(entry, $event)"
-                >
-                  <IconClose />
-                </span>
-              </div>
-            </template>
-            <div v-if="!sortedViews.length" class="views-menu-empty">
-              {{ viewsFilter ? t('chat.tui.viewsNoMatch') : t('chat.tui.viewsEmpty') }}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- View —— 打开会话后常驻；只能点它自己的 × 手动关闭，不随 PTY tab 关闭而隐藏 -->
       <div
-        v-if="hasOpenSession"
-        class="term-tab view-tab view-tab-closable"
-        :class="{ active: viewActive }"
-        v-tooltip:bottom="t('chat.tui.viewTabTooltip')"
-        role="button"
-        tabindex="0"
-        @click="onViewClick"
-        @keydown.enter.prevent="onViewClick"
-        @keydown.space.prevent="onViewClick"
-      >
-        <IconChat class="term-tab-agent" />
-        <span class="term-tab-title">{{ t('chat.tui.viewTab') }}</span>
-        <span
-          class="term-tab-close"
-          v-tooltip:bottom="t('chat.tui.tabClose')"
-          role="button"
-          tabindex="0"
-          @click="onViewClose"
-          @keydown.enter.prevent="onViewClose"
-        >
-          <IconClose />
-        </span>
-      </div>
-
-      <div
-        v-if="visibleTabs.length > 0 || visibleSaved.length > 0"
+        v-if="viewTabs.length > 0 || visibleTabs.length > 0 || visibleSaved.length > 0"
         class="term-tab-sep"
         aria-hidden="true"
       />
@@ -935,88 +870,116 @@ onUnmounted(() => {
     >
       <div ref="trackRef" class="term-strip-track" :class="{ panning }" :style="trackStyle">
 
-      <div
-        v-for="tab in visibleTabs"
-        :key="tab.uiId"
-        class="term-tab"
-        :class="{
-          active: activeUiId === tab.uiId,
-          dragging: draggingTabUiId === tab.uiId,
-          'drop-before': dropTarget?.uiId === tab.uiId && dropTarget.position === 'before',
-          'drop-after': dropTarget?.uiId === tab.uiId && dropTarget.position === 'after',
-          'state-working': !tab.isShell && statusKind(tab) === 'working',
-          'state-done': !tab.isShell && statusKind(tab) === 'done',
-          'state-blocked': !tab.isShell && statusKind(tab) === 'blocked',
-          'state-error': !tab.isShell && statusKind(tab) === 'error',
-          'state-exited': !tab.isShell && statusKind(tab) === 'exited',
-          'state-unknown': !tab.isShell && statusKind(tab) === 'unknown',
-        }"
-        v-tooltip:bottom="tab.title"
-        :data-tab-ui-id="tab.uiId"
-        role="button"
-        tabindex="0"
-        @click="onTabClick(tab.uiId, $event)"
-        @dblclick.stop="renameTab(tab, $event)"
-        @contextmenu="onTabContextMenu(tab, $event)"
-        @pointerdown="onTabPointerDown(tab, $event)"
-        @keydown.enter.prevent="onTabClick(tab.uiId)"
-        @keydown.space.prevent="onTabClick(tab.uiId)"
-      >
-        <IconTerminal v-if="tab.isShell" class="term-tab-agent" />
-        <component v-else :is="agentIcons[tab.agent]" class="term-tab-agent" :class="tab.agent" />
-        <span class="term-tab-title">{{ shortTitle(tab.title) }}</span>
-        <span
-          v-if="!tab.isShell && statusKind(tab) === 'working'"
-          class="term-tab-status term-tab-status-working"
-          aria-hidden="true"
-        >
-          <i />
-          <i />
-          <i />
-        </span>
-        <span
-          v-else-if="!tab.isShell && statusKind(tab) !== 'none'"
-          class="term-tab-status"
-          :class="'term-tab-status-' + statusKind(tab)"
-          aria-hidden="true"
-        />
-        <span
-          class="term-tab-close"
-          v-tooltip:bottom="t('chat.tui.tabClose')"
+      <template v-for="ut in unifiedTabs" :key="ut.kind === 'tui' ? ut.tab.uiId : ut.kind === 'saved' ? 'saved:' + (ut.saved.sessionPath || `shell-${ut.index}`) : 'vt:' + ut.vt.uiId">
+        <!-- TUI (live terminal/session) tab -->
+        <div
+          v-if="ut.kind === 'tui'"
+          class="term-tab"
+          :class="{
+            active: activeUiId === ut.tab.uiId,
+            dragging: draggingTabUiId === ut.tab.uiId,
+            'drop-before': dropTarget?.uiId === ut.tab.uiId && dropTarget.position === 'before',
+            'drop-after': dropTarget?.uiId === ut.tab.uiId && dropTarget.position === 'after',
+            'state-working': !ut.tab.isShell && statusKind(ut.tab) === 'working',
+            'state-done': !ut.tab.isShell && statusKind(ut.tab) === 'done',
+            'state-blocked': !ut.tab.isShell && statusKind(ut.tab) === 'blocked',
+            'state-error': !ut.tab.isShell && statusKind(ut.tab) === 'error',
+            'state-exited': !ut.tab.isShell && statusKind(ut.tab) === 'exited',
+            'state-unknown': !ut.tab.isShell && statusKind(ut.tab) === 'unknown',
+          }"
+          v-tooltip:bottom="ut.tab.title"
+          :data-tab-ui-id="ut.tab.uiId"
           role="button"
           tabindex="0"
-          @click="onClose(tab.uiId, $event)"
-          @keydown.enter.prevent="onClose(tab.uiId, $event)"
+          @click="onTabClick(ut.tab.uiId, $event)"
+          @dblclick.stop="renameTab(ut.tab, $event)"
+          @contextmenu="onTabContextMenu(ut.tab, $event)"
+          @pointerdown="onTabPointerDown(ut.tab, $event)"
+          @keydown.enter.prevent="onTabClick(ut.tab.uiId)"
+          @keydown.space.prevent="onTabClick(ut.tab.uiId)"
         >
-          <IconClose />
-        </span>
-      </div>
+          <IconTerminal v-if="ut.tab.isShell" class="term-tab-agent" />
+          <component v-else :is="agentIcons[ut.tab.agent]" class="term-tab-agent" :class="ut.tab.agent" />
+          <span class="term-tab-title">{{ shortTitle(ut.tab.title) }}</span>
+          <span
+            v-if="!ut.tab.isShell && statusKind(ut.tab) === 'working'"
+            class="term-tab-status term-tab-status-working"
+            aria-hidden="true"
+          >
+            <i />
+            <i />
+            <i />
+          </span>
+          <span
+            v-else-if="!ut.tab.isShell && statusKind(ut.tab) !== 'none'"
+            class="term-tab-status"
+            :class="'term-tab-status-' + statusKind(ut.tab)"
+            aria-hidden="true"
+          />
+          <span
+            class="term-tab-close"
+            v-tooltip:bottom="t('chat.tui.tabClose')"
+            role="button"
+            tabindex="0"
+            @click="onClose(ut.tab.uiId, $event)"
+            @keydown.enter.prevent="onClose(ut.tab.uiId, $event)"
+          >
+            <IconClose />
+          </span>
+        </div>
 
-      <!-- Saved (lazy-restore) tabs: pill only, no xterm/PTY until clicked -->
-      <div
-        v-for="(saved, si) in visibleSaved"
-        :key="'saved:' + (saved.sessionPath || `shell-${si}`)"
-        class="term-tab term-tab-saved"
-        v-tooltip:bottom="saved.title"
-        role="button"
-        tabindex="0"
-        @click="onSavedClick(saved)"
-        @contextmenu="onSavedContextMenu(saved, $event)"
-      >
-        <IconTerminal v-if="saved.isShell" class="term-tab-agent" />
-        <component v-else :is="agentIcons[saved.agent]" class="term-tab-agent" :class="saved.agent" />
-        <span class="term-tab-title">{{ shortTitle(saved.title) }}</span>
-        <span
-          class="term-tab-close"
-          v-tooltip:bottom="t('chat.tui.tabClose')"
+        <!-- Saved (lazy-restore) tab -->
+        <div
+          v-else-if="ut.kind === 'saved'"
+          class="term-tab term-tab-saved"
+          v-tooltip:bottom="ut.saved.title"
           role="button"
           tabindex="0"
-          @click="onSavedClose(saved, $event)"
-          @keydown.enter.prevent="onSavedClose(saved, $event)"
+          @click="onSavedClick(ut.saved)"
+          @contextmenu="onSavedContextMenu(ut.saved, $event)"
         >
-          <IconClose />
-        </span>
-      </div>
+          <IconTerminal v-if="ut.saved.isShell" class="term-tab-agent" />
+          <component v-else :is="agentIcons[ut.saved.agent]" class="term-tab-agent" :class="ut.saved.agent" />
+          <span class="term-tab-title">{{ shortTitle(ut.saved.title) }}</span>
+          <span
+            class="term-tab-close"
+            v-tooltip:bottom="t('chat.tui.tabClose')"
+            role="button"
+            tabindex="0"
+            @click="onSavedClose(ut.saved, $event)"
+            @keydown.enter.prevent="onSavedClose(ut.saved, $event)"
+          >
+            <IconClose />
+          </span>
+        </div>
+
+        <!-- View (read/chat) tab -->
+        <div
+          v-else
+          class="term-tab view-tab view-tab-closable"
+          :class="{ active: activeUiId === null && activeViewTabId === ut.vt.uiId }"
+          v-tooltip:bottom="ut.vt.title || (ut.vt.type === 'chat' ? t('chat.tui.chatTab') : t('chat.tui.viewTab'))"
+          role="button"
+          tabindex="0"
+          @click="onViewTabClick(ut.vt.uiId)"
+          @contextmenu="onViewTabContextMenu(ut.vt, $event)"
+          @keydown.enter.prevent="onViewTabClick(ut.vt.uiId)"
+          @keydown.space.prevent="onViewTabClick(ut.vt.uiId)"
+        >
+          <component :is="ut.vt.type === 'chat' ? IconChat : IconReader" class="term-tab-agent" />
+          <span class="term-tab-title">{{ ut.vt.title ? shortTitle(ut.vt.title) : (ut.vt.type === 'chat' ? t('chat.tui.chatTab') : t('chat.tui.viewTab')) }}</span>
+          <span
+            class="term-tab-close"
+            v-tooltip:bottom="t('chat.tui.tabClose')"
+            role="button"
+            tabindex="0"
+            @click="onViewTabClose(ut.vt.uiId, $event)"
+            @keydown.enter.prevent="onViewTabClose(ut.vt.uiId, $event)"
+          >
+            <IconClose />
+          </span>
+        </div>
+      </template>
       </div>
     </div>
 
@@ -1102,7 +1065,7 @@ onUnmounted(() => {
         data-menu-action="tab-close-others"
         @click="closeOtherCtxTabs"
       >
-        <span>{{ t('chat.tui.tabCloseOthers') }}</span>
+        <span>{{ t(tabCtx?.tab?.isShell ? 'chat.tui.tabCloseOthers' : 'chat.tui.tabCloseOthersSession') }}</span>
       </button>
       <button
         type="button"
@@ -1110,7 +1073,14 @@ onUnmounted(() => {
         data-menu-action="tab-close-project"
         @click="closeProjectCtxTabs"
       >
-        <span>{{ t('chat.tui.tabCloseProject') }}</span>
+        <span>{{ t(tabCtx?.tab?.isShell ? 'chat.tui.tabCloseProject' : 'chat.tui.tabCloseProjectSession') }}</span>
+      </button>
+      <div class="ctx-sep" />
+      <button type="button" class="ctx-item" @click="closeTabCtx(); tabCtx && emit('closeOthersAll', tabCtx.tab.uiId, 'tui')">
+        <span>{{ t('chat.tui.tabCloseOthersAll') }}</span>
+      </button>
+      <button type="button" class="ctx-item danger" @click="closeTabCtx(); emit('closeAll')">
+        <span>{{ t('chat.tui.tabCloseAll') }}</span>
       </button>
     </div>
 
@@ -1143,6 +1113,40 @@ onUnmounted(() => {
         @click="closeProjectCtxSaved"
       >
         <span>{{ t('chat.tui.tabCloseProject') }}</span>
+      </button>
+      <div class="ctx-sep" />
+      <button type="button" class="ctx-item danger" @click="closeTabCtx(); emit('closeAll')">
+        <span>{{ t('chat.tui.tabCloseAll') }}</span>
+      </button>
+    </div>
+
+    <!-- View tab 右键菜单 (fallback) -->
+    <div
+      v-if="viewTabCtx"
+      class="ctx-menu term-tab-ctx-menu"
+      :style="{ left: viewTabCtx.x + 'px', top: viewTabCtx.y + 'px' }"
+      @click.stop
+      @contextmenu.prevent.stop
+    >
+      <button type="button" class="ctx-item" @click="closeViewTabCtx(); emit('viewRename', viewTabCtx!.vt)">
+        <span>{{ t('chat.tui.tabRenameView') }}</span>
+      </button>
+      <div class="ctx-sep" />
+      <button type="button" class="ctx-item" @click="closeViewTabCtx(); emit('viewClose', viewTabCtx!.vt.uiId)">
+        <span>{{ t('chat.tui.tabClose') }}</span>
+      </button>
+      <button type="button" class="ctx-item" @click="closeViewTabCtx(); emit('viewCloseOthers', viewTabCtx!.vt)">
+        <span>{{ t('chat.tui.tabCloseOthersView', { type: viewTabCtx!.typeLabel }) }}</span>
+      </button>
+      <button type="button" class="ctx-item danger" @click="closeViewTabCtx(); emit('viewCloseProject', viewTabCtx!.vt.type)">
+        <span>{{ t('chat.tui.tabCloseProjectView', { type: viewTabCtx!.typeLabel }) }}</span>
+      </button>
+      <div class="ctx-sep" />
+      <button type="button" class="ctx-item" @click="const vt = viewTabCtx!.vt; closeViewTabCtx(); emit('closeOthersAll', vt.uiId, 'view')">
+        <span>{{ t('chat.tui.tabCloseOthersAll') }}</span>
+      </button>
+      <button type="button" class="ctx-item danger" @click="closeViewTabCtx(); emit('closeAll')">
+        <span>{{ t('chat.tui.tabCloseAll') }}</span>
       </button>
     </div>
 

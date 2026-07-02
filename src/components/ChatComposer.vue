@@ -156,8 +156,24 @@ const historyHint = computed(() =>
 // 切到别的会话时退出历史浏览（草稿快照属于上一个会话，不能带过去），并自动聚焦新会话输入框。
 watch(() => props.session.uiId, () => {
   exitHistory()
+  stash.value = null
   focusInput()
 })
+// Ctrl+S stash：暂存输入框内容，下一条消息开始发送的瞬间恢复。
+const stash = ref<{ text: string; images: ChatImageAttachment[]; files: ChatFileAttachment[] } | null>(null)
+watch(() => props.session.turnState, (cur, prev) => {
+  if (prev === 'idle' && cur === 'running' && stash.value) {
+    if (!text.value.trim() && images.value.length === 0 && files.value.length === 0) {
+      text.value = stash.value.text
+      images.value = stash.value.images
+      files.value = stash.value.files
+      stash.value = null
+      nextTick(autosize)
+      focusInput()
+    }
+  }
+})
+
 const plusMenuOpen = ref(false) // "+" 弹出菜单（Add files or photos / Add folder）
 const taEl = ref<HTMLTextAreaElement>()
 const wrapEl = ref<HTMLElement>() // 输入框容器（@ 浮层定位的相对锚点）
@@ -942,6 +958,18 @@ function onKeydown(e: KeyboardEvent) {
       e.preventDefault()
       return
     }
+  }
+  // Ctrl+S stash（非 Cmd+S）：暂存当前输入框内容，下一轮结束后恢复。
+  if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && (e.key === 's' || e.key === 'S')) {
+    e.preventDefault()
+    if (text.value.trim() || images.value.length > 0 || files.value.length > 0) {
+      stash.value = { text: text.value, images: [...images.value], files: [...files.value] }
+      text.value = ''
+      images.value = []
+      files.value = []
+      nextTick(autosize)
+    }
+    return
   }
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault()
