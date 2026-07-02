@@ -3905,6 +3905,25 @@ body.is-tab-reordering * {
 .modal-actions .btn {
   flex-shrink: 0;
 }
+.window-close-modal {
+  max-width: calc(100vw - 32px);
+}
+.window-close-remember {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.4;
+  user-select: none;
+}
+.window-close-remember input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--brand);
+}
 
 /* ---------- Settings ---------- */
 /* 左右布局：左侧图标导航 + 右侧定高滚动内容（参考 Claude 客户端设置面板）。 */

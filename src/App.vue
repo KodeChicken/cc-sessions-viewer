@@ -143,6 +143,11 @@ const settingsTab = ref<'general' | 'advanced' | 'shortcuts' | 'updates'>('gener
 const sidebarOpen = ref(true)
 const refreshing = ref(false)
 const isWindows = /Win/i.test(navigator.platform)
+type WindowCloseAction = 'tray' | 'exit'
+const WINDOW_CLOSE_PREF_KEY = 'windowCloseAction:v1'
+const windowClosePrompt = ref({ show: false, remember: false })
+const windowCloseRunning = ref(false)
+let windowCloseUnlisten: UnlistenFn | null = null
 function toggleSidebar() {
   sidebarOpen.value = !sidebarOpen.value
 }
@@ -806,6 +811,46 @@ function notify(msg: string, error = false) {
   toast.value = { show: true, msg, error }
   clearTimeout(toastTimer)
   toastTimer = window.setTimeout(() => (toast.value.show = false), 2600)
+}
+
+function loadWindowCloseAction(): WindowCloseAction | null {
+  const value = localStorage.getItem(WINDOW_CLOSE_PREF_KEY)
+  return value === 'tray' || value === 'exit' ? value : null
+}
+
+async function runWindowCloseAction(action: WindowCloseAction) {
+  if (windowCloseRunning.value) return
+  windowCloseRunning.value = true
+  windowClosePrompt.value.show = false
+  if (windowClosePrompt.value.remember) {
+    localStorage.setItem(WINDOW_CLOSE_PREF_KEY, action)
+  }
+  try {
+    if (action === 'tray') await api.windowHideToTray()
+    else await api.windowExitApp()
+  } catch (e) {
+    windowCloseRunning.value = false
+    notify(t('windowClose.actionFailed', { e: String(e) }), true)
+    return
+  }
+  windowCloseRunning.value = false
+}
+
+function chooseWindowCloseAction(action: WindowCloseAction) {
+  runWindowCloseAction(action)
+}
+
+async function installWindowClosePrompt() {
+  if (!isWindows) return
+  windowCloseUnlisten = await listen('window://close-requested', () => {
+    if (windowCloseRunning.value || windowClosePrompt.value.show) return
+    const savedAction = loadWindowCloseAction()
+    if (savedAction) {
+      runWindowCloseAction(savedAction)
+      return
+    }
+    windowClosePrompt.value = { show: true, remember: false }
+  })
 }
 
 // ---------- 数据加载 ----------
@@ -3004,11 +3049,14 @@ async function installTerminalTurnListeners() {
 }
 
 onMounted(() => {
+  installWindowClosePrompt()
   installLiveTailListeners()
   installTerminalTurnListeners()
 })
 
 onUnmounted(() => {
+  windowCloseUnlisten?.()
+  windowCloseUnlisten = null
   menuUnlisten?.()
   menuUnlisten = null
   window.clearInterval(tuiTitleSyncTimer)
@@ -3328,6 +3376,34 @@ async function onGlobalSearchOpen(hit: SearchHit) {
       @cancel="confirm.show = false"
       @alt="runAlt"
     />
+
+    <Transition name="fade">
+      <div
+        v-if="isWindows && windowClosePrompt.show"
+        class="overlay overlay-confirm"
+        @click.self="windowClosePrompt.show = false"
+      >
+        <div class="modal window-close-modal" role="dialog" aria-modal="true">
+          <h3>{{ t('windowClose.title') }}</h3>
+          <p>{{ t('windowClose.body') }}</p>
+          <label class="window-close-remember">
+            <input v-model="windowClosePrompt.remember" type="checkbox">
+            <span>{{ t('windowClose.remember') }}</span>
+          </label>
+          <div class="modal-actions">
+            <button class="btn" @click="windowClosePrompt.show = false">
+              {{ t('common.cancel') }}
+            </button>
+            <button class="btn danger" @click="chooseWindowCloseAction('exit')">
+              {{ t('windowClose.exitApp') }}
+            </button>
+            <button class="btn primary" @click="chooseWindowCloseAction('tray')">
+              {{ t('windowClose.minimizeToTray') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
     <!-- 设置弹窗 -->
     <Transition name="fade">

@@ -6,6 +6,12 @@ export default {
   'common.close': '关闭',
   'common.confirm': '请确认',
   'common.loading': '加载中…',
+  'windowClose.title': '关闭窗口',
+  'windowClose.body': '请选择点击关闭窗口时要执行的操作。',
+  'windowClose.minimizeToTray': '最小化到托盘',
+  'windowClose.exitApp': '退出应用',
+  'windowClose.remember': '记住此选项，下次不再提示',
+  'windowClose.actionFailed': '关闭窗口操作失败：{e}',
 
   'sidebar.projectsCount': '{count} 个项目',
   'sidebar.noSessions': '未发现 {agent} 会话',
