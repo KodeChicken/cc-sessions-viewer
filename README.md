@@ -26,6 +26,7 @@ https://github.com/user-attachments/assets/9bcb92a8-e5b8-40e5-b492-af252162309b
 - **In-app chat** — start or resume a session in a built-in chat with live model, reasoning-effort (incl. Opus **Ultracode**), and permission-mode pickers — no terminal required
 - **One-click resume** — resume or start a session in an embedded terminal or external app — supports **Terminal.app**, **cmux**, **iTerm2**, **Ghostty**, and **Warp**
 - **Shell terminal tabs** — open pure shell tabs alongside agent sessions for running arbitrary commands in the project directory; tabs persist across restarts
+- **Split panes** — split any project into side-by-side or stacked panes, each with its own tab strip; drag tabs to reorder within a pane or move them between panes, with keyboard shortcuts for every action (see Settings → Shortcuts). Every project remembers its own layout across restarts
 - **cmux deep integration** — auto-reuses existing workspace by cwd, locates running sessions with blue flash, smart split direction, and directory-named tabs
 - **Launch arguments** — per-agent CLI flags (e.g. `--dangerously-skip-permissions`) appended on resume / new session
 - **Jump to prompt** — locate button lists all user prompts; click to scroll and flash the target message
@@ -53,12 +54,12 @@ https://github.com/user-attachments/assets/9bcb92a8-e5b8-40e5-b492-af252162309b
   </tr>
   <tr>
     <td width="50%">
-      <img src="docs/screenshots/chat-preview.png" alt="In-app chat — Mermaid, tables, file mentions and image attachments" />
-      <p align="center"><em>In-app chat — Mermaid & tables, @-mention files, attach images</em></p>
+      <img src="docs/screenshots/split-screen.png" alt="Split panes — multiple sessions side by side" />
+      <p align="center"><em>Split panes — multiple sessions side by side, drag tabs between panes</em></p>
     </td>
     <td width="50%">
-      <img src="docs/screenshots/chat-preview-2.png" alt="Interactive prompts answered inside the chat" />
-      <p align="center"><em>Interactive prompts — answer Claude's questions right in the chat</em></p>
+      <img src="docs/screenshots/chat-preview.png" alt="In-app chat — Mermaid, tables, file mentions and image attachments" />
+      <p align="center"><em>In-app chat — Mermaid & tables, @-mention files, attach images</em></p>
     </td>
   </tr>
   <tr>

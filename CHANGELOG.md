@@ -6,6 +6,21 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.2.3]
+
+### Features
+
+- **Split panes** — split any project view into multiple side-by-side / stacked panes, each with its own tab strip. Panes form a recursive horizontal/vertical tree, and every project remembers its own layout and per-pane tabs across relaunches. Drag tabs to reorder within a pane or move them between panes, with a live drop indicator and a drag preview that follows the cursor; saved-session pills interleave into the strip on the shared timeline. Hold `Cmd/Ctrl` to reveal project shortcuts (`Cmd/Ctrl+1–9`) and `Cmd/Ctrl+Shift` for tab shortcuts (`Cmd/Ctrl+Shift+1–9`); the focused pane is highlighted while the others dim
+- **Code-block language labels** — each code block now shows an always-on language label to the left of its copy button, hidden for unknown / unsupported languages
+- **Refreshed subscription model menu** — Fable 5 leads the list and Sonnet 5 replaces Sonnet 4.6 (moved to More, older Opus kept in More); Fable 5 also joins the Ultracode effort tier alongside Opus 4.7 / 4.8
+
+### Bug Fixes
+
+- **Highlight fenced blocks tagged with aliases** — fences labeled `js`, `ts`, `py`, `sh`, `yml`, … are normalized to Shiki's canonical language name so they highlight correctly instead of rendering plain
+- **Honor ReClaude routing on Windows** — the ReClaude toggle is now respected by the Windows GUI-chat and embedded-terminal command builders (previously ignored); external-terminal resume intentionally keeps ReClaude off
+- **New chat no longer bills credits by default** — auto-pick now skips the credit-gated Fable 5, so a fresh chat defaults to Opus 4.8 instead of consuming usage credits
+- **Homebrew CLI upgrades** — upgrade commands are prefixed with `HOMEBREW_NO_INSTALL_FROM_API=1` to avoid API-based install failures
+
 ## [v0.2.1]
 
 ### Features

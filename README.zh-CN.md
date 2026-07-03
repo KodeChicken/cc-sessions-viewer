@@ -26,6 +26,7 @@ https://github.com/user-attachments/assets/9bcb92a8-e5b8-40e5-b492-af252162309b
 - **应用内对话** — 在内置聊天里新开或续聊会话，实时切换模型、推理强度（含 Opus **Ultracode**）与权限模式，无需打开终端
 - **一键恢复** — 在窗口内嵌终端或外部终端中直接恢复/新建会话——支持 **Terminal.app**、**cmux**、**iTerm2**、**Ghostty** 和 **Warp**
 - **Shell 终端标签** — 在 agent 会话旁开启纯 shell 标签页，直接在项目目录执行任意命令；标签状态跨重启保留
+- **分屏** — 把任意项目拆成左右并排或上下堆叠的多个分屏，每个分屏有独立的标签栏；标签可在分屏内重新排序，也可拖到其他分屏，每个操作都有快捷键（见 设置 → 快捷键）。每个项目的分屏布局跨重启保留
 - **cmux 深度集成** — 按 cwd 自动复用已有 workspace，定位正在运行的会话并蓝色闪烁提示，智能选择拆分方向，新标签页自动以目录名命名
 - **启动参数** — 为每个 agent 单独配置 CLI 参数（如 `--dangerously-skip-permissions`），恢复/新建会话时自动追加
 - **定位提问** — 聊天标题栏的定位按钮列出所有用户提问，点击即滚动到目标消息并闪烁高亮
@@ -53,12 +54,12 @@ https://github.com/user-attachments/assets/9bcb92a8-e5b8-40e5-b492-af252162309b
   </tr>
   <tr>
     <td width="50%">
-      <img src="docs/screenshots/chat-preview.png" alt="应用内聊天 — Mermaid、表格、@ 提及文件与图片附件" />
-      <p align="center"><em>应用内聊天 — Mermaid 与表格渲染、@ 提及文件、粘贴图片</em></p>
+      <img src="docs/screenshots/split-screen.png" alt="分屏 — 多个会话并排显示" />
+      <p align="center"><em>分屏 — 多个会话并排显示，标签可在分屏间拖动</em></p>
     </td>
     <td width="50%">
-      <img src="docs/screenshots/chat-preview-2.png" alt="在聊天中直接回答 Claude 的提问" />
-      <p align="center"><em>交互式提问 — 直接在聊天里回答 Claude 的选择题</em></p>
+      <img src="docs/screenshots/chat-preview.png" alt="应用内聊天 — Mermaid、表格、@ 提及文件与图片附件" />
+      <p align="center"><em>应用内聊天 — Mermaid 与表格渲染、@ 提及文件、粘贴图片</em></p>
     </td>
   </tr>
   <tr>

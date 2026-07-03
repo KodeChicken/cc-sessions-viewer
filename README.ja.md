@@ -26,6 +26,7 @@ https://github.com/user-attachments/assets/9bcb92a8-e5b8-40e5-b492-af252162309b
 - **アプリ内チャット** — 内蔵チャットでセッションを新規作成・再開。モデル / 推論強度（Opus **Ultracode** 対応）/ 権限モードをその場で切り替え（ターミナル不要）
 - **ワンクリック再開** — 埋め込みターミナルまたは外部アプリでセッションを再開・新規作成 — **Terminal.app**、**cmux**、**iTerm2**、**Ghostty**、**Warp** に対応
 - **Shell ターミナルタブ** — エージェントセッションの横に純粋なシェルタブを開き、プロジェクトディレクトリで任意のコマンドを実行可能。タブは再起動後も保持
+- **画面分割** — 任意のプロジェクトを左右または上下に分割し、各ペインが独自のタブ列を持つ。タブはペイン内で並べ替えたり、別のペインへドラッグして移動でき、すべての操作にキーボードショートカットあり（設定 → ショートカット）。ペインのレイアウトはプロジェクトごとに再起動後も保持
 - **cmux 深い統合** — cwd で既存ワークスペースを自動再利用、実行中のセッションを青フラッシュで特定、スマート分割方向、ディレクトリ名でタブ命名
 - **起動引数** — エージェントごとに CLI フラグ（例：`--dangerously-skip-permissions`）を設定、再開・新規作成時に自動追加
 - **プロンプトへジャンプ** — ロケートボタンで全ユーザープロンプトを一覧表示、クリックで対象メッセージへスクロール＆ハイライト
@@ -53,12 +54,12 @@ https://github.com/user-attachments/assets/9bcb92a8-e5b8-40e5-b492-af252162309b
   </tr>
   <tr>
     <td width="50%">
-      <img src="docs/screenshots/chat-preview.png" alt="アプリ内チャット — Mermaid、表、ファイル メンション、画像添付" />
-      <p align="center"><em>アプリ内チャット — Mermaid・表の描画、@ファイル メンション、画像添付</em></p>
+      <img src="docs/screenshots/split-screen.png" alt="画面分割 — 複数セッションを並べて表示" />
+      <p align="center"><em>画面分割 — 複数セッションを並べて表示、タブをペイン間でドラッグ</em></p>
     </td>
     <td width="50%">
-      <img src="docs/screenshots/chat-preview-2.png" alt="チャット内で Claude の質問に直接回答" />
-      <p align="center"><em>対話式プロンプト — Claude の質問にチャット内で直接回答</em></p>
+      <img src="docs/screenshots/chat-preview.png" alt="アプリ内チャット — Mermaid、表、ファイル メンション、画像添付" />
+      <p align="center"><em>アプリ内チャット — Mermaid・表の描画、@ファイル メンション、画像添付</em></p>
     </td>
   </tr>
   <tr>
