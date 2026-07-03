@@ -86,6 +86,7 @@ import IconPaperclipRaw from '~icons/lucide/paperclip'
 import IconSlashSquareRaw from '~icons/lucide/square-slash'
 import IconSkillRaw from '~icons/lucide/box'
 import IconContextWindowRaw from '~icons/lucide/layout-grid'
+import IconExitPaneRaw from '~icons/lucide/log-out'
 
 export const IconPinUp = IconPinUpRaw
 export const IconPinDown = IconPinDownRaw
@@ -108,6 +109,7 @@ export const IconEmptyBox = IconEmptyBoxRaw
 export const IconPointLeft = IconPointLeftRaw
 export const IconSidebar = IconSidebarRaw
 export const IconClose = IconCloseRaw
+export const IconExitPane = IconExitPaneRaw
 export const IconSun = IconSunRaw
 export const IconMoon = IconMoonRaw
 export const IconMonitor = IconMonitorRaw

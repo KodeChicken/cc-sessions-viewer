@@ -78,6 +78,7 @@ const navItems = [
 const isMac = /Mac/i.test(navigator.platform)
 const mod = isMac ? '⌘' : 'Ctrl'
 const shift = isMac ? '⇧' : 'Shift'
+const opt = isMac ? '⌥' : 'Alt'
 const sep = isMac ? '' : '+'
 const k = (parts: string[]) => parts.join(sep)
 // 分两组展示：全局（应用级，随处可用）/ 会话（作用于当前会话或其 tab）。
@@ -107,6 +108,17 @@ const shortcutGroups = [
       { key: k([mod, 'R']), label: 'settings.shortcut.renameTab' },
       { key: k([mod, 'E']), label: 'settings.shortcut.exportSession' },
       { key: k([mod, 'U']), label: 'settings.shortcut.attachFiles' },
+      { key: k([mod, 'J']), label: 'settings.shortcut.btwSideChat' },
+      { key: 'Ctrl+S', label: 'settings.shortcut.stashInput' },
+    ],
+  },
+  {
+    title: 'settings.shortcut.groupPanes',
+    items: [
+      { key: k([mod, 'D']), label: 'settings.shortcut.splitRight' },
+      { key: k([mod, shift, 'D']), label: 'settings.shortcut.splitDown' },
+      { key: k([mod, shift, 'W']), label: 'settings.shortcut.closePane' },
+      { key: `${k([mod, opt])} ←↑↓→`, label: 'settings.shortcut.focusPane' },
     ],
   },
 ]

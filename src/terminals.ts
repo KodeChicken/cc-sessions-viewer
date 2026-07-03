@@ -27,6 +27,7 @@ import '@xterm/xterm/css/xterm.css'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { Agent, SessionMeta } from './types'
 import { theme, launchArgs, useReclaude } from './settings'
+import { panes, focusPane, ensureLayout, activeUiId } from './panes'
 import * as api from './api'
 import {
   applyPendingTurnState,
@@ -59,6 +60,8 @@ export interface TerminalTab {
   /** 所属侧栏项目的 key（= ProjectInfo.dirName）。tab 只在 (agent, projectKey)
    *  匹配当前侧栏选中项时显示在 strip 里；切别的项目 PTY 不杀，只是临时隐藏。 */
   projectKey: string
+  /** 所属分屏格子 id（见 panes.ts）。多 pane 时 strip 只显示 paneId 匹配的 tab。 */
+  paneId: number
   sessionId: string
   sessionPath: string
   title: string
@@ -99,7 +102,9 @@ export interface TerminalTab {
 }
 
 export const tabs = ref<TerminalTab[]>([])
-export const activeUiId = ref<number | null>(null)
+// activeUiId 现在是「聚焦 pane 的 activeUiId」投影（真身在 panes.ts）。从这里 re-export
+// 以保持 TerminalStrip / App.vue 既有 import 路径不变。
+export { activeUiId }
 let nextUiId = 1
 
 // ============================ 持久化（懒恢复） ============================
@@ -121,6 +126,8 @@ export interface SavedTab {
   createdAt?: number
   isShell?: boolean
   userRenamed?: boolean
+  /** 上次退出时所属分屏格子 id。恢复时若该 pane 不在了就兜底到主 pane（见 TerminalStrip）。 */
+  paneId?: number
 }
 
 export interface SavedNav {
@@ -232,6 +239,7 @@ export function persistTabState(nav: SavedNav) {
       title: t.title,
       cwd: t.cwd,
       createdAt: t.createdAt,
+      paneId: t.paneId,
       ...(t.isShell ? { isShell: true } : {}),
       ...(t.userRenamed ? { userRenamed: true } : {}),
     }))
@@ -766,7 +774,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   if (!isNew) {
     const existing = findTabBySession(opts.sessionPath)
     if (existing) {
-      activeUiId.value = existing.uiId
+      activateTabInPane(existing)
       return
     }
   }
@@ -804,6 +812,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     ptyId: null,
     agent: opts.agent,
     projectKey: opts.projectKey,
+    paneId: ensureLayout(opts.agent, opts.projectKey).focusedPaneId,
     sessionId: opts.sessionId,
     sessionPath: opts.sessionPath,
     title: opts.title,
@@ -833,7 +842,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   }) as TerminalTab
   if (opts.userRenamed) tab.userRenamed = true
   tabs.value.push(tab)
-  activeUiId.value = uiId
+  activateTabInPane(tab)
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown' || ev.altKey) return true
     const key = ev.key.toLowerCase()
@@ -991,6 +1000,7 @@ export async function openShellTab(opts: {
     ptyId: null,
     agent: opts.agent,
     projectKey: opts.projectKey,
+    paneId: ensureLayout(opts.agent, opts.projectKey).focusedPaneId,
     sessionId: '',
     sessionPath: '',
     title: opts.title,
@@ -1020,7 +1030,7 @@ export async function openShellTab(opts: {
     isShell: true,
   }) as TerminalTab
   tabs.value.push(tab)
-  activeUiId.value = uiId
+  activateTabInPane(tab)
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown' || ev.altKey) return true
     const key = ev.key.toLowerCase()
@@ -1098,28 +1108,29 @@ export async function openShellTab(opts: {
   term.focus()
 }
 
-/** 切换激活 tab。`null` = 隐藏 TUI 层，露出 view（聊天/列表/统计/...）。 */
-export function setActive(uiId: number | null) {
-  activeUiId.value = uiId
-  if (uiId !== null) markTabViewed(uiId)
+/** 在 tab 自己的 pane 里激活它（并聚焦该 pane）。pane 已不存在则挂到当前聚焦 pane。 */
+function activateTabInPane(tab: TerminalTab) {
+  let pane = panes.get(tab.paneId)
+  if (!pane) {
+    tab.paneId = ensureLayout(tab.agent, tab.projectKey).focusedPaneId
+    pane = panes.get(tab.paneId)
+  }
+  if (pane) {
+    pane.activeUiId = tab.uiId
+    focusPane(pane.id)
+  }
 }
 
-export function moveTab(sourceUiId: number, targetUiId: number, position: 'before' | 'after'): boolean {
-  if (sourceUiId === targetUiId) return false
-  const sourceIndex = tabs.value.findIndex((t) => t.uiId === sourceUiId)
-  const target = tabs.value.find((t) => t.uiId === targetUiId)
-  if (sourceIndex < 0 || !target) return false
-  const source = tabs.value[sourceIndex]
-  if (source.agent !== target.agent || source.projectKey !== target.projectKey) return false
-
-  tabs.value.splice(sourceIndex, 1)
-  const targetIndex = tabs.value.findIndex((t) => t.uiId === targetUiId)
-  if (targetIndex < 0) {
-    tabs.value.splice(sourceIndex, 0, source)
-    return false
+/** 切换激活 tab。`null` = 隐藏聚焦 pane 的 TUI 层，露出 view（聊天/列表/统计/...）。 */
+export function setActive(uiId: number | null) {
+  if (uiId === null) {
+    activeUiId.value = null
+    return
   }
-  tabs.value.splice(position === 'before' ? targetIndex : targetIndex + 1, 0, source)
-  return true
+  const tab = tabs.value.find((t) => t.uiId === uiId)
+  if (!tab) return
+  activateTabInPane(tab)
+  markTabViewed(uiId)
 }
 
 /** 书签合并到真实项目时，把旧 projectKey 的 tab 迁移到新 key，避免 strip 过滤丢失。 */
@@ -1150,12 +1161,13 @@ export function closeTab(uiId: number) {
   // splice + active fallback first → UI updates immediately
   tabs.value.splice(idx, 1)
   knownPathsAtTabCreation.delete(uiId)
-  if (activeUiId.value === uiId) {
+  const pane = panes.get(tab.paneId)
+  if (pane && pane.activeUiId === uiId) {
+    // 落到同 pane 内的邻居 tab；该 pane 没别的 tab 了就露出 view 层
     const sameCtx = tabs.value.filter(
-      (t) => t.agent === tab.agent && t.projectKey === tab.projectKey,
+      (t) => t.agent === tab.agent && t.projectKey === tab.projectKey && t.paneId === tab.paneId,
     )
-    const next = sameCtx[0] ?? null
-    activeUiId.value = next?.uiId ?? null
+    pane.activeUiId = sameCtx[0]?.uiId ?? null
   }
 
   // heavy cleanup after reactive state is settled

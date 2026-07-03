@@ -25,12 +25,15 @@ beforeEach(() => {
   tabs.value = []
 })
 
+const PANE_ID = 99
+
 function tab(over: Partial<TerminalTab> = {}): TerminalTab {
   return {
     uiId: 1,
     ptyId: 1,
     agent: 'codex',
     projectKey: 'proj',
+    paneId: PANE_ID,
     sessionId: '',
     sessionPath: '',
     title: 'New session',
@@ -47,6 +50,8 @@ function tab(over: Partial<TerminalTab> = {}): TerminalTab {
     quietCursor: false,
     quietCursorTimer: null,
     lastUserInputAt: 0,
+    currentInputLine: '',
+    pendingAnsiBytes: null,
     processState: 'alive',
     turnState: 'unknown',
     turnStateSource: null,
@@ -62,6 +67,13 @@ function tab(over: Partial<TerminalTab> = {}): TerminalTab {
 function factory() {
   return mount(TerminalStrip, {
     props: {
+      pane: {
+        id: PANE_ID,
+        agent: 'codex' as const,
+        projectKey: 'proj',
+        activeUiId: null,
+        activeViewTabId: null,
+      },
       agent: 'codex',
       projectKey: 'proj',
       inProjectBrowse: true,

@@ -246,9 +246,9 @@ describe('SessionsView', () => {
         } as Props,
         global: { directives: { tooltip: vTooltip } },
       })
-      // 目录已不存在 → 新建会话 / 刷新都没意义，只剩删除项目。
-      // 没有会话 (sessions=[]) → 「批量选择」入口也不渲染。
-      expect(wrapper.findAll('.list-head-actions .icon-btn')).toHaveLength(1)
+      // 目录已不存在 → 新建会话 / 刷新都没意义；单格（showExitPane 未传）也无「退出分屏」。
+      // 没有会话 (sessions=[]) → 「批量选择」入口也不渲染 → 顶栏动作区为空。
+      expect(wrapper.findAll('.list-head-actions .icon-btn')).toHaveLength(0)
       expect(wrapper.find('.list-head-actions .new-menu-wrap').exists()).toBe(false)
       expect(wrapper.find('.list-head-actions .icon-btn[aria-label^="Reload"]').exists()).toBe(
         false,
@@ -261,10 +261,13 @@ describe('SessionsView', () => {
       expect(wrapper.emitted('refresh')).toHaveLength(1)
     })
 
-    it('emits "delete-project" when the header delete button is clicked', async () => {
+    it('shows the exit-pane button only when showExitPane is set, and emits "exit-pane"', async () => {
       const wrapper = factory()
-      await findByLabel(wrapper, 'Delete project').trigger('click')
-      expect(wrapper.emitted('delete-project')).toHaveLength(1)
+      // 单格默认（showExitPane 未传）不显示「退出分屏」按钮
+      expect(findByLabel(wrapper, 'Exit split pane')).toBeUndefined()
+      await wrapper.setProps({ showExitPane: true })
+      await findByLabel(wrapper, 'Exit split pane').trigger('click')
+      expect(wrapper.emitted('exit-pane')).toHaveLength(1)
     })
 
     it('shows the "select multiple" entry only when there are 2+ sessions', () => {

@@ -9,6 +9,7 @@
 import { ref, computed } from 'vue'
 import type { Agent, SessionMeta, Msg } from './types'
 import type { ChatSession } from './chatSessions'
+import { activeViewTabId, panes, focusPane, ensureLayout } from './panes'
 
 let nextViewTabId = 1
 
@@ -17,6 +18,8 @@ export interface ViewTab {
   type: 'session' | 'chat'
   agent: Agent
   projectKey: string
+  /** 所属分屏格子 id（见 panes.ts）。 */
+  paneId: number
   title: string
   createdAt: number
   // session tab
@@ -37,11 +40,30 @@ export interface ViewTab {
 }
 
 export const viewTabs = ref<ViewTab[]>([])
-export const activeViewTabId = ref<number | null>(null)
+// activeViewTabId 现在是「聚焦 pane 的 activeViewTabId」投影（真身在 panes.ts）；从这里
+// re-export 保持既有 import 路径。activeViewTab（解出真正的 ViewTab 对象）留在本模块，因为
+// 它要查 viewTabs 数组。
+export { activeViewTabId }
 
 export const activeViewTab = computed<ViewTab | null>(() =>
   viewTabs.value.find(t => t.uiId === activeViewTabId.value) ?? null,
 )
+
+/** 在 view tab 自己的 pane 里激活它：露出 view 层、指向该 tab、聚焦该 pane。 */
+function activateViewTabInPane(tab: ViewTab) {
+  let pane = panes.get(tab.paneId)
+  // 兜底：pane 不存在，或恢复后 paneId 撞到了别的项目的格子（id 每次启动重排）——
+  // 一律回落到本项目聚焦格子，避免 tab 落进错误的 pane。
+  if (!pane || pane.agent !== tab.agent || pane.projectKey !== tab.projectKey) {
+    tab.paneId = ensureLayout(tab.agent, tab.projectKey).focusedPaneId
+    pane = panes.get(tab.paneId)
+  }
+  if (pane) {
+    pane.activeUiId = null
+    pane.activeViewTabId = tab.uiId
+    focusPane(pane.id)
+  }
+}
 
 export function createViewTab(partial: Partial<ViewTab> & Pick<ViewTab, 'type' | 'agent' | 'projectKey'>): ViewTab {
   const uiId = nextViewTabId++
@@ -58,12 +80,16 @@ export function createViewTab(partial: Partial<ViewTab> & Pick<ViewTab, 'type' |
     trashAgent: null,
     importedAgent: null,
     ...partial,
+    // paneId 放在 spread 之后并带兜底：恢复旧数据（无 paneId）或 partial 显式传了 undefined 时，
+    // 仍回落到本项目聚焦格子，而不是被 undefined 覆盖。
+    paneId: partial.paneId ?? ensureLayout(partial.agent, partial.projectKey).focusedPaneId,
     createdAt: partial.createdAt ?? Date.now(),
   }
   viewTabs.value.push(tab)
-  activeViewTabId.value = uiId
   // Return the reactive proxy, not the plain object, so callers' mutations trigger reactivity
-  return viewTabs.value[viewTabs.value.length - 1]
+  const proxy = viewTabs.value[viewTabs.value.length - 1]
+  activateViewTabInPane(proxy)
+  return proxy
 }
 
 export function findViewTab(predicate: (t: ViewTab) => boolean): ViewTab | undefined {
@@ -76,17 +102,28 @@ export function removeViewTab(uiId: number) {
   const tab = viewTabs.value[idx]
   window.clearTimeout(tab.liveFadeTimer)
   viewTabs.value.splice(idx, 1)
-  if (activeViewTabId.value === uiId) {
-    // 关闭当前 tab 后，激活同项目的上一个 tab（如有）
-    const sameProject = viewTabs.value.filter(
-      t => t.agent === tab.agent && t.projectKey === tab.projectKey,
+  // 主动丢弃重引用：session 的 msgs 可能是几 MB 的 transcript，chatSession 指向已停的
+  // 会话对象。清空后立刻可回收，避免关 tab 后内存不降。
+  tab.msgs = []
+  tab.chatSession = null
+  const pane = panes.get(tab.paneId)
+  if (pane && pane.activeViewTabId === uiId) {
+    // 关闭当前 tab 后，激活同 pane 的上一个 view tab（如有），否则露出主页
+    const sameCtx = viewTabs.value.filter(
+      t => t.agent === tab.agent && t.projectKey === tab.projectKey && t.paneId === tab.paneId,
     )
-    activeViewTabId.value = sameProject.length > 0 ? sameProject[sameProject.length - 1].uiId : null
+    pane.activeViewTabId = sameCtx.length > 0 ? sameCtx[sameCtx.length - 1].uiId : null
   }
 }
 
 export function setActiveViewTab(uiId: number | null) {
-  activeViewTabId.value = uiId
+  if (uiId === null) {
+    activeViewTabId.value = null
+    return
+  }
+  const tab = viewTabs.value.find(t => t.uiId === uiId)
+  if (!tab) return
+  activateViewTabInPane(tab)
 }
 
 export function visibleViewTabs(agent: Agent, projectKey: string | null): ViewTab[] {
@@ -106,6 +143,8 @@ export interface SavedViewTab {
   type: 'session' | 'chat'
   agent: Agent
   projectKey: string
+  /** 上次退出时所属分屏格子 id；恢复时回落到本项目聚焦格子（见 activateViewTabInPane）。 */
+  paneId: number
   title: string
   createdAt: number
   session: SessionMeta | null
@@ -121,6 +160,7 @@ export function persistViewTabs() {
       type: t.type,
       agent: t.agent,
       projectKey: t.projectKey,
+      paneId: t.paneId,
       title: t.title,
       createdAt: t.createdAt,
       session: t.session ?? t.sourceSession,

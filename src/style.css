@@ -952,6 +952,26 @@ body.is-sidebar-resizing {
   font-variant-numeric: tabular-nums;
   font-weight: 500;
 }
+/* 按住 ⌘/Ctrl 时这颗快捷键 chip 顶替 .proj-count 显示。**必须与 .proj-count 等高（18px）**——
+   .proj-item 是 flex 行，行高由最高子元素撑起；两者不等高会导致按下修饰键的一瞬间整列行高跳变。 */
+.proj-shortcut {
+  min-width: 30px;
+  height: 18px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--surface) 78%, var(--text) 7%);
+  color: var(--text-dim);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #fff 8%, transparent);
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
 .proj-item.active .proj-count {
   background: color-mix(in srgb, var(--brand) 16%, transparent);
   color: var(--brand);
@@ -3388,22 +3408,30 @@ body.is-tab-reordering * {
   cursor: grabbing !important;
   user-select: none !important;
 }
+/* 拖拽重排的落点指示线（cmux 式醒目竖条）。旧版是 2px 近黑(--accent)细线、挂在 4px 间隙里(left/right:-4px)，
+ * 又暗又细，还会被相邻 tab 的边框和 .term-strip-scroll 的 overflow:hidden 裁切/遮住 → 「黑线被挡住」。
+ * 改成贴着目标 tab 内侧边缘(left/right:1px)的品牌色亮条：够高够粗、带辉光、z-index 压过相邻 tab，
+ * 且落在 tab 边界之内绝不会被裁掉。 */
 .term-tab.drop-before::before,
 .term-tab.drop-after::after {
   content: "";
   position: absolute;
-  top: 4px;
-  bottom: 4px;
-  width: 2px;
-  border-radius: 2px;
-  background: var(--accent, #3b82f6);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent, #3b82f6) 20%, transparent);
+  top: 2px;
+  bottom: 2px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--brand);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--brand) 35%, transparent),
+    0 0 6px color-mix(in srgb, var(--brand) 55%, transparent);
+  z-index: 6;
+  pointer-events: none;
 }
 .term-tab.drop-before::before {
-  left: -4px;
+  left: 1px;
 }
 .term-tab.drop-after::after {
-  right: -4px;
+  right: 1px;
 }
 .term-tab.active {
   background: color-mix(in srgb, var(--brand) 7%, var(--surface));
@@ -3464,6 +3492,24 @@ body.is-tab-reordering * {
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.term-tab-shortcut {
+  height: 18px;
+  min-width: 28px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--surface) 82%, var(--text) 6%);
+  color: var(--text-dim);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #fff 8%, transparent);
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 .term-tab-status {
   position: relative;
@@ -3576,6 +3622,93 @@ body.is-tab-reordering * {
 }
 
 /* ============================ TUI 主体布局 ============================ */
+
+/* 分屏。.main 里要么是全局全区视图（.global-view-layer），要么是 .pane-grid（分屏树）。
+ * .pane-grid 是最外层容器；里面由递归的 PaneGrid 铺成 .pane-split（行/列）+ .pane（叶子）。 */
+.pane-grid {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* split 容器：row = 左右并排（divider 竖直）；col = 上下堆叠（divider 水平）。 */
+.pane-split {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+.pane-split.row { flex-direction: row; }
+.pane-split.col { flex-direction: column; }
+
+/* split 的每个孩子槽位：flex-grow 按 sizes 占比，内部再放 PaneGrid（叶子或更深 split）。 */
+.pane-cell {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* divider：可拖拽调整相邻两格占比。命中区比视觉线宽，靠 background 只画中间一条细线。 */
+.pane-resizer {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 6;
+  background: var(--border);
+  transition: background 0.12s;
+}
+.pane-resizer:hover { background: var(--accent); }
+.pane-resizer.row { width: 1px; cursor: col-resize; }
+.pane-resizer.col { height: 1px; cursor: row-resize; }
+/* 加宽命中区（伪元素铺满两侧），视觉仍是 1px 线。 */
+.pane-resizer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+.pane-resizer.row::before { left: -3px; right: -3px; }
+.pane-resizer.col::before { top: -3px; bottom: -3px; }
+
+/* 每个 .pane 自成一列：[TerminalStrip] → [main-body]，和原来 .main 的内部布局一致，
+ * 从而可以在 PaneGrid 里被平铺多份。 */
+.pane {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 聚焦不加边框（丑）。改走 cmux 风格：非聚焦格子整体淡出一档，内容/文字朝背景色淡化，读起来变
+ * 浅灰；聚焦格子保持原色。只在多格子（.multi）时生效。用 opacity 而非深色遮罩 —— 遮罩会发闷发脏，
+ * opacity 让文字变浅、更干净，正是想要的「非 active 文字浅灰」效果。 */
+.pane-grid.multi .pane {
+  transition: opacity 0.16s ease;
+}
+.pane-grid.multi .pane:not(.pane-focused) {
+  opacity: 0.5;
+}
+/* 拖拽时被悬停的目标格子恢复满不透明，让落点高亮清晰可见。 */
+.pane-grid.multi .pane.pane-drop-target {
+  opacity: 1;
+}
+/* 拖拽 tab 悬停到的目标格子（≠ 源格子）的落点高亮。
+ * 旧版是贴边的 2px 纯黑（--accent 在浅色下≈黑）方框，又硬又丑。改成：从边缘内缩 4px 的圆角高亮卡，
+ * 用品牌色（Claude 橙 / Codex 绿）的柔和描边 + 极淡填充 —— 圆角、通透、明显但不刺眼。 */
+.pane-drop-target::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  pointer-events: none;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--brand) 10%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--brand) 62%, transparent);
+  z-index: 7;
+}
 
 /* .main 现在是: [topbar(从外部)] → [TerminalStrip] → [main-body]。
  * main-body 是 flex: 1，里面叠两个层：view-layer 和 tui-layer。 */

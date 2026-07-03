@@ -30,6 +30,7 @@ import {
   IconPlus,
   IconSelect,
   IconClose,
+  IconExitPane,
   IconTerminal,
   IconChat,
   agentIcons,
@@ -42,6 +43,8 @@ const props = defineProps<{
   sessionTotal: number
   loading: boolean
   loadingMore: boolean
+  /** 多格分屏时才显示「退出分屏」按钮；单格无分屏可退。 */
+  showExitPane?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -57,7 +60,8 @@ const emit = defineEmits<{
   (e: 'new-session'): void
   (e: 'new-gui-session'): void
   (e: 'new-shell'): void
-  (e: 'delete-project'): void
+  /** 退出当前分屏格子（关闭并释放该格所有 tab）。 */
+  (e: 'exit-pane'): void
   (e: 'load-more'): void
   (e: 'scroll', scrollTop: number): void
   /** 批量删除：原本由 SessionsTopbar 触发，现已挪到 list-head 顶栏里。 */
@@ -614,11 +618,12 @@ defineExpose({ scrollEl })
           <IconRefresh />
         </button>
         <button
-          class="icon-btn danger"
-          v-tooltip="t('proj.delete')"
-          @click="emit('delete-project')"
+          v-if="showExitPane"
+          class="icon-btn"
+          v-tooltip="t('pane.exit')"
+          @click="emit('exit-pane')"
         >
-          <IconTrash />
+          <IconExitPane />
         </button>
       </template>
     </div>

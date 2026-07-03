@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, computed, onMounted, onUnmounted, watch, nextTick, defineAsyncComponent } from 'vue'
+import { ref, shallowRef, computed, onMounted, onUnmounted, watch, nextTick, provide, defineAsyncComponent } from 'vue'
 import type { Agent, ProjectInfo, SessionMeta, TrashItem, Msg, UsageSummary } from './types'
 import * as api from './api'
 import { shortName } from './format'
@@ -47,7 +47,6 @@ import { recordExport, type ExportRecord } from './exportHistory'
 import { globalSearchOpen, openGlobalSearch } from './globalSearch'
 import { runBackgroundCheck } from './updateCheck'
 import type { SearchHit } from './types'
-import ChatView from './views/ChatView.vue'
 import ChatSidePanel from './components/ChatSidePanel.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import { IconSearch } from './components/icons'
@@ -56,15 +55,12 @@ import ChatTopbar from './components/topbar/ChatTopbar.vue'
 import TrashTopbar from './components/topbar/TrashTopbar.vue'
 import SessionsTopbar from './components/topbar/SessionsTopbar.vue'
 import TrashView from './views/TrashView.vue'
-import SessionsView from './views/SessionsView.vue'
-import WelcomeView from './views/WelcomeView.vue'
 // 按需视图懒加载：StatsView 拖着重量级图表库 @antv/g2，PricingView / ExportHistoryView 也是
 // 二级页面 —— 都不进首屏主包，进对应页面时再拉各自的 chunk。
 const StatsView = defineAsyncComponent(() => import('./views/StatsView.vue'))
 import Sidebar from './components/Sidebar.vue'
 import SidebarTopbar from './components/SidebarTopbar.vue'
-import TerminalStrip from './components/TerminalStrip.vue'
-import TerminalPaneSlot from './components/TerminalPaneSlot.vue'
+import PaneGrid from './components/PaneGrid.vue'
 import ConfirmModal from './modals/ConfirmModal.vue'
 import RenameModal from './modals/RenameModal.vue'
 import GlobalSearchModal from './modals/GlobalSearchModal.vue'
@@ -130,12 +126,34 @@ import {
   loadSavedViewTabs,
   type SavedViewTab,
 } from './viewTabs'
+import {
+  currentAgent as panesAgent,
+  currentProjectKey as panesProject,
+  focusedPane,
+  focusPane,
+  currentLayout,
+  currentPanes,
+  paneCount,
+  splitPane,
+  closePane,
+  persistLayouts,
+  type SplitDir,
+} from './panes'
+import { paneViewsOf } from './paneRegistry'
+import { PaneActionsKey, type PaneActions } from './paneActions'
 
 // ---------- 状态 ----------
 // 默认进首个可见 agent —— 用户若在设置里关掉了 claude，启动时就不该停在隐藏的 agent 上。
 const agent = ref<Agent>(visibleAgents.value[0] ?? 'claude')
 const projects = ref<ProjectInfo[]>([])
 const activeDir = ref<string | null>(null)
+
+// 分屏当前视图 = 侧栏选中的 (agent, project)。panes 模块据此解出当前布局 / 聚焦 pane，
+// 而 activeUiId / activeViewTabId 又是聚焦 pane 的投影，所以这一步是它们正确工作的前提。
+watch([agent, activeDir], ([a, dir]) => {
+  panesAgent.value = a
+  panesProject.value = dir
+}, { immediate: true })
 const showTrash = ref(false)
 const showStats = ref(false)
 const showExportHistory = ref(false)
@@ -323,7 +341,7 @@ const openTrashItem = ref<TrashItem | null>(null)
 //   - 安静 STALE_MS 后自动熄灭 —— CLI 进程通常已结束
 // 这与"是否在后端追这个文件"分离：watcher 对所有非回收站会话都开，
 // 否则用户从终端 resume 一个老会话时我们就漏掉了。
-const liveTailing = computed(() => activeViewTab.value?.liveTailing ?? false)
+// （"● Live" 徽章的实际渲染在 PaneContent 里按各自 pane 的 view tab 解出。）
 const LIVE_FRESH_MS = 3 * 60 * 1000
 const LIVE_STALE_MS = 2 * 60 * 1000
 function clearLive() {
@@ -342,11 +360,13 @@ const sessionStatsTarget = ref<{ agent: Agent; path: string; title?: string } | 
 //   'global' ← 全局 StatsView Top Sessions 行点击（关闭 → 回到全局 StatsView）
 const sessionStatsFrom = ref<'chat' | 'global' | null>(null)
 
-const sessionsViewRef = ref<InstanceType<typeof SessionsView> | null>(null)
-const chatViewRef = ref<InstanceType<typeof ChatView> | null>(null)
+// 聚焦格子内部的 ChatView / SessionsView 实例 —— 每个 PaneContent 把自己登记进 paneRegistry，
+// App 按聚焦 paneId 取，借此做 flashMessage / onLiveAppend / 列表滚动保存恢复。
+const focusedPaneViews = computed(() => paneViewsOf(focusedPane.value?.id))
+const chatViewRef = computed(() => focusedPaneViews.value?.chatView ?? null)
 const sidebarRef = ref<InstanceType<typeof Sidebar> | null>(null)
 const listScrollEl = computed<HTMLElement | undefined>(
-  () => sessionsViewRef.value?.scrollEl,
+  () => focusedPaneViews.value?.sessionsView?.scrollEl,
 )
 let savedListScroll = 0
 const TUI_TITLE_SYNC_INTERVAL_MS = 4000
@@ -373,6 +393,90 @@ watch(openSession, (val, old) => {
   }
 })
 
+// —— 分屏 ——
+// 全局全区视图（stats/trash/…）接管主区时分屏格子不可见，此时不响应拆分/关闭快捷键。
+const globalViewActive = computed(
+  () => showStats.value || showTrash.value || showExportHistory.value || showPricing.value,
+)
+
+/** Cmd+D → 右侧新增一格（row），Cmd+Shift+D → 下方新增一格（col）。新格聚焦、无 tab（露项目主页）。 */
+function splitFocusedPane(dir: SplitDir) {
+  if (globalViewActive.value) return
+  const p = focusedPane.value
+  if (!p) return
+  splitPane(p.id, dir)
+}
+
+/** 关闭聚焦格子（至少保留 1 格）。被关格子里的 tab 迁移到折叠后聚焦的邻格，PTY 不杀。 */
+// 关闭并**释放**某个分屏格子里的所有 tab（kill PTY / dispose xterm / kill chat 子进程 /
+// 丢弃 msgs），再收起空格子并把聚焦落到邻居。不迁移到邻居——迁移会让进程和 xterm 实例
+// 常驻内存，关得越多越卡。
+function closePaneFreeing(paneId: number) {
+  if (currentPanes.value.length <= 1) return
+  const tuiIds = tuiTabs.value.filter((t) => t.paneId === paneId).map((t) => t.uiId)
+  const viewIds = viewTabs.value.filter((t) => t.paneId === paneId).map((t) => t.uiId)
+  for (const id of tuiIds) closeTab(id)
+  for (const id of viewIds) {
+    const vt = viewTabs.value.find((t) => t.uiId === id)
+    if (vt?.type === 'chat') closeLiveChat(id)
+    else removeViewTab(id)
+  }
+  closePane(paneId)
+  saveTabState()
+}
+
+// Cmd+Shift+W：关闭聚焦格子（快捷键 = power user，不二次确认）。
+function closeFocusedPane() {
+  if (globalViewActive.value) return
+  const p = focusedPane.value
+  if (!p) return
+  closePaneFreeing(p.id)
+}
+
+// SessionsView 顶栏「退出分屏」按钮：二次确认后关闭指定格子（会丢失该格的终端/会话/聊天）。
+function exitPane(paneId: number) {
+  if (currentPanes.value.length <= 1) return
+  ask({
+    title: t('dialog.exitPane.title'),
+    message: t('dialog.exitPane.body'),
+    okText: t('dialog.exitPane.ok'),
+    danger: true,
+    onOk: () => closePaneFreeing(paneId),
+  })
+}
+
+/**
+ * Cmd+Alt+方向键 → 按空间方向把聚焦移到相邻格子。用实际 DOM 矩形而非树顺序，这样在
+ * 混合 row/col 嵌套下也能正确选出「右边/下边」的那格。主轴距离为主、交叉轴距离加权次之。
+ */
+function focusPaneDir(dir: 'left' | 'right' | 'up' | 'down') {
+  if (globalViewActive.value || currentPanes.value.length <= 1) return
+  const cur = focusedPane.value
+  if (!cur) return
+  const els = [...document.querySelectorAll<HTMLElement>('.pane-grid .pane[data-pane-id]')]
+  const rectOf = (id: number) => els.find((e) => e.dataset.paneId === String(id))?.getBoundingClientRect()
+  const curRect = rectOf(cur.id)
+  if (!curRect) return
+  const cx = curRect.left + curRect.width / 2
+  const cy = curRect.top + curRect.height / 2
+  let best: { id: number; score: number } | null = null
+  for (const p of currentPanes.value) {
+    if (p.id === cur.id) continue
+    const r = rectOf(p.id)
+    if (!r) continue
+    const dx = r.left + r.width / 2 - cx
+    const dy = r.top + r.height / 2 - cy
+    let primary: number, cross: number
+    if (dir === 'right') { if (dx <= 1) continue; primary = dx; cross = Math.abs(dy) }
+    else if (dir === 'left') { if (dx >= -1) continue; primary = -dx; cross = Math.abs(dy) }
+    else if (dir === 'down') { if (dy <= 1) continue; primary = dy; cross = Math.abs(dx) }
+    else { if (dy >= -1) continue; primary = -dy; cross = Math.abs(dx) }
+    const score = primary + cross * 2
+    if (!best || score < best.score) best = { id: p.id, score }
+  }
+  if (best) focusPane(best.id)
+}
+
 const activeProject = computed(() =>
   projects.value.find((p) => p.dirName === activeDir.value),
 )
@@ -398,14 +502,6 @@ const topbarContextMeta = computed(() => {
 const chatAgent = computed<Agent>(
   () => activeViewTab.value?.trashAgent ?? activeViewTab.value?.importedAgent ?? activeViewTab.value?.agent ?? agent.value,
 )
-
-// ChatView 用来 spawn 内嵌 TUI 的 cwd。优先用会话自带的 cwd（Codex / Gemini 可靠），
-// 退到当前激活项目的 displayPath（Claude 的项目就是路径）。回收站模式不需要 —— TerminalPane
-// 仅在 !trashed 且 cwd 非空时挂载。
-const chatCwd = computed<string>(() => {
-  if (openTrashItem.value) return ''
-  return openSession.value?.cwd || activeProject.value?.displayPath || ''
-})
 
 // ---------- 项目置顶 / 沉底偏好（持久化到 localStorage）----------
 type ProjState = 'pinned' | 'sunk'
@@ -483,11 +579,6 @@ function ctxRemoveBookmark() {
   closeCtxMenu()
   if (!p) return
   removeBookmark(p)
-}
-
-// 删除当前打开的项目 —— SessionsView 顶部操作区的删除按钮。
-function deleteActiveProject() {
-  if (activeProject.value) deleteProject(activeProject.value)
 }
 
 function deleteProject(p: ProjectInfo) {
@@ -2684,6 +2775,7 @@ function saveTabState() {
   }
   persistTuiMap()
   persistViewTabs()
+  persistLayouts()
   const noPathIdx = cur && !cur.sessionPath
     ? tuiTabs.value.filter((t) => !t.sessionPath).indexOf(cur)
     : undefined
@@ -2744,6 +2836,7 @@ onMounted(() => {
         type: 'session',
         agent: sv.agent,
         projectKey: sv.projectKey,
+        paneId: sv.paneId,
         title: sv.title,
         createdAt: sv.createdAt,
         session: sv.session,
@@ -2775,6 +2868,7 @@ onMounted(() => {
         type: 'chat',
         agent: session.agent,
         projectKey: session.projectKey,
+        paneId: saved?.paneId,
         title,
         createdAt: saved?.createdAt,
         chatSession: session,
@@ -2817,6 +2911,7 @@ onMounted(() => {
           type: 'chat',
           agent: sv.agent,
           projectKey: sv.projectKey,
+          paneId: sv.paneId,
           title: sv.title,
           createdAt: sv.createdAt,
           chatSession,
@@ -2829,6 +2924,7 @@ onMounted(() => {
           type: 'session',
           agent: sv.agent,
           projectKey: sv.projectKey,
+          paneId: sv.paneId,
           title: sv.title,
           createdAt: sv.createdAt,
           session: s,
@@ -2870,6 +2966,9 @@ onMounted(() => {
   const savedCount = computed(() => savedTabs.value.length)
   const viewTabCount = computed(() => viewTabs.value.length)
   watch([agent, activeDir, activeUiId, tabCount, savedCount, viewTabCount, activeViewTabId], debouncedSave)
+  // 分屏树几何 / sizes / 聚焦格子变化也要存（split / close / resize / focus）。deep + 500ms
+  // 防抖，resize 拖拽的高频 sizes 更新会被合并成一次落盘。
+  watch(currentLayout, debouncedSave, { deep: true })
   // 后台检查 GitHub release —— 缓存 24h，失败完全静默；结果驱动侧边栏 Settings
   // 按钮上的"有新版本"小红点。
   runBackgroundCheck()
@@ -2900,11 +2999,26 @@ onMounted(() => {
     (e) => {
       const mod = _isMac ? e.metaKey : e.ctrlKey
       const otherMod = _isMac ? e.ctrlKey : e.metaKey
+
+      // Cmd+Alt+方向键 → 分屏格子间移动聚焦（方向感知）。放在下面的 altKey 拒绝之前。
+      if (mod && !otherMod && e.altKey && !e.shiftKey) {
+        const dir = ({
+          arrowleft: 'left', arrowright: 'right', arrowup: 'up', arrowdown: 'down',
+        } as const)[e.key.toLowerCase()]
+        if (dir) { e.preventDefault(); focusPaneDir(dir) }
+        return
+      }
       if (!mod || otherMod || e.altKey) return
 
       const key = e.key.toLowerCase()
       if (key === 'w' && !e.shiftKey) {
         e.preventDefault(); closeActiveTab()
+      } else if (key === 'w' && e.shiftKey) {
+        e.preventDefault(); closeFocusedPane()
+      } else if (key === 'd' && !e.shiftKey) {
+        e.preventDefault(); splitFocusedPane('row')
+      } else if (key === 'd' && e.shiftKey) {
+        e.preventDefault(); splitFocusedPane('col')
       } else if (key === 't' && !e.shiftKey) {
         e.preventDefault(); newDefaultAction()
       } else if (key === 'r' && !e.shiftKey) {
@@ -3105,6 +3219,57 @@ async function onGlobalSearchOpen(hit: SearchHit) {
     chatViewRef.value?.flashMessage(hit.matchMsgIndex, hit.matchMsgUuid ?? undefined)
   }
 }
+
+// 把 App 的全部处理函数下发给分屏格子（PaneContent）。见 paneActions.ts 的说明：
+// PaneContent 只呈现，行为一律回调到这里；「交互即聚焦」保证无参 action 作用在被点的格子。
+provide<PaneActions>(PaneActionsKey, {
+  onTuiListClick,
+  onTuiViewTabClick,
+  onTuiViewClose,
+  onViewRename,
+  onViewCloseOthers,
+  onViewCloseProject,
+  onCloseOthersAll,
+  onCloseAll,
+  onTuiTabClosed,
+  openRenameFromTuiTab,
+  openRenameFromSavedTab,
+  saveTabState,
+  newSession,
+  newDefaultAction,
+  newGuiSession,
+  newShellSession,
+  hydrateSavedTab,
+  closeLiveChat,
+  openRenameLiveChat,
+  forkLiveChat,
+  switchLiveChatToRead,
+  openLiveChatStats,
+  exportLiveChat,
+  deleteFromLiveChat,
+  closeActiveViewTab,
+  openChat,
+  deleteSession,
+  resumeHere,
+  resumeChatFromSession,
+  openRename,
+  copyText,
+  exportSession,
+  restore,
+  openSessionStats,
+  reveal,
+  chatFromList,
+  exportFromList,
+  refreshSessions,
+  exitPane,
+  loadMore,
+  onListScroll,
+  batchDeleteSessions,
+  batchExportSessions,
+  selectProject,
+  switchAgent,
+  openRepo,
+})
 </script>
 
 <template>
@@ -3208,158 +3373,50 @@ async function onGlobalSearchOpen(hit: SearchHit) {
 
     <!-- 主区 -->
     <main class="main">
-      <!-- TUI tab 条：左边 List/View meta tab + 当前项目的 PTY tab。
-           inProjectBrowse + viewTabs 决定 strip 何时显示。 -->
-      <TerminalStrip
-        :agent="agent"
-        :project-key="activeDir"
-        :in-project-browse="!!activeDir && !showTrash && !showStats"
-        :view-tabs="visibleViewTabs(agent, activeDir)"
-        :active-view-tab-id="activeViewTabId"
-        @list-click="onTuiListClick"
-        @view-click="onTuiViewTabClick"
-        @view-close="onTuiViewClose"
-        @view-rename="onViewRename"
-        @view-close-others="onViewCloseOthers"
-        @view-close-project="onViewCloseProject"
-        @close-others-all="onCloseOthersAll"
-        @close-all="onCloseAll"
-        @tab-closed="onTuiTabClosed"
-        @tab-rename="openRenameFromTuiTab"
-        @saved-rename="openRenameFromSavedTab"
-        @tabs-reordered="saveTabState"
-        @new-session="newSession"
-        @new-default="newDefaultAction"
-        @new-gui-session="newGuiSession"
-        @new-shell="newShellSession"
-        @hydrate-saved="hydrateSavedTab"
-      />
+      <!-- 全局全区视图（统计 / 回收站 / 导出历史 / 计费）—— 接管整个主区，盖住分屏格子。
+           它们是 app 级页面（由侧栏顶栏触发），不属于任何 pane。退出后分屏布局原样恢复。 -->
+      <div
+        v-if="showStats || showTrash || showExportHistory || showPricing"
+        class="view-layer global-view-layer"
+      >
+        <StatsView
+          v-if="showStats"
+          :session="sessionStatsTarget"
+          @close="closeStats"
+          @open-project="(dir) => selectProject(dir)"
+          @open-session="openSessionStatsFromGlobal"
+        />
+        <TrashView
+          v-else-if="showTrash"
+          :trash="trash"
+          :loading="loadingList"
+          @clear="clearTrash"
+          @open="openTrashSession"
+          @restore="restore"
+          @permanent-delete="permanentDelete"
+          @batch-restore="batchRestore"
+          @batch-permanent-delete="batchPermanentDelete"
+        />
+        <ExportHistoryView
+          v-else-if="showExportHistory"
+          @open="openHistorySession"
+        />
+        <PricingView v-else-if="showPricing" />
+      </div>
 
-      <!-- view 层 / TUI 层 同时存在；activeUiId === null 时只显示 view，
-           否则 view 隐去、TerminalPaneSlot 顶到面前。两层都是 main-body 的子，
-           position 由 CSS 控制。 -->
-      <div class="main-body">
-        <!-- 标准视图（聊天 / 列表 / 统计 / 回收站 / 欢迎页） -->
-        <div class="view-layer" v-show="activeUiId === null">
-          <!-- live GUI chat tab -->
-          <ChatView
-            v-if="activeViewTab?.type === 'chat' && liveChat"
-            :agent="liveChat.agent"
-            :session="liveChatMeta"
-            :messages="liveChat.msgs"
-            :live-session="liveChat"
-            :cwd="liveChat.cwd"
-            :has-read-view="!!liveChatSourceSession"
-            @back="closeLiveChat()"
-            @rename="openRenameLiveChat"
-            @fork="forkLiveChat"
-            @switch-to-read="switchLiveChatToRead"
-            @open-session-stats="openLiveChatStats"
-            @reveal="reveal(liveChatSourceSession?.path || liveChat.cwd || '')"
-            @export-md="exportLiveChat('md')"
-            @export-html="exportLiveChat('html')"
-            @export-json="exportLiveChat('json')"
-            @delete="deleteFromLiveChat"
-          />
-
-          <StatsView
-            v-else-if="showStats"
-            :session="sessionStatsTarget"
-            @close="closeStats"
-            @open-project="(dir) => selectProject(dir)"
-            @open-session="openSessionStatsFromGlobal"
-          />
-
-          <!-- session tab（只读查看） -->
-          <template v-else-if="activeViewTab?.type === 'session' && openSession">
-            <div v-if="activeViewTab.loadingMsgs" class="loading">{{ t('common.loading') }}</div>
-            <ChatView
-              v-else
-              ref="chatViewRef"
-              :agent="chatAgent"
-              :session="openSession"
-              :messages="chatMsgs"
-              :trashed="!!openTrashItem"
-              :live="liveTailing"
-              :cwd="chatCwd"
-              @back="closeActiveViewTab"
-              @refresh="openChat(openSession)"
-              @delete="deleteSession(openSession)"
-              @resume-here="resumeHere(openSession)"
-              @switch-to-chat="resumeChatFromSession(openSession)"
-              @rename="openRename(openSession)"
-              @reveal="reveal(openSession.path)"
-              @copy-id="copyText(openSession.id)"
-              @export-md="exportSession('md')"
-              @export-html="exportSession('html')"
-              @export-json="exportSession('json')"
-              @restore="openTrashItem && restore(openTrashItem)"
-              @open-session-stats="openSessionStats"
-            />
-          </template>
-
-          <TrashView
-            v-else-if="showTrash"
-            :trash="trash"
-            :loading="loadingList"
-            @clear="clearTrash"
-            @open="openTrashSession"
-            @restore="restore"
-            @permanent-delete="permanentDelete"
-            @batch-restore="batchRestore"
-            @batch-permanent-delete="batchPermanentDelete"
-          />
-
-          <ExportHistoryView
-            v-else-if="showExportHistory"
-            @open="openHistorySession"
-          />
-
-          <PricingView v-else-if="showPricing" />
-
-          <SessionsView
-            v-else-if="activeProject"
-            ref="sessionsViewRef"
-            :agent="agent"
-            :project="activeProject"
-            :sessions="sessions"
-            :session-total="sessionTotal"
-            :loading="loadingList"
-            :loading-more="loadingMore"
-            @open="openChat"
-            @rename="openRename"
-            @resume="resumeHere"
-            @chat="chatFromList"
-            @reveal="reveal"
-            @delete="deleteSession"
-            @copy="copyText"
-            @export="exportFromList"
-            @refresh="refreshSessions"
-            @new-session="newSession"
-            @new-shell="newShellSession"
-            @delete-project="deleteActiveProject"
-            @load-more="loadMore"
-            @scroll="onListScroll"
-            @batch-delete="batchDeleteSessions"
-            @batch-export="batchExportSessions"
-            @new-gui-session="newGuiSession"
-          />
-
-          <WelcomeView
-            v-else
-            :agent="agent"
-            :projects="projects"
-            @select-project="selectProject"
-            @switch-agent="switchAgent"
-            @open-repo="openRepo"
-          />
-        </div>
-
-        <!-- TUI 层 —— TerminalPaneSlot 自己用 v-show 控制 attach；这里 wrap 一层
-             tui-layer 给 CSS 用于绝对定位填满 main-body。 -->
-        <TerminalPaneSlot
-          v-show="activeUiId !== null"
-          class="tui-layer"
+      <!-- 分屏格子：递归 PaneGrid 渲染整棵分屏树。每格 strip + 会话/列表/欢迎 + TUI 层由
+           PaneContent 按各自 pane 解出。multi class 只在多格子时给聚焦格子加聚焦描边。 -->
+      <div v-else class="pane-grid" :class="{ multi: paneCount > 1 }">
+        <PaneGrid
+          :node="currentLayout.tree"
+          :active-project="activeProject"
+          :agent="agent"
+          :projects="projects"
+          :sessions="sessions"
+          :session-total="sessionTotal"
+          :loading-list="loadingList"
+          :loading-more="loadingMore"
+          :open-trash-item="openTrashItem"
         />
       </div>
     </main>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Agent, ProjectInfo } from '../types'
 import { shortName } from '../format'
 import { t } from '../i18n'
@@ -124,6 +124,87 @@ const allSelected = computed(() =>
   props.projects.length > 0 && selectedDirs.value.size === props.projects.length,
 )
 
+const isMac = /Mac/i.test(navigator.platform)
+const modHintDown = ref(false)
+const modHintLabel = isMac ? '⌘' : 'Ctrl'
+
+function shortcutForIndex(index: number) {
+  return index < 9 ? `${modHintLabel}${isMac ? '' : '+'}${index + 1}` : ''
+}
+
+function digitFromEvent(e: KeyboardEvent): number | null {
+  if (/^Digit[1-9]$/.test(e.code)) return Number(e.code.slice(5))
+  if (/^Numpad[1-9]$/.test(e.code)) return Number(e.code.slice(6))
+  const n = Number(e.key)
+  return Number.isInteger(n) && n >= 1 && n <= 9 ? n : null
+}
+
+function isPlainModNumber(e: KeyboardEvent) {
+  const mod = isMac ? e.metaKey : e.ctrlKey
+  const otherMod = isMac ? e.ctrlKey : e.metaKey
+  return mod && !otherMod && !e.shiftKey && !e.altKey
+}
+
+// 修饰键本身（⌘/Ctrl/⇧/⌥），用来区分「只按了修饰键」和「按下了实义键」。
+const isModifierKey = (k: string) => k === 'Meta' || k === 'Control' || k === 'Shift' || k === 'Alt'
+
+// 提示「延时显示、立即隐藏」：只有单独按住 ⌘/Ctrl 满 MOD_HINT_DELAY 才亮，其间一旦叠加实义键就取消——
+// 这样敲组合键（⌘C、⌘⇧F…）不会闪一下再灭。隐藏永远即时，保证敲组合键时提示不抢戏。
+// 阈值要大于「一前一后敲组合键」的自然间隔（几十~两三百 ms），否则先按 ⌘ 再按第二键仍会闪；
+// 400ms 把「顺手敲的组合键」和「特意按住 ⌘ 查快捷键」区分开——真想查的人按住半秒即可。
+const MOD_HINT_DELAY = 400
+let modHintTimer: ReturnType<typeof setTimeout> | null = null
+function clearModHintTimer() {
+  if (modHintTimer !== null) { clearTimeout(modHintTimer); modHintTimer = null }
+}
+function showModHintSoon() {
+  if (modHintDown.value) { clearModHintTimer(); return } // 已亮则维持，不重排
+  clearModHintTimer()
+  modHintTimer = setTimeout(() => { modHintTimer = null; modHintDown.value = true }, MOD_HINT_DELAY)
+}
+function hideModHint() {
+  clearModHintTimer()
+  modHintDown.value = false
+}
+
+function onShortcutKeydown(e: KeyboardEvent) {
+  // 当前按下的是修饰键本身、且此刻恰好只按住 ⌘/Ctrl（无 ⇧/⌥/另一修饰键）→ 延时点亮；
+  // 一旦叠加任何实义键（⌘C、⌘5、⌘⇧F…）立即收起——那已是组合键。
+  if (isModifierKey(e.key) && isPlainModNumber(e)) showModHintSoon()
+  else hideModHint()
+  if (!isPlainModNumber(e)) return
+  if (e.repeat) return
+  const n = digitFromEvent(e)
+  if (!n) return
+  const entry = groupedEntries.value[n - 1]
+  if (!entry) return
+  e.preventDefault()
+  emit('select-project', entry.project.dirName)
+}
+
+function onShortcutKeyup(e: KeyboardEvent) {
+  // 松开任意键后按剩余修饰键状态重算：仍单独按住 ⌘/Ctrl 则重新延时点亮，否则即时收起。
+  if (isPlainModNumber(e)) showModHintSoon()
+  else hideModHint()
+}
+
+function onShortcutBlur() {
+  hideModHint()
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onShortcutKeydown, true)
+  window.addEventListener('keyup', onShortcutKeyup, true)
+  window.addEventListener('blur', onShortcutBlur)
+})
+
+onUnmounted(() => {
+  clearModHintTimer()
+  window.removeEventListener('keydown', onShortcutKeydown, true)
+  window.removeEventListener('keyup', onShortcutKeyup, true)
+  window.removeEventListener('blur', onShortcutBlur)
+})
+
 function toggleSelectAll() {
   if (allSelected.value) {
     selectedDirs.value = new Set()
@@ -237,7 +318,7 @@ defineExpose({ exitSelect })
     </div>
 
     <div class="proj-list">
-      <template v-for="entry in groupedEntries" :key="entry.project.dirName">
+      <template v-for="(entry, index) in groupedEntries" :key="entry.project.dirName">
         <div
           class="proj-item"
           :class="{
@@ -278,7 +359,8 @@ defineExpose({ exitSelect })
           <span class="proj-name">{{
             entry.kind === 'child' ? entry.project.worktreeName ?? shortName(entry.project.displayPath) : shortName(entry.project.displayPath)
           }}</span>
-          <span class="proj-count">{{ entry.project.sessionCount }}</span>
+          <span v-if="modHintDown && shortcutForIndex(index)" class="proj-shortcut">{{ shortcutForIndex(index) }}</span>
+          <span v-else class="proj-count">{{ entry.project.sessionCount }}</span>
         </div>
       </template>
       <div v-if="!projects.length" class="sidebar-sub" style="padding: 12px">
