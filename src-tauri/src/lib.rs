@@ -817,7 +817,7 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
         // 编码后的命令里已含 powershell_refresh_path()：起来的 powershell 会以继承到的
         // $processPath 打头、再并上注册表 User + Machine PATH，无需在 cmd 这层注入 PATH
         // （注入反而会覆盖掉继承来的完整 PATH，留下未展开的注册表字面量）。
-        let ps_cmd = crate::agent_command::powershell_set_location_and_run(cwd, command);
+        let ps_cmd = crate::agent_command::powershell_set_location_and_run(cwd, command, false);
         let encoded = crate::agent_command::powershell_encoded_command(&ps_cmd);
         std::process::Command::new("cmd")
             .args(["/c", "start", "", "powershell.exe", "-NoExit", "-EncodedCommand", &encoded])

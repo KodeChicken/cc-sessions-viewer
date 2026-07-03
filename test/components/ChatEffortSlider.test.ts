@@ -34,7 +34,7 @@ describe('ChatEffortSlider', () => {
 
   it('ignores a default that is not a valid level for the current model', () => {
     // ultracode 只在 Opus 4.7/4.8 存在；Sonnet 下不是合法档 → 应回落最低档，而非显示 Ultracode。
-    const wrapper = mountSlider({ selected: undefined, defaultLevel: 'ultracode', model: 'claude-sonnet-4-6' })
+    const wrapper = mountSlider({ selected: undefined, defaultLevel: 'ultracode', model: 'claude-sonnet-5' })
     expect(wrapper.find('.es-trigger').text()).toContain('Low')
     expect(wrapper.find('.es-trigger').text()).not.toContain('Ultracode')
   })

@@ -43,6 +43,54 @@ const LANG_IMPORTS: Record<string, () => Promise<any>> = {
 
 const SUPPORTED_LANGS = new Set(Object.keys(LANG_IMPORTS))
 
+/**
+ * 围栏信息串（```js / ```ts / ```py …）→ Shiki 规范语言名。CommonMark 允许任意别名，
+ * 但 Shiki 语言包名是 javascript / typescript / python，别名对不上 `tryLoadLang` 第一步
+ * `SUPPORTED_LANGS.has()` 就 false → 整块 skip、不高亮（`js` 就是这么漏掉的）。
+ * 这里把常见别名归一；已是规范名或未知串原样返回（未知的照旧走 SUPPORTED_LANGS 兜底 skip）。
+ */
+const LANG_ALIASES: Record<string, string> = {
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', node: 'javascript',
+  ts: 'typescript', mts: 'typescript', cts: 'typescript',
+  py: 'python',
+  rb: 'ruby',
+  rs: 'rust',
+  kt: 'kotlin', kts: 'kotlin',
+  golang: 'go',
+  sh: 'bash', console: 'bash',
+  yml: 'yaml',
+  md: 'markdown', mdx: 'markdown',
+  htm: 'html',
+  'c++': 'cpp',
+  gql: 'graphql',
+}
+
+export function canonicalLang(lang: string): string {
+  return LANG_ALIASES[lang] || lang
+}
+
+/** 规范语言名 → 展示名（好看的大小写）。缺省回落规范名本身。 */
+const LANG_DISPLAY_NAMES: Record<string, string> = {
+  javascript: 'JavaScript', typescript: 'TypeScript', jsx: 'JSX', tsx: 'TSX',
+  python: 'Python', rust: 'Rust', go: 'Go', java: 'Java', c: 'C', cpp: 'C++',
+  html: 'HTML', css: 'CSS', scss: 'SCSS', vue: 'Vue', svelte: 'Svelte',
+  json: 'JSON', yaml: 'YAML', toml: 'TOML', xml: 'XML',
+  bash: 'Bash', shell: 'Shell', zsh: 'Zsh', powershell: 'PowerShell',
+  sql: 'SQL', graphql: 'GraphQL', markdown: 'Markdown', diff: 'Diff',
+  ruby: 'Ruby', php: 'PHP', swift: 'Swift', kotlin: 'Kotlin', dart: 'Dart',
+  dockerfile: 'Dockerfile', lua: 'Lua', zig: 'Zig',
+}
+
+/**
+ * 围栏信息串 → 代码块左上角语言标签的展示名。**未知语言（空串 / 不在支持集）返回 null**，
+ * 调用方据此「未知不展示」。已知则给规范化后的展示名（如 `js` → "JavaScript"）。
+ */
+export function langLabel(rawLang: string): string | null {
+  const lang = canonicalLang(rawLang.trim().toLowerCase())
+  if (!SUPPORTED_LANGS.has(lang)) return null
+  return LANG_DISPLAY_NAMES[lang] ?? lang
+}
+
 const THEMES = ['github-light', 'github-dark', 'dracula'] as const
 
 function getHighlighter(): Promise<HighlighterCore> {
@@ -221,7 +269,7 @@ export async function highlightAllCodeBlocks(root: HTMLElement | null): Promise<
   const themeName = currentTheme()
 
   for (const pre of fenced) {
-    const lang = pre.dataset.lang || ''
+    const lang = canonicalLang(pre.dataset.lang || '')
     if (!lang) { pre.dataset.shiki = 'skip'; continue }
     const code = pre.querySelector('code')?.textContent ?? ''
     if (!code) { pre.dataset.shiki = 'skip'; continue }

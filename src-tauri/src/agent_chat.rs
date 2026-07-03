@@ -162,14 +162,14 @@ fn build_piped_command(cwd: &str, command: &AgentCommand, use_reclaude: bool) ->
 }
 
 #[cfg(windows)]
-fn build_piped_command(cwd: &str, command: &AgentCommand, _use_reclaude: bool) -> std::process::Command {
+fn build_piped_command(cwd: &str, command: &AgentCommand, use_reclaude: bool) -> std::process::Command {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     let mut cmd = std::process::Command::new("powershell.exe");
     cmd.arg("-NoLogo")
         .arg("-Command")
-        .arg(crate::agent_command::powershell_set_location_and_run(cwd, command));
+        .arg(crate::agent_command::powershell_set_location_and_run(cwd, command, use_reclaude));
     cmd.current_dir(cwd);
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd

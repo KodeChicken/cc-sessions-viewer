@@ -39,10 +39,17 @@ impl AgentCommand {
         parts.join(" ")
     }
 
+    /// `wrapper` 给出时用它做进程包装器（`& 'reclaude' 'claude' ...`）：`&` 调用算子跑
+    /// wrapper，原 program/args 全成 wrapper 的参数。与 posix 侧 `'reclaude' <cli>` 同款语义。
     #[cfg(target_os = "windows")]
-    pub fn to_powershell(&self) -> String {
-        let mut parts = Vec::with_capacity(2 + self.args.len() + usize::from(!self.extra_args.is_empty()));
+    pub fn to_powershell(&self, wrapper: Option<&str>) -> String {
+        let mut parts = Vec::with_capacity(
+            2 + usize::from(wrapper.is_some()) + self.args.len() + usize::from(!self.extra_args.is_empty()),
+        );
         parts.push("&".to_string());
+        if let Some(wrapper) = wrapper {
+            parts.push(powershell_quote(wrapper));
+        }
         parts.push(powershell_quote(&self.program));
         parts.extend(self.args.iter().map(|arg| powershell_quote(arg)));
         if !self.extra_args.is_empty() {
@@ -62,13 +69,16 @@ pub fn powershell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+/// `use_reclaude`：GUI 聊天 / 内嵌终端里把命令包一层 `reclaude`，走 reclaude 守护进程的
+/// 鉴权 + 代理链路（与 posix 侧一致）。外部终端 resume 传 `false`。
 #[cfg(target_os = "windows")]
-pub fn powershell_set_location_and_run(cwd: &str, command: &AgentCommand) -> String {
+pub fn powershell_set_location_and_run(cwd: &str, command: &AgentCommand, use_reclaude: bool) -> String {
     let cwd = powershell_quote(cwd);
+    let wrapper = if use_reclaude { Some("reclaude") } else { None };
     format!(
         "{}; Set-Location -LiteralPath {cwd}; {}",
         powershell_refresh_path(),
-        command.to_powershell()
+        command.to_powershell(wrapper)
     )
 }
 

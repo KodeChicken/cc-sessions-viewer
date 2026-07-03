@@ -2618,6 +2618,22 @@ code.file-ref:hover {
   width: 14px;
   height: 14px;
 }
+/* 语言标签：常显，位于复制按钮（right:6, 宽 26）左侧；与其同高、垂直对齐。未知语言不注入。 */
+.code-lang {
+  position: absolute;
+  top: 6px;
+  right: 40px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--text-mute);
+  pointer-events: none;
+  user-select: none;
+}
 .code-block.shiki {
   background: var(--code-bg) !important;
 }

@@ -25,7 +25,7 @@ import AutoModeConfirmModal from './AutoModeConfirmModal.vue'
 import {
   hasModelChoice,
   modelSupportsEffort,
-  modelMenuFor,
+  autoPickModel,
   fallbackPermissionMode,
   fallbackEffort,
   type ModelMenuOptions,
@@ -254,7 +254,7 @@ watch(
   () => {
     if (props.session.agent !== 'claude' || !runtimeLoaded.value) return
     if (props.session.model || props.session.lastModel || props.session.msgs.length > 0) return
-    const first = modelMenuFor(agent.value, modelMenuOptions.value).primary[0]?.value
+    const first = autoPickModel(agent.value, modelMenuOptions.value)
     if (first) onPickModel(first)
   },
   { immediate: true },

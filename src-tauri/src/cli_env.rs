@@ -205,11 +205,11 @@ fn resolve_upgrade_cmd(spec: &CliSpec) -> String {
     match pm.as_str() {
         "homebrew-cask" => {
             if let Some(args) = spec.brew_upgrade {
-                return format!("brew upgrade {args}");
+                return format!("HOMEBREW_NO_INSTALL_FROM_API=1 brew upgrade {args}");
             }
         }
         "homebrew" => {
-            return format!("brew upgrade {}", spec.npm_package.rsplit('/').next().unwrap_or(spec.binary));
+            return format!("HOMEBREW_NO_INSTALL_FROM_API=1 brew upgrade {}", spec.npm_package.rsplit('/').next().unwrap_or(spec.binary));
         }
         "nvm" | "fnm" | "volta" | "npm" => {
             if let Some(ref bin_path) = first {
@@ -252,7 +252,10 @@ fn extract_fallback_cmd(output: &str) -> Option<String> {
         let trimmed = line.trim();
         if trimmed.starts_with("brew upgrade ")
             || trimmed.starts_with("brew reinstall ")
-            || trimmed.starts_with("npm install ")
+        {
+            return Some(format!("HOMEBREW_NO_INSTALL_FROM_API=1 {trimmed}"));
+        }
+        if trimmed.starts_with("npm install ")
             || trimmed.starts_with("npm i ")
         {
             return Some(trimmed.to_string());
@@ -484,7 +487,7 @@ mod tests {
                          brew upgrade claude-code@latest\n";
         assert_eq!(
             extract_fallback_cmd(output),
-            Some("brew upgrade claude-code@latest".into())
+            Some("HOMEBREW_NO_INSTALL_FROM_API=1 brew upgrade claude-code@latest".into())
         );
 
         assert_eq!(extract_fallback_cmd("Updated successfully!"), None);

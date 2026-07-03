@@ -5,6 +5,8 @@ import {
   CLAUDE_ALIAS_MODEL_MENU,
   CHAT_EFFORT_LEVELS,
   hasModelChoice,
+  autoPickModel,
+  requiresCredits,
   hasEffortChoice,
   effortLevelsFor,
   modelSupportsEffort,
@@ -48,11 +50,13 @@ describe('chatComposerOptions', () => {
 
   it('Claude 模型用完整标准 id（主列表 + More），且一律不带 [1m]', () => {
     expect(CHAT_MODEL_MENU.claude.primary.map((m) => m.value)).toEqual([
+      'claude-fable-5',
       'claude-opus-4-8',
-      'claude-sonnet-4-6',
+      'claude-sonnet-5',
       'claude-haiku-4-5-20251001',
     ])
     expect(CHAT_MODEL_MENU.claude.more.map((m) => m.value)).toEqual([
+      'claude-sonnet-4-6',
       'claude-opus-4-7',
       'claude-opus-4-6',
     ])
@@ -80,6 +84,15 @@ describe('chatComposerOptions', () => {
         claudeAliasTargets: { opus: 'mimo-v2.5-pro' },
       }).primary[0].label,
     ).toBe('Opus (mimo-v2.5-pro)')
+  })
+
+  it('autoPickModel：Fable 5 需 credits 不作新会话默认，订阅落到 Opus 4.8，alias 照常取 opus', () => {
+    expect(requiresCredits('claude-fable-5')).toBe(true)
+    expect(requiresCredits('claude-opus-4-8')).toBe(false)
+    // 订阅：primary[0] 是烧额度的 Fable 5 → 跳过 → 第一个不烧额度的 Opus 4.8
+    expect(autoPickModel('claude')).toBe('claude-opus-4-8')
+    // alias 模式：primary[0] 是 opus 别名（不烧额度）→ 照常返回
+    expect(autoPickModel('claude', { claudeAliasMode: true })).toBe('opus')
   })
 
   it('关键回归：任何下发模型 id 都不含 [1m]（否则会触发 1M-context credits 报错）', () => {
@@ -131,19 +144,20 @@ describe('chatComposerOptions', () => {
     expect(effortLabel('low')).toBe('Low')
   })
 
-  it('effortLevelsFor：Opus 4.7/4.8 在 max 后多一档 ultracode，其余模型只有基础五档', () => {
+  it('effortLevelsFor：Fable 5 / Opus 4.7 / 4.8 在 max 后多一档 ultracode，其余模型只有基础五档', () => {
     const base = ['low', 'medium', 'high', 'xhigh', 'max']
+    expect(effortLevelsFor('claude', 'claude-fable-5')).toEqual([...base, 'ultracode'])
     expect(effortLevelsFor('claude', 'claude-opus-4-8')).toEqual([...base, 'ultracode'])
     expect(effortLevelsFor('claude', 'claude-opus-4-7')).toEqual([...base, 'ultracode'])
     expect(effortLevelsFor('claude', 'claude-opus-4-6')).toEqual(base)
-    expect(effortLevelsFor('claude', 'claude-sonnet-4-6')).toEqual(base)
+    expect(effortLevelsFor('claude', 'claude-sonnet-5')).toEqual(base)
     expect(effortLevelsFor('claude', undefined)).toEqual(base)
     expect(effortLevelsFor('codex', 'gpt-5.4')).toEqual(['minimal', 'low', 'medium', 'high'])
   })
 
   it('modelSupportsEffort：Haiku 无 effort；Opus/Sonnet 有；Gemini agent 一律无', () => {
     expect(modelSupportsEffort('claude', 'claude-opus-4-8')).toBe(true)
-    expect(modelSupportsEffort('claude', 'claude-sonnet-4-6')).toBe(true)
+    expect(modelSupportsEffort('claude', 'claude-sonnet-5')).toBe(true)
     expect(modelSupportsEffort('claude', 'claude-haiku-4-5-20251001')).toBe(false)
     // 未指定模型时按「支持」处理（滑杆默认展示）。
     expect(modelSupportsEffort('claude', undefined)).toBe(true)
@@ -160,17 +174,17 @@ describe('chatComposerOptions', () => {
 
   it('fallbackEffort：切到不支持当前档的模型 → 退最高可用档；否则原样', () => {
     // 4.8 的 ultracode 切到 Sonnet（无 ultracode）→ 退到 max。
-    expect(fallbackEffort('ultracode', 'claude', 'claude-sonnet-4-6')).toBe('max')
+    expect(fallbackEffort('ultracode', 'claude', 'claude-sonnet-5')).toBe('max')
     // 档位在新模型下仍存在 → 原样。
     expect(fallbackEffort('high', 'claude', 'claude-opus-4-8')).toBe('high')
     expect(fallbackEffort('ultracode', 'claude', 'claude-opus-4-7')).toBe('ultracode')
-    expect(fallbackEffort(undefined, 'claude', 'claude-sonnet-4-6')).toBeUndefined()
+    expect(fallbackEffort(undefined, 'claude', 'claude-sonnet-5')).toBeUndefined()
   })
 
   it('Haiku 不支持 auto 权限模式；其它模型不受限', () => {
     expect(permissionModeDisabled('auto', 'claude-haiku-4-5-20251001')).toBe(true)
     expect(permissionModeDisabled('auto', 'claude-opus-4-8')).toBe(false)
-    expect(permissionModeDisabled('auto', 'claude-sonnet-4-6')).toBe(false)
+    expect(permissionModeDisabled('auto', 'claude-sonnet-5')).toBe(false)
     expect(permissionModeDisabled('acceptEdits', 'claude-haiku-4-5-20251001')).toBe(false)
     expect(permissionModeDisabled('auto', undefined)).toBe(false)
   })

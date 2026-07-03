@@ -10,6 +10,8 @@
 //   · 用「父节点是否已是 .code-wrap」做幂等判断，重复 sweep 不会二次包裹。
 //   · 复制内容惰性读取：shiki 之后内层 <pre> 带 data-source（原始码），否则回退 <code> 文本。
 
+import { langLabel } from './shikiHighlight'
+
 // lucide copy / check 的原始 SVG（按钮要 innerHTML 注入，拿不到 Vue 图标组件的字符串，内联之）。
 const COPY_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>'
@@ -36,6 +38,16 @@ export function decorateCodeBlocks(root: HTMLElement | null): void {
     wrap.className = 'code-wrap'
     parent.insertBefore(wrap, pre)
     wrap.appendChild(pre)
+
+    // 左上角语言标签（在复制按钮左边）。围栏信息串来自 pre.dataset.lang（format.ts 写入的
+    // 原始别名，或 shiki 替换后已归一的规范名，两种都能识别）。未知语言不展示。
+    const label = langLabel(pre.dataset.lang || '')
+    if (label) {
+      const tag = document.createElement('span')
+      tag.className = 'code-lang'
+      tag.textContent = label
+      wrap.appendChild(tag)
+    }
 
     const btn = document.createElement('button')
     btn.type = 'button'

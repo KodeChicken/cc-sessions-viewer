@@ -141,13 +141,13 @@ fn build_shell_command(
     cwd: &str,
     command: &AgentCommand,
     color_scheme: PtyColorScheme,
-    _use_reclaude: bool,
+    use_reclaude: bool,
 ) -> CommandBuilder {
     // PowerShell 单引号字面串里 ' 用 '' 转义。
     let mut cmd = CommandBuilder::new("powershell.exe");
     cmd.arg("-NoLogo");
     cmd.arg("-Command");
-    cmd.arg(crate::agent_command::powershell_set_location_and_run(cwd, command));
+    cmd.arg(crate::agent_command::powershell_set_location_and_run(cwd, command, use_reclaude));
     // ConPTY 自己处理 VT 序列；TERM 对 Win 上的 Node CLI（claude / codex / gemini）也无害。
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");

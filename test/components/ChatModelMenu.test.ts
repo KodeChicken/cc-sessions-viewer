@@ -20,13 +20,13 @@ describe('ChatModelMenu', () => {
 
   it('checkmarks the displayValue model when selected is empty (resumed session, model not yet picked)', async () => {
     const wrapper = mount(ChatModelMenu, {
-      props: { agent: 'claude', selected: undefined, displayValue: 'claude-sonnet-4-6' },
+      props: { agent: 'claude', selected: undefined, displayValue: 'claude-sonnet-5' },
       global: { directives: { tooltip: vTooltip } },
     })
     await wrapper.find('button.mm-trigger').trigger('click')
     const checked = wrapper.findAll('.mm-item.active')
     expect(checked).toHaveLength(1)
-    expect(checked[0].text()).toContain('Sonnet 4.6')
+    expect(checked[0].text()).toContain('Sonnet 5')
   })
 
   it('shows the real mapped model name for Claude alias menu items', async () => {
