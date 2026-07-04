@@ -819,8 +819,11 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
         // （注入反而会覆盖掉继承来的完整 PATH，留下未展开的注册表字面量）。
         let ps_cmd = crate::agent_command::powershell_set_location_and_run(cwd, command, false);
         let encoded = crate::agent_command::powershell_encoded_command(&ps_cmd);
+        let ps_exe = crate::agent_command::windows_powershell_exe();
+        // -ExecutionPolicy Bypass（仅本进程）：放行 npm 装的 claude/codex .ps1 垫片，
+        // 否则 Win 默认 Restricted 策略会以 UnauthorizedAccess 拒跑 resume 命令。
         std::process::Command::new("cmd")
-            .args(["/c", "start", "", "powershell.exe", "-NoExit", "-EncodedCommand", &encoded])
+            .args(["/c", "start", "", ps_exe, "-NoExit", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &encoded])
             .spawn()
             .map_err(|e| format!("Failed to launch terminal: {e}"))?;
     }
@@ -1071,6 +1074,7 @@ fn bundle_bins(rel: &str) -> Vec<String> {
 /// 源码 / 文本类文件点击时优先用「代码编辑器」打开 —— 而不是 macOS 默认那个（如 `.dart` 默认会被
 /// Xcode 接管，又重又不对路）。pdf / 图片 / office / 压缩包等仍交给各自默认程序；无扩展名（含目录、
 /// `Dockerfile` 这类）也走默认，交给 `open`。
+#[cfg(target_os = "macos")]
 fn wants_editor(p: &Path) -> bool {
     let ext = match p.extension().and_then(|e| e.to_str()) {
         Some(e) => e.to_ascii_lowercase(),

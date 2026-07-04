@@ -1,5 +1,4 @@
-// 「btw」侧聊浮框的全局状态层 —— 对标 Claude Code 客户端的 `/btw`：在主任务进行中
-// 顺手问一句、不打断、也不污染主对话历史。
+// 「btw」侧聊浮框 —— 每个分屏格子各自持有一份独立的侧聊会话。
 //
 // 语义取自 Claude Code 官方对 `/btw` 的定位：一个**临时**的旁支问答，能看见当前对话
 // 的上下文，但答完即走、不进主历史。本 app 是「外部进程」模型（每个 chat 是独立的
@@ -11,13 +10,21 @@
 //
 // 进程模型复用 chatSessions：侧聊本身就是一个普通 ChatSession，被 `startChat` 推进
 // `chatSessions.value`（于是模块时钟、事件路由、closeChat 全都直接复用），只是另由这里
-// 的 `sideChat` ref 单独持有、与主视图的 `liveChat` 互不干扰。
+// 的 map 按 paneId 持有、与主视图的 `liveChat` 互不干扰。
 
-import { ref } from 'vue'
+import { computed, shallowRef } from 'vue'
 import { startChat, closeChat, sendPrompt, type ChatSession } from './chatSessions'
+import { focusedPane } from './panes'
 
-/** 当前的 btw 侧聊会话；null = 浮框未开。主视图的 `liveChat` 与它各持一份，互不影响。 */
-export const sideChat = ref<ChatSession | null>(null)
+/** 每个分屏格子的 btw 侧聊会话；null = 该格子未开侧聊。 */
+const perPane = shallowRef(new Map<number, ChatSession>())
+
+/** 当前聚焦格子的 btw 侧聊会话（给 ChatSidePanel 渲染用）。 */
+export const sideChat = computed<ChatSession | null>(() => {
+  const fp = focusedPane.value
+  if (!fp) return null
+  return perPane.value.get(fp.id) ?? null
+})
 
 export interface OpenSideChatOptions {
   /** 侧聊所属项目 key（= ProjectInfo.dirName），仅用于归类/标题。 */
@@ -35,14 +42,19 @@ export interface OpenSideChatOptions {
 }
 
 /**
- * 打开（或复用）btw 侧聊浮框。已开则不重开子进程：带词就把这句发进现有侧聊，
- * 否则只是把焦点交还给已存在的浮框。返回当前侧聊会话。
+ * 打开（或复用）当前聚焦格子 的 btw 侧聊浮框。已开则不重开子进程：带词就把这句发进
+ * 现有侧聊，否则只是把焦点交还给已存在的浮框。返回当前侧聊会话。
  */
 export async function openSideChat(opts: OpenSideChatOptions): Promise<ChatSession | null> {
-  if (sideChat.value) {
-    if (opts.prompt) void sendPrompt(sideChat.value, opts.prompt)
-    return sideChat.value
+  const fp = focusedPane.value
+  if (!fp) return null
+
+  const existing = perPane.value.get(fp.id)
+  if (existing) {
+    if (opts.prompt) void sendPrompt(existing, opts.prompt)
+    return existing
   }
+
   const fork = !!opts.forkSessionId
   const session = await startChat({
     // btw 是 Claude Code 的概念（`--fork-session` 也只有 Claude 有）→ 侧聊恒为 claude。
@@ -58,13 +70,37 @@ export async function openSideChat(opts: OpenSideChatOptions): Promise<ChatSessi
     effort: opts.effort,
     initialPrompt: opts.prompt,
   })
-  sideChat.value = session
+
+  const next = new Map(perPane.value)
+  next.set(fp.id, session)
+  perPane.value = next
+
   return session
 }
 
-/** 关闭 btw 侧聊：停子进程并丢弃（fork 出来的会话与主聊无关，不回写主历史）。 */
+/** 关闭当前聚焦格子的 btw 侧聊：停子进程并丢弃（fork 出来的会话与主聊无关，不回写主历史）。 */
 export function closeSideChat(): void {
-  const s = sideChat.value
-  sideChat.value = null
-  if (s) void closeChat(s.uiId)
+  const fp = focusedPane.value
+  if (!fp) return
+
+  const s = perPane.value.get(fp.id)
+  if (!s) return
+
+  const next = new Map(perPane.value)
+  next.delete(fp.id)
+  perPane.value = next
+
+  void closeChat(s.uiId)
+}
+
+/**
+ * 关闭**所有** pane 的 btw 侧聊。切 agent / 切项目时调用 —— 此时整个视图已换，
+ * 旧 side chat 不再有意义。
+ */
+export function closeAllSideChats(): void {
+  const all = perPane.value
+  perPane.value = new Map()
+  for (const s of all.values()) {
+    void closeChat(s.uiId)
+  }
 }

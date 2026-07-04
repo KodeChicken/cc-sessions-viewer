@@ -8,8 +8,9 @@
 //       `-l + -i` 同时给：login shell source `.zprofile` / `.bash_profile`，interactive
 //       shell source `.zshrc` / `.bashrc`。npm global / nvm / fnm / volta 通常把 PATH
 //       export 在 rc 文件里，少一个都可能找不到 claude / codex / gemini。
-//     · Windows：`powershell.exe -NoLogo -Command "Set-Location -LiteralPath '<cwd>'; <cli>"`。
-//       挑 `powershell.exe`（Win10+ 自带）而不是 `pwsh.exe`（PS7，要单独装）以兼容空机器；
+//     · Windows：`<pwsh|powershell>.exe -NoLogo -Command "Set-Location -LiteralPath '<cwd>'; <cli>"`。
+//       优先 `pwsh.exe`（PS7，用户默认想用的）——装了才用，没装回退 Win10+ 自带的
+//       `powershell.exe`（5.1）以兼容空机器；见 agent_command::windows_powershell_exe。
 //       `-Command` 默认会 load `$PROFILE`，nvm-windows / volta-win 在 profile 里改的 PATH
 //       也能拿到。msi / choco 安装的 CLI 直接走系统 PATH，无 profile 也能找到。
 //   - 给每个活跃 PTY 分配一个 `u64` id，前端拿着 id 调 write / resize / kill。
@@ -97,8 +98,8 @@ struct ExitPayload {
 /// shell 同时 source 两套 rc 文件，把 nvm / fnm / volta / npm-global 在 rc 里 export 的
 /// PATH 都拉进来。SHELL 缺省时 macOS 回退 zsh、Linux 回退 bash —— 各自系统默认。
 ///
-/// Windows → `powershell.exe -NoLogo -Command "Set-Location -LiteralPath '<cwd>'; <cli>"`。
-/// 用内置的 `powershell.exe`（PS 5.1，Win10+ 自带）而不是 PS7，免去用户额外装。
+/// Windows → `<pwsh|powershell>.exe -NoLogo -Command "Set-Location -LiteralPath '<cwd>'; <cli>"`。
+/// 优先 PS7（`pwsh.exe`），没装才回退内置的 `powershell.exe`（PS 5.1，Win10+ 自带）。
 /// `-Command` 默认会 load `$PROFILE` —— nvm-windows / volta 在 profile 里改的 PATH 能
 /// 拿到；msi / choco 装的 CLI 直接走系统 PATH。
 ///
@@ -143,9 +144,13 @@ fn build_shell_command(
     color_scheme: PtyColorScheme,
     use_reclaude: bool,
 ) -> CommandBuilder {
-    // PowerShell 单引号字面串里 ' 用 '' 转义。
-    let mut cmd = CommandBuilder::new("powershell.exe");
+    // PowerShell 单引号字面串里 ' 用 '' 转义。装了 PS7 就用 pwsh，否则回退自带的 5.1。
+    let mut cmd = CommandBuilder::new(crate::agent_command::windows_powershell_exe());
     cmd.arg("-NoLogo");
+    // -ExecutionPolicy Bypass（仅本进程）：resume 会 `& 'codex' ...` 跑 npm 装的 .ps1 垫片，
+    // Win 默认策略 Restricted 会以 UnauthorizedAccess 拒绝，Bypass 放行且不改系统策略。
+    cmd.arg("-ExecutionPolicy");
+    cmd.arg("Bypass");
     cmd.arg("-Command");
     cmd.arg(crate::agent_command::powershell_set_location_and_run(cwd, command, use_reclaude));
     // ConPTY 自己处理 VT 序列；TERM 对 Win 上的 Node CLI（claude / codex / gemini）也无害。
@@ -182,8 +187,12 @@ fn build_interactive_shell(cwd: &str, color_scheme: PtyColorScheme) -> CommandBu
 fn build_interactive_shell(cwd: &str, color_scheme: PtyColorScheme) -> CommandBuilder {
     // 与 v0.1.12 一致：裸 powershell，直接继承 GUI 进程已展开的环境块 PATH —— 实测
     // node / npm 都能找到。不再注入 / 刷新 PATH，避免覆盖掉本来就好用的继承 PATH。
-    let mut cmd = CommandBuilder::new("powershell.exe");
+    // 装了 PS7 就用 pwsh，否则回退自带的 5.1。
+    let mut cmd = CommandBuilder::new(crate::agent_command::windows_powershell_exe());
     cmd.arg("-NoLogo");
+    // 交互式里用户随手跑 claude/codex 也会碰到 .ps1 垫片，同样放行执行策略（仅本进程）。
+    cmd.arg("-ExecutionPolicy");
+    cmd.arg("Bypass");
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("COLORFGBG", color_scheme.colorfgbg());

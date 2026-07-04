@@ -57,14 +57,14 @@ tauri-plugin-process = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [features]
-default = ["dev-mcp"]
+default = []
 dev-mcp = ["tauri-plugin-mcp-bridge"]
 
 [profile.release]
 strip = true
-lto = true
+lto = false
 codegen-units = 1
-opt-level = "s"
+opt-level = 2
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

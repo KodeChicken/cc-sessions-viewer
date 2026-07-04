@@ -74,8 +74,13 @@ fn run_in_login_shell(cmd: &str) -> Result<String, String> {
 fn run_in_login_shell(cmd: &str) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let out = Command::new("powershell.exe")
-        .args(["-NoLogo", "-Command", cmd])
+    // -ExecutionPolicy Bypass（仅本进程）：npm/nvm 装的 claude/codex 是 .ps1 垫片，
+    // Win 默认执行策略 Restricted 会拒跑它们，导致 `codex --version` 失败 → 误报"未安装"。
+    // 前置 powershell_refresh_path()：从注册表重建完整 PATH，与 resume 路径同款解析，
+    // 免得检测吃的是 GUI 进程继承的残缺 PATH、和 resume 实际会跑的命令不一致。
+    let full_cmd = format!("{}; {cmd}", crate::agent_command::powershell_refresh_path());
+    let out = Command::new(crate::agent_command::windows_powershell_exe())
+        .args(["-NoLogo", "-ExecutionPolicy", "Bypass", "-Command", &full_cmd])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("powershell exec: {e}"))?;

@@ -29,7 +29,13 @@ fn projects_dir() -> PathBuf {
 
 fn list_projects_in(dir: &Path) -> Result<Vec<ProjectInfo>, String> {
     let mut out = Vec::new();
-    let entries = fs::read_dir(dir).map_err(|e| format!("Failed to read project directory: {e}"))?;
+    // ~/.claude/projects/ 不存在（刚装 CLI 还没跑过任何会话）→ 返回空列表，
+    // 不要报错，否则后续 bookmark 逻辑全部跳过、侧栏为空。
+    let entries = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(format!("Failed to read project directory: {e}")),
+    };
     for e in entries.flatten() {
         let path = e.path();
         if !path.is_dir() {

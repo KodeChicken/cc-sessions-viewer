@@ -111,7 +111,7 @@ import {
   removeViewEverywhere,
 } from './viewHistory'
 import { startChat, closeChat, reconnectChats, lastAssistantModel, type ChatSession } from './chatSessions'
-import { sideChat, openSideChat, closeSideChat } from './sideChat'
+import { sideChat, openSideChat, closeAllSideChats } from './sideChat'
 import {
   type ViewTab,
   viewTabs,
@@ -1046,7 +1046,7 @@ function switchAgent(a: Agent) {
   // 任何主区视图切换 → 把 TUI 层收起，让用户看到刚切到的视图。TUI tab 不关，
   // 用户在 TerminalStrip 里随时能切回。
   setActiveTui(null)
-  if (sideChat.value) closeSideChat()
+  if (sideChat.value) closeAllSideChats()
   // showStats 不重置 —— 统计是 agent-scoped，切 agent 后 StatsView 自己 refetch。
   loadProjects()
 }
@@ -1076,7 +1076,7 @@ async function selectProject(dir: string) {
     persistTuiMap()
   }
   setActiveTui(null)
-  if (sideChat.value) closeSideChat()
+  if (sideChat.value) closeAllSideChats()
   // 再次点击当前已选中的项目：
   //   - 有 view tab → 取消 view tab 激活，回到列表
   //   - 无 view tab → 收起项目
