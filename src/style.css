@@ -1540,6 +1540,42 @@ body.is-sidebar-resizing {
   opacity: 0;
   transition: opacity 0.12s;
 }
+/* 下载 icon 与「置顶 / 沉底」之间的竖分隔线，把两组操作视觉分开。
+   flex:none —— 否则 1px 宽的分隔条会被 flex-shrink 压成 0 宽而看不见。 */
+.session-actions .action-sep {
+  flex: none;
+  width: 2px;
+  height: 16px;
+  align-self: center;
+  margin: 0 5px;
+  border-radius: 1px;
+  /* 2px 实心：1px 线在 body{zoom:0.9} 下会被渲染成 <1px 的淡影几乎看不见，靠 2px 宽度保证可见；
+     颜色用 --border-strong(和会话详情顶栏分隔线同色)，比 text-dim 淡、更克制。 */
+  background: var(--border-strong);
+}
+/* 置顶 / 沉底按钮激活态：用 brand 强调色，和普通 icon-btn 的 hover(灰底)明确区分。 */
+.icon-btn.sess-pin-btn.active {
+  color: var(--brand);
+  background: var(--brand-soft, var(--surface-hover));
+}
+/* 置顶卡片：左侧一条 brand 竖条（居中、卡片一半高），一眼可辨。 */
+.session-card.sess-pinned::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 25%;
+  height: 50%;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--brand);
+}
+/* 沉底卡片：整体压暗，暗示「次要」。hover 时恢复清晰以便操作。 */
+.session-card.sess-sunk {
+  opacity: 0.55;
+}
+.session-card.sess-sunk.is-hover {
+  opacity: 1;
+}
 /* 用 JS 驱动的 .is-hover 而非 CSS :hover：虚拟列表回收 DOM 节点时，
    WebKit 的 :hover 伪类会在多个物理节点上卡住，导致多行同时亮起。 */
 .session-card.is-hover .session-actions,
@@ -2132,6 +2168,16 @@ mark.locate-hl {
   max-width: min(86%, 1800px);
   margin: 0 auto;
   width: 100%;
+}
+
+/* 虚拟滚动：外层撑总高（滚动条几何），每个 .msg-vrow 绝对定位到自己的 translateY。
+   .msg-vrow 是绝对定位 → 自成 BFC，子 .msg-row 的 margin-bottom 被计入其测量高度，
+   行间距因此原样保留（measureRow 读 getBoundingClientRect().height）。 */
+.chat-vlist {
+  width: 100%;
+}
+.msg-vrow {
+  box-sizing: border-box;
 }
 
 .msg-row {

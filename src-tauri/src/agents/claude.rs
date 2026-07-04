@@ -4,10 +4,13 @@
 // user/assistant 的 `message.content` 数组里夹着 text / thinking / tool_use /
 // tool_result / image 等块。
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
+use rayon::prelude::*;
 use serde_json::Value;
 
 use super::{ChatEvent, SessionSource};
@@ -121,12 +124,11 @@ impl SessionSource for ClaudeSource {
         }
         files.sort_by_key(|f| std::cmp::Reverse(f.1));
         let total = files.len();
-        let sessions = files
-            .iter()
-            .skip(offset)
-            .take(limit)
-            .map(|(p, _)| scan(p))
-            .collect();
+        // 本页要扫的文件可能各自几十 MB，串行 scan 一个大项目要 ~10s。scan 是纯 CPU（读+切分），
+        // 用 rayon 铺到多核并行；scan 内部的缓存锁只在 get/insert 时短暂持有，不会成为瓶颈。
+        // par_iter().collect() 保序，列表顺序不变。
+        let window: Vec<&PathBuf> = files.iter().skip(offset).take(limit).map(|(p, _)| p).collect();
+        let sessions: Vec<SessionMeta> = window.par_iter().map(|p| scan(p)).collect();
         Ok(SessionPage { total, sessions })
     }
 
@@ -930,7 +932,73 @@ fn fork_jsonl(content: &str, new_id: &str, title: &str) -> String {
     out
 }
 
+/// 从一行 JSONL 的**前缀字节**里廉价提取顶层 `"field":"..."` 字符串值,不对整行做 serde 解析。
+/// list 扫描只需要靠前的 type / cwd 等字段,而单行 message 正文可达上百 MB —— 对每行整体 serde
+/// 解析是切到大会话项目时 16s 卡顿的根因。这里只在前缀里找,找不到（字段不在前缀 / 非字符串 /
+/// 被截断）就返回 None,由调用方决定是否退回整行解析。转义按 JSON 规则用 serde 还原单个 token。
+fn json_str_field_prefix(prefix: &[u8], field: &str) -> Option<String> {
+    let mut needle = Vec::with_capacity(field.len() + 2);
+    needle.push(b'"');
+    needle.extend_from_slice(field.as_bytes());
+    needle.push(b'"');
+    let mut i = prefix.windows(needle.len()).position(|w| w == needle.as_slice())? + needle.len();
+    while i < prefix.len() && (prefix[i] == b' ' || prefix[i] == b'\t') {
+        i += 1;
+    }
+    if i >= prefix.len() || prefix[i] != b':' {
+        return None;
+    }
+    i += 1;
+    while i < prefix.len() && (prefix[i] == b' ' || prefix[i] == b'\t') {
+        i += 1;
+    }
+    if i >= prefix.len() || prefix[i] != b'"' {
+        return None;
+    }
+    let start = i; // 开引号
+    i += 1;
+    while i < prefix.len() {
+        match prefix[i] {
+            b'\\' => i += 2, // 跳过转义字符（可能越过前缀 → 视为截断）
+            b'"' => {
+                let raw = &prefix[start..=i]; // 含首尾引号
+                return std::str::from_utf8(raw)
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<String>(s).ok());
+            }
+            _ => i += 1,
+        }
+    }
+    None // 前缀内未闭合
+}
+
+/// scan() 结果缓存：key = 绝对路径，value = (mtime, size, meta)。
+/// 会话文件不变（mtime+size 一致）就直接返回克隆,避免每次切项目都把 500MB 会话重扫一遍。
+/// 文件被追加/替换后 mtime 或 size 变 → key 不命中 → 重扫。是纯加速,不影响正确性。
+type ScanCache = HashMap<PathBuf, (u64, u64, SessionMeta)>;
+static SCAN_CACHE: OnceLock<Mutex<ScanCache>> = OnceLock::new();
+fn scan_cache() -> &'static Mutex<ScanCache> {
+    SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn scan(fp: &Path) -> SessionMeta {
+    let size = fs::metadata(fp).map(|m| m.len()).unwrap_or(0);
+    let modified = mtime_millis(fp);
+    if let Ok(cache) = scan_cache().lock() {
+        if let Some((m, s, meta)) = cache.get(fp) {
+            if *m == modified && *s == size {
+                return meta.clone();
+            }
+        }
+    }
+    let meta = scan_uncached(fp, size, modified);
+    if let Ok(mut cache) = scan_cache().lock() {
+        cache.insert(fp.to_path_buf(), (modified, size, meta.clone()));
+    }
+    meta
+}
+
+fn scan_uncached(fp: &Path, size: u64, modified: u64) -> SessionMeta {
     let file_name = fp
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -948,8 +1016,6 @@ fn scan(fp: &Path) -> SessionMeta {
     } else {
         file_name.trim_end_matches(".jsonl").to_string()
     };
-    let size = fs::metadata(fp).map(|m| m.len()).unwrap_or(0);
-    let modified = mtime_millis(fp);
 
     // Claude Code `/rename <name>` 会成对追加 `custom-title` + `agent-name`
     // 两条记录（同值）。两者都识别，最后一条生效；否则回落到首条 user message。
@@ -960,58 +1026,94 @@ fn scan(fp: &Path) -> SessionMeta {
     let mut message_count = 0usize;
 
     if let Ok(file) = fs::File::open(fp) {
-        for line in BufReader::new(file).lines().map_while(Result::ok) {
-            if line.trim().is_empty() {
-                continue;
+        // 逐行读原始字节（read_until 复用同一个 buffer,避免为上百 MB 的行反复分配 String）；
+        // 只对**必须**深挖的行（首条用户消息取标题、custom-title、attachment）做整行 serde 解析,
+        // 其余（含巨大的 tool_result / image 行）只从前缀廉价取 type/cwd。见 json_str_field_prefix。
+        let mut reader = BufReader::new(file);
+        let mut buf: Vec<u8> = Vec::with_capacity(8192);
+        // type/cwd 都在 message 正文之前,几百字节内；4KB 前缀足够覆盖且不触碰巨大正文。
+        const PREFIX: usize = 4096;
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(_) => break,
             }
-            let v: Value = match serde_json::from_str(&line) {
-                Ok(v) => v,
-                Err(_) => continue,
+            let line: &[u8] = {
+                let mut s = &buf[..];
+                while let [rest @ .., b'\n' | b'\r' | b' ' | b'\t'] = s {
+                    s = rest;
+                }
+                while let [b'\n' | b'\r' | b' ' | b'\t', rest @ ..] = s {
+                    s = rest;
+                }
+                s
             };
-            let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-            if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
-                cwd = Some(c.to_string());
-            }
-            if t == "custom-title" || t == "agent-name" {
-                let field = if t == "custom-title" {
-                    "customTitle"
-                } else {
-                    "agentName"
-                };
-                if let Some(ct) = v.get(field).and_then(|x| x.as_str()) {
-                    let trimmed = ct.trim();
-                    if !trimmed.is_empty() {
-                        custom_title = Some(trimmed.to_string());
-                    }
-                }
+            if line.is_empty() {
                 continue;
             }
-            if t == "user" || t == "assistant" {
-                if created.is_none() {
-                    created = v
-                        .get("timestamp")
-                        .and_then(|x| x.as_str())
-                        .map(|s| s.to_string());
-                }
-                message_count += 1;
+            let prefix = &line[..line.len().min(PREFIX)];
+            // cwd：原实现每行都取、最后一条生效（cd 后目录会变，见 scan_uses_last_cwd_after_cd）。
+            if let Some(c) = json_str_field_prefix(prefix, "cwd") {
+                cwd = Some(c);
             }
-            // 排队输入的消息（attachment/queued_command）也算一条用户消息。
-            if t == "attachment" && queued_command_blocks(&v).is_some() {
-                message_count += 1;
-            }
-            // 标题回落到首条「真正的」用户消息 —— 跳过系统注入记录（skill 注入 /
-            // 压缩摘要 / 任务通知 / 命令输出），否则 /dm-watch 这类会话的侧栏标题会
-            // 变成 "Base directory for this skill: …" 之类的注入正文。
-            if first_user_title.is_empty() && t == "user" && !is_injected_user(&v) {
-                if let Some(txt) = user_text(&v) {
-                    // 先剥掉 `@文件` 引用，标题取用户真正写的话（否则侧栏 / 头部标题会变成
-                    // `@"/path" hi` 这种）。
-                    let (_, body) = extract_file_refs(&txt);
-                    let clean = clean_title(&body);
-                    if !clean.is_empty() {
-                        first_user_title = clean;
+            let t = json_str_field_prefix(prefix, "type").unwrap_or_default();
+            match t.as_str() {
+                "custom-title" | "agent-name" => {
+                    // 短记录,整行解析取标题字段。
+                    if let Ok(v) = serde_json::from_slice::<Value>(line) {
+                        let field = if t == "custom-title" {
+                            "customTitle"
+                        } else {
+                            "agentName"
+                        };
+                        if let Some(ct) = v.get(field).and_then(|x| x.as_str()) {
+                            let trimmed = ct.trim();
+                            if !trimmed.is_empty() {
+                                custom_title = Some(trimmed.to_string());
+                            }
+                        }
                     }
                 }
+                "user" | "assistant" => {
+                    message_count += 1;
+                    // created = 首条 user/assistant 的 timestamp；标题回落到首条「真正的」用户消息。
+                    // timestamp 在正文之后（前缀里未必有）、user_text/is_injected 需要正文 —— 这两件
+                    // 事都只在「还没拿到」时对该行整行解析,一旦拿齐后续行就只计数,不再深挖。
+                    let need_created = created.is_none();
+                    let need_title = first_user_title.is_empty() && t == "user";
+                    if need_created || need_title {
+                        if let Ok(v) = serde_json::from_slice::<Value>(line) {
+                            if need_created {
+                                created = v
+                                    .get("timestamp")
+                                    .and_then(|x| x.as_str())
+                                    .map(|s| s.to_string());
+                            }
+                            // 跳过系统注入记录（skill 注入 / 压缩摘要 / 任务通知 / 命令输出），
+                            // 否则 /dm-watch 这类会话的侧栏标题会变成注入正文。
+                            if need_title && !is_injected_user(&v) {
+                                if let Some(txt) = user_text(&v) {
+                                    let (_, body) = extract_file_refs(&txt);
+                                    let clean = clean_title(&body);
+                                    if !clean.is_empty() {
+                                        first_user_title = clean;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                "attachment" => {
+                    // 排队输入的消息（attachment/queued_command）也算一条用户消息。
+                    if let Ok(v) = serde_json::from_slice::<Value>(line) {
+                        if queued_command_blocks(&v).is_some() {
+                            message_count += 1;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -2566,6 +2668,19 @@ mod tests {
         ]);
         let meta = scan(&p);
         assert_eq!(meta.cwd.as_deref(), Some(r#"D:\ZLSYSproject"#));
+    }
+
+    #[test]
+    fn json_str_field_prefix_extracts_and_unescapes() {
+        let line = br#"{"parentUuid":"x","userType":"external","cwd":"C:\\Users\\BLL","type":"user","message":{"content":"hi"}}"#;
+        assert_eq!(json_str_field_prefix(line, "type").as_deref(), Some("user"));
+        // 转义还原 + 不被 "userType" 误命中
+        assert_eq!(json_str_field_prefix(line, "cwd").as_deref(), Some(r#"C:\Users\BLL"#));
+        // 字段不存在
+        assert_eq!(json_str_field_prefix(line, "nope"), None);
+        // 字段值落在前缀窗口之外（被截断）→ None，调用方回退整行解析
+        let big = br#"{"cwd":"/x","type":"user","message":"AAAA"#; // 未闭合
+        assert_eq!(json_str_field_prefix(&big[..20], "message"), None);
     }
 
     #[test]

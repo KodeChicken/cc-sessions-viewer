@@ -56,7 +56,7 @@ const modKey = isMac ? '⌘' : 'Ctrl'
     </button>
     <div class="welcome-inner">
       <div class="welcome-logo"><img :src="appIcon" alt="" /></div>
-      <h1 class="welcome-title">Claude Session Viewer</h1>
+      <h1 class="welcome-title">Sessions Viewer</h1>
 
       <!-- 当前 agent 切换 -->
       <div v-if="visibleAgents.length > 1" class="welcome-agents">

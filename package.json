@@ -51,6 +51,7 @@
   },
   "dependencies": {
     "@antv/g2": "^5.4.8",
+    "@tanstack/vue-virtual": "^3.13.31",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-notification": "^2.3.3",

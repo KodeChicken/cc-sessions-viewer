@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, defineAsyncComponent } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
 import type { Agent, Msg, SessionMeta, Block } from '../types'
 import { renderText, formatTime, isCaveatOnlyMsg, parseSystemEvent, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage, stripImagePlaceholders, parseFileRef } from '../format'
 import type { MetaField } from '../format'
@@ -592,6 +593,50 @@ function openLightbox(imgs: string[], index = 0) {
 }
 
 const scrollEl = ref<HTMLElement>()
+const vlistEl = ref<HTMLElement>()
+
+// ============================ 虚拟滚动 ============================
+// 长会话（几千条）以前一次性把所有 .msg-row 挂进 DOM（几万节点）+ 首屏同步跑满 markdown /
+// Shiki / mermaid → 打开卡、滚动卡。改用 @tanstack/vue-virtual：只挂「可见窗口 + overscan
+// 缓冲」的行,行高用 measureElement（ResizeObserver）动态测量 —— 代码高亮/图片/mermaid 异步
+// 撑高后自动重测、自动校正滚动位置,正是「快速滚动不留大片空白」的关键。
+//
+// scrollMargin：列表并非贴着滚动容器顶端（.chat-scroll 有 28px padding-top）,把这段偏移告诉
+// 虚拟器,scrollToIndex 才对得准。挂载后量一次。
+const listScrollMargin = ref(0)
+function measureListMargin() {
+  const s = scrollEl.value
+  const v = vlistEl.value
+  if (!s || !v) return
+  listScrollMargin.value = v.getBoundingClientRect().top - s.getBoundingClientRect().top + s.scrollTop
+}
+
+const rowVirtualizer = useVirtualizer(
+  computed(() => ({
+    count: props.messages.length,
+    getScrollElement: () => scrollEl.value ?? null,
+    // 粗估行高（未测量的行用它撑起滚动条几何）；测到真高后自动替换。取接近真实均值,减少大跳
+    // 滚动时估算与实际的落差 —— 落差大 → 已测区间修正累积高度 → 滚动位置跳动 + 视口留缝。
+    // 实测本类会话约 40% 消息被 v-show 隐藏(0 高),含 0 的均值≈110,故取 110 而非视觉行高。
+    estimateSize: () => 110,
+    // overscan：视口上下各多渲染的行数 —— 缓冲区,快速滚动时先垫住,避免白板。给大一点。
+    overscan: 20,
+    getItemKey: (i: number) => props.messages[i]?.uuid ?? i,
+    scrollMargin: listScrollMargin.value,
+    // ⚠️ 用 offsetHeight，不要用 getBoundingClientRect().height。本 app 的 body 有 CSS zoom(≈0.9)：
+    // gBCR 返回的是**视觉坐标**(已 ×0.9)，而虚拟器定位用的 translateY / scrollTop / scrollHeight 都在
+    // **布局坐标**。用 gBCR 会让每行高度被低估 ~10% → 行与行按 0.9 倍间距铺 → 整列消息逐行重叠 ~10%
+    // (用户看到「消息错位」)。offsetHeight 是布局坐标、且本就是整数(无小数抖动,不会触发 RO 死循环)，
+    // 两个问题一起解决。
+    measureElement: (el: Element) => (el as HTMLElement).offsetHeight,
+  })),
+)
+const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
+const totalSize = computed(() => rowVirtualizer.value.getTotalSize())
+// 每个可见行绑到它,TanStack 用 data-index 认领并挂 ResizeObserver 动态测高。
+function measureRow(el: unknown) {
+  if (el instanceof Element) rowVirtualizer.value.measureElement(el)
+}
 
 // 自定义 rAF 平滑滚动：原生 behavior:'smooth' 在长会话里会随距离把动画拉长，
 // 每帧又触发大段 reflow，所以 420 条消息时就会卡。这里用固定时长 + ease-out，
@@ -681,8 +726,14 @@ function scrollToTop() {
   smoothScrollTo(0)
 }
 function scrollToBottom() {
-  const el = scrollEl.value
-  if (el) smoothScrollTo(el.scrollHeight)
+  if (props.liveSession) {
+    // 直播：列表底部还挂着「流式行 / 运行状态行」等非虚拟项,按 scrollHeight 贴底才包含它们。
+    pinToBottomFor(300)
+    return
+  }
+  // 只读：末行高度多为估算,直接 scrollHeight 会落不到真底 —— 交给虚拟器逐帧测量对齐到末行。
+  const n = props.messages.length
+  if (n > 0) rowVirtualizer.value.scrollToIndex(n - 1, { align: 'end' })
 }
 
 // 跳转到某条消息：滚到对应 .msg-row，触发一次 .msg-flash 闪烁动画。
@@ -703,101 +754,55 @@ function cancelFlashStick() {
   flashStickCleanup?.()
 }
 function flashMessage(idx: number, uuid?: string) {
-  const inner = innerEl.value
   const sa = scrollEl.value
-  if (!inner || !sa) return
-  const findRow = () =>
-    (uuid
-      ? inner.querySelector<HTMLElement>(`.msg-row[data-msg-uuid="${CSS.escape(uuid)}"]`)
-      : null) ?? inner.querySelector<HTMLElement>(`.msg-row[data-msg-idx="${idx}"]`)
+  if (!sa) return
+  // uuid 优先（能扛重排）；否则按下标。定位到 messages 里的真实下标交给虚拟器。
+  let realIdx = idx
+  if (uuid) {
+    const found = props.messages.findIndex((m) => m.uuid === uuid)
+    if (found >= 0) realIdx = found
+  }
+  if (realIdx < 0 || realIdx >= props.messages.length) return
 
-  // 先取消上一个跳转的尾巴 + 任何在跑的平滑滚动。
   cancelFlashStick()
   cancelScroll()
 
-  // Step 1：等 row 挂上 DOM —— readSession 返回后大长 v-for 通常 1-2 帧搞定，
-  // 但留 30 帧（≈500ms）兜底，超过仍找不到就放弃。
-  let waitFrames = 0
-  const start = () => {
-    const first = findRow()
-    if (!first) {
-      if (++waitFrames > 30) return
-      requestAnimationFrame(start)
-      return
-    }
-    run(first)
+  // 虚拟器直接滚到目标行并居中。动态高度下,目标行挂载/测量、以及其上方行被 Shiki/图片
+  // 撑高后偏移会变 —— 用一个短 rAF 循环反复 scrollToIndex 把它稳定到位;用户一动即让位。
+  rowVirtualizer.value.scrollToIndex(realIdx, { align: 'center' })
+  let userBailed = false
+  const onUserInput = () => {
+    userBailed = true
   }
-
-  // Step 2：自带 rAF 循环 —— 不复用 smoothScrollTo，因为它把目标缓存为常量，
-  // 长会话里目标会随子组件渲染往下挪，必须每帧重新读 offsetTop。
-  const run = (first: HTMLElement) => {
-    const startScroll = sa.scrollTop
-    const firstTarget = Math.max(0, first.offsetTop - 80)
-    const initDist = firstTarget - startScroll
-    const duration = Math.min(360, 180 + Math.abs(initDist) * 0.05)
-    const ease = (p: number) => 1 - Math.pow(1 - p, 3)
-    const t0 = performance.now()
-    // 总「贴靠」时长：动画 ~360ms + 校准 ~1.2s。校准期是为了等图片 / 代码块
-    // 异步渲染完后还能把命中行拉回正确位置。
-    const STICK_MS = 1600
-
-    let userBailed = false
-    const onUserInput = () => {
-      userBailed = true
-    }
-    sa.addEventListener('wheel', onUserInput, { passive: true })
-    sa.addEventListener('pointerdown', onUserInput, { passive: true })
-    sa.addEventListener('keydown', onUserInput)
-
-    let raf = 0
-    const tick = () => {
-      if (userBailed) return cleanup()
-      const now = performance.now()
-      const elapsed = now - t0
-      if (elapsed > STICK_MS) return cleanup()
-
-      // 每帧重新拿引用：keep-alive 之类的边界场景下 row 节点可能被换掉。
-      const cur = findRow()
-      if (!cur) {
-        raf = requestAnimationFrame(tick)
-        return
-      }
-      const target = Math.max(0, cur.offsetTop - 80)
-
-      if (elapsed < duration) {
-        // 动画阶段：用 ease 平滑滚到 target；target 每帧都重新读，自然追得上后涨高度
-        const p = elapsed / duration
-        sa.scrollTop = startScroll + (target - startScroll) * ease(p)
-      } else {
-        // 校准阶段：层出不穷的 1-2 像素抖动忽略；只在偏差明显时硬对齐
-        if (Math.abs(sa.scrollTop - target) > 1) sa.scrollTop = target
-      }
-      raf = requestAnimationFrame(tick)
-    }
-
-    const cleanup = () => {
-      if (raf) cancelAnimationFrame(raf)
-      sa.removeEventListener('wheel', onUserInput)
-      sa.removeEventListener('pointerdown', onUserInput)
-      sa.removeEventListener('keydown', onUserInput)
-      flashStickCleanup = null
-    }
-    flashStickCleanup = cleanup
+  sa.addEventListener('wheel', onUserInput, { passive: true })
+  sa.addEventListener('pointerdown', onUserInput, { passive: true })
+  sa.addEventListener('keydown', onUserInput)
+  const t0 = performance.now()
+  let raf = 0
+  const tick = () => {
+    if (userBailed || performance.now() - t0 > 1200) return cleanup()
+    rowVirtualizer.value.scrollToIndex(realIdx, { align: 'center' })
     raf = requestAnimationFrame(tick)
-
-    // 闪烁：先清状态，等下一帧再写，确保 CSS 动画从头跑。
-    const realIdx = Number(first.dataset.msgIdx ?? idx)
-    flashIdx.value = null
-    requestAnimationFrame(() => {
-      flashIdx.value = realIdx
-      window.clearTimeout(flashTimer)
-      flashTimer = window.setTimeout(() => {
-        flashIdx.value = null
-      }, 1400)
-    })
   }
+  const cleanup = () => {
+    if (raf) cancelAnimationFrame(raf)
+    sa.removeEventListener('wheel', onUserInput)
+    sa.removeEventListener('pointerdown', onUserInput)
+    sa.removeEventListener('keydown', onUserInput)
+    flashStickCleanup = null
+  }
+  flashStickCleanup = cleanup
+  raf = requestAnimationFrame(tick)
 
-  start()
+  // 闪烁：先清状态,下一帧再写,确保 CSS 动画从头跑。
+  flashIdx.value = null
+  requestAnimationFrame(() => {
+    flashIdx.value = realIdx
+    window.clearTimeout(flashTimer)
+    flashTimer = window.setTimeout(() => {
+      flashIdx.value = null
+    }, 1400)
+  })
 }
 // ============================ Live tail: 自动跟随 + "N 条新" pill ============================
 //
@@ -863,6 +868,9 @@ function onScroll() {
   rafEdge = requestAnimationFrame(() => {
     rafEdge = 0
     updateEdges()
+    // 装饰(高亮/mermaid)由「真实滚动」驱动,而非 virtualRows 的响应式变化 —— 否则装饰改行高
+    // → measureElement 重测 → virtualRows 变 → 又装饰,即使静止也空转打满 CPU。滚动停 = 不再装饰。
+    scheduleDecorate()
   })
 }
 // 悬浮 tip：事件委托挂在滚动容器上（v-html 动态节点挂不上指令）。两类目标共用：
@@ -959,35 +967,85 @@ function unmarkAll() {
   marks = []
 }
 
-function applySearch() {
-  unmarkAll()
-  const root = innerEl.value
-  const q = search.value.trim()
-  if (!q || !root) {
+// ---- 数据驱动搜索（虚拟滚动版）----
+// 旧实现遍历整棵 DOM 打 <mark> 计数,但虚拟滚动下 DOM 里只有可见行 —— 搜不到窗口外的消息。
+// 改为：命中「计数 / 定位」在 messages 数据上算（覆盖全部消息,含未挂载的）；DOM 打标只对
+// 当前可见行做（滚到哪标到哪）。粒度为「消息级」：searchCount = 命中的消息条数,上一条/下一条
+// 在命中消息间跳转,滚到该消息后再在其行内高亮、并把首个 mark 设为 current。
+let searchHits: number[] = [] // 命中的 message 下标（升序）
+
+function scopePasses(scope: string, filter: string): boolean {
+  if (filter === 'all') return true
+  if (filter === 'user') return scope === 'user'
+  if (filter === 'agent') return scope === 'assistant' || scope === 'tools-edit'
+  if (filter === 'tools') return scope === 'tools-other'
+  return true
+}
+// 一条消息里各可搜片段的 (scope, text) —— 与模板给 DOM 打的 data-search-scope 对齐。
+function messageSegments(m: Msg): { scope: string; text: string }[] {
+  const rscope = rowScope(m)
+  const segs: { scope: string; text: string }[] = []
+  for (const b of m.blocks) {
+    if (b.kind === 'tool_use') {
+      const s = toolUseScope(b)
+      segs.push({ scope: s, text: `${b.toolName ?? ''} ${b.toolInput ?? ''}` })
+      const r = inlinedResultFor(b) ?? attachedResultFor(b)
+      if (r?.text) segs.push({ scope: s, text: r.text })
+    } else if (b.kind === 'tool_result') {
+      segs.push({ scope: isToolOnly(m) ? 'tools-edit' : rscope, text: b.text ?? '' })
+    } else if (b.text) {
+      segs.push({ scope: rscope, text: b.text })
+    }
+    if (b.filePath) segs.push({ scope: rscope, text: b.filePath })
+  }
+  return segs
+}
+function computeSearchHits() {
+  const q = search.value.trim().toLowerCase()
+  if (!q) {
+    searchHits = []
     searchCount.value = 0
     searchIndex.value = 0
     return
   }
+  const filter = searchScope.value
+  const hits: number[] = []
+  for (let i = 0; i < props.messages.length; i++) {
+    const m = props.messages[i]
+    if (!rowHasContent(m)) continue
+    if (isHidden(m, i) && !showHidden.value) continue // 隐藏行 = display:none,不参与搜索（与旧行为一致）
+    for (const seg of messageSegments(m)) {
+      if (scopePasses(seg.scope, filter) && seg.text.toLowerCase().includes(q)) {
+        hits.push(i)
+        break
+      }
+    }
+  }
+  searchHits = hits
+  searchCount.value = hits.length
+  searchIndex.value = hits.length ? Math.min(searchIndex.value || 1, hits.length) : 0
+}
+
+// 对当前挂载的可见行打 <mark>（不改计数 / 当前项）。滚动进新行时由 scheduleDecorate 调用。
+function markVisibleSearch() {
+  unmarkAll()
+  const root = innerEl.value
+  const q = search.value.trim()
+  if (!q || !root) return
   const lower = q.toLowerCase()
   const filter = searchScope.value
-  // 沿祖先链找到最近的 data-search-scope 标签，再决定是否计入当前筛选项。
-  function scopeOk(parent: HTMLElement): boolean {
+  const scopeOk = (parent: HTMLElement): boolean => {
     if (filter === 'all') return true
     const node = parent.closest<HTMLElement>('[data-search-scope]')
     const scope = node?.dataset.searchScope ?? null
-    if (filter === 'user') return scope === 'user'
-    if (filter === 'agent') return scope === 'assistant' || scope === 'tools-edit'
-    if (filter === 'tools') return scope === 'tools-other'
-    return true
+    return scopePasses(scope ?? '', filter)
   }
-  // 收集所有候选文本节点（跳过 <script>/<style>/已经是 mark 内部的）
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const txt = node.textContent
       if (!txt || !txt.toLowerCase().includes(lower)) return NodeFilter.FILTER_REJECT
       const parent = (node as Text).parentElement
       if (!parent) return NodeFilter.FILTER_REJECT
-      // 不在脚本/样式里搜
       const tag = parent.tagName
       if (tag === 'SCRIPT' || tag === 'STYLE') return NodeFilter.FILTER_REJECT
       if (!scopeOk(parent)) return NodeFilter.FILTER_REJECT
@@ -997,7 +1055,6 @@ function applySearch() {
   const targets: Text[] = []
   let n: Node | null
   while ((n = walker.nextNode())) targets.push(n as Text)
-
   const collected: HTMLElement[] = []
   for (const text of targets) {
     const s = text.data
@@ -1019,34 +1076,63 @@ function applySearch() {
     text.parentNode?.replaceChild(frag, text)
   }
   marks = collected
-  searchCount.value = marks.length
-  searchIndex.value = marks.length > 0 ? 1 : 0
-  setCurrentMark()
+  applyCurrentClass()
 }
 
-function setCurrentMark() {
-  marks.forEach((m) => m.classList.remove('current'))
-  if (searchIndex.value < 1 || searchIndex.value > marks.length) return
-  const target = marks[searchIndex.value - 1]
-  target.classList.add('current')
-  // 匹配可能藏在 collapsed 的 <details> 里 —— 沿着祖先链全部打开，确保可见
-  let p: HTMLElement | null = target.parentElement
+function currentHitMsgIndex(): number | null {
+  if (searchIndex.value < 1 || searchIndex.value > searchHits.length) return null
+  return searchHits[searchIndex.value - 1]
+}
+// 把当前命中消息行内的第一个 mark 设为 .current,展开其祖先 details,并滚到视区中部。
+function applyCurrentClass() {
+  marks.forEach((mk) => mk.classList.remove('current'))
+  const mi = currentHitMsgIndex()
+  if (mi == null) return
+  const row = innerEl.value?.querySelector<HTMLElement>(`.msg-vrow[data-index="${mi}"]`)
+  const first = row?.querySelector<HTMLElement>('mark.search-hit')
+  if (!first) return
+  first.classList.add('current')
+  let p: HTMLElement | null = first.parentElement
   while (p) {
     if (p.tagName === 'DETAILS' && !(p as HTMLDetailsElement).open) {
       ;(p as HTMLDetailsElement).open = true
     }
     p = p.parentElement
   }
-  // 不用 smooth scroll：长会话里成百上千次跳转会卡，且我们已有自定义滚动 RAF。
-  // block: 'center' 让 mark 出现在视区中部，符合搜索体验直觉。
-  target.scrollIntoView({ block: 'center' })
+  first.scrollIntoView({ block: 'center' })
+}
+
+// 跳到第 k 个命中消息（1-based,环绕）：虚拟器滚过去,等行挂载后标记 + 高亮当前。
+function gotoHit(k: number) {
+  if (!searchHits.length) return
+  const idx = ((k - 1 + searchHits.length) % searchHits.length) + 1
+  searchIndex.value = idx
+  const mi = searchHits[idx - 1]
+  rowVirtualizer.value.scrollToIndex(mi, { align: 'center' })
+  // 用 setTimeout 而非 rAF 轮询等待目标行挂载：窗口被遮挡(visibilityState=hidden)时 rAF 会
+  // 被暂停,marking 就永远不跑;Vue 的渲染调度不依赖 rAF,所以 setTimeout 能在隐藏时照常收敛。
+  let tries = 0
+  const settle = () => {
+    const row = innerEl.value?.querySelector(`.msg-vrow[data-index="${mi}"]`)
+    if (!row && tries++ < 20) {
+      setTimeout(settle, 16)
+      return
+    }
+    markVisibleSearch() // 内部会 applyCurrentClass 高亮当前命中
+  }
+  setTimeout(settle, 16)
+}
+
+// 重新计算命中集并跳到第一个（输入框变更 / 切换范围时）。
+function applySearch() {
+  computeSearchHits()
+  if (searchHits.length) gotoHit(1)
+  else unmarkAll()
 }
 
 function navigateMatches(dir: 1 | -1) {
-  if (marks.length === 0) return
-  const next = ((searchIndex.value - 1 + dir + marks.length) % marks.length) + 1
-  searchIndex.value = next
-  setCurrentMark()
+  if (searchHits.length === 0) return
+  gotoHit(searchIndex.value + dir)
 }
 
 watch(search, () => {
@@ -1064,6 +1150,38 @@ watch(searchScope, () => {
 // live GUI chat 自动跟随：必须在「消息变化导致 DOM 撑高之前」判断用户是否贴底，
 // 否则新消息一来 scrollHeight 立刻变大、isNearBottom 误判为 false，就再也不跟随了。
 // flush:'pre' 的 watcher 在 re-render 前跑，此刻 scrollTop/scrollHeight 还是旧值。
+// 对当前挂在 DOM 里的可见行补做高亮 / mermaid / 装饰 / 折叠态。虚拟滚动下只有窗口内的行
+// 存在,这些函数都跳过已处理节点（:not([data-shiki]) 等）,所以每次只碰新进入的行,成本≈仅可见行。
+function decorateVisible() {
+  const root = innerEl.value ?? null
+  if (toolsCollapsed.value) sweepDetails(false)
+  renderAllMermaid(root)
+  highlightAllCodeBlocks(root)
+  decorateCodeBlocks(root)
+}
+// 滚动使可见窗口频繁变化 —— 用 rAF 合并,一帧最多跑一次。
+//
+// ⚠️ 关键：只在「可见行的下标区间」真正变化时才装饰。否则会陷入死循环：装饰（高亮/mermaid）
+// 改了行高 → measureElement 的 ResizeObserver 重测 → 虚拟器调整 start → virtualRows 变（对象
+// 变了但可见行没变）→ watch 又触发装饰 …… 每帧空转把 CPU 打满。用首/末下标当指纹,重排但下标
+// 区间不变就跳过,反馈环即断。
+let decorateRAF = 0
+let lastVisibleKey = ''
+function scheduleDecorate() {
+  const rows = virtualRows.value
+  const key = rows.length ? `${rows[0].index}-${rows[rows.length - 1].index}` : ''
+  if (key === lastVisibleKey) return
+  lastVisibleKey = key
+  if (decorateRAF) return
+  decorateRAF = requestAnimationFrame(() => {
+    decorateRAF = 0
+    decorateVisible()
+    if (search.value) markVisibleSearch()
+  })
+}
+// 注意：不要 watch(virtualRows) 来触发装饰 —— 会形成 装饰→改行高→重测→virtualRows 变→装饰
+// 的死循环。装饰改由 onScroll（真实滚动）驱动;静止时不跑,反馈环天然断开。
+
 let wasAtBottomBeforeUpdate = true
 watch(
   () => props.messages,
@@ -1074,12 +1192,10 @@ watch(
 watch(
   () => props.messages,
   () => {
+    lastVisibleKey = '' // 消息集变了,让下次滚动重新装饰
     nextTick(() => {
-      if (toolsCollapsed.value) sweepDetails(false)
+      decorateVisible()
       if (search.value) applySearch()
-      renderAllMermaid(innerEl.value ?? null)
-      highlightAllCodeBlocks(innerEl.value ?? null)
-      decorateCodeBlocks(innerEl.value ?? null)
       // 聊天进行中：变化前贴底 → 钉到最新消息（钉一小段，扛住高亮/图片异步撑高）。
       if (props.liveSession && wasAtBottomBeforeUpdate) {
         pinToBottomFor(220)
@@ -1138,9 +1254,8 @@ onMounted(() => {
   document.addEventListener('click', onDocClick)
   // 初次挂载也跑一遍 —— 会话已经有 messages 时 watch 不会触发。
   nextTick(() => {
-    renderAllMermaid(innerEl.value ?? null)
-    highlightAllCodeBlocks(innerEl.value ?? null)
-    decorateCodeBlocks(innerEl.value ?? null)
+    measureListMargin() // 量列表相对滚动容器顶端的偏移,scrollToIndex 才对得准
+    decorateVisible()
     // live GUI chat：进入时（含入口 3 切换 / 列表续聊的预载历史）钉到底部一会儿，
     // 露出最新上下文 + composer，扛住代码高亮/图片异步撑高。
     if (props.liveSession) {
@@ -1459,20 +1574,35 @@ function onDocClick(e: MouseEvent) {
 
   <div ref="scrollEl" class="chat-scroll" :class="{ 'has-composer': !!liveSession }">
     <div ref="innerEl" class="chat-inner">
+      <!-- 虚拟滚动列表：只有可见窗口 + overscan 的行真正挂 DOM。外层 .chat-vlist 撑满整段
+           虚拟总高（滚动条几何）；每个 .msg-vrow 绝对定位到自己的 translateY,并绑 measureRow
+           动态测高。内层用单元素 v-for 把当前行的消息重新命名回 `m`,行体保持原样。 -->
       <div
-        v-for="(m, i) in messages"
-        :key="m.uuid ?? i"
-        v-show="rowHasContent(m) && (!isHidden(m, i) || showHidden)"
+        ref="vlistEl"
+        class="chat-vlist"
+        :style="{ height: totalSize + 'px', position: 'relative', width: '100%' }"
+      >
+      <div
+        v-for="vr in virtualRows"
+        :key="vr.index"
+        :ref="measureRow"
+        :data-index="vr.index"
+        class="msg-vrow"
+        :style="{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${vr.start - listScrollMargin}px)` }"
+      >
+      <template v-for="m in [messages[vr.index]]" :key="vr.index">
+      <div
+        v-show="rowHasContent(m) && (!isHidden(m, vr.index) || showHidden)"
         class="msg-row"
         :class="[
           contextUsageOf(m) ? 'assistant' : systemEventLabel(m) ? 'system' : m.metaKind ? 'meta' : isToolOnly(m) ? 'tool-only' : m.role,
-          { 'msg-flash': flashIdx === i, 'msg-hidden': isHidden(m, i) && showHidden, 'row-active': hoveredKey === msgKey(m, i) },
+          { 'msg-flash': flashIdx === vr.index, 'msg-hidden': isHidden(m, vr.index) && showHidden, 'row-active': hoveredKey === msgKey(m, vr.index) },
         ]"
         :data-search-scope="rowScope(m)"
-        :data-msg-idx="i"
+        :data-msg-idx="vr.index"
         :data-msg-uuid="m.uuid ?? ''"
-        @mouseenter="hoveredKey = msgKey(m, i)"
-        @mouseleave="hoveredKey === msgKey(m, i) && (hoveredKey = null)"
+        @mouseenter="hoveredKey = msgKey(m, vr.index)"
+        @mouseleave="hoveredKey === msgKey(m, vr.index) && (hoveredKey = null)"
       >
         <!-- /context 的可视化面板：放在最前，无论它来自 live 的 assistant 消息还是离线回看的
              command-output 落盘记录，都升级成可折叠卡片（而非灰泡里的原始 markdown 表 / 命令输出框）。 -->
@@ -1654,23 +1784,26 @@ function onDocClick(e: MouseEvent) {
             <button
               class="msg-action-btn"
               type="button"
-              v-tooltip="copiedMsgKey === msgKey(m, i) ? t('chat.action.copied') : t('chat.action.copyMsg')"
-              @click="copyMsg(m, i)"
+              v-tooltip="copiedMsgKey === msgKey(m, vr.index) ? t('chat.action.copied') : t('chat.action.copyMsg')"
+              @click="copyMsg(m, vr.index)"
             >
-              <component :is="copiedMsgKey === msgKey(m, i) ? IconCheck : IconCopy" />
+              <component :is="copiedMsgKey === msgKey(m, vr.index) ? IconCheck : IconCopy" />
             </button>
             <!-- 隐藏消息仅在只读详情里出现：直播 chat 进行中无需隐藏自己刚发的消息。 -->
             <button
               v-if="!liveSession"
               class="msg-action-btn"
               type="button"
-              v-tooltip="isHidden(m, i) ? t('chat.action.unhideMsg') : t('chat.action.hideMsg')"
-              @click="toggleHideMsg(m, i)"
+              v-tooltip="isHidden(m, vr.index) ? t('chat.action.unhideMsg') : t('chat.action.hideMsg')"
+              @click="toggleHideMsg(m, vr.index)"
             >
-              <component :is="isHidden(m, i) ? IconEye : IconEyeOff" />
+              <component :is="isHidden(m, vr.index) ? IconEye : IconEyeOff" />
             </button>
           </div>
         </template>
+      </div>
+      </template>
+      </div>
       </div>
 
       <!-- §10.6 流式预览：正在生成的文本块打字机（仅 Claude 产 delta；Codex 永不出现）。

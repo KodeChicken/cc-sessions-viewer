@@ -21,7 +21,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(app.default_window_icon().cloned().unwrap())
         .menu(&menu)
-        .tooltip("cc-sessions-viewer")
+        .tooltip("Sessions Viewer")
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| match event {
             TrayIconEvent::Click {

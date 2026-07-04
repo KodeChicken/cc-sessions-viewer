@@ -25,6 +25,8 @@ import {
   IconHtml,
   IconJson,
   IconRefresh,
+  IconPinUp,
+  IconPinDown,
   IconCheck,
   IconSearch,
   IconPlus,
@@ -153,10 +155,47 @@ watch(
 // 工具栏（搜索 / 排序 / 仅带 ID）作用后的可见列表 —— 状态来自 sessionsToolbar 模块。
 // 关键词非空时走后端搜索结果；空时走 props.sessions（分页 / 完整数组）。
 // 两条路径都过 filterSessions，因为 sort + withIdOnly 是纯本地的策略。
+// ============================ 单会话置顶 / 沉底（持久化,镜像项目那套 projPrefs）============================
+// 重要会话置顶、不重要的沉底。key = `${agent}::${path}`（path 全局唯一）。stable sort 保组内 mtime 序。
+// 注意：列表按 mtime 分页加载,这里只在**已加载**的会话内排序 —— 置顶一个很老、还没翻到的会话时,
+// 要滚动加载到它才会浮顶（符合直觉：能点到的卡片一定已加载）。
+type SessState = 'pinned' | 'sunk'
+const SESS_PREFS_KEY = 'sessionPrefs:v1'
+function loadSessPrefs(): Record<string, SessState> {
+  try {
+    return JSON.parse(localStorage.getItem(SESS_PREFS_KEY) || '{}')
+  } catch {
+    return {}
+  }
+}
+const sessPrefs = ref<Record<string, SessState>>(loadSessPrefs())
+function sessPrefKey(s: SessionMeta): string {
+  return `${props.agent}::${s.path}`
+}
+function sessStateOf(s: SessionMeta): SessState | undefined {
+  return sessPrefs.value[sessPrefKey(s)]
+}
+function setSessState(s: SessionMeta, state: SessState) {
+  const key = sessPrefKey(s)
+  if (sessPrefs.value[key] === state) {
+    delete sessPrefs.value[key]
+  } else {
+    sessPrefs.value[key] = state
+  }
+  sessPrefs.value = { ...sessPrefs.value }
+  localStorage.setItem(SESS_PREFS_KEY, JSON.stringify(sessPrefs.value))
+}
+
 const visibleSessions = computed(() => {
   const base =
     sessionSearch.value.trim().length >= SEARCH_MIN_LEN ? searchHits.value : props.sessions
-  return filterSessions(base)
+  const filtered = filterSessions(base)
+  // 置顶(0) → 普通(1) → 沉底(2)；Array.sort 稳定,组内保持原有（mtime / 搜索相关性）顺序。
+  const rank = (s: SessionMeta) => {
+    const st = sessStateOf(s)
+    return st === 'pinned' ? 0 : st === 'sunk' ? 2 : 1
+  }
+  return [...filtered].sort((a, b) => rank(a) - rank(b))
 })
 
 // ============================ 每卡 token 用量懒加载 ============================
@@ -657,6 +696,8 @@ defineExpose({ scrollEl })
           'menu-open': openExportFor === s.path,
           'list-selectable': sessionSelectMode,
           'list-selected': sessionSelectMode && selectedSessions.has(s.path),
+          'sess-pinned': sessStateOf(s) === 'pinned',
+          'sess-sunk': sessStateOf(s) === 'sunk',
         }"
         :data-path="s.path"
         @click="onCardClick(s)"
@@ -749,14 +790,6 @@ defineExpose({ scrollEl })
         >
           <IconFolder />
         </button>
-        <button
-          v-if="project.exists"
-          class="icon-btn"
-          v-tooltip="t('list.action.refresh')"
-          @click.stop="emit('refresh')"
-        >
-          <IconRefresh />
-        </button>
         <div
           :ref="(el) => setExportMenuEl(s.path, el as Element | null)"
           class="export-menu-wrap"
@@ -804,6 +837,23 @@ defineExpose({ scrollEl })
             </button>
           </div>
         </div>
+        <span class="action-sep" aria-hidden="true" />
+        <button
+          class="icon-btn sess-pin-btn"
+          :class="{ active: sessStateOf(s) === 'pinned' }"
+          v-tooltip="sessStateOf(s) === 'pinned' ? t('list.action.unpin') : t('list.action.pin')"
+          @click.stop="setSessState(s, 'pinned')"
+        >
+          <IconPinUp />
+        </button>
+        <button
+          class="icon-btn sess-pin-btn"
+          :class="{ active: sessStateOf(s) === 'sunk' }"
+          v-tooltip="sessStateOf(s) === 'sunk' ? t('list.action.unsink') : t('list.action.sink')"
+          @click.stop="setSessState(s, 'sunk')"
+        >
+          <IconPinDown />
+        </button>
         <button
           class="icon-btn danger"
           v-tooltip="t('list.action.trash')"

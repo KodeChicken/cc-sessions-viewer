@@ -429,8 +429,31 @@ export function stripImagePlaceholders(raw: string): string {
     .trim()
 }
 
+// renderText 是纯函数（只依赖 raw）。虚拟滚动下同一条消息会随滚动反复挂载/卸载,每次模板
+// v-html 都重跑一遍 markdown 解析 —— 用一个带上限的 LRU 缓存按 raw 记住结果,滚动重入零解析。
+const renderTextCache = new Map<string, string>()
+const RENDER_CACHE_MAX = 3000
+
 /** 渲染 Markdown 子集：围栏代码块 + 行内强调 + GFM table。 */
 export function renderText(raw: string): string {
+  const cached = renderTextCache.get(raw)
+  if (cached !== undefined) {
+    // LRU：命中后挪到末尾（最近使用）。
+    renderTextCache.delete(raw)
+    renderTextCache.set(raw, cached)
+    return cached
+  }
+  const out = renderTextImpl(raw)
+  renderTextCache.set(raw, out)
+  if (renderTextCache.size > RENDER_CACHE_MAX) {
+    // 淘汰最旧一条（Map 迭代序 = 插入序）。
+    const oldest = renderTextCache.keys().next().value
+    if (oldest !== undefined) renderTextCache.delete(oldest)
+  }
+  return out
+}
+
+function renderTextImpl(raw: string): string {
   const { text: pre, codes } = extractCommandTags(raw)
   // 按行扫围栏，而不是 split('```')：围栏长度由开围栏决定，闭围栏必须 ≥ 开围栏长度，
   // 更短的反引号串算作代码内容。这样 ````markdown 里嵌的 ```js 不会被误判成围栏。

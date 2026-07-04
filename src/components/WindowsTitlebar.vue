@@ -114,8 +114,8 @@ onUnmounted(() => {
 <template>
   <div ref="titlebarEl" class="window-titlebar">
     <div class="window-app-id" data-tauri-drag-region>
-      <span class="window-app-icon" aria-hidden="true">cs</span>
-      <span>cc-sessions-viewer</span>
+      <span class="window-app-icon" aria-hidden="true">sv</span>
+      <span>Sessions Viewer</span>
     </div>
     <nav
       class="window-menu"

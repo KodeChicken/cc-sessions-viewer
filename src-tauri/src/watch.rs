@@ -74,6 +74,25 @@ fn debounce_seq_map() -> &'static Mutex<std::collections::HashMap<String, u64>> 
     DEBOUNCE_SEQ.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
+/// 每个路径上次「整文件重解析」时的廉价指纹 (mtime, 字节数)。
+/// 因为我们 watch 的是父目录（见文件头注释），同目录里**别的**会话文件被追加也会派事件；
+/// 若每次都对目标大文件（可达数十 MB）做全量 read_session，就会被无关写入反复全量重读、CPU 打满。
+/// 处理前先比指纹：目标文件没变就直接跳过昂贵的重解析。真正的追加会改 mtime/size,照常被捕获。
+static LAST_STAT: OnceLock<Mutex<std::collections::HashMap<String, (std::time::SystemTime, u64)>>> =
+    OnceLock::new();
+
+fn last_stat_map(
+) -> &'static Mutex<std::collections::HashMap<String, (std::time::SystemTime, u64)>> {
+    LAST_STAT.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 目标文件的廉价指纹：(修改时间, 字节数)。取不到（文件不在 / 无权限）返回 None,
+/// 此时调用方退回到「照常重读」，不因拿不到指纹而漏掉更新。
+fn file_fingerprint(path: &str) -> Option<(std::time::SystemTime, u64)> {
+    let md = std::fs::metadata(path).ok()?;
+    Some((md.modified().ok()?, md.len()))
+}
+
 fn watch_root_for(path: &Path) -> Result<PathBuf, String> {
     path.parent()
         .map(Path::to_path_buf)
@@ -114,6 +133,12 @@ pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), 
     {
         let mut m = last_count_map().lock().map_err(|e| e.to_string())?;
         m.insert(path.clone(), initial.len());
+    }
+    // 记下初始指纹,后续无关目录事件才能被廉价短路掉（否则第一波事件仍会全量重读一次）。
+    if let Some(fp) = file_fingerprint(&path) {
+        if let Ok(mut m) = last_stat_map().lock() {
+            m.insert(path.clone(), fp);
+        }
     }
 
     let app_handle = app.clone();
@@ -236,7 +261,24 @@ fn process_change(app: &AppHandle, agent: &str, path: &str) {
         if let Ok(mut m) = debounce_seq_map().lock() {
             m.remove(path);
         }
+        if let Ok(mut m) = last_stat_map().lock() {
+            m.remove(path);
+        }
         return;
+    }
+
+    // 廉价短路：目标文件指纹（mtime+size）与上次处理时相同 → 这次事件是同目录里**别的**文件在写,
+    // 直接返回,别对大文件做全量 read_session。真有追加会改指纹,走到下面重读。
+    let cur_fp = file_fingerprint(path);
+    if let Some(fp) = cur_fp {
+        let unchanged = last_stat_map()
+            .lock()
+            .ok()
+            .and_then(|m| m.get(path).copied())
+            == Some(fp);
+        if unchanged {
+            return;
+        }
     }
 
     let src = match agents::source(agent) {
@@ -247,6 +289,12 @@ fn process_change(app: &AppHandle, agent: &str, path: &str) {
         Ok(m) => m,
         Err(_) => return,
     };
+    // 读成功即刷新指纹（无论 Msg 数是否变化）—— 否则同一次 mtime 变更会被每个后续事件反复重读。
+    if let Some(fp) = cur_fp {
+        if let Ok(mut m) = last_stat_map().lock() {
+            m.insert(path.to_string(), fp);
+        }
+    }
 
     let prev_count = {
         let m = match last_count_map().lock() {

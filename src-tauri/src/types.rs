@@ -174,7 +174,7 @@ pub struct ProjectInfo {
     pub worktree_name: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionMeta {
     pub id: String,

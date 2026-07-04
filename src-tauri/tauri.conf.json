@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "cc-sessions-viewer",
+  "productName": "Sessions Viewer",
   "version": "0.2.4",
   "identifier": "com.wuchao.cc-sessions-viewer",
   "build": {

@@ -329,7 +329,7 @@ describe('SessionsView', () => {
 
     // 目录已不存在 → 恢复 / 刷新 这些依赖项目目录的卡片操作没有意义，隐藏。
     // 重命名只动 ~/.claude/projects 下的 JSONL，与项目目录无关 —— 保留。
-    it('hides resume and refresh on session cards when the directory is missing', () => {
+    it('hides chat and resume on session cards when the directory is missing', () => {
       const wrapper = mount(SessionsView, {
         props: {
           agent: 'claude',
@@ -342,15 +342,15 @@ describe('SessionsView', () => {
         global: { directives: { tooltip: vTooltip } },
       })
       expect(wrapper.find('.title-rename-ic').exists()).toBe(true)
-      // 只剩 在文件管理器中显示 / 导出 / 删除
-      expect(wrapper.findAll('.session-actions .icon-btn')).toHaveLength(3)
+      // 只剩 在文件管理器中显示 / 导出 / 置顶 / 沉底 / 删除
+      expect(wrapper.findAll('.session-actions .icon-btn')).toHaveLength(5)
     })
 
     it('keeps every card action when the directory exists', () => {
       const wrapper = factory()
       expect(wrapper.find('.title-rename-ic').exists()).toBe(true)
-      // chat(claude) / resume / reveal / refresh / export / delete
-      expect(wrapper.findAll('.session-actions .icon-btn')).toHaveLength(6)
+      // chat(claude) / resume / reveal / export / pin / sink / delete
+      expect(wrapper.findAll('.session-actions .icon-btn')).toHaveLength(7)
     })
   })
 
