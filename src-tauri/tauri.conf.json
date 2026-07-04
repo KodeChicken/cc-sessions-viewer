@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "cc-sessions-viewer",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "identifier": "com.wuchao.cc-sessions-viewer",
   "build": {
     "beforeDevCommand": "npm run dev",
