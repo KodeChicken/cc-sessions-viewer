@@ -11,7 +11,7 @@
 
 [English](README.md) · **中文** · [日本語](README.ja.md) · [CHANGELOG](CHANGELOG.md)
 
-<p align="center">一个专为 <strong>Claude Code</strong>、<strong>Codex</strong> 和 <strong>Gemini CLI</strong> 打造的原生桌面浏览器。<br/>在一处读取、搜索并管理三个 CLI 的本地会话记录。</p>
+<p align="center">一个专为 <strong>Claude Code</strong> 和 <strong>Codex</strong> 打造的原生桌面浏览器。<br/>在一处读取、搜索并管理两个 CLI 的本地会话记录。</p>
 
 </div>
 
@@ -33,7 +33,7 @@ https://github.com/user-attachments/assets/9bcb92a8-e5b8-40e5-b492-af252162309b
 - **视图历史** — 每个项目独立、可搜索的「打开过的视图」历史，支持收藏；一键回到任意历史的只读或对话视图
 - **深度统计** — 基于 LiteLLM 实时价目聚合 Token 消耗与成本，按项目/模型/工具多维分析
 - **菜单栏统计** — macOS 托盘图标一览各 agent 的 Today / 7d / 30d 花费与 Token 量
-- **实时模型价格** — 可浏览的 Claude / Codex / Gemini 价格表，数据源自动更新
+- **实时模型价格** — 可浏览的 Claude / Codex 价格表，数据源自动更新
 - **灵活导出** — 单会话或批量导出为离线可读的 Markdown / HTML / 无损 JSON
 - **书签** — 将任意文件夹固定到侧栏快速访问，按 agent 独立管理
 - **重命名与删除** — 会话重命名同步回 CLI，软删除移入共享回收站并支持还原
@@ -119,7 +119,7 @@ macOS 上 `.app` 是 **ad-hoc 签名、未公证**，首次打开可能弹出「
 - Finder 里右键应用 → **打开** → 弹窗里再确认（一次即可）。
 - 或在终端清掉隔离属性：
   ```bash
-  sudo xattr -dr com.apple.quarantine /Applications/cc-sessions-viewer.app
+  sudo xattr -dr com.apple.quarantine "/Applications/Sessions Viewer.app"
   ```
 
 Linux 上 `.AppImage` 是便携格式 —— `chmod +x` 后直接运行。`.deb` 安装：

@@ -11,7 +11,7 @@
 
 **English** · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [CHANGELOG](CHANGELOG.md)
 
-<p align="center">A native desktop browser for <strong>Claude Code</strong>, <strong>Codex</strong>, and <strong>Gemini CLI</strong>.<br/>Read, search, and manage local session transcripts from all three in one place.</p>
+<p align="center">A native desktop browser for <strong>Claude Code</strong> and <strong>Codex</strong>.<br/>Read, search, and manage local session transcripts from both in one place.</p>
 
 </div>
 
@@ -33,7 +33,7 @@ https://github.com/user-attachments/assets/9bcb92a8-e5b8-40e5-b492-af252162309b
 - **Views history** — per-project, searchable history of every view you've opened, with favorites; jump back to any past read or chat view in one click
 - **Deep stats** — aggregate token spend and cost with live model pricing from LiteLLM; slice by project, model, or tool
 - **Menu bar stats** — macOS tray icon shows at-a-glance Today / 7d / 30d cost and tokens per agent
-- **Live model pricing** — browseable pricing table for Claude / Codex / Gemini, auto-updated from upstream
+- **Live model pricing** — browseable pricing table for Claude / Codex, auto-updated from upstream
 - **Flexible export** — single session or batches to offline-readable Markdown, HTML, or lossless JSON
 - **Bookmarks** — pin any folder to the sidebar for quick access, per agent
 - **Rename & delete** — session renames sync back to the CLI; soft-delete moves to shared trash with restore support
@@ -119,7 +119,7 @@ On macOS the `.app` is **ad-hoc signed but not notarized**, so first launch may 
 - Right-click the app in Finder → **Open** → confirm in the dialog (one-time).
 - Or strip the quarantine attribute in Terminal:
   ```bash
-  sudo xattr -dr com.apple.quarantine /Applications/cc-sessions-viewer.app
+  sudo xattr -dr com.apple.quarantine "/Applications/Sessions Viewer.app"
   ```
 
 On Linux the `.AppImage` is portable — `chmod +x` and run. The `.deb` installs with:
