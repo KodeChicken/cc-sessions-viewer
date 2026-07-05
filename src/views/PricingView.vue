@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 「模型实时价格」视图 —— 跟 TrashView / ExportHistoryView 同级，从顶栏
 // More 菜单里进。数据来自 src-tauri 启动期从 models.dev 拉的内存表，by family
-// 分 3 段（Claude / Codex / Gemini）展示。
+// 分 2 段（Claude / Codex）展示。
 //
 // 主题：完全靠 style.css 里的 design tokens（--surface / --border / --text /
 // --accent / --muted），dark/light 切换自动跟随，无 hardcoded 颜色。
@@ -20,7 +20,7 @@ import {
   IconPriceTag,
   IconClaude,
   IconCodex,
-  IconGemini,
+  IconAgy,
   IconSearch,
   IconClose,
   IconExternalLink,
@@ -70,11 +70,11 @@ async function onRefresh() {
 onMounted(load)
 
 // 按 family 分桶 —— 后端已排好序（family, input 升序），这里仅做分组。
-type Family = 'claude' | 'codex' | 'gemini'
+type Family = 'claude' | 'codex' | 'agy'
 const FAMILIES: { key: Family; icon: Component; label: string }[] = [
   { key: 'claude', icon: IconClaude, label: 'pricing.family.claude' },
   { key: 'codex', icon: IconCodex, label: 'pricing.family.codex' },
-  { key: 'gemini', icon: IconGemini, label: 'pricing.family.gemini' },
+  { key: 'agy', icon: IconAgy, label: 'pricing.family.agy' },
 ]
 // 价格页同样跟随设置里的 agent 显隐：只展示启用的 family（锚点 chip + 模型分段）。
 const visibleFamilies = computed(() =>
@@ -99,7 +99,7 @@ const filtered = computed<PricingEntry[]>(() => {
 })
 
 const grouped = computed(() => {
-  const map: Record<Family, PricingEntry[]> = { claude: [], codex: [], gemini: [] }
+  const map: Record<Family, PricingEntry[]> = { claude: [], codex: [], agy: [] }
   for (const e of filtered.value) {
     if (e.family in map) map[e.family].push(e)
   }
@@ -111,7 +111,7 @@ const grouped = computed(() => {
 function fmtRate(perToken: number): string {
   if (!perToken || perToken <= 0) return t('pricing.unavailable')
   const perMtok = perToken * 1_000_000
-  // 小于 $0.10/Mtok 用 3 位小数（gemini-flash-lite 这种），其它 2 位足够
+  // 小于 $0.10/Mtok 用 3 位小数，其它 2 位足够
   return perMtok < 0.1 ? `$${perMtok.toFixed(3)}` : `$${perMtok.toFixed(2)}`
 }
 
@@ -132,15 +132,15 @@ function fmtContext(tokens: number): string {
 }
 
 // 锚点快速跳转 ——
-// 用户场景：模型表 200+ 行，找一家厂商的价格要滚很久。顶部加 3 个锚点 chip
-// （Claude / Codex / Gemini），点击 smooth-scroll 到对应 section 顶端，且滚动
+// 用户场景：模型表 200+ 行，找一家厂商的价格要滚很久。顶部加 2 个锚点 chip
+// （Claude / Codex），点击 smooth-scroll 到对应 section 顶端，且滚动
 // 时根据视窗里第一个可见的 section 高亮当前 chip。
 const scrollEl = ref<HTMLElement>()
 const toolbarEl = ref<HTMLElement>()
 const sectionEls = ref<Record<Family, HTMLElement | null>>({
   claude: null,
   codex: null,
-  gemini: null,
+  agy: null,
 })
 const activeFamily = ref<Family>('claude')
 

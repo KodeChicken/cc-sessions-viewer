@@ -133,7 +133,9 @@ impl SessionSource for ClaudeSource {
     }
 
     fn read_session(&self, path: &str) -> Result<Vec<Msg>, String> {
-        read(path)
+        let mut msgs = read(path)?;
+        crate::util::post_process_session_msgs(&mut msgs);
+        Ok(msgs)
     }
 
     fn discover_stats_sessions(&self, project_key: &str) -> Result<Vec<SessionMeta>, String> {

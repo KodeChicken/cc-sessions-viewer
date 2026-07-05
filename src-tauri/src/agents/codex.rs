@@ -901,6 +901,7 @@ fn read_with_title_index(
     let mut created_ms: Option<i64> = None;
     let mut first_user_title = String::new();
     let mut saw_explicit_rename = false;
+    let mut model_hint: Option<String> = None;
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         if line.trim().is_empty() {
             continue;
@@ -934,6 +935,20 @@ fn read_with_title_index(
                         .and_then(|x| x.as_str())
                         .and_then(parse_iso8601_ms)
                         .or_else(|| ts.as_deref().and_then(parse_iso8601_ms));
+                }
+                if model_hint.is_none() {
+                    if let Some(m) = p.get("model").and_then(|x| x.as_str()) {
+                        if !m.is_empty() {
+                            model_hint = Some(m.to_string());
+                        }
+                    }
+                }
+            }
+            ("turn_context", _) => {
+                if let Some(m) = p.get("model").and_then(|x| x.as_str()) {
+                    if !m.is_empty() {
+                        model_hint = Some(m.to_string());
+                    }
                 }
             }
             ("response_item", "message")
@@ -984,7 +999,9 @@ fn read_with_title_index(
             ("event_msg", "agent_message") => {
                 if let Some(m) = p.get("message").and_then(|x| x.as_str()) {
                     if !m.trim().is_empty() {
-                        msgs.push(simple_msg("assistant", ts, text_block("text", m)));
+                        let mut msg = simple_msg("assistant", ts, text_block("text", m));
+                        msg.model = model_hint.clone();
+                        msgs.push(msg);
                     }
                 }
             }
@@ -1010,7 +1027,7 @@ fn read_with_title_index(
                     .and_then(|x| x.as_str())
                     .map(|s| s.to_string());
                 let id_for_index = id.clone();
-                msgs.push(simple_msg(
+                let mut msg = simple_msg(
                     "assistant",
                     ts,
                     Block {
@@ -1020,7 +1037,9 @@ fn read_with_title_index(
                         tool_id: id,
                         ..Default::default()
                     },
-                ));
+                );
+                msg.model = model_hint.clone();
+                msgs.push(msg);
                 if is_apply_patch {
                     if let Some(call_id) = id_for_index {
                         apply_patch_by_call_id.insert(call_id, msgs.len().saturating_sub(1));
@@ -1029,21 +1048,57 @@ fn read_with_title_index(
             }
             ("response_item", "function_call_output")
             | ("response_item", "custom_tool_call_output") => {
-                let out = output_text(p.get("output"));
                 let id = p
                     .get("call_id")
                     .and_then(|x| x.as_str())
                     .map(|s| s.to_string());
-                msgs.push(simple_msg(
-                    "user",
-                    ts,
-                    Block {
-                        kind: "tool_result".to_string(),
-                        text: Some(out),
-                        tool_id: id,
-                        ..Default::default()
-                    },
-                ));
+                let mut blocks = Vec::new();
+                if let Some(arr) = p.get("output").and_then(|x| x.as_array()) {
+                    for el in arr {
+                        if let Some(src) = image_src(el) {
+                            blocks.push(Block {
+                                kind: "image".to_string(),
+                                image_src: Some(src),
+                                tool_id: id.clone(),
+                                ..Default::default()
+                            });
+                        } else {
+                            let text = match el {
+                                Value::String(s) => s.clone(),
+                                other => other.to_string(),
+                            };
+                            if !text.trim().is_empty() {
+                                blocks.push(Block {
+                                    kind: "tool_result".to_string(),
+                                    text: Some(text),
+                                    tool_id: id.clone(),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    let out = output_text(p.get("output"));
+                    if !out.trim().is_empty() {
+                        blocks.push(Block {
+                            kind: "tool_result".to_string(),
+                            text: Some(out),
+                            tool_id: id,
+                            ..Default::default()
+                        });
+                    }
+                }
+                if !blocks.is_empty() {
+                    msgs.push(Msg {
+                        uuid: None,
+                        role: "user".to_string(),
+                        timestamp: ts,
+                        model: None,
+                        sidechain: false,
+                        blocks,
+                        meta_kind: None,
+                    });
+                }
             }
             ("event_msg", "patch_apply_end") => {
                 let Some(call_id) = p.get("call_id").and_then(|x| x.as_str()) else {
@@ -1073,7 +1128,7 @@ fn read_with_title_index(
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string();
-                msgs.push(simple_msg(
+                let mut msg = simple_msg(
                     "assistant",
                     ts,
                     Block {
@@ -1082,7 +1137,9 @@ fn read_with_title_index(
                         tool_input: Some(query),
                         ..Default::default()
                     },
-                ));
+                );
+                msg.model = model_hint.clone();
+                msgs.push(msg);
             }
             _ => {}
         }
@@ -1366,7 +1423,9 @@ impl SessionSource for CodexSource {
     }
 
     fn read_session(&self, path: &str) -> Result<Vec<Msg>, String> {
-        read(path)
+        let mut msgs = read(path)?;
+        crate::util::post_process_session_msgs(&mut msgs);
+        Ok(msgs)
     }
 
     fn rename_session(&self, path: &Path, name: &str) -> Result<(), String> {

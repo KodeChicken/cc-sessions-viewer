@@ -1,4 +1,4 @@
-export type Agent = 'claude' | 'codex' | 'gemini'
+export type Agent = 'claude' | 'codex' | 'agy'
 
 export interface ProjectInfo {
   dirName: string
@@ -169,8 +169,9 @@ export interface ActivityStat {
 /** 统计范围筛选 —— 前端 dropdown 切换。 */
 export type StatsScope = 'all' | Agent
 
-/** 时间范围筛选。 */
-export type StatsRange = 'today' | 'days7' | 'days30' | 'month' | 'months6'
+/** 时间范围筛选。`custom:start:end` 使用本地日期（YYYY-MM-DD），end 按整日包含。 */
+export type StatsPresetRange = 'today' | 'days7' | 'days30' | 'month' | 'months3' | 'months6'
+export type StatsRange = StatsPresetRange | `custom:${string}:${string}`
 
 /** 流式统计的完整结果（与 Rust AgentStats 同形）。`scope` 标识维度。 */
 export interface AgentStats {
@@ -277,7 +278,7 @@ export interface SlashCommand {
 }
 
 /** GUI chat 的进程模型：长驻 stdin（Claude，切设置需 restart-with-resume）
- *  vs 一轮一进程 resume（Codex/Gemini，切设置改下轮 flag 即生效）。 */
+ *  vs 一轮一进程 resume（Codex，切设置改下轮 flag 即生效）。 */
 export type ChatProcessModel = 'longLivedStdin' | 'oneShotResume'
 
 /** agent_chat_start 的返回（与 Rust ChatStartInfo 同形）。 */
@@ -423,7 +424,7 @@ export interface TrayStats {
 // ---- CLI 环境检测 ----
 
 export interface CliVersionInfo {
-  cli: 'claude' | 'codex' | 'gemini'
+  cli: 'claude' | 'codex' | 'agy'
   npmPackage: string
   currentVersion: string | null
   latestVersion: string | null
@@ -441,7 +442,7 @@ export interface CliInstallation {
 }
 
 export interface CliDiagnosisResult {
-  cli: 'claude' | 'codex' | 'gemini'
+  cli: 'claude' | 'codex' | 'agy'
   binaryName: string
   installations: CliInstallation[]
   hasConflict: boolean
@@ -449,7 +450,7 @@ export interface CliDiagnosisResult {
 }
 
 export interface CliUpgradeResult {
-  cli: 'claude' | 'codex' | 'gemini'
+  cli: 'claude' | 'codex' | 'agy'
   success: boolean
   newVersion: string | null
   error: string | null

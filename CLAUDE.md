@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A macOS Tauri 2 desktop app (Vue 3 + Rust) for browsing, viewing, and trashing
 local session transcripts from coding agent CLIs — currently **Claude Code**,
-**Codex**, and **Gemini CLI**. Each CLI stores JSONL transcripts in
+**Codex**, and **Antigravity CLI (agy)**. Each CLI stores JSONL transcripts in
 its own on-disk layout; this app normalizes them all into the same project →
 sessions → chat UI, plus a soft-delete trash that survives across agents. The
 app is read-only against the original transcripts — deletion is a `move` into a
@@ -83,9 +83,9 @@ trait defined in `agents/mod.rs`. Currently:
 | ------ | ------------------------------------------------------------------- | ------------------------------- |
 | Claude | `~/.claude/projects/<dir>/<sessionId>.jsonl`                        | by project directory            |
 | Codex  | `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`                | by the `cwd` recorded *inside* each file |
-| Gemini | `~/.gemini/tmp/<slug>/chats/session-*.jsonl` (+ `.project_root` sibling) | by `slug`; cwd read from `.project_root` |
+| agy    | `~/.gemini/antigravity-cli/brain/<uuid>/.system_generated/logs/transcript.jsonl` | by `workspace` from `history.jsonl`; fallback: first tool_call path |
 
-To add a new agent (template: see `agents/gemini.rs`):
+To add a new agent:
 
 1. Create `src-tauri/src/agents/<name>.rs` with a `<Name>Source` unit struct
    that implements `SessionSource` (every method calls the agent's private

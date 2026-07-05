@@ -52,7 +52,7 @@ enum ChatHandle {
         /// 子进程句柄：stop 时 kill；waiter 线程走短锁 try_wait 避免长占。
         child: Mutex<Child>,
     },
-    /// 一轮一进程（Codex / Gemini）：start 不 spawn，send 时 spawn 一个 resume 进程。
+    /// 一轮一进程（Codex）：start 不 spawn，send 时 spawn 一个 resume 进程。
     OneShot {
         /// 用于 send 时 spawn turn 进程 + emit 事件。
         app: AppHandle,
@@ -470,7 +470,7 @@ pub fn send(
         } => {
             let source = agents::source(agent)?;
             let sid = session_id.lock().ok().and_then(|g| g.clone());
-            // OneShot 的图片入参暂不处理：Codex/Gemini 的 CLI 图片形态各异（多为文件路径
+            // OneShot 的图片入参暂不处理：Codex 的 CLI 图片形态各异（多为文件路径
             // 而非 base64 arg），接具体 agent 时再补；这里只发文本 prompt。
             let command = source
                 .chat_turn_command(sid.as_deref(), text, permission_mode, model, effort)

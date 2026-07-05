@@ -213,7 +213,7 @@ const retryLabel = computed(() => {
 const agent = computed(() => props.session.agent)
 // 底栏当前 git 分支（与 ChatView 头部共用 useGitBranch）：非 git 仓库 → null 不渲染。
 const gitBranch = useGitBranch(() => props.session.cwd)
-// 拖拽投放区配色：用 agent 自己的品牌色 token（--brand-claude / -codex / -gemini），
+// 拖拽投放区配色：用 agent 自己的品牌色 token（--brand-claude / -codex），
 // 而非随窗口失焦变灰的 --brand。从 Finder 拖文件进来时本窗口处于 .is-blurred（--brand
 // 被降级成 --text-mute 灰），用 raw token 才能始终保持橘/绿/蓝，不会先灰后橘地闪。
 const dropBrand = computed(() => `var(--brand-${props.session.agent})`)
@@ -2159,9 +2159,6 @@ function queuedLabel(q: QueuedMessage): string {
 }
 .cc-star.codex {
   color: var(--brand-codex);
-}
-.cc-star.gemini {
-  color: var(--brand-gemini);
 }
 @keyframes cc-spin {
   to {

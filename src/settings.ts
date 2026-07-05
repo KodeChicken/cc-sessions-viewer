@@ -71,7 +71,7 @@ export function setUseReclaude(v: boolean) {
 // ---------- 双击 / 新建快捷键默认打开什么 ----------
 // 双击 tab 条空白处、⌘N / ⌘T 默认都开「会话(session)」。这里让用户改成开
 // 「终端(terminal, 纯 shell)」或「chat(GUI live chat, 等价右键 New chat)」。
-// 注意：chat 目前只有 claude 支持，codex / gemini 选了也会被调用方拦下来提示。
+// 注意：chat 目前只有 claude 支持，codex 选了也会被调用方拦下来提示。
 export type QuickOpenTarget = 'session' | 'terminal' | 'chat'
 function readQuickOpenTarget(): QuickOpenTarget {
   const v = localStorage.getItem(QUICK_OPEN_KEY)
@@ -83,13 +83,16 @@ export function setQuickOpenTarget(v: QuickOpenTarget) {
   localStorage.setItem(QUICK_OPEN_KEY, v)
 }
 
-export type LaunchArgs = { claude: string; codex: string; gemini: string }
+export type LaunchArgs = { claude: string; codex: string; agy: string }
 function readLaunchArgs(): LaunchArgs {
   try {
     const v = localStorage.getItem(LAUNCH_ARGS_KEY)
-    if (v) return { claude: '', codex: '', gemini: '', ...JSON.parse(v) }
+    if (v) {
+      const parsed = JSON.parse(v) as Partial<LaunchArgs>
+      return { claude: parsed.claude ?? '', codex: parsed.codex ?? '', agy: parsed.agy ?? '' }
+    }
   } catch { /* ignore */ }
-  return { claude: '', codex: '', gemini: '' }
+  return { claude: '', codex: '', agy: '' }
 }
 export const launchArgs = ref<LaunchArgs>(readLaunchArgs())
 
@@ -99,18 +102,23 @@ export function setLaunchArgs(agent: keyof LaunchArgs, args: string) {
 }
 
 // ---------- Agent 显隐开关 ----------
-// 只用 cc + codex 的用户可以把 gemini 关掉，让侧栏/主页的 agent 切换更清爽。
-// 固定顺序 claude → codex → gemini；至少保留一个启用，否则整个 app 无内容可看。
-export const ALL_AGENTS: Agent[] = ['claude', 'codex', 'gemini']
+// 只用 cc 的用户可以把 codex 关掉，让侧栏/主页的 agent 切换更清爽。
+// 固定顺序 claude → codex → agy；至少保留一个启用，否则整个 app 无内容可看。
+export const ALL_AGENTS: Agent[] = ['claude', 'codex', 'agy']
 type EnabledAgents = Record<Agent, boolean>
 
 function readEnabledAgents(): EnabledAgents {
-  const all: EnabledAgents = { claude: true, codex: true, gemini: true }
+  const all: EnabledAgents = { claude: true, codex: true, agy: true }
   try {
     const v = localStorage.getItem(ENABLED_AGENTS_KEY)
     if (v) {
-      const merged = { ...all, ...(JSON.parse(v) as Partial<EnabledAgents>) }
-      // 防御：localStorage 里若三个都是 false（脏数据/手改）就回退到全开。
+      const parsed = JSON.parse(v) as Partial<EnabledAgents>
+      const merged: EnabledAgents = {
+        claude: parsed.claude ?? true,
+        codex: parsed.codex ?? true,
+        agy: parsed.agy ?? true,
+      }
+      // 防御：localStorage 里若全是 false（脏数据/手改）就回退到全开。
       if (ALL_AGENTS.some((a) => merged[a])) return merged
     }
   } catch { /* ignore */ }
@@ -234,25 +242,31 @@ export function clearAppCache() {
   localStorage.removeItem(LAUNCH_ARGS_KEY)
   terminalApp.value = 'terminal'
   useExternalTerminal.value = false
-  launchArgs.value = { claude: '', codex: '', gemini: '' }
+  launchArgs.value = { claude: '', codex: '', agy: '' }
 }
 
 // ---------- Statistics 页的 scope / range 持久化 ----------
-// 默认 all agents + 过去 6 个月；用户改完写回 localStorage，下次进入沿用上次选择。
+// 默认 all agents + 过去 3 个月；用户改完写回 localStorage，下次进入沿用上次选择。
 // （之前默认是 "all"=全部时间，全盘扫成本巨大且基本没人关心 1 年前的；改成
-// months6 后默认体验快得多，需要看更老的数据再手动切。）
+// months3 后默认体验快得多，需要看更老的数据再手动切。）
 
 function readStatsScope(): StatsScope {
   const v = localStorage.getItem(STATS_SCOPE_KEY)
-  return v === 'claude' || v === 'codex' || v === 'gemini' || v === 'all' ? v : 'all'
+  return v === 'claude' || v === 'codex' || v === 'all' ? v : 'all'
 }
 function readStatsRange(): StatsRange {
-  const v = localStorage.getItem(STATS_RANGE_KEY)
+  const v = localStorage.getItem(STATS_RANGE_KEY) || ''
   // 老用户 localStorage 里可能还存着 'all'（已废弃）—— 这里静默回退到 months6，
   // 后端 parse_range 也已经不认 'all'。
-  return v === 'today' || v === 'days7' || v === 'days30' || v === 'month' || v === 'months6'
-    ? v
-    : 'months6'
+  return v === 'today'
+    || v === 'days7'
+    || v === 'days30'
+    || v === 'month'
+    || v === 'months3'
+    || v === 'months6'
+    || /^custom:\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}$/.test(v)
+    ? v as StatsRange
+    : 'months3'
 }
 
 export const statsScope = ref<StatsScope>(readStatsScope())

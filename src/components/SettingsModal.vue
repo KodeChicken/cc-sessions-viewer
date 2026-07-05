@@ -124,7 +124,7 @@ const shortcutGroups = [
 ]
 
 const agentLabel = (a: Agent) =>
-  a === 'codex' ? 'Codex' : a === 'gemini' ? 'Gemini' : 'Claude'
+  a === 'codex' ? 'Codex' : a === 'agy' ? 'Antigravity CLI' : 'Claude'
 
 const props = defineProps<{ cacheBytes: number; initialTab?: SettingsTab }>()
 const emit = defineEmits<{ close: []; clearCache: []; clearTabs: [] }>()
@@ -551,20 +551,20 @@ async function installClaudeHooks() {
               <p class="set-group-desc">{{ t('settings.launchArgsDesc') }}</p>
             </div>
             <div class="set-launch-args">
-              <div class="set-launch-args-row" v-for="a in (['claude', 'codex', 'gemini'] as const)" :key="a">
+              <div class="set-launch-args-row" v-for="a in (['claude', 'codex', 'agy'] as const)" :key="a">
                 <component :is="agentIcons[a]" class="set-launch-args-icon" />
                 <input
                   class="set-launch-args-input"
                   :value="launchArgs[a]"
                   @input="setLaunchArgs(a, ($event.target as HTMLInputElement).value)"
-                  :placeholder="{ claude: '--dangerously-skip-permissions', codex: '--yolo', gemini: '--yolo' }[a]"
+                  :placeholder="{ claude: '--dangerously-skip-permissions', codex: '--yolo', agy: '--dangerously-skip-permissions' }[a]"
                   spellcheck="false"
                 />
                 <button
                   v-if="!launchArgs[a]"
                   class="set-launch-args-fill"
                   v-tooltip="t('settings.launchArgsFill')"
-                  @click="setLaunchArgs(a, { claude: '--dangerously-skip-permissions', codex: '--yolo', gemini: '--yolo' }[a])"
+                  @click="setLaunchArgs(a, { claude: '--dangerously-skip-permissions', codex: '--yolo', agy: '--dangerously-skip-permissions' }[a])"
                 >↵</button>
               </div>
             </div>

@@ -7,7 +7,7 @@
 //     · POSIX (`macOS / Linux`)：`$SHELL -l -i -c "cd '<cwd>' && <cli>"`。
 //       `-l + -i` 同时给：login shell source `.zprofile` / `.bash_profile`，interactive
 //       shell source `.zshrc` / `.bashrc`。npm global / nvm / fnm / volta 通常把 PATH
-//       export 在 rc 文件里，少一个都可能找不到 claude / codex / gemini。
+//       export 在 rc 文件里，少一个都可能找不到 claude / codex。
 //     · Windows：`<pwsh|powershell>.exe -NoLogo -Command "Set-Location -LiteralPath '<cwd>'; <cli>"`。
 //       优先 `pwsh.exe`（PS7，用户默认想用的）——装了才用，没装回退 Win10+ 自带的
 //       `powershell.exe`（5.1）以兼容空机器；见 agent_command::windows_powershell_exe。
@@ -31,7 +31,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -153,7 +153,7 @@ fn build_shell_command(
     cmd.arg("Bypass");
     cmd.arg("-Command");
     cmd.arg(crate::agent_command::powershell_set_location_and_run(cwd, command, use_reclaude));
-    // ConPTY 自己处理 VT 序列；TERM 对 Win 上的 Node CLI（claude / codex / gemini）也无害。
+    // ConPTY 自己处理 VT 序列；TERM 对 Win 上的 Node CLI（claude / codex）也无害。
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("COLORFGBG", color_scheme.colorfgbg());
@@ -287,25 +287,49 @@ fn spawn_raw(
 }
 
 fn reader_loop(app: AppHandle, id: u64, mut reader: Box<dyn Read + Send>) {
-    let mut buf = [0u8; 4096];
-    loop {
-        match reader.read(&mut buf) {
-            Ok(0) => break, // EOF —— slave 端被关 / 子进程退出。
-            Ok(n) => {
-                let payload = DataPayload {
-                    id,
-                    base64: B64.encode(&buf[..n]),
-                };
-                if app.emit("pty://data", payload).is_err() {
-                    // 事件 emit 失败通常意味着 app 在 teardown —— 直接 break。
-                    break;
+    // PTY 输出合并：TUI（如 Claude Code 的 ink 界面）整屏重绘会被内核拆成一串小块。
+    // 逐块 emit 的话每块都吃一次 IPC 延迟，重绘被摊到多个渲染帧上 —— 前端能看见
+    // 「光标飞到状态栏画字再飞回来」的中间态（光标抖动）。这里把阻塞读挪进子线程，
+    // 本线程在 2ms 静默窗口内合并后续块（总时长 16ms / 128KB 封顶）再一次性 emit，
+    // 一次重绘基本落在同一个事件里，前端一帧画完只见最终态。
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break, // EOF —— slave 端被关 / 子进程退出。
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
                 }
-            }
-            Err(e) => {
                 // 任何 IO 错误（连接关闭 / 中断）一律退出。Waiter 线程会负责 emit exit。
-                let _ = e;
+                Err(_) => break,
+            }
+        }
+    });
+
+    while let Ok(first) = rx.recv() {
+        let mut acc = first;
+        let deadline = Instant::now() + Duration::from_millis(16);
+        while acc.len() < 128 * 1024 {
+            let now = Instant::now();
+            if now >= deadline {
                 break;
             }
+            let quiet = Duration::from_millis(2).min(deadline - now);
+            match rx.recv_timeout(quiet) {
+                Ok(chunk) => acc.extend_from_slice(&chunk),
+                Err(_) => break, // 静默 2ms 或读线程退出 —— 都先把手上的发出去
+            }
+        }
+        let payload = DataPayload {
+            id,
+            base64: B64.encode(&acc),
+        };
+        if app.emit("pty://data", payload).is_err() {
+            // 事件 emit 失败通常意味着 app 在 teardown —— 直接 break。
+            break;
         }
     }
 }

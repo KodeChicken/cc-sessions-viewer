@@ -11,6 +11,9 @@ struct CliSpec {
     /// Built-in update subcommand (e.g. "claude update"), tried when the CLI
     /// wasn't installed via brew or npm.
     builtin_update: Option<&'static str>,
+    /// Manifest URL template for non-npm CLIs (e.g. agy). The placeholder
+    /// `{platform}` will be replaced at runtime with e.g. `darwin_arm64`.
+    manifest_url: Option<&'static str>,
 }
 
 const CLI_SPECS: &[CliSpec] = &[
@@ -20,6 +23,7 @@ const CLI_SPECS: &[CliSpec] = &[
         npm_package: "@anthropic-ai/claude-code",
         brew_upgrade: Some("claude-code@latest"),
         builtin_update: Some("claude update"),
+        manifest_url: None,
     },
     CliSpec {
         name: "codex",
@@ -27,13 +31,17 @@ const CLI_SPECS: &[CliSpec] = &[
         npm_package: "@openai/codex",
         brew_upgrade: Some("--cask codex"),
         builtin_update: Some("codex update"),
+        manifest_url: None,
     },
     CliSpec {
-        name: "gemini",
-        binary: "gemini",
-        npm_package: "@google/gemini-cli",
+        name: "agy",
+        binary: "agy",
+        npm_package: "",
         brew_upgrade: None,
-        builtin_update: None,
+        builtin_update: Some("agy update"),
+        manifest_url: Some(
+            "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/{platform}.json",
+        ),
     },
 ];
 
@@ -126,6 +134,50 @@ fn fetch_npm_latest(package: &str) -> Result<String, String> {
     }
 }
 
+/// Fetch the latest version from a platform-specific manifest JSON endpoint.
+/// The manifest is a JSON object with a `"version"` field.
+fn fetch_manifest_latest(manifest_url_template: &str) -> Result<String, String> {
+    let platform = detect_platform_key();
+    let url = manifest_url_template.replace("{platform}", &platform);
+    let try_once = || -> Result<String, String> {
+        let resp: serde_json::Value = ureq::get(&url)
+            .timeout(Duration::from_secs(10))
+            .call()
+            .map_err(|e| format!("manifest fetch: {e}"))?
+            .into_json()
+            .map_err(|e| format!("parse json: {e}"))?;
+        resp.get("version")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| "missing version field".into())
+    };
+    match try_once() {
+        Ok(v) => Ok(v),
+        Err(_) => {
+            std::thread::sleep(Duration::from_millis(500));
+            try_once()
+        }
+    }
+}
+
+/// Return a platform key such as `darwin_arm64`, `darwin_amd64`, `linux_amd64`
+/// etc., matching the manifest filename convention used by the agy auto-updater.
+fn detect_platform_key() -> String {
+    let os = if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "linux"
+    };
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
+    };
+    format!("{os}_{arch}")
+}
+
 fn compare_versions(current: &str, latest: &str) -> bool {
     let parse = |s: &str| -> Vec<u64> {
         s.split('.').filter_map(|p| p.parse().ok()).collect()
@@ -148,7 +200,14 @@ fn compare_versions(current: &str, latest: &str) -> bool {
 fn check_cli_version(spec: &CliSpec) -> CliVersionInfo {
     let current = get_installed_version(spec);
     let installed = current.is_some();
-    let latest = fetch_npm_latest(spec.npm_package);
+    // Use npm registry for npm-based CLIs, manifest URL for others (e.g. agy)
+    let latest = if !spec.npm_package.is_empty() {
+        fetch_npm_latest(spec.npm_package)
+    } else if let Some(manifest_url) = spec.manifest_url {
+        fetch_manifest_latest(manifest_url)
+    } else {
+        Err("no version source configured".into())
+    };
     let (latest_version, error) = match latest {
         Ok(v) => (Some(v), None),
         Err(e) => (None, Some(e)),
@@ -470,11 +529,11 @@ mod tests {
             "nvm"
         );
         assert_eq!(
-            detect_package_manager("/Users/u/.volta/bin/gemini"),
+            detect_package_manager("/Users/u/.volta/bin/codex"),
             "volta"
         );
         assert_eq!(
-            detect_package_manager("/usr/local/lib/node_modules/@google/gemini-cli/bin/gemini"),
+            detect_package_manager("/usr/local/lib/node_modules/@openai/codex/bin/codex"),
             "npm"
         );
         assert_eq!(detect_package_manager("/usr/bin/claude"), "system");
@@ -497,8 +556,8 @@ mod tests {
 
         assert_eq!(extract_fallback_cmd("Updated successfully!"), None);
         assert_eq!(
-            extract_fallback_cmd("  npm install -g @google/gemini-cli@latest"),
-            Some("npm install -g @google/gemini-cli@latest".into())
+            extract_fallback_cmd("  npm install -g @openai/codex@latest"),
+            Some("npm install -g @openai/codex@latest".into())
         );
     }
 }

@@ -126,6 +126,16 @@ fn unwatch_session() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn check_watched_session(app: tauri::AppHandle) -> Result<(), String> {
+    watch::check_watched_session(app)
+}
+
+#[tauri::command]
+fn check_session_turns(app: tauri::AppHandle) -> Result<(), String> {
+    turn::check_session_turns(app)
+}
+
+#[tauri::command]
 fn terminal_turn_signal(
     app: tauri::AppHandle,
     agent: String,
@@ -168,7 +178,7 @@ fn unwatch_session_turn(path: String) -> Result<(), String> {
 }
 
 /// 单个会话的 token 用量汇总（按 path + mtime 缓存）。
-/// 前端 ChatTopbar / SessionsView 卡片懒加载这条；Gemini 暂占位返零。
+/// 前端 ChatTopbar / SessionsView 卡片懒加载这条。
 #[tauri::command]
 fn session_usage(agent: String, path: String) -> Result<UsageSummary, String> {
     let src = agents::source(&agent)?;
@@ -196,8 +206,9 @@ fn agent_stats(agent: String) -> Result<AgentStats, String> {
 /// `stats://done` / `stats://error` 三个事件把结果推回前端。新请求会让旧请求让位
 /// （`STATS_GEN` 代际计数器）。前端用 `requestId` 比对，丢掉旧数据。
 ///
-/// `scope`：`all` / `claude` / `codex` / `gemini` / `session:<agent>:<absolute path>`。
-/// `range`：`today` / `days7` / `days30` / `all`（session-scope 下忽略）。
+/// `scope`：`all` / `claude` / `codex` / `session:<agent>:<absolute path>`。
+/// `range`：`today` / `days7` / `days30` / `month` / `months3` / `months6` /
+/// `custom:YYYY-MM-DD:YYYY-MM-DD`（session-scope 下忽略）。
 #[tauri::command]
 fn start_agent_stats(app: tauri::AppHandle, scope: String, range: String, request_id: u64) {
     stats::stream::start(app, scope, range, request_id);
@@ -579,7 +590,7 @@ fn resume_session(
     if !Path::new(&cwd).is_dir() {
         return Err("Project directory no longer exists".to_string());
     }
-    // id 校验：Claude/Codex 为 UUID，Gemini 为 session-<startTime>-<id8>
+    // id 校验：Claude/Codex 为 UUID
     if session_id.is_empty()
         || !session_id
             .chars()
@@ -982,6 +993,30 @@ fn write_file(path: String, content: String) -> Result<String, String> {
     }
     fs::write(&p, content).map_err(|e| format!("Failed to write file: {e}"))?;
     Ok(p.to_string_lossy().to_string())
+}
+
+/// 把前端传来的 base64 图片数据保存到临时文件，返回路径。
+/// 用于内嵌终端的 Cmd+V 贴图：xterm 拿到路径后写入 PTY stdin。
+#[tauri::command]
+fn save_clipboard_image(data: String, media_type: String) -> Result<String, String> {
+    let ext = match media_type.as_str() {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "png",
+    };
+    let ts = chrono::Local::now().format("%Y-%m-%d-%H%M%S");
+    let name = format!("clipboard-{ts}.{ext}");
+    let dir = std::env::temp_dir();
+    let path = dir.join(&name);
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        &data,
+    )
+    .map_err(|e| format!("base64 decode failed: {e}"))?;
+    fs::write(&path, &bytes).map_err(|e| format!("write failed: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 /// 在系统文件管理器中显示该文件。
@@ -1454,7 +1489,7 @@ fn pricing_status() -> stats::pricing::PricingStatus {
     stats::pricing::status()
 }
 
-/// 返回当前价格表里 Claude / Codex / Gemini 三家的全部模型 —— 给 PricingView 弹窗渲染。
+/// 返回当前价格表里 Claude / Codex 两家的全部模型 —— 给 PricingView 弹窗渲染。
 /// 已按 family 分组、组内按 input 单价升序，前端可直接 group_by(family) 渲染。
 #[tauri::command]
 fn list_pricing() -> Vec<stats::pricing::PricingEntry> {
@@ -1545,6 +1580,8 @@ pub fn run() {
             read_session,
             watch_session,
             unwatch_session,
+            check_watched_session,
+            check_session_turns,
             terminal_turn_signal,
             install_claude_turn_hooks,
             claude_runtime_info,
@@ -1587,6 +1624,7 @@ pub fn run() {
             open_url,
             open_path_external,
             read_file_base64,
+            save_clipboard_image,
             path_is_dir,
             git_current_branch,
             list_project_files,

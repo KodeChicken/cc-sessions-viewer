@@ -51,6 +51,26 @@ export type {
   TerminalTurnState,
 } from './tabStatus'
 
+/// 处理 DOM paste 事件（含图片）——用 capture 阶段拦截，先于 xterm 的 stopPropagation。
+/// Mac 上 Cmd+V / Ctrl+V 触发；图片保存为临时文件后把路径粘贴到终端。
+async function _handleTerminalPaste(term: Terminal, e: ClipboardEvent) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  for (const item of Array.from(items)) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      const file = item.getAsFile()
+      if (!file) continue
+      const buf = await file.arrayBuffer()
+      const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)))
+      const path = await api.saveClipboardImage(b64, file.type)
+      term.paste(path)
+      return
+    }
+  }
+}
+
 export interface TerminalTab {
   /** 本地稳定 id，供 v-for 用；和后端 pty id 是两套号 */
   uiId: number
@@ -77,9 +97,6 @@ export interface TerminalTab {
   onDataDisp: { dispose: () => void } | null
   lastSyncedCols: number
   lastSyncedRows: number
-  quietCursor: boolean
-  quietCursorTimer: number | null
-  lastUserInputAt: number
   currentInputLine: string
   /** 进程生命周期：只描述 PTY/CLI 进程本身，不代表本轮回答是否完成。 */
   processState: TerminalProcessState
@@ -351,18 +368,8 @@ function terminalColorScheme(): 'light' | 'dark' {
   return isDarkActive() ? 'dark' : 'light'
 }
 
-function terminalTheme(tab: TerminalTab) {
-  const base = xtermTheme(isDarkActive())
-  if (!tab.quietCursor) return base
-  return {
-    ...base,
-    cursor: 'rgba(0,0,0,0)',
-    cursorAccent: 'rgba(0,0,0,0)',
-  }
-}
-
 function applyTerminalTheme(tab: TerminalTab) {
-  tab.term.options.theme = terminalTheme(tab)
+  tab.term.options.theme = xtermTheme(isDarkActive())
 }
 
 // 主题切换：把所有活跃 Terminal 的 theme 选项替换；xterm 自己会重绘。
@@ -371,24 +378,6 @@ watch(theme, () => {
     applyTerminalTheme(tab)
   }
 })
-
-function setQuietCursor(tab: TerminalTab, quiet: boolean) {
-  if (tab.quietCursor === quiet) return
-  tab.quietCursor = quiet
-  applyTerminalTheme(tab)
-}
-
-function markTerminalOutputBusy(tab: TerminalTab) {
-  if (Date.now() - tab.lastUserInputAt < 250) return
-  if (tab.quietCursorTimer !== null) {
-    window.clearTimeout(tab.quietCursorTimer)
-  }
-  setQuietCursor(tab, true)
-  tab.quietCursorTimer = window.setTimeout(() => {
-    tab.quietCursorTimer = null
-    setQuietCursor(tab, false)
-  }, 700)
-}
 
 // ============================ base64 双向 ============================
 // btoa / atob 对多字节字符不友好，统一走 Uint8Array 转换 + 分块避免栈溢出。
@@ -721,7 +710,7 @@ export function markTabViewed(uiId: number) {
 }
 
 function shouldWatchSessionTurns(tab: TerminalTab) {
-  return (tab.agent === 'claude' || tab.agent === 'codex' || tab.agent === 'gemini') && !!tab.sessionPath
+  return (tab.agent === 'claude' || tab.agent === 'codex' || tab.agent === 'agy') && !!tab.sessionPath
 }
 
 function ensureSessionTurnWatch(tab: TerminalTab, catchUp: boolean) {
@@ -799,6 +788,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   // 提示 xterm 即将 attach；真正的 open(container) 推迟到 slot 把 container 放入
   // 可见 DOM 树之后，否则在 detached 节点上 open 会拿不到尺寸。
   term.open(container)
+  if (_isMac) container.addEventListener('paste', (e: Event) => _handleTerminalPaste(term, e as ClipboardEvent), true)
 
   const uiId = nextUiId++
   if (isNew && opts.knownSessionPaths) {
@@ -826,9 +816,6 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     onDataDisp: null,
     lastSyncedCols: 0,
     lastSyncedRows: 0,
-    quietCursor: false,
-    quietCursorTimer: null,
-    lastUserInputAt: 0,
     currentInputLine: '',
     processState: 'spawning',
     turnState: 'unknown',
@@ -846,21 +833,6 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown' || ev.altKey) return true
     const key = ev.key.toLowerCase()
-
-    if (ev.ctrlKey && !ev.metaKey) {
-      if (key === 'c' && term.hasSelection()) {
-        ev.preventDefault()
-        void navigator.clipboard.writeText(term.getSelection()).catch(() => {})
-        return false
-      }
-      if (key === 'v') {
-        ev.preventDefault()
-        void navigator.clipboard.readText().then((text) => {
-          if (text) term.paste(text)
-        }).catch(() => {})
-        return false
-      }
-    }
 
     const mod = _isMac ? ev.metaKey : ev.ctrlKey
     const otherMod = _isMac ? ev.ctrlKey : ev.metaKey
@@ -920,7 +892,6 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   tab.unlistenData = await listen<{ id: number; base64: string }>('pty://data', (e) => {
     if (e.payload.id !== ptyId) return
     tab.lastOutputAt = Date.now()
-    markTerminalOutputBusy(tab)
     const bytes = base64ToBytes(e.payload.base64)
     if (tab.agent === 'codex' && terminalColorScheme() === 'light') {
       const normalized = normalizeLightAnsiBackground(bytes, tab.pendingAnsiBytes)
@@ -944,7 +915,6 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   // xterm → 后端（注：spawning / exited 时屏蔽，避免空 ptyId 或写已死管道）
   tab.onDataDisp = term.onData((data) => {
     if (tab.ptyId === null || tab.processState !== 'alive') return
-    tab.lastUserInputAt = Date.now()
     if (isTerminalCancelInput(data)) {
       clearLocalWorkingTurn(tab, activeUiId.value === tab.uiId)
     } else {
@@ -957,7 +927,6 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
       }
       tab.currentInputLine = input.nextLine
     }
-    setQuietCursor(tab, false)
     const bytes = new TextEncoder().encode(data)
     api.ptyWrite(tab.ptyId, bytesToBase64(bytes)).catch(() => {})
   })
@@ -993,6 +962,7 @@ export async function openShellTab(opts: {
   const container = markRaw(document.createElement('div'))
   container.className = 'terminal-host'
   term.open(container)
+  if (_isMac) container.addEventListener('paste', (e: Event) => _handleTerminalPaste(term, e as ClipboardEvent), true)
 
   const uiId = nextUiId++
   const tab = reactive<TerminalTab>({
@@ -1014,9 +984,6 @@ export async function openShellTab(opts: {
     onDataDisp: null,
     lastSyncedCols: 0,
     lastSyncedRows: 0,
-    quietCursor: false,
-    quietCursorTimer: null,
-    lastUserInputAt: 0,
     currentInputLine: '',
     processState: 'spawning',
     turnState: 'unknown',
@@ -1034,21 +1001,6 @@ export async function openShellTab(opts: {
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown' || ev.altKey) return true
     const key = ev.key.toLowerCase()
-
-    if (ev.ctrlKey && !ev.metaKey) {
-      if (key === 'c' && term.hasSelection()) {
-        ev.preventDefault()
-        void navigator.clipboard.writeText(term.getSelection()).catch(() => {})
-        return false
-      }
-      if (key === 'v') {
-        ev.preventDefault()
-        void navigator.clipboard.readText().then((text) => {
-          if (text) term.paste(text)
-        }).catch(() => {})
-        return false
-      }
-    }
 
     const mod = _isMac ? ev.metaKey : ev.ctrlKey
     const otherMod = _isMac ? ev.ctrlKey : ev.metaKey
@@ -1099,8 +1051,6 @@ export async function openShellTab(opts: {
 
   tab.onDataDisp = term.onData((data) => {
     if (tab.ptyId === null || tab.processState !== 'alive') return
-    tab.lastUserInputAt = Date.now()
-    setQuietCursor(tab, false)
     const bytes = new TextEncoder().encode(data)
     api.ptyWrite(tab.ptyId, bytesToBase64(bytes)).catch(() => {})
   })
@@ -1171,10 +1121,6 @@ export function closeTab(uiId: number) {
   }
 
   // heavy cleanup after reactive state is settled
-  if (tab.quietCursorTimer !== null) {
-    window.clearTimeout(tab.quietCursorTimer)
-    tab.quietCursorTimer = null
-  }
   tab.onDataDisp?.dispose()
   tab.unlistenData?.()
   tab.unlistenExit?.()

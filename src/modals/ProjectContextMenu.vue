@@ -6,6 +6,7 @@ import {
   IconPinDown,
   IconRefresh,
   IconTrashOpen,
+  IconFolder,
 } from '../components/icons'
 
 type ProjState = 'pinned' | 'sunk'
@@ -20,6 +21,7 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'toggle-state', state: ProjState): void
   (e: 'refresh'): void
+  (e: 'open-folder'): void
   (e: 'delete'): void
   (e: 'remove-bookmark'): void
 }>()
@@ -39,6 +41,10 @@ const emit = defineEmits<{
       <div class="ctx-sep" />
       <!-- 目录已不存在 → 刷新无意义，连同分隔线一起隐藏 -->
       <template v-if="project.exists">
+        <button class="ctx-item" @click="emit('open-folder')">
+          <IconFolder />
+          {{ t('proj.openFolder') }}
+        </button>
         <button class="ctx-item" @click="emit('refresh')">
           <IconRefresh />
           {{ t('proj.refresh') }}

@@ -731,7 +731,7 @@ defineExpose({ scrollEl })
           <span>{{ formatSize(s.size) }}</span>
           <span>{{ t('list.updated', { time: formatTime(s.modified) }) }}</span>
           <!-- Token 角标：IntersectionObserver 看到这条 chip 才发请求 (`observeUsageCard`)。
-               cache 命中时显示 total；空数据（Gemini）显示 "—"；loading 显示空占位。 -->
+               cache 命中时显示 total；空数据显示 "—"；loading 显示空占位。 -->
           <span
             class="session-tok"
             :ref="(el) => observeUsageCard(s.path, el as Element | null)"
@@ -778,7 +778,7 @@ defineExpose({ scrollEl })
         <button
           v-if="project.exists"
           class="icon-btn"
-          v-tooltip="t('list.action.resume')"
+          v-tooltip="s.cwd?.startsWith('ide://') ? t('list.action.resumeIde') : t('list.action.resume')"
           @click.stop="emit('resume', s)"
         >
           <IconPlay />

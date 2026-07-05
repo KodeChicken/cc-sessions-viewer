@@ -61,7 +61,7 @@ export const CHAT_MODEL_MENU: Record<Agent, ModelMenuConfig> = {
     more: [{ value: 'gpt-5.1-codex-max', label: 'gpt-5.1-codex-max' }],
     showFastMode: false,
   },
-  gemini: { unavailable: [], primary: [], more: [], showFastMode: false },
+  agy: { unavailable: [], primary: [], more: [], showFastMode: false },
 }
 
 /** Claude 在 API-key / 第三方兼容端点下改走 alias，让本地 settings.json 模型映射接管。 */
@@ -162,7 +162,7 @@ export function modelLabel(
 export const CHAT_EFFORT_LEVELS: Record<Agent, string[]> = {
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   codex: ['minimal', 'low', 'medium', 'high'],
-  gemini: [],
+  agy: [],
 }
 
 /** 多一档「ultracode」的模型（排在 max 之后，仅这些模型显示）。 */

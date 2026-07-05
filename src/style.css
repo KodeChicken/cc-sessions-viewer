@@ -43,7 +43,7 @@
   --link: hsl(212 100% 48%);        /* ds-blue-700，仅文本链接 */
   --brand-claude: #c2410c;
   --brand-codex: #047857;
-  --brand-gemini: #1a73e8;
+  --brand-agy: #7c3aed;
   --brand: var(--brand-claude);
   --brand-soft: rgba(194, 65, 12, 0.10);
   --danger: #b91c1c;
@@ -109,7 +109,7 @@
   --link: hsl(210 100% 66%);          /* ds-blue-900 dark */
   --brand-claude: #f97316;
   --brand-codex: #10b981;
-  --brand-gemini: #4d8bf8;
+  --brand-agy: #8b5cf6;
   --brand: var(--brand-claude);
   --brand-soft: rgba(249, 115, 22, 0.14);
   --danger: #f87171;
@@ -213,14 +213,13 @@
 :root:not(.theme-dark) .app.agent-codex {
   --brand-soft: rgba(4, 120, 87, 0.10);
 }
-.app.agent-gemini {
-  --brand: var(--brand-gemini);
-  --brand-soft: color-mix(in srgb, var(--brand-gemini) 14%, transparent);
+.app.agent-agy {
+  --brand: var(--brand-agy);
+  --brand-soft: color-mix(in srgb, var(--brand-agy) 14%, transparent);
 }
-:root:not(.theme-dark) .app.agent-gemini {
-  --brand-soft: rgba(26, 115, 232, 0.10);
+:root:not(.theme-dark) .app.agent-agy {
+  --brand-soft: rgba(124, 58, 237, 0.10);
 }
-
 * {
   box-sizing: border-box;
 }
@@ -878,9 +877,9 @@ body.is-sidebar-resizing {
   background: color-mix(in srgb, var(--brand-claude) 14%, transparent);
   color: var(--brand-claude);
 }
-.agent-badge.gemini {
-  background: color-mix(in srgb, var(--brand-gemini) 14%, transparent);
-  color: var(--brand-gemini);
+.agent-badge.agy {
+  background: color-mix(in srgb, var(--brand-agy) 14%, transparent);
+  color: var(--brand-agy);
 }
 
 /* ---------- Project list ---------- */
@@ -1676,8 +1675,8 @@ body.is-sidebar-resizing {
   top: calc(100% + 6px);
   right: 0;
   z-index: 50;
-  width: 340px;
-  max-height: 420px;
+  width: 420px;
+  max-height: 520px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1819,6 +1818,60 @@ mark.locate-hl {
 .welcome-github:hover {
   background: var(--surface-hover);
   color: var(--text);
+}
+/* 滚动公告 */
+.welcome-announcement {
+  position: absolute;
+  top: 14px;
+  right: 60px; /* 放在 GitHub 按钮左侧 */
+  height: 34px;
+  width: 380px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-hover) 85%, transparent);
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text-mute);
+  padding-right: 8px;
+}
+.announcement-icon {
+  position: absolute;
+  left: 10px;
+  display: flex;
+  align-items: center;
+  color: #e2a100; /* 温和的警示金黄色 */
+  z-index: 2;
+}
+.announcement-icon svg {
+  width: 14px;
+  height: 14px;
+}
+.announcement-viewport {
+  margin-left: 32px; /* 留出左侧图标的绝对空间 */
+  flex: 1;
+  overflow: hidden;
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+.announcement-track {
+  display: flex;
+  width: max-content;
+  animation: welcomeMarquee 25s linear infinite;
+}
+.announcement-content {
+  padding-right: 48px; /* 循环项之间的安全间距 */
+  white-space: nowrap;
+}
+@keyframes welcomeMarquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
 }
 .welcome-inner {
   width: 100%;
@@ -2315,7 +2368,7 @@ mark.locate-hl {
 }
 .bubble.assistant {
   background: transparent;
-  max-width: 100%;
+  max-width: 86%;
   padding: 0;
 }
 
@@ -2404,8 +2457,8 @@ mark.locate-hl {
 .role-tag .agent-icon.codex {
   color: var(--brand-codex);
 }
-.role-tag .agent-icon.gemini {
-  color: var(--brand-gemini);
+.role-tag .agent-icon.agy {
+  color: var(--brand-agy);
 }
 .sidechain-badge {
   background: var(--surface-2);
@@ -2572,9 +2625,21 @@ mark.locate-hl {
   margin: 10px 0 4px;
   font-weight: 600;
 }
-/* 消息首行就是标题时，去掉标题上边距，避免与 role-tag 之间多出一段空白。 */
+.text-run h5 {
+  font-size: 13px;
+  margin: 8px 0 3px;
+  font-weight: 600;
+}
+.text-run h6 {
+  font-size: 12.5px;
+  margin: 6px 0 2px;
+  font-weight: 600;
+  color: var(--text-mute);
+}
 .text-run > h3:first-child,
-.text-run > h4:first-child {
+.text-run > h4:first-child,
+.text-run > h5:first-child,
+.text-run > h6:first-child {
   margin-top: 0;
 }
 /* Geist 风：链接默认无下划线，hover 才出来，颜色用 ds-blue */
@@ -3072,6 +3137,11 @@ details[open] > .block-summary > .chev {
   font-size: 11px;
   font-weight: 500;
   border: 1px solid var(--border);
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
 }
 
 /* ---------- Floating scroll buttons ---------- */
@@ -3140,7 +3210,7 @@ details[open] > .block-summary > .chev {
   font-variant-numeric: tabular-nums;
 }
 /* 运行中的 agent 品牌图标 —— 与消息头部 .role-tag .agent-icon 同一个 SVG、同尺寸，保持静止。
-   用 agent 自己的色调（claude 橙 / codex 绿 / gemini 蓝），不跟随主题的 --brand（否则 codex
+   用 agent 自己的色调（claude 橙 / codex 绿），不跟随主题的 --brand（否则 codex
    主题下会被染成蓝）；SVG 走 currentColor，所以下面的 color 直接生效。 */
 .chat-running-star {
   width: 14px;
@@ -3151,8 +3221,8 @@ details[open] > .block-summary > .chev {
 .chat-running-star.codex {
   color: var(--brand-codex);
 }
-.chat-running-star.gemini {
-  color: var(--brand-gemini);
+.chat-running-star.agy {
+  color: var(--brand-agy);
 }
 /* 进行中动词「Working / 思考中」：底色是低调 --text-dim，上面叠一层同样文字的 --text 亮色副本
    (::after content:attr(data-text))，用一条柔和的 mask 渐变带从左到右扫过它、扫到处提亮 →
@@ -5476,6 +5546,10 @@ body.is-tab-reordering * {
   border-radius: 8px;
   padding: 2px;
 }
+.stats-range-picker {
+  position: relative;
+  display: inline-flex;
+}
 .stats-pill {
   font-size: 12px;
   padding: 4px 10px;
@@ -5487,10 +5561,198 @@ body.is-tab-reordering * {
   transition: background 0.12s, color 0.12s;
   font-weight: 500;
 }
+.stats-pill-icon {
+  width: 28px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.stats-pill-icon svg {
+  width: 14px;
+  height: 14px;
+}
 .stats-pill:hover { color: var(--text); }
 .stats-pill.active {
   background: var(--accent);
   color: var(--surface);
+}
+.stats-date-range {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg, 0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.15));
+  color: var(--text);
+  width: 480px;
+}
+.stats-date-fields {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.stats-date-field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2, var(--surface));
+  color: var(--text-mute);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+.stats-date-field span {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.stats-date-field strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.stats-date-field.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+  color: var(--accent);
+}
+.stats-date-field.active strong {
+  color: var(--accent);
+}
+.stats-cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.stats-cal-nav {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-mute);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  transition: all 0.12s;
+}
+.stats-cal-nav:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.stats-cal-nav svg {
+  width: 14px;
+  height: 14px;
+}
+.stats-cal-limit {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-mute);
+}
+.stats-cal-months {
+  display: flex;
+  gap: 20px;
+  width: 100%;
+}
+.stats-cal-month {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.stats-cal-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--text);
+}
+.stats-cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-mute);
+  opacity: 0.8;
+}
+.stats-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  row-gap: 2px;
+}
+.stats-cal-empty {
+  aspect-ratio: 1;
+}
+.stats-cal-day {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.12s;
+  position: relative;
+}
+.stats-cal-day:hover:not(.disabled) {
+  background: var(--surface-hover);
+}
+.stats-cal-day.disabled {
+  color: var(--text-mute);
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.stats-cal-day.range {
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-hover));
+  border-radius: 0;
+}
+.stats-cal-day.start {
+  background: var(--accent) !important;
+  color: var(--surface) !important;
+  font-weight: 600;
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+.stats-cal-day.end {
+  background: var(--accent) !important;
+  color: var(--surface) !important;
+  font-weight: 600;
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+.stats-cal-day.today::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.stats-cal-day.start.today::after,
+.stats-cal-day.end.today::after {
+  background: var(--surface);
 }
 
 /* Hero strip */
@@ -5798,7 +6060,7 @@ body.is-tab-reordering * {
 }
 
 /* ---------- PricingView ----------
-   3 段（Claude / Codex / Gemini）模型价格表。布局：每行一个 CSS Grid，
+   2 段（Claude / Codex）模型价格表。布局：每行一个 CSS Grid，
    model 名占左 fr，4 列价格定宽右对齐。配色完全 token 化，dark/light 自动切。
    .pricing-scroll 自己是滚动容器，且 position:relative —— sticky 工具栏 + jumpTo
    按 section.offsetTop 跳都依赖它作为定位参考系。 */

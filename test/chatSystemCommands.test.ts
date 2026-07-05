@@ -24,12 +24,10 @@ describe('systemSlashCommands', () => {
 
   it('limits non-Claude agents to the universal client actions', () => {
     setLang('en')
-    for (const agent of ['codex', 'gemini'] as const) {
-      const names = systemSlashCommands(agent).map((c) => c.name)
-      expect(names).toEqual(['model', 'export', 'rename', 'clear'])
-      expect(names).not.toContain('fork')
-      expect(names).not.toContain('btw')
-    }
+    const names = systemSlashCommands('codex').map((c) => c.name)
+    expect(names).toEqual(['model', 'export', 'rename', 'clear'])
+    expect(names).not.toContain('fork')
+    expect(names).not.toContain('btw')
   })
 
   it('localizes descriptions via t()', () => {

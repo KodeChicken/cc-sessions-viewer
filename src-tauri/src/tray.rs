@@ -571,7 +571,7 @@ fn brand_color(agent: &str) -> (f64, f64, f64) {
     match agent {
         "claude" => (204.0 / 255.0, 124.0 / 255.0,  94.0 / 255.0),
         "codex"  => ( 73.0 / 255.0, 163.0 / 255.0, 176.0 / 255.0),
-        "gemini" => (171.0 / 255.0, 135.0 / 255.0, 234.0 / 255.0),
+        "agy"    => (139.0 / 255.0,  92.0 / 255.0, 246.0 / 255.0),
         _        => (0.5, 0.5, 0.5),
     }
 }
@@ -583,7 +583,7 @@ fn make_agent_card(
     let name = match a.agent.as_str() {
         "claude" => "Claude Code",
         "codex"  => "Codex CLI",
-        "gemini" => "Gemini CLI",
+        "agy"    => "Antigravity CLI",
         _        => &a.agent,
     };
     let (br, bg, bb) = brand_color(&a.agent);

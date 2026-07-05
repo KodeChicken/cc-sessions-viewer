@@ -14,7 +14,7 @@
 // 现在这份模块只剩两件事：
 //   1. 把 CLI 里的"花式"模型名归一成上游的 canonical key（去 @pin / 日期 / provider，
 //      `claude-opus-4.7` → `claude-opus-4-7` 这种别名）
-//   2. 把 canonical 模型名转成展示名（"Opus 4.7" / "GPT-5.3 Codex" / "Gemini 2.5 Flash"），
+//   2. 把 canonical 模型名转成展示名（"Opus 4.7" / "GPT-5.3 Codex"），
 //      用通用规则推导而非维护映射表 —— 新版本零改动也能渲染对。
 
 use crate::types::UsageSummary;
@@ -222,12 +222,12 @@ pub struct PricingStatus {
 }
 
 /// 前端「模型实时价格」窗口要展示的单条记录。`family` 用来在 UI 上分 tab
-/// （Claude / Codex / Gemini），名字按上游原始 key（用户已熟悉的标识符）。
+/// （Claude / Codex），名字按上游原始 key（用户已熟悉的标识符）。
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PricingEntry {
     pub name: String,
-    pub family: &'static str, // "claude" | "codex" | "gemini"
+    pub family: &'static str, // "claude" | "codex"
     pub input: f64,
     pub output: f64,
     pub cache_write: f64,
@@ -295,11 +295,11 @@ fn pin_date(name: &str) -> Option<u32> {
     latest
 }
 
-/// 我们只展示三家 CLI 用户实际会跑的模型：Anthropic Claude、OpenAI Codex（含
-/// `gpt-…-codex` / `codex-…` / `o1-…` 系列）、Google Gemini。入表时已只取这
-/// 三家 provider，这里的前缀过滤是第二道防线（顺带踢掉 embedding 等非 chat 条目）。
+/// 我们只展示两家 CLI 用户实际会跑的模型：Anthropic Claude、OpenAI Codex（含
+/// `gpt-…-codex` / `codex-…` / `o1-…` 系列）。入表时已只取这
+/// 两家 provider，这里的前缀过滤是第二道防线（顺带踢掉 embedding 等非 chat 条目）。
 ///
-/// 排序：先 family（claude → codex → gemini），再按"版本号自然顺序倒序"
+/// 排序：先 family（claude → codex），再按"版本号自然顺序倒序"
 /// —— 最新型号在前。`claude-opus-4-8` > `claude-opus-4-7` > `claude-opus-4` > `claude-3-7-sonnet`，
 /// 同名带日期后缀（`-20241022`）的具体版本 > 不带的"latest alias"。
 pub fn list_for_ui() -> Vec<PricingEntry> {
@@ -338,13 +338,15 @@ pub fn list_for_ui() -> Vec<PricingEntry> {
         }
         let family: &'static str = if lower.starts_with("claude-") {
             "claude"
-        } else if lower.starts_with("codex-") || lower.contains("-codex") {
-            "codex"
-        } else if lower.starts_with("gpt-") || lower.starts_with("o1-") || lower == "o1" {
-            // GPT 主线（Codex CLI 也会跑 gpt-5 / gpt-4o）也归入 codex 维度
+        } else if lower.starts_with("codex-")
+            || lower.contains("-codex")
+            || lower.starts_with("gpt-")
+            || lower.starts_with("o1-")
+            || lower == "o1"
+        {
             "codex"
         } else if lower.starts_with("gemini-") {
-            "gemini"
+            "agy"
         } else {
             continue;
         };
@@ -361,7 +363,7 @@ pub fn list_for_ui() -> Vec<PricingEntry> {
     let family_rank = |f: &str| match f {
         "claude" => 0,
         "codex" => 1,
-        "gemini" => 2,
+        "agy" => 2,
         _ => 9,
     };
     // 同 family 内："版本号倒序" 主键 + "naked > 日期 pin 倒序" tiebreak。
@@ -543,7 +545,7 @@ fn save_to_cache(table: &HashMap<String, ModelCosts>) {
 }
 
 /// 解析 models.dev 的根 JSON：`{ <provider>: { models: { <id>: { cost, limit, … } } } }`。
-/// 只取三家 CLI 实际会跑的 provider（anthropic / openai / google）—— 其余 130+ 个
+/// 只取两家 CLI 实际会跑的 provider（anthropic / openai）—— 其余 130+ 个
 /// provider 多是镜像网关（openrouter / bedrock / vercel / …），模型 ID 还带前缀，
 /// 入表只是噪声；裸 ID 入表后 `lookup()` 的 canonical / 前缀匹配逻辑原样工作。
 pub(crate) fn parse_models_dev_json(body: &str) -> Option<HashMap<String, ModelCosts>> {
@@ -644,7 +646,6 @@ pub fn short_name(model: &str) -> String {
 /// 从结构化模型 ID 推导展示名。只在能自信解析时返回 Some；不规则名返回 None 交给覆盖表。
 ///   claude-<family>-<major>[-<minor>...]  -> "Opus 4.8" / "Sonnet 4"
 ///   gpt-<ver>[-suffix...]                 -> "GPT-5.3 Codex" / "GPT-4o Mini"
-///   gemini-<ver>[-variant...][-preview]   -> "Gemini 2.5 Flash"（剥尾部 preview / 日期段）
 fn derive_name(canon: &str) -> Option<String> {
     if let Some(rest) = canon.strip_prefix("claude-") {
         let segs: Vec<&str> = rest.split('-').collect();
@@ -673,27 +674,6 @@ fn derive_name(canon: &str) -> Option<String> {
         }
         return Some(out);
     }
-    if let Some(rest) = canon.strip_prefix("gemini-") {
-        let mut segs: Vec<&str> = rest.split('-').collect();
-        while segs.len() > 1 {
-            let last = *segs.last().unwrap();
-            if last == "preview" || (!last.is_empty() && last.bytes().all(|b| b.is_ascii_digit())) {
-                segs.pop();
-            } else {
-                break;
-            }
-        }
-        let ver = segs.first()?;
-        if ver.is_empty() {
-            return None;
-        }
-        let mut out = format!("Gemini {ver}");
-        for s in &segs[1..] {
-            out.push(' ');
-            out.push_str(&title_case(s));
-        }
-        return Some(out);
-    }
     None
 }
 
@@ -706,7 +686,7 @@ fn title_case(s: &str) -> String {
 }
 
 /// 测试帮助：往内存表里塞一组常见模型价格，幂等。
-/// 给其它模块（aggregate / agents/codex / agents/gemini）的单元测试用 ——
+/// 给其它模块（aggregate / agents/codex）的单元测试用 ——
 /// 它们走 `cost_usd` 链路，没有这一步 hardcoded 表被砍后就全部塌成 $0。
 /// 用 `Once` 保证多次调用只灌一次；其它测试若用 `with_remote` 临时 override
 /// 同名 key 也安全（HashMap 直接覆盖）。
@@ -736,10 +716,6 @@ const TEST_DEFAULT_PRICES: &[(&str, ModelCosts)] = &[
     ("gpt-5", ModelCosts {
         input: 0.00000125, output: 0.00001,
         cache_write: 0.0000015625, cache_read: 0.000000125, context: 0,
-    }),
-    ("gemini-2.5-flash", ModelCosts {
-        input: 0.0000003, output: 0.0000025,
-        cache_write: 0.000000375, cache_read: 0.00000003, context: 0,
     }),
 ];
 
@@ -984,7 +960,7 @@ mod tests {
         //   - 缺 cache_write：套兜底公式 input × 1.25
         //   - 缺 cache_read：套兜底公式 input × 0.1
         //   - 没有 cost 的条目（image / 开源权重）跳过
-        //   - 非 anthropic/openai/google 的 provider（镜像网关）整组跳过
+        //   - 非 anthropic/openai 的 provider（镜像网关）整组跳过
         let body = r#"{
             "anthropic": { "models": {
                 "claude-magic-9": {
@@ -1001,9 +977,6 @@ mod tests {
                     "limit": { "context": 400000 }
                 },
                 "gpt-image-x": { "limit": { "context": 32000 } }
-            }},
-            "google": { "models": {
-                "gemini-cheap": { "cost": { "input": 0.3, "output": 2.5 } }
             }},
             "openrouter": { "models": {
                 "anthropic/claude-magic-9": { "cost": { "input": 99, "output": 99 } }
@@ -1026,7 +999,6 @@ mod tests {
         assert!((no_cr.cache_read - 4e-7).abs() < 1e-15, "input×0.1 fallback");
         assert_eq!(no_cr.context, 400_000);
 
-        assert!(table.contains_key("gemini-cheap"));
         assert!(!table.contains_key("gpt-image-x"), "无 cost entry 跳过");
         assert!(
             !table.contains_key("anthropic/claude-magic-9"),
@@ -1051,7 +1023,6 @@ mod tests {
         assert_eq!(short_name("claude-opus-4-7"), "Opus 4.7");
         assert_eq!(short_name("gpt-5.3-codex"), "GPT-5.3 Codex");
         assert_eq!(short_name("gpt-5-fast"), "GPT-5"); // aliased
-        assert_eq!(short_name("gemini-2.5-pro-preview-05-06"), "Gemini 2.5 Pro");
     }
 
     #[test]
@@ -1071,9 +1042,6 @@ mod tests {
         assert_eq!(short_name("gpt-5.1-codex-max"), "GPT-5.1 Codex Max");
         assert_eq!(short_name("gpt-4.1-mini"), "GPT-4.1 Mini");
         assert_eq!(short_name("gpt-4o"), "GPT-4o");
-        // Gemini：剥尾部 preview / 日期段
-        assert_eq!(short_name("gemini-2.5-flash-lite"), "Gemini 2.5 Flash Lite");
-        assert_eq!(short_name("gemini-3-pro-preview"), "Gemini 3 Pro");
     }
 
     #[test]

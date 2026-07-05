@@ -29,7 +29,7 @@ const emit = defineEmits<{
 }>()
 
 const agentLabel = (a: Agent) =>
-  a === 'codex' ? 'Codex' : a === 'gemini' ? 'Gemini' : 'Claude'
+  a === 'codex' ? 'Codex' : a === 'agy' ? 'agy' : 'Claude'
 const agentName = computed(() => agentLabel(props.agent))
 
 function prefKey(p: ProjectInfo): string {

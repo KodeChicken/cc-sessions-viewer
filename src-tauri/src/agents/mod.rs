@@ -1,7 +1,7 @@
 // 各 agent 的会话源抽象。
 //
-// 接入新 agent（如 gemini）的步骤：
-//   1. 新建 `agents/<name>.rs`，定义一个 unit struct（如 `GeminiSource`），
+// 接入新 agent 的步骤：
+//   1. 新建 `agents/<name>.rs`，定义一个 unit struct（如 `<Name>Source`），
 //      为它实现下面的 `SessionSource` trait（每个方法各自调用 agent 自己的解析逻辑）。
 //   2. 在文件末尾 `pub mod <name>;` 声明 module，并在 `source()` 里加一个 match 分支。
 //   3. 前端 `types.ts` 的 `Agent` 联合类型里加上 `"<name>"`，sidebar / 切换 UI 自然支持。
@@ -100,9 +100,9 @@ const SEARCH_MAX_HITS: usize = 200;
 /// 命中片段窗口（字符数）。`text` 字段的匹配返回的小段长度大致 = SNIPPET_WIN * 2。
 const SNIPPET_WIN: usize = 60;
 
+pub mod agy;
 pub mod claude;
 pub mod codex;
-pub mod gemini;
 
 /// 程序化聊天（GUI chat）里，agent 子进程 stdout 的一行被归一成的事件。
 /// 各 agent 的 [`SessionSource::parse_chat_line`] 把自家 stream-json / JSON 行翻成这套
@@ -142,7 +142,7 @@ pub enum ChatEvent {
 ///
 /// - `LongLivedStdin`（Claude）：起**一个长驻进程**，多轮用户消息持续写进 stdin
 ///   （`--input-format stream-json`）。
-/// - `OneShotResume`（Codex / Gemini）：**一轮一进程**，每条用户消息 spawn 一个
+/// - `OneShotResume`（Codex）：**一轮一进程**，每条用户消息 spawn 一个
 ///   `<cli> [resume <id>] "<prompt>"`，跑完即退出；靠 session/thread id resume 续上下文。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChatProcessModel {
@@ -225,7 +225,7 @@ pub trait SessionSource: Send + Sync {
     /// 审批策略（MVP 走 `acceptEdits`）。返回 `None` 表示该 agent 暂无可用的 headless
     /// chat 模式 —— 调用方据此禁用 GUI 入口 / 退回方案 A（TUI）。
     ///
-    /// 默认 `None`：尚未适配的 agent（codex / gemini）不必改动即可编译，Phase 3 再实现。
+    /// 默认 `None`：尚未适配的 agent（codex）不必改动即可编译，Phase 3 再实现。
     ///
     /// `model` / `effort` 为 `None` 时走 CLI 自身默认（不下发对应 flag）。长驻进程模型下
     /// 这两者在 start 时定型；切换需 restart-with-resume（前端据 `chat_process_model` 决策）。
@@ -254,7 +254,7 @@ pub trait SessionSource: Send + Sync {
     }
 
     /// 该 agent 的 GUI chat 进程模型。默认 `LongLivedStdin`（Claude）；one-shot 的 agent
-    /// （Codex / Gemini）覆写为 `OneShotResume`。`agent_chat.rs` 据此选驱动路径。
+    /// （Codex）覆写为 `OneShotResume`。`agent_chat.rs` 据此选驱动路径。
     fn chat_process_model(&self) -> ChatProcessModel {
         ChatProcessModel::LongLivedStdin
     }
@@ -329,7 +329,7 @@ pub trait SessionSource: Send + Sync {
     /// 每个 call 记录该次调用用了哪个模型、产生了多少 token、调用了哪些工具
     /// （含 Bash 命令首词 / MCP server 名）。
     ///
-    /// Agent 没记某些字段（如 Gemini 不写 usage、Codex 把 token 算在 session
+    /// Agent 没记某些字段（如 Codex 把 token 算在 session
     /// 级而非 call 级）时按 0 / 空列表处理，不要返回错误 —— 一个坏文件不要拖垮
     /// 整个全局统计。失败仅在文件完全无法打开时返回 Err，调用方会跳过这个文件。
     fn read_turns(&self, path: &str) -> Result<Vec<Turn>, String>;
@@ -760,9 +760,9 @@ fn match_snippet(hay: &str, q: &str) -> Option<String> {
 /// 按 agent 名拿到一个具体的会话源。Unknown agent 返回错误，调用方应直接透传给前端。
 pub fn source(agent: &str) -> Result<Box<dyn SessionSource>, String> {
     match agent {
+        "agy" => Ok(Box::new(agy::AgySource)),
         "claude" => Ok(Box::new(claude::ClaudeSource)),
         "codex" => Ok(Box::new(codex::CodexSource)),
-        "gemini" => Ok(Box::new(gemini::GeminiSource)),
         other => Err(format!("Unknown agent: {other}")),
     }
 }

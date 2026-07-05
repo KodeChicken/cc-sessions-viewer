@@ -10,6 +10,7 @@ import {
   IconClose,
   IconGithub,
   IconSearch,
+  IconInfo,
   agentIcons,
 } from '../components/icons'
 import appIcon from '../assets/app-icon.png'
@@ -28,7 +29,7 @@ const emit = defineEmits<{
 }>()
 
 const agentLabel = (a: Agent) =>
-  a === 'codex' ? 'Codex' : a === 'gemini' ? 'Gemini' : 'Claude'
+  a === 'codex' ? 'Codex' : a === 'agy' ? 'agy' : 'Claude'
 
 // 最近打开过的项目：拿 recents 里的 dirName 去当前 projects 取真身，
 // 过滤掉已删除 / 换 agent 后不存在的（getRecents 读 recents.value，computed 自动随它刷新）。
@@ -46,6 +47,22 @@ const modKey = isMac ? '⌘' : 'Ctrl'
 
 <template>
   <div class="welcome">
+    <!-- 滚动公告 -->
+    <div class="welcome-announcement">
+      <div class="announcement-icon">
+        <IconInfo />
+      </div>
+      <div class="announcement-viewport">
+        <div class="announcement-track">
+          <div class="announcement-content">
+            {{ t('welcome.announcement') }}
+          </div>
+          <div class="announcement-content">
+            {{ t('welcome.announcement') }}
+          </div>
+        </div>
+      </div>
+    </div>
     <!-- 仓库入口：固定在主页面右上角 -->
     <button
       class="welcome-github"

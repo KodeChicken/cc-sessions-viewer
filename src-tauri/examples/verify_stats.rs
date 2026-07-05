@@ -1,6 +1,6 @@
 // 跑全量 stats，模拟前端 start_agent_stats 路径，但不走 Tauri：
 //   cargo run --example verify_stats --release -- <agent> <range>
-// agent: claude | codex | gemini | all
+// agent: claude | codex | all
 // range: today | days7 | days30 | month | months6 | all (alias of months6 + warn)
 //
 // 输出一行 JSON：{ cost, calls, sessions, projects, in, out, cr, cw, models, projects_list }
@@ -56,10 +56,9 @@ fn main() {
     let agent_arg = std::env::args().nth(1).unwrap_or_else(|| "all".to_string());
     let range = std::env::args().nth(2).unwrap_or_else(|| "today".to_string());
     let agents_to_scan: Vec<&'static str> = match agent_arg.as_str() {
-        "all" => vec!["claude", "codex", "gemini"],
+        "all" => vec!["claude", "codex"],
         "claude" => vec!["claude"],
         "codex" => vec!["codex"],
-        "gemini" => vec!["gemini"],
         _ => panic!("unknown agent {agent_arg}"),
     };
     let (lo, hi) = parse_range(&range);

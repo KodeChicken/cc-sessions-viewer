@@ -4,20 +4,23 @@
 //
 //   1. 切换 scope / range / 刷新 / 进入页面：立即重启一次扫描；先看到 computing
 //      骨架 + 进度数字，然后随 partial 逐步把卡片填充进去。
-//   2. 没有 cost / by_model 这类纯数字的视觉差异时（譬如 Gemini scope），相关
+//   2. 没有 cost / by_model 这类纯数字的视觉差异时，相关
 //      卡片仍然渲染但内容为"无数据"。
 //   3. 图表用 AntV G2（每张图一个组件），自己监听 theme/data 变化重建。
 
-import { computed, onMounted, watch } from 'vue'
-import type { Agent, StatsRange, StatsScope } from '../types'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { Agent, StatsPresetRange, StatsRange, StatsScope } from '../types'
 import { t } from '../i18n'
 import { formatTime, formatTokens, shortName } from '../format'
 import {
   IconActivity,
   IconArrowLeft,
+  IconCalendarClock,
   IconChart,
   IconChat,
+  IconChevronRight,
   IconClose,
+  IconPointLeft,
   IconRefresh,
   IconWallet,
   IconZap,
@@ -55,7 +58,9 @@ const range = statsRange
 // Scope 选项跟随设置里的 agent 显隐：'all' 常驻，其余只列出启用的 agent。
 const SCOPES = computed<{ value: StatsScope; key: string }[]>(() => [
   { value: 'all', key: 'stats.scope.all' },
-  ...visibleAgents.value.map((a) => ({ value: a as StatsScope, key: `stats.scope.${a}` })),
+  ...visibleAgents.value
+    .filter((a) => a !== 'agy')
+    .map((a) => ({ value: a as StatsScope, key: `stats.scope.${a}` })),
 ])
 
 // 持久化的 scope 可能指向一个之后被隐藏的 agent —— 回退到 'all'。
@@ -78,19 +83,224 @@ watch(visibleAgents, (list) => {
 // 后端据此只聚合启用的 agent。非 'all' 的 scope 原样透传。
 function backendScope(): string {
   if (scope.value !== 'all') return scope.value
-  const vis = visibleAgents.value
-  return vis.length >= 3 ? 'all' : `all:${vis.join(',')}`
+  const vis = visibleAgents.value.filter((a) => a !== 'agy')
+  return vis.length >= 2 ? 'all' : `all:${vis.join(',')}`
 }
-const RANGES: { value: StatsRange; key: string }[] = [
+const RANGES: { value: StatsPresetRange | 'custom'; key: string }[] = [
   { value: 'today', key: 'stats.range.today' },
   { value: 'days7', key: 'stats.range.days7' },
   { value: 'days30', key: 'stats.range.days30' },
   { value: 'month', key: 'stats.range.month' },
+  { value: 'months3', key: 'stats.range.months3' },
   { value: 'months6', key: 'stats.range.months6' },
+  { value: 'custom', key: 'stats.range.custom' },
 ]
 
 const stream = useStatsStream()
 const { stats, stage, progress, error } = stream
+
+function formatDateInput(d: Date): string {
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function parseDateInput(s: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (!m) return null
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  return formatDateInput(d) === s ? d : null
+}
+
+function addCalendarMonths(d: Date, months: number): Date {
+  const out = new Date(d.getFullYear(), d.getMonth(), 1)
+  out.setMonth(out.getMonth() + months)
+  const lastDay = new Date(out.getFullYear(), out.getMonth() + 1, 0).getDate()
+  out.setDate(Math.min(d.getDate(), lastDay))
+  return out
+}
+
+function presetDateRange(value: StatsPresetRange): { start: string; end: string } {
+  const today = new Date()
+  const start = new Date(today)
+  if (value === 'today') {
+    return { start: formatDateInput(today), end: formatDateInput(today) }
+  }
+  if (value === 'days7') start.setDate(today.getDate() - 6)
+  else if (value === 'days30') start.setDate(today.getDate() - 29)
+  else if (value === 'month') start.setDate(1)
+  else if (value === 'months3') return { start: formatDateInput(addCalendarMonths(today, -3)), end: formatDateInput(today) }
+  else return { start: formatDateInput(addCalendarMonths(today, -6)), end: formatDateInput(today) }
+  return { start: formatDateInput(start), end: formatDateInput(today) }
+}
+
+function customParts(v: StatsRange | string): { start: string; end: string } | null {
+  const m = /^custom:(\d{4}-\d{2}-\d{2}):(\d{4}-\d{2}-\d{2})$/.exec(v)
+  return m ? { start: m[1], end: m[2] } : null
+}
+
+const initialCustom = customParts(range.value) ?? presetDateRange('months3')
+const customStart = ref(initialCustom.start)
+const customEnd = ref(initialCustom.end)
+const datePickerOpen = ref(false)
+const rangePickerEl = ref<HTMLElement | null>(null)
+const activeRangeEdge = ref<'start' | 'end'>('start')
+const calendarBaseMonth = ref(monthStart(parseDateInput(customEnd.value) ?? new Date()))
+const isCustomRange = computed(() => range.value.startsWith('custom:'))
+const todayInput = computed(() => formatDateInput(new Date()))
+const rangeLabel = computed(() => {
+  const custom = customParts(range.value)
+  return custom ? `${custom.start} - ${custom.end}` : t(`stats.range.${range.value}`)
+})
+
+function monthStart(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), 1)
+}
+
+function dateOnly(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate())
+}
+
+function compareDates(a: Date, b: Date): number {
+  return dateOnly(a).getTime() - dateOnly(b).getTime()
+}
+
+function setCalendarAroundEnd() {
+  const end = parseDateInput(customEnd.value) ?? new Date()
+  calendarBaseMonth.value = monthStart(addCalendarMonths(end, -1))
+}
+
+function syncCustomInputsFromRange() {
+  const custom = customParts(range.value)
+  if (!custom) return
+  customStart.value = custom.start
+  customEnd.value = custom.end
+  setCalendarAroundEnd()
+}
+
+function normalizeCustomRange(): { start: string; end: string } {
+  const today = new Date()
+  let end = parseDateInput(customEnd.value) ?? today
+  if (end > today) end = today
+  let start = parseDateInput(customStart.value) ?? addCalendarMonths(end, -6)
+  if (start > end) start = new Date(end)
+  const minStart = addCalendarMonths(end, -12)
+  if (start < minStart) start = minStart
+  return { start: formatDateInput(start), end: formatDateInput(end) }
+}
+
+function applyCustomRange() {
+  const next = normalizeCustomRange()
+  customStart.value = next.start
+  customEnd.value = next.end
+  range.value = `custom:${next.start}:${next.end}`
+}
+
+function selectRange(value: StatsPresetRange | 'custom') {
+  if (value === 'custom') {
+    if (isCustomRange.value) {
+      datePickerOpen.value = !datePickerOpen.value
+      if (datePickerOpen.value) setCalendarAroundEnd()
+      return
+    }
+    if (!isCustomRange.value) {
+      const preset = presetDateRange(range.value as StatsPresetRange)
+      customStart.value = preset.start
+      customEnd.value = preset.end
+    }
+    activeRangeEdge.value = 'start'
+    applyCustomRange()
+    setCalendarAroundEnd()
+    datePickerOpen.value = true
+  } else {
+    datePickerOpen.value = false
+    range.value = value
+  }
+}
+
+if (customParts(range.value)) {
+  applyCustomRange()
+}
+
+function onDocumentPointerDown(e: PointerEvent) {
+  const el = rangePickerEl.value
+  if (!datePickerOpen.value || !el) return
+  if (e.target instanceof Node && el.contains(e.target)) return
+  datePickerOpen.value = false
+}
+
+function monthTitle(month: Date): string {
+  return `${t(`stats.month.${month.getMonth() + 1}`)} ${month.getFullYear()}`
+}
+
+function shiftCalendar(months: number) {
+  calendarBaseMonth.value = monthStart(addCalendarMonths(calendarBaseMonth.value, months))
+}
+
+function dateDisabled(key: string): boolean {
+  const d = parseDateInput(key)
+  if (!d) return true
+  const today = parseDateInput(todayInput.value) ?? dateOnly(new Date())
+  if (compareDates(d, today) > 0) return true
+  if (activeRangeEdge.value === 'start') {
+    const end = parseDateInput(customEnd.value) ?? today
+    return compareDates(d, end) > 0 || compareDates(d, addCalendarMonths(end, -12)) < 0
+  }
+  const start = parseDateInput(customStart.value) ?? addCalendarMonths(today, -3)
+  return compareDates(d, start) < 0 || compareDates(d, addCalendarMonths(start, 12)) > 0
+}
+
+function selectCalendarDate(key: string) {
+  if (dateDisabled(key)) return
+  if (activeRangeEdge.value === 'start') {
+    customStart.value = key
+    activeRangeEdge.value = 'end'
+  } else {
+    customEnd.value = key
+  }
+  applyCustomRange()
+}
+
+const calendarMonths = computed(() => [
+  calendarBaseMonth.value,
+  addCalendarMonths(calendarBaseMonth.value, 1),
+])
+
+const weekDays = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
+
+interface CalendarCell {
+  key: string
+  day: number
+  disabled: boolean
+  selectedStart: boolean
+  selectedEnd: boolean
+  inRange: boolean
+  today: boolean
+}
+
+function monthCells(month: Date): (CalendarCell | null)[] {
+  const first = monthStart(month)
+  const days = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate()
+  const cells: (CalendarCell | null)[] = Array.from({ length: first.getDay() }, () => null)
+  const start = customStart.value
+  const end = customEnd.value
+  const today = todayInput.value
+  for (let day = 1; day <= days; day += 1) {
+    const key = formatDateInput(new Date(first.getFullYear(), first.getMonth(), day))
+    cells.push({
+      key,
+      day,
+      disabled: dateDisabled(key),
+      selectedStart: key === start,
+      selectedEnd: key === end,
+      inRange: key > start && key < end,
+      today: key === today,
+    })
+  }
+  while (cells.length % 7 !== 0) cells.push(null)
+  return cells
+}
 
 // 单会话模式：scope 是固定的 session: 串；range 被后端忽略，但本地保留默认值便于 UI。
 const isSession = computed(() => !!props.session)
@@ -112,6 +322,11 @@ onMounted(() => {
   refresh()
   // 价格表（models.dev 上游）—— 启动期可能还在拉。先读一次状态，没就绪就开 poll。
   refreshPricingStatus().then(() => watchPricingUntilReady())
+  window.addEventListener('pointerdown', onDocumentPointerDown, true)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('pointerdown', onDocumentPointerDown, true)
 })
 
 const pricingReady = computed(() => pricingStatus.value.loaded)
@@ -135,7 +350,10 @@ async function retryPricing() {
 watch(scope, () => {
   if (!isSession.value) refresh()
 })
-watch(range, refresh)
+watch(range, () => {
+  syncCustomInputsFromRange()
+  refresh()
+})
 // 切换 session 目标也要重启流：
 //   - session A → session B：单会话间跳
 //   - session → null：从单会话「返回」回到全局视图（必须 refresh，否则
@@ -227,7 +445,7 @@ function emptyHint(arr: { length: number } | undefined): boolean {
 }
 
 function asAgent(name: string): Agent {
-  return (name === 'codex' || name === 'gemini' ? name : 'claude') as Agent
+  return (name === 'codex' ? name : 'claude') as Agent
 }
 </script>
 
@@ -271,16 +489,85 @@ function asAgent(name: string): Agent {
           </div>
           <div class="stats-pill-group">
             <span class="stats-pill-label">{{ t('stats.range.label') }}:</span>
-            <div class="stats-pills">
-              <button
-                v-for="r in RANGES"
-                :key="r.value"
-                class="stats-pill"
-                :class="{ active: range === r.value }"
-                @click="range = r.value"
-              >
-                {{ t(r.key) }}
-              </button>
+            <div ref="rangePickerEl" class="stats-range-picker">
+              <div class="stats-pills">
+                <button
+                  v-for="r in RANGES"
+                  :key="r.value"
+                  class="stats-pill"
+                  :class="[
+                    { active: r.value === 'custom' ? isCustomRange : range === r.value },
+                    { 'stats-pill-icon': r.value === 'custom' },
+                  ]"
+                  :aria-label="r.value === 'custom' ? t(r.key) : undefined"
+                  v-tooltip="r.value === 'custom' ? t(r.key) : undefined"
+                  @click="selectRange(r.value)"
+                >
+                  <IconCalendarClock v-if="r.value === 'custom'" />
+                  <span v-else>{{ t(r.key) }}</span>
+                </button>
+              </div>
+              <div v-if="datePickerOpen" class="stats-date-range">
+                <div class="stats-date-fields">
+                  <button
+                    class="stats-date-field"
+                    :class="{ active: activeRangeEdge === 'start' }"
+                    @click="activeRangeEdge = 'start'"
+                  >
+                    <span>{{ t('stats.range.start') }}</span>
+                    <strong>{{ customStart }}</strong>
+                  </button>
+                  <button
+                    class="stats-date-field"
+                    :class="{ active: activeRangeEdge === 'end' }"
+                    @click="activeRangeEdge = 'end'"
+                  >
+                    <span>{{ t('stats.range.end') }}</span>
+                    <strong>{{ customEnd }}</strong>
+                  </button>
+                </div>
+                <div class="stats-cal-head">
+                  <button class="stats-cal-nav" @click="shiftCalendar(-1)">
+                    <IconPointLeft />
+                  </button>
+                  <div class="stats-cal-limit">{{ rangeLabel }}</div>
+                  <button class="stats-cal-nav" @click="shiftCalendar(1)">
+                    <IconChevronRight />
+                  </button>
+                </div>
+                <div class="stats-cal-months">
+                  <div
+                    v-for="month in calendarMonths"
+                    :key="month.toISOString()"
+                    class="stats-cal-month"
+                  >
+                    <div class="stats-cal-title">{{ monthTitle(month) }}</div>
+                    <div class="stats-cal-weekdays">
+                      <span v-for="wd in weekDays" :key="wd">{{ wd }}</span>
+                    </div>
+                    <div class="stats-cal-grid">
+                      <template v-for="(cell, idx) in monthCells(month)" :key="cell?.key || `blank-${idx}`">
+                        <span v-if="!cell" class="stats-cal-empty" />
+                        <button
+                          v-else
+                          class="stats-cal-day"
+                          :class="{
+                            disabled: cell.disabled,
+                            range: cell.inRange,
+                            start: cell.selectedStart,
+                            end: cell.selectedEnd,
+                            today: cell.today,
+                          }"
+                          :disabled="cell.disabled"
+                          @click="selectCalendarDate(cell.key)"
+                        >
+                          {{ cell.day }}
+                        </button>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </template>
@@ -309,7 +596,7 @@ function asAgent(name: string): Agent {
         </template>
         <template v-else>
           <span class="stats-hero-scope">{{ t(`stats.scope.${scope}`) }}</span>
-          <span class="stats-hero-range">· {{ t(`stats.range.${range}`) }}</span>
+          <span class="stats-hero-range">· {{ rangeLabel }}</span>
         </template>
         <span v-if="isComputing" class="stats-hero-status">
           {{ progress.total

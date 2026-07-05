@@ -82,14 +82,15 @@ function inline(text: string): string {
   s = escapeHtml(s)
   s = s.replace(URL_RE, (url) => `<a href="${url}" target="_blank" rel="noopener">${url}</a>`)
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+  s = s.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>')
+  s = s.replace(/^#####\s+(.+)$/gm, '<h6>$1</h6>')
+  s = s.replace(/^####\s+(.+)$/gm, '<h5>$1</h5>')
   s = s.replace(/^###\s+(.+)$/gm, '<h4>$1</h4>')
   s = s.replace(/^##\s+(.+)$/gm, '<h3>$1</h3>')
   s = s.replace(/^#\s+(.+)$/gm, '<h3>$1</h3>')
   s = s.replace(/\n/g, '<br>')
-  // 标题已是块级元素（自带上下 margin）。紧贴它的 <br> 会再叠空行 → 标题前后空一大段。
-  // 去掉与标题相邻的整段 <br>（不止一个），让标题间距完全交给 CSS margin 控制。
-  s = s.replace(/(?:<br>\s*)+(<h[34]>)/g, '$1')
-  s = s.replace(/(<\/h[34]>)(?:\s*<br>)+/g, '$1')
+  s = s.replace(/(?:<br>\s*)+(<h[3-6]>)/g, '$1')
+  s = s.replace(/(<\/h[3-6]>)(?:\s*<br>)+/g, '$1')
   // Restore code spans (escaped, so contents stay literal) BEFORE links, so a link
   // placeholder captured inside a code span still gets expanded by the link pass.
   if (codes.length) {

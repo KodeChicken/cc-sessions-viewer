@@ -22,7 +22,6 @@ describe('terminal input status inference', () => {
       expect(isSlashCommandInput(input)).toBe(true)
       expect(shouldTerminalInputStartTurn('codex', input)).toBe(false)
       expect(shouldTerminalInputStartTurn('claude', input)).toBe(false)
-      expect(shouldTerminalInputStartTurn('gemini', input)).toBe(false)
     }
   })
 
@@ -34,7 +33,6 @@ describe('terminal input status inference', () => {
   it('keeps normal prompts eligible to start a turn', () => {
     expect(shouldTerminalInputStartTurn('codex', 'fix this bug')).toBe(true)
     expect(shouldTerminalInputStartTurn('claude', 'fix this bug')).toBe(true)
-    expect(shouldTerminalInputStartTurn('gemini', 'fix this bug')).toBe(true)
   })
 
   it('ignores empty terminal input', () => {

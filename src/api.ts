@@ -68,7 +68,7 @@ export const listSessions = (
 export const readSession = (agent: Agent, path: string) =>
   invoke<Msg[]>('read_session', { agent, path })
 
-/** 单个会话的 token 用量。Gemini 当前返回零值占位（agent JSONL 还没稳定写）。
+/** 单个会话的 token 用量。
  *  后端按 (path, mtime) 缓存，重复调用不会重复扫描文件。 */
 export const sessionUsage = (agent: Agent, path: string) =>
   invoke<UsageSummary>('session_usage', { agent, path })
@@ -84,8 +84,10 @@ export const agentStats = (agent: Agent) =>
 
 /** 流式启动一次统计扫描；函数立刻返回。Worker 通过 `stats://progress` / `stats://done` /
  *  `stats://error` 事件 emit 结果，前端用 `useStatsStream` 监听。
- *  `scope`：'all' | 'claude' | 'codex' | 'gemini' | `session:<agent>:<absolutePath>`。
- *  `range`：'today' | 'days7' | 'days30' | 'month' | 'months6'（session-scope 时被忽略）。 */
+ *  `scope`：'all' | 'claude' | 'codex' | `session:<agent>:<absolutePath>`。
+ *  `range`：'today' | 'days7' | 'days30' | 'month' | 'months3' | 'months6' |
+ *  `custom:YYYY-MM-DD:YYYY-MM-DD`
+ *  （session-scope 时被忽略）。 */
 export const startAgentStats = (
   scope: StatsScope | string,
   range: StatsRange,
@@ -181,6 +183,9 @@ export const watchSession = (agent: Agent, path: string) =>
 
 /** 关闭 Live tail。可重入 —— 没有活跃 watcher 也不会抛错。 */
 export const unwatchSession = () => invoke<void>('unwatch_session')
+
+export const checkWatchedSession = () => invoke<void>('check_watched_session')
+export const checkSessionTurns = () => invoke<void>('check_session_turns')
 
 export const terminalTurnSignal = (
   agent: Agent,
@@ -340,6 +345,9 @@ export const agentChatSend = (
 /** 读取本地图片文件为 base64（系统选择器只给路径，这里取字节做缩略图 + 视觉块）。 */
 export const readFileBase64 = (path: string) =>
   invoke<ChatImageInput>('read_file_base64', { path })
+
+export const saveClipboardImage = (data: string, mediaType: string) =>
+  invoke<string>('save_clipboard_image', { data, mediaType })
 
 /** 判断本地路径是否为目录（拖拽到输入框的附件可能是文件或文件夹，据此选图标 + 提示）。 */
 export const pathIsDir = (path: string) => invoke<boolean>('path_is_dir', { path })

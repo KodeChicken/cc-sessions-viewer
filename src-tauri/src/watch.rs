@@ -93,6 +93,16 @@ fn file_fingerprint(path: &str) -> Option<(std::time::SystemTime, u64)> {
     Some((md.modified().ok()?, md.len()))
 }
 
+fn preferred_transcript_str(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    let full = p.with_file_name("transcript_full.jsonl");
+    if full.exists() {
+        full.to_string_lossy().to_string()
+    } else {
+        path.to_string()
+    }
+}
+
 fn watch_root_for(path: &Path) -> Result<PathBuf, String> {
     path.parent()
         .map(Path::to_path_buf)
@@ -127,6 +137,12 @@ pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), 
     }
     let watch_root = watch_root_for(&p)?;
 
+    let target_path = if agent == "agy" {
+        preferred_transcript_str(&path)
+    } else {
+        path.clone()
+    };
+
     // 先把 baseline 写好，避免 watcher 起来后回调先到 process_change 时拿不到 count。
     let src = agents::source(&agent)?;
     let initial = src.read_session(&path).unwrap_or_default();
@@ -134,8 +150,8 @@ pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), 
         let mut m = last_count_map().lock().map_err(|e| e.to_string())?;
         m.insert(path.clone(), initial.len());
     }
-    // 记下初始指纹,后续无关目录事件才能被廉价短路掉（否则第一波事件仍会全量重读一次）。
-    if let Some(fp) = file_fingerprint(&path) {
+    // 记下初始指纹（使用对应目标真实落盘文件的指纹）,后续无关目录事件才能被廉价短路掉
+    if let Some(fp) = file_fingerprint(&target_path) {
         if let Ok(mut m) = last_stat_map().lock() {
             m.insert(path.clone(), fp);
         }
@@ -267,9 +283,15 @@ fn process_change(app: &AppHandle, agent: &str, path: &str) {
         return;
     }
 
+    let target_path = if agent == "agy" {
+        preferred_transcript_str(path)
+    } else {
+        path.to_string()
+    };
+
     // 廉价短路：目标文件指纹（mtime+size）与上次处理时相同 → 这次事件是同目录里**别的**文件在写,
     // 直接返回,别对大文件做全量 read_session。真有追加会改指纹,走到下面重读。
-    let cur_fp = file_fingerprint(path);
+    let cur_fp = file_fingerprint(&target_path);
     if let Some(fp) = cur_fp {
         let unchanged = last_stat_map()
             .lock()
@@ -336,6 +358,17 @@ fn process_change(app: &AppHandle, agent: &str, path: &str) {
         };
         m.insert(path.to_string(), msgs.len());
     }
+}
+
+pub fn check_watched_session(app: AppHandle) -> Result<(), String> {
+    let active_info = {
+        let slot = state().lock().map_err(|e| e.to_string())?;
+        slot.as_ref().map(|active| (active.agent.clone(), active.path.to_string_lossy().to_string()))
+    };
+    if let Some((agent, path)) = active_info {
+        process_change(&app, &agent, &path);
+    }
+    Ok(())
 }
 
 /// 测试用：当前是否有活跃 watch。

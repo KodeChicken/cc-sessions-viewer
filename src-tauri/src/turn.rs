@@ -59,7 +59,7 @@ fn hook_script_path() -> Result<PathBuf, String> {
 const SESSION_TURN_POLL_MS: u64 = 1500;
 
 pub fn emit_turn_signal(app: &AppHandle, payload: TerminalTurnPayload) -> Result<(), String> {
-    if payload.agent != "claude" && payload.agent != "codex" && payload.agent != "gemini" {
+    if payload.agent != "claude" && payload.agent != "codex" && payload.agent != "agy" {
         return Err("Unknown agent".to_string());
     }
     if payload.path.trim().is_empty() {
@@ -119,7 +119,7 @@ pub fn watch_session_turn(
     path: String,
     catch_up: bool,
 ) -> Result<(), String> {
-    if agent != "claude" && agent != "codex" && agent != "gemini" {
+    if agent != "claude" && agent != "codex" && agent != "agy" {
         return Ok(());
     }
     let p = PathBuf::from(&path);
@@ -129,7 +129,12 @@ pub fn watch_session_turn(
     let offset = if catch_up {
         0
     } else {
-        fs::metadata(&p).map(|m| m.len()).unwrap_or(0)
+        let target_fp = if agent == "agy" {
+            preferred_transcript(&p)
+        } else {
+            p.clone()
+        };
+        fs::metadata(&target_fp).map(|m| m.len()).unwrap_or(0)
     };
     let watch_root = p
         .parent()
@@ -179,6 +184,17 @@ pub fn unwatch_session_turn(path: String) -> Result<(), String> {
     Ok(())
 }
 
+pub fn check_session_turns(app: AppHandle) -> Result<(), String> {
+    let watches_info = {
+        let guard = session_turn_watches().lock().map_err(|e| e.to_string())?;
+        guard.values().map(|w| (w.agent.clone(), w.path.to_string_lossy().to_string())).collect::<Vec<_>>()
+    };
+    for (agent, path) in watches_info {
+        process_session_turn_file(&app, &agent, &path, Path::new(&path));
+    }
+    Ok(())
+}
+
 fn start_session_turn_poll(app: AppHandle, agent: String, path: String, fp: PathBuf) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(SESSION_TURN_POLL_MS));
@@ -200,7 +216,12 @@ fn start_session_turn_poll(app: AppHandle, agent: String, path: String, fp: Path
 }
 
 fn process_session_turn_file(app: &AppHandle, agent: &str, path: &str, fp: &Path) {
-    let mut file = match File::open(fp) {
+    let target_fp = if agent == "agy" {
+        preferred_transcript(fp)
+    } else {
+        fp.to_path_buf()
+    };
+    let mut file = match File::open(&target_fp) {
         Ok(f) => f,
         Err(_) => return,
     };
@@ -275,7 +296,7 @@ fn infer_turn_state(agent: &str, line: &str) -> Option<&'static str> {
     match agent {
         "claude" => infer_claude_turn_state(&value),
         "codex" => infer_codex_turn_state(&value),
-        "gemini" => infer_gemini_turn_state(&value),
+        "agy" => crate::agents::agy::classify_turn_state(&value),
         _ => None,
     }
 }
@@ -351,10 +372,6 @@ fn claude_queued_command_has_content(value: &Value) -> bool {
 
 fn infer_codex_turn_state(value: &Value) -> Option<&'static str> {
     crate::agents::codex::classify_turn_state(value)
-}
-
-fn infer_gemini_turn_state(value: &Value) -> Option<&'static str> {
-    crate::agents::gemini::classify_turn_state(value)
 }
 
 fn process_signal_file(app: &AppHandle, path: &Path) {
@@ -586,13 +603,21 @@ process.stdin.on('end', () => {
 });
 "#;
 
+fn preferred_transcript(p: &Path) -> PathBuf {
+    let full = p.with_file_name("transcript_full.jsonl");
+    if full.exists() {
+        full
+    } else {
+        p.to_path_buf()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
     use crate::agents::codex::classify_turn_state as codex_classify;
-    use crate::agents::gemini::classify_turn_state as gemini_classify;
 
     #[test]
     fn claude_infers_turn_lifecycle_only_from_real_user_input() {
@@ -680,47 +705,6 @@ mod tests {
             codex_classify(&json!({"type":"event_msg","payload":{"type":"token_count"}})),
             None
         );
-    }
-
-    #[test]
-    fn gemini_infers_turn_lifecycle_from_user_and_response_records() {
-        assert_eq!(
-            gemini_classify(&json!({"type":"user","content":"hi"})),
-            Some("started")
-        );
-        assert_eq!(
-            gemini_classify(&json!({"type":"user","content":[{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]})),
-            Some("started")
-        );
-        assert_eq!(
-            gemini_classify(&json!({"type":"user","content":""})),
-            None
-        );
-        assert_eq!(
-            gemini_classify(&json!({"type":"user","content":"   "})),
-            None
-        );
-        assert_eq!(
-            gemini_classify(&json!({"type":"user","content":[]})),
-            None
-        );
-        assert_eq!(
-            gemini_classify(&json!({"type":"gemini","content":"ok"})),
-            Some("completed")
-        );
-        assert_eq!(
-            gemini_classify(&json!({"type":"gemini","tokens":{"output":1}})),
-            Some("completed")
-        );
-        assert_eq!(
-            gemini_classify(&json!({"type":"gemini","tokens":{"thoughts":1}})),
-            Some("completed")
-        );
-        assert_eq!(
-            gemini_classify(&json!({"type":"gemini","toolCalls":[] })),
-            None
-        );
-        assert_eq!(gemini_classify(&json!({"type":"error"})), Some("failed"));
     }
 
     #[test]

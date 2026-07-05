@@ -895,7 +895,7 @@ async function openNativeStripContextMenu(ev: MouseEvent): Promise<boolean> {
           text: t('list.action.newSessionTui'),
           action: () => emit('newSession'),
         },
-        // New chat (GUI) 目前只有 claude 支持；codex / gemini 先不放这一项。
+        // New chat (GUI) 目前只有 claude 支持；codex 先不放这一项。
         ...(props.agent === 'claude'
           ? [
               {

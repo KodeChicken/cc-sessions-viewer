@@ -126,7 +126,7 @@ impl Aggregator {
 
         for turn in feed.turns {
             // 终判：turn 是否在窗口内。turn.timestamp_ms == 0 时退回 session mtime
-            // —— 老 JSONL / Gemini 早期格式可能没 timestamp，按 session 最后活跃日算。
+            // —— 老 JSONL 可能没 timestamp，按 session 最后活跃日算。
             let ts = if turn.timestamp_ms > 0 {
                 turn.timestamp_ms as u64
             } else {

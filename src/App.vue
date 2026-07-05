@@ -323,6 +323,9 @@ const chatMsgs = computed<Msg[]>(() => {
 // 存 sessionPath（跨重启稳定）而非 uiId（重启后变）。
 const activeTuiByProject = new Map<string, { uiId?: number; sessionPath: string; isShell?: boolean }>()
 const activeViewByProject = new Map<string, { viewUiId: number | null; wasTui: boolean }>()
+// 每个 agent 上次停留的项目 —— 左侧切 agent 再切回来时直接恢复到该项目（含其活跃 tab），
+// 而不是回到欢迎页要求再点一次。undefined / null 表示上次停在欢迎页。
+const lastDirByAgent = new Map<Agent, string | null>()
 const viewKey = (a: string, dir: string) => a + ' ' + dir
 function persistTuiMap() {
   const out: SavedActiveTui[] = []
@@ -481,7 +484,7 @@ const activeProject = computed(() =>
   projects.value.find((p) => p.dirName === activeDir.value),
 )
 const activeAgentLabel = computed(() =>
-  agent.value === 'codex' ? 'Codex' : agent.value === 'gemini' ? 'Gemini' : 'Claude',
+  agent.value === 'codex' ? 'Codex' : agent.value === 'agy' ? 'agy' : 'Claude',
 )
 const topbarContextTitle = computed(() => {
   if (showStats.value) return t('sidebar.stats')
@@ -549,9 +552,9 @@ interface CtxMenu {
 const ctxMenu = ref<CtxMenu | null>(null)
 function openCtxMenu(e: MouseEvent, p: ProjectInfo) {
   e.preventDefault()
-  // 菜单大约 168×180，靠近视口右/下边时收回来一点，避免被截掉
+  // 菜单大约 176×220，靠近视口右/下边时收回来一点，避免被截掉
   const W = 176
-  const H = 180
+  const H = 220
   const x = Math.min(e.clientX, window.innerWidth - W - 8)
   const y = Math.min(e.clientY, window.innerHeight - H - 8)
   ctxMenu.value = { x, y, project: p }
@@ -567,6 +570,12 @@ function ctxToggleState(state: ProjState) {
 function ctxRefresh() {
   closeCtxMenu()
   refreshAll()
+}
+function ctxOpenProjectFolder() {
+  const p = ctxMenu.value?.project
+  closeCtxMenu()
+  if (!p) return
+  api.revealInFinder(p.displayPath).catch((e) => notify(`${e}`, true))
 }
 function ctxDeleteProject() {
   const p = ctxMenu.value?.project
@@ -1034,8 +1043,35 @@ watch(visibleAgents, (list) => {
   if (!list.includes(agent.value)) switchAgent(list[0])
 })
 
+// 记住「当前 agent + 当前项目」里活跃的 view tab / TUI tab，供切项目、切 agent
+// 之后原样恢复。activeDir 为空（欢迎页）时无可记，直接返回。
+function rememberActiveNav() {
+  if (!activeDir.value) return
+  const k = viewKey(agent.value, activeDir.value)
+  activeViewByProject.set(k, {
+    viewUiId: activeViewTabId.value,
+    wasTui: activeUiId.value !== null,
+  })
+  const curTab = activeUiId.value !== null
+    ? tuiTabs.value.find((t) => t.uiId === activeUiId.value)
+    : undefined
+  if (curTab) {
+    activeTuiByProject.set(k, {
+      uiId: curTab.uiId,
+      sessionPath: curTab.sessionPath,
+      ...(curTab.isShell ? { isShell: true } : {}),
+    })
+  } else {
+    activeTuiByProject.delete(k)
+  }
+  persistTuiMap()
+}
+
 function switchAgent(a: Agent) {
   if (agent.value === a) return
+  // 离开当前 agent 前，记下它停在哪个项目 + 该项目活跃的 tab，切回来好原样恢复。
+  rememberActiveNav()
+  lastDirByAgent.set(agent.value, activeDir.value)
   agent.value = a
   activeDir.value = null
   sessions.value = []
@@ -1048,7 +1084,20 @@ function switchAgent(a: Agent) {
   setActiveTui(null)
   if (sideChat.value) closeAllSideChats()
   // showStats 不重置 —— 统计是 agent-scoped，切 agent 后 StatsView 自己 refetch。
-  loadProjects()
+  // 乐观恢复目标 agent 上次停留的项目（含其活跃 tab）：立刻 selectProject 定位过去，
+  // 不等 loadProjects 回来 —— codex 的项目扫描慢，先闪一下欢迎页很明显。selectProject
+  // 拉会话走 listSessions，本就不依赖项目列表；loadProjects 并行跑，回来后仅在记的项目
+  // 确实已不存在时才回落欢迎页。
+  const lastDir = lastDirByAgent.get(a)
+  if (lastDir) selectProject(lastDir)
+  loadProjects().then(() => {
+    if (agent.value !== a) return
+    if (activeDir.value && !projects.value.some((p) => p.dirName === activeDir.value)) {
+      activeDir.value = null
+      sessions.value = []
+      sessionTotal.value = 0
+    }
+  })
 }
 
 async function selectProject(dir: string) {
@@ -1057,23 +1106,7 @@ async function selectProject(dir: string) {
     : undefined
   // 记住当前项目活跃的 view tab 和 TUI tab
   if (activeDir.value && activeDir.value !== dir) {
-    activeViewByProject.set(viewKey(agent.value, activeDir.value), {
-      viewUiId: activeViewTabId.value,
-      wasTui: activeUiId.value !== null,
-    })
-    const curTab = activeUiId.value !== null
-      ? tuiTabs.value.find((t) => t.uiId === activeUiId.value)
-      : undefined
-    if (curTab) {
-      activeTuiByProject.set(viewKey(agent.value, activeDir.value), {
-        uiId: curTab.uiId,
-        sessionPath: curTab.sessionPath,
-        ...(curTab.isShell ? { isShell: true } : {}),
-      })
-    } else {
-      activeTuiByProject.delete(viewKey(agent.value, activeDir.value))
-    }
-    persistTuiMap()
+    rememberActiveNav()
   }
   setActiveTui(null)
   if (sideChat.value) closeAllSideChats()
@@ -1314,12 +1347,12 @@ async function openChat(s: SessionMeta) {
     if (existing.type === 'chat') {
       existing.type = 'session'
       existing.session = s
-      existing.loadingMsgs = true
-      api.readSession(agent.value, s.path).then(msgs => {
-        existing.msgs = msgs
-        existing.loadingMsgs = false
-      }).catch(() => { existing.loadingMsgs = false })
     }
+    existing.loadingMsgs = true
+    api.readSession(agent.value, s.path).then(msgs => {
+      existing.msgs = msgs
+      existing.loadingMsgs = false
+    }).catch(() => { existing.loadingMsgs = false })
     setActiveViewTab(existing.uiId)
     return
   }
@@ -2452,6 +2485,10 @@ function deleteFromLiveChat() {
 
 /** Resume 一个会话 —— 根据设置决定走窗口内 TUI 还是外部终端。 */
 async function resumeHere(s: SessionMeta) {
+  if (s.cwd?.startsWith('ide://')) {
+    notify(t('toast.resumeIdeSession'))
+    return
+  }
   const cwd = s.cwd || activeProject.value?.displayPath || ''
   if (!cwd) {
     notify(t('toast.resumeNoCwd'), true)
@@ -2550,7 +2587,7 @@ async function newShellSession() {
 }
 
 // 双击 tab 条空白处 / ⌘N / ⌘T 的「默认新建」手势 —— 按设置分流到 session/terminal/chat。
-// chat 只有 claude 支持；codex / gemini 选了 chat 时先提示，不做任何打开。
+// chat 只有 claude 支持；codex 选了 chat 时先提示，不做任何打开。
 function newDefaultAction() {
   if (quickOpenTarget.value === 'terminal') {
     newShellSession()
@@ -2736,9 +2773,26 @@ function onClearTabs() {
 
 // ---------- 窗口聚焦 / 失焦：与 Codex 一致的弱化态 ----------
 const windowFocused = ref(document.hasFocus())
-function onFocus() {
+async function onFocus() {
   windowFocused.value = true
   clearPendingLiveNotification()
+  const activeTab = viewTabs.value.find(t => t.uiId === activeViewTabId.value)
+  if (activeTab && activeTab.type === 'session' && activeTab.session?.path) {
+    try {
+      const oldLen = activeTab.msgs.length
+      const newMsgs = await api.readSession(activeTab.agent, activeTab.session.path)
+      activeTab.msgs = newMsgs
+      await api.watchSession(activeTab.agent, activeTab.session.path)
+      if (newMsgs.length > oldLen) {
+        activeTab.liveTailing = true
+        window.clearTimeout(activeTab.liveFadeTimer)
+        activeTab.liveFadeTimer = window.setTimeout(() => {
+          activeTab.liveTailing = false
+        }, LIVE_STALE_MS)
+      }
+    } catch {}
+  }
+  api.checkSessionTurns().catch(() => {})
 }
 function onBlur() {
   windowFocused.value = false
@@ -3500,6 +3554,7 @@ provide<PaneActions>(PaneActionsKey, {
       :project="ctxMenu.project"
       :proj-state="projStateOf(ctxMenu.project)"
       @toggle-state="ctxToggleState"
+      @open-folder="ctxOpenProjectFolder"
       @refresh="ctxRefresh"
       @delete="ctxDeleteProject"
       @remove-bookmark="ctxRemoveBookmark"

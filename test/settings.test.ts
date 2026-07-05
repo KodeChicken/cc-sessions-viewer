@@ -159,26 +159,31 @@ describe('stats scope / range persistence', () => {
     return import('../src/settings')
   }
 
-  it('defaults to all agents + last 6 months when no preference is stored', async () => {
+  it('defaults to all agents + last 3 months when no preference is stored', async () => {
     const mod = await freshStats({})
     expect(mod.statsScope.value).toBe('all')
-    expect(mod.statsRange.value).toBe('months6')
+    expect(mod.statsRange.value).toBe('months3')
   })
 
   it('restores a valid persisted scope and range', async () => {
-    const mod = await freshStats({ scope: 'gemini', range: 'days7' })
-    expect(mod.statsScope.value).toBe('gemini')
+    const mod = await freshStats({ scope: 'codex', range: 'days7' })
+    expect(mod.statsScope.value).toBe('codex')
     expect(mod.statsRange.value).toBe('days7')
   })
 
-  // 老用户 localStorage 里可能存的 'all'（已废弃）；这里 pin 死回退到 months6
+  it('restores a valid persisted custom date range', async () => {
+    const mod = await freshStats({ range: 'custom:2026-01-05:2026-07-05' })
+    expect(mod.statsRange.value).toBe('custom:2026-01-05:2026-07-05')
+  })
+
+  // 老用户 localStorage 里可能存的 'all'（已废弃）；这里 pin 死回退到 months3
   // 而不是再写 'all'，否则 startAgentStats 会被后端拒掉。
-  it('migrates legacy "all" range to months6 (and rejects bogus values)', async () => {
+  it('migrates legacy "all" range to months3 (and rejects bogus values)', async () => {
     const mod = await freshStats({ scope: 'bogus', range: 'all' })
     expect(mod.statsScope.value).toBe('all')
-    expect(mod.statsRange.value).toBe('months6')
+    expect(mod.statsRange.value).toBe('months3')
     const mod2 = await freshStats({ range: 'forever' })
-    expect(mod2.statsRange.value).toBe('months6')
+    expect(mod2.statsRange.value).toBe('months3')
   })
 
   it('writes back to localStorage when the ref changes', async () => {
@@ -201,39 +206,39 @@ describe('agent visibility (enabledAgents / visibleAgents / setAgentEnabled)', (
 
   it('defaults to all agents enabled when nothing is stored', async () => {
     const mod = await freshAgents()
-    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'gemini'])
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'agy'])
   })
 
   it('restores a persisted subset, preserving the canonical order', async () => {
-    const mod = await freshAgents(JSON.stringify({ claude: true, codex: true, gemini: false }))
-    expect(mod.visibleAgents.value).toEqual(['claude', 'codex'])
+    const mod = await freshAgents(JSON.stringify({ claude: true, codex: false, agy: true }))
+    expect(mod.visibleAgents.value).toEqual(['claude', 'agy'])
   })
 
   it('falls back to all-enabled when stored data has every agent off', async () => {
-    const mod = await freshAgents(JSON.stringify({ claude: false, codex: false, gemini: false }))
-    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'gemini'])
+    const mod = await freshAgents(JSON.stringify({ claude: false, codex: false, agy: false }))
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'agy'])
   })
 
   it('falls back to all-enabled on corrupt JSON', async () => {
     const mod = await freshAgents('{not json')
-    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'gemini'])
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'agy'])
   })
 
   it('setAgentEnabled disables an agent and persists', async () => {
     const mod = await freshAgents()
-    mod.setAgentEnabled('gemini', false)
+    mod.setAgentEnabled('agy', false)
     expect(mod.visibleAgents.value).toEqual(['claude', 'codex'])
-    expect(JSON.parse(localStorage.getItem('enabledAgents:v1')!).gemini).toBe(false)
+    expect(JSON.parse(localStorage.getItem('enabledAgents:v1')!).agy).toBe(false)
   })
 
   it('refuses to disable the last remaining agent', async () => {
-    const mod = await freshAgents(JSON.stringify({ claude: true, codex: false, gemini: false }))
+    const mod = await freshAgents(JSON.stringify({ claude: true, codex: false, agy: false }))
     mod.setAgentEnabled('claude', false)
     expect(mod.visibleAgents.value).toEqual(['claude'])
   })
 
   it('re-enables a previously hidden agent', async () => {
-    const mod = await freshAgents(JSON.stringify({ claude: true, codex: false, gemini: false }))
+    const mod = await freshAgents(JSON.stringify({ claude: true, codex: false, agy: false }))
     mod.setAgentEnabled('codex', true)
     expect(mod.visibleAgents.value).toEqual(['claude', 'codex'])
   })

@@ -17,14 +17,20 @@
         "title": "",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "width": 1180,
-        "height": 760,
+        "width": 1360,
+        "height": 850,
         "minWidth": 880,
         "minHeight": 560
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "**/*"
+        ]
+      }
     },
     "withGlobalTauri": true
   },

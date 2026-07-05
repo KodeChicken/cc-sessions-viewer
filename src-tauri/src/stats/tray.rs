@@ -68,7 +68,7 @@ pub fn quick_stats() -> Result<TrayStats, String> {
     let bounds = compute_boundaries()?;
     let earliest = bounds.month_ms.min(bounds.week_ms);
 
-    let agent_names: &[&str] = &["claude", "codex", "gemini"];
+    let agent_names: &[&str] = &["claude", "codex"];
     let mut accs: HashMap<&str, AgentAcc> = HashMap::new();
 
     for &agent_name in agent_names {

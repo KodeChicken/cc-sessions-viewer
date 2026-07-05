@@ -436,7 +436,7 @@ function endTurn(s: ChatSession) {
 // ============================ 消息队列 ============================
 // type-while-running：一轮进行中时回车把消息入队，待本轮 result 结束后按序逐条发出
 //（对齐 Claude CLI 的消息队列）。纯前端实现、后端零改动：sendPrompt 仍是「发一条」原语，
-// 队列只决定何时调它，故长驻（Claude）与 one-shot（Codex/Gemini）通吃。
+// 队列只决定何时调它，故长驻（Claude）与 one-shot（Codex）通吃。
 
 /** 会话是否可发送（进程在、未退出 / 未出错）。 */
 function chatUsable(s: ChatSession): boolean {
@@ -818,7 +818,7 @@ export async function interruptChat(session: ChatSession): Promise<void> {
  * `/clear`：清屏 + 重置上下文。先清空界面消息，再停掉当前 chat 进程、**不带**任何源
  * session 重起一个全新进程（空上下文、新 session id 由 init 回填）。磁盘上的旧 transcript
  * 不动，仍可在会话列表里续聊。两种进程模型通吃：长驻（Claude）换一个全新长驻进程；
- * one-shot（Codex / Gemini）换一个 session_id 为空的新登记，下一轮即从零开始。
+ * one-shot（Codex）换一个 session_id 为空的新登记，下一轮即从零开始。
  */
 export async function clearChat(session: ChatSession): Promise<void> {
   // 立即视觉清屏 —— 无论后续 restart 成败，界面与上下文角标都应清零。

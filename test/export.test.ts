@@ -203,11 +203,6 @@ describe('messagesToMarkdown', () => {
     expect(md).toContain('- Agent: `codex`')
   })
 
-  it('uses the gemini assistant label when agent is gemini', () => {
-    const md = messagesToMarkdown(session(), [msg('assistant', [text('hi')])], 'gemini')
-    expect(md).toContain('## Gemini')
-    expect(md).toContain('- Agent: `gemini`')
-  })
 })
 
 describe('messagesToHtml', () => {
@@ -433,21 +428,6 @@ describe('messagesToHtml', () => {
     expect(/class="md-mermaid/.test(html)).toBe(true)
   })
 
-  it('uses the gemini avatar + label for assistant rows on gemini sessions', async () => {
-    const html = await messagesToHtml(
-      session(),
-      [msg('assistant', [text('hi')])],
-      'gemini',
-    )
-    // 资产标记是 #448aff（material-icon-theme gemini-ai），claude 的 #ff7043
-    // 不应出现在 gemini 导出里。
-    expect(html).toContain('#448aff')
-    expect(html).not.toContain('#ff7043')
-    // 顶部 meta 把 agent 名展示成 `gemini`；assistant role 标签是 'Gemini'
-    expect(html).toContain('>gemini<')
-    expect(html).toContain('Gemini')
-    expect(html).not.toContain('Claude')
-  })
 })
 
 describe('exportMarkdown / exportHtml', () => {
@@ -493,9 +473,9 @@ describe('exportMarkdown / exportHtml', () => {
 
 describe('buildExportEnvelope', () => {
   it('tags the format and embeds the full payload', () => {
-    const env = JSON.parse(buildExportEnvelope(session(), [msg('user', [text('hi')])], 'gemini'))
+    const env = JSON.parse(buildExportEnvelope(session(), [msg('user', [text('hi')])], 'codex'))
     expect(env.__type).toBe('cc-session-viewer-export')
-    expect(env.agent).toBe('gemini')
+    expect(env.agent).toBe('codex')
     expect(env.session.title).toBe('My Session')
     expect(env.messages[0].role).toBe('user')
   })

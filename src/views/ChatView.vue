@@ -69,6 +69,7 @@ import {
 import type { PermissionChoice } from '../chatPermission'
 import type { QuestionSelection } from '../chatQuestion'
 import { openPathExternal, agentChatSlashCommands } from '../api'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import { useGitBranch } from '../gitBranch'
 import { showTooltipFor, hideTooltip } from '../tooltip'
 
@@ -314,6 +315,19 @@ function rowHasContent(m: Msg): boolean {
 }
 
 // ---- 图片：缩略图浮在气泡上方（参考 Claude 客户端），不进灰底气泡 ----
+function imageSrcUrl(src: string): string {
+  if (!src) return ''
+  if (src.startsWith('data:') || src.startsWith('http:') || src.startsWith('https:')) {
+    return src
+  }
+  try {
+    return convertFileSrc(src)
+  } catch (e) {
+    console.error('convertFileSrc error:', e)
+    return src
+  }
+}
+
 function imageBlocks(m: Msg): Block[] {
   return m.blocks.filter((b) => b.kind === 'image' && b.imageSrc)
 }
@@ -338,7 +352,7 @@ function renderBubble(m: Msg, raw: string): string {
 }
 
 // ---- 命令描述：hover 蓝色命令 token 时显示其描述 ----
-// 描述来自扫描当前项目可用的 commands/skills（与输入框 slash 列表同源；codex/gemini 暂为空）。
+// 描述来自扫描当前项目可用的 commands/skills（与输入框 slash 列表同源；codex 暂为空）。
 // 内置命令（/config、/clear 等）不在扫描列表里 → 无描述、hover 即无提示。
 const cmdDesc = ref<Record<string, string>>({})
 async function loadCmdDescriptions() {
@@ -523,12 +537,13 @@ watch(
 // 不再弹自定义菜单。
 
 const assistantName = computed(() =>
-  props.agent === 'codex'
-    ? 'Codex'
-    : props.agent === 'gemini'
-      ? 'Gemini'
-      : 'Claude',
+  props.agent === 'codex' ? 'Codex' : props.agent === 'agy' ? 'agy' : 'Claude',
 )
+
+function formatModelName(modelName: string): string {
+  if (!modelName) return ''
+  return modelName.replace(/\s*\([^)]*\)$/, '').trim()
+}
 
 function systemEventLabel(m: Msg): string | null {
   const ev = parseSystemEvent(m)
@@ -1421,7 +1436,7 @@ function onDocClick(e: MouseEvent) {
          挪进 chat-head 后顶栏只剩 scope+search 一条横线。toolsCollapsed
          走 chatToolbar 模块 ref 共享，原 ChatTopbar 的对应按钮已删除。 -->
     <button
-      v-if="!trashed"
+      v-if="!trashed && agent !== 'agy'"
       class="icon-btn"
       v-tooltip="t('chat.tb.sessionStats')"
       @click="$emit('openSessionStats')"
@@ -1665,9 +1680,9 @@ function onDocClick(e: MouseEvent) {
               :key="'img' + bi"
               type="button"
               class="msg-image-thumb"
-              @click="openLightbox(imageBlocks(m).map((x) => x.imageSrc!), bi)"
+              @click="openLightbox(imageBlocks(m).map((x) => imageSrcUrl(x.imageSrc!)), bi)"
             >
-              <img :src="b.imageSrc" loading="lazy" alt="" />
+              <img :src="imageSrcUrl(b.imageSrc!)" loading="lazy" alt="" />
             </button>
           </div>
 
@@ -1697,7 +1712,7 @@ function onDocClick(e: MouseEvent) {
               />
               {{ m.role === 'user' ? t('chat.role.me') : assistantName }}
             </span>
-            <span v-if="m.model" class="tool-chip">{{ m.model }}</span>
+            <span v-if="m.model" class="tool-chip">{{ formatModelName(m.model) }}</span>
             <span v-if="m.sidechain" class="sidechain-badge">
               {{ t('chat.badge.subtask') }}
             </span>
@@ -1876,7 +1891,7 @@ function onDocClick(e: MouseEvent) {
     >
       <IconReader />
     </button>
-    <!-- 切到 chat（GUI live chat）目前只有 claude 支持；codex / gemini 不显示这个 FAB。 -->
+    <!-- 切到 chat（GUI live chat）目前只有 claude 支持；codex 不显示这个 FAB。 -->
     <button
       v-else-if="!liveSession && !trashed && canResumeHere && agent === 'claude'"
       class="fab fab-accent"

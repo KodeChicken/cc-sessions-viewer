@@ -655,3 +655,293 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 }
+
+// ─── 消息后处理：提取文本块中的图片与文件物理路径并抬升为独立 Block ───
+
+pub fn post_process_session_msgs(msgs: &mut [Msg]) {
+    for msg in msgs {
+        let mut new_blocks = Vec::new();
+        for block in std::mem::take(&mut msg.blocks) {
+            if block.kind == "text" {
+                if let Some(text) = &block.text {
+                    let (lifted, remaining_text) = lift_paths_from_text(text);
+                    new_blocks.extend(lifted);
+                    if !remaining_text.trim().is_empty() {
+                        new_blocks.push(Block {
+                            kind: "text".to_string(),
+                            text: Some(remaining_text),
+                            ..Default::default()
+                        });
+                    }
+                    continue;
+                }
+            }
+            new_blocks.push(block);
+        }
+        msg.blocks = new_blocks;
+    }
+}
+
+fn lift_paths_from_text(text: &str) -> (Vec<Block>, String) {
+    let mut lifted = Vec::new();
+    let mut cleaned_text = text.to_string();
+
+    // 1. 先用正则提取 @[path] 形式的行内文件/图片提及
+    let re_bracket = regex_lite::Regex::new(r"@\[([^\]]+)\]").expect("valid regex");
+    let mut temp = String::new();
+    let mut last = 0;
+    for caps in re_bracket.captures_iter(&cleaned_text) {
+        let whole = caps.get(0).unwrap();
+        let path = caps.get(1).unwrap().as_str().trim().to_string();
+        temp.push_str(&cleaned_text[last..whole.start()]);
+        last = whole.end();
+        lift_path_block(&path, &mut lifted);
+    }
+    temp.push_str(&cleaned_text[last..]);
+    cleaned_text = temp;
+
+    // 2. 提取 @path 或 @"path" 形式的提及
+    let re_at = regex_lite::Regex::new(r#"@"([^"]+)"|@(\S+)"#).expect("valid regex");
+    let mut temp = String::new();
+    let mut last = 0;
+    for caps in re_at.captures_iter(&cleaned_text) {
+        let whole = caps.get(0).unwrap();
+        let path = match (caps.get(1), caps.get(2)) {
+            (Some(q), _) => Some(q.as_str().to_string()),
+            (None, Some(u)) if looks_like_file_path(u.as_str()) => Some(u.as_str().to_string()),
+            _ => None,
+        };
+        if let Some(p) = path {
+            temp.push_str(&cleaned_text[last..whole.start()]);
+            last = whole.end();
+            lift_path_block(&p, &mut lifted);
+        }
+    }
+    temp.push_str(&cleaned_text[last..]);
+    cleaned_text = temp;
+
+    // 3. 提取行内绝对路径 / 家目录路径（支持中文粘连，如 "前缀/var/path.png"）
+    let re_abs = regex_lite::Regex::new(
+        r#"(?x)
+        (?: ^ | \s | [^\x00-\x7F] | [^\w.@-] )
+        (
+            (?: ~[/\\] | /[a-zA-Z0-9] | [a-zA-Z]:[/\\] )
+            (?: [\w.@~-]+ [/\\] )*
+            [\w.@-]+ \. [a-zA-Z0-9]+
+            (?: :\d+(?::\d+)? )?
+        )
+        "#
+    ).expect("valid regex");
+
+    let mut temp = String::new();
+    let mut last = 0;
+    for caps in re_abs.captures_iter(&cleaned_text) {
+        let whole = caps.get(0).unwrap();
+        let path = caps.get(1).unwrap().as_str().trim().to_string();
+
+        let capture = caps.get(1).unwrap();
+        let capture_start = capture.start();
+
+        temp.push_str(&cleaned_text[last..capture_start]);
+        last = whole.end();
+        lift_path_block(&path, &mut lifted);
+    }
+    temp.push_str(&cleaned_text[last..]);
+    cleaned_text = temp;
+
+    // 4. 对余下文本运行逐行文件提炼（处理相对路径等）
+    let mut remaining_lines = Vec::new();
+    for line in cleaned_text.lines() {
+        let trimmed_line = line.trim();
+        if trimmed_line.is_empty() {
+            remaining_lines.push(line);
+            continue;
+        }
+
+        if let Some(path) = parse_line_as_path(trimmed_line) {
+            lift_path_block(&path, &mut lifted);
+        } else {
+            remaining_lines.push(line);
+        }
+    }
+
+    let mut remaining_text = remaining_lines.join("\n");
+    remaining_text = remaining_text.trim().to_string();
+
+    (lifted, remaining_text)
+}
+
+fn lift_path_block(path: &str, lifted: &mut Vec<Block>) {
+    let path_buf = expand_home(path);
+    let exists = path_buf.exists();
+    let is_dir = exists && path_buf.is_dir();
+
+    let is_image = if exists && !is_dir {
+        is_image_file(&path_buf)
+    } else {
+        is_image_ext(path)
+    };
+
+    if is_image {
+        lifted.push(Block {
+            kind: "image".to_string(),
+            image_src: Some(path.to_string()),
+            ..Default::default()
+        });
+    } else {
+        lifted.push(Block {
+            kind: "file".to_string(),
+            file_path: Some(path.to_string()),
+            is_dir: if is_dir { Some(true) } else { None },
+            ..Default::default()
+        });
+    }
+}
+
+fn parse_line_as_path(line: &str) -> Option<String> {
+    let mut s = line;
+    if s.starts_with('@') {
+        s = &s[1..];
+    }
+    if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+        && s.len() >= 2 {
+            s = &s[1..s.len() - 1];
+        }
+    s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    let is_abs = s.starts_with('/')
+        || s.starts_with('\\')
+        || s.starts_with("~/")
+        || s.starts_with("~\\")
+        || (s.len() >= 2 && s.as_bytes()[1] == b':');
+
+    if is_abs {
+        return Some(s.to_string());
+    }
+
+    let has_sep = s.contains('/') || s.contains('\\');
+    let has_ext = s.rsplit_once('.').map(|(_, ext)| {
+        !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric())
+    }).unwrap_or(false);
+
+    if (has_sep && has_ext) || std::path::Path::new(s).exists() {
+        return Some(s.to_string());
+    }
+
+    None
+}
+
+fn looks_like_file_path(s: &str) -> bool {
+    s.starts_with('/')
+        || s.starts_with('~')
+        || s.starts_with("./")
+        || s.starts_with("../")
+        || s.contains('/')
+        || (s.len() >= 2 && s.as_bytes()[1] == b':')
+        || has_file_extension(s)
+}
+
+fn has_file_extension(s: &str) -> bool {
+    match s.rsplit_once('.') {
+        Some((stem, ext)) => {
+            !stem.is_empty()
+                && (1..=8).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        }
+        None => false,
+    }
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    if path.starts_with("~/") || path.starts_with("~\\") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(&path[2..]);
+        }
+    }
+    PathBuf::from(path)
+}
+
+fn is_image_file(path: &Path) -> bool {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        is_image_ext_str(ext)
+    } else {
+        false
+    }
+}
+
+fn is_image_ext(path_str: &str) -> bool {
+    if let Some(ext) = path_str.split('.').next_back() {
+        is_image_ext_str(ext)
+    } else {
+        false
+    }
+}
+
+fn is_image_ext_str(ext: &str) -> bool {
+    let ext_lower = ext.to_lowercase();
+    matches!(
+        ext_lower.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" | "ico"
+    )
+}
+
+#[cfg(test)]
+mod path_lifting_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_line_as_path() {
+        assert_eq!(parse_line_as_path("/var/folders/pic.png").unwrap(), "/var/folders/pic.png");
+        assert_eq!(parse_line_as_path("~/.config/config.json").unwrap(), "~/.config/config.json");
+        assert_eq!(parse_line_as_path("@\"/abs/path\"").unwrap(), "/abs/path");
+        assert_eq!(parse_line_as_path("not_a_path"), None);
+    }
+
+    #[test]
+    fn test_lift_paths_from_text() {
+        let text = "/var/folders/some_image.png\n\nSome normal message\n/Users/jerry/document.pdf\nDone.";
+        let (blocks, remaining) = lift_paths_from_text(text);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].kind, "image");
+        assert_eq!(blocks[0].image_src.as_deref().unwrap(), "/var/folders/some_image.png");
+        assert_eq!(blocks[1].kind, "file");
+        assert_eq!(blocks[1].file_path.as_deref().unwrap(), "/Users/jerry/document.pdf");
+        assert_eq!(remaining, "Some normal message\n\nDone.");
+    }
+
+    #[test]
+    fn test_lift_bracket_paths() {
+        let text = "@[src/App.vue] 这个文件很大，有什么规划？";
+        let (blocks, remaining) = lift_paths_from_text(text);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].kind, "file");
+        assert_eq!(blocks[0].file_path.as_deref().unwrap(), "src/App.vue");
+        assert_eq!(remaining, "这个文件很大，有什么规划？");
+    }
+
+    #[test]
+    fn test_lift_glued_paths() {
+        let text = "这个应该像Claude一样/var/folders/8h/ddvbjjrn74q1v55wywphwkdc0000gn/T/clipboard-2026-07-05-122944-350E5680.png";
+        let (blocks, remaining) = lift_paths_from_text(text);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].kind, "image");
+        assert_eq!(blocks[0].image_src.as_deref().unwrap(), "/var/folders/8h/ddvbjjrn74q1v55wywphwkdc0000gn/T/clipboard-2026-07-05-122944-350E5680.png");
+        assert_eq!(remaining, "这个应该像Claude一样");
+    }
+
+    #[test]
+    fn test_lift_mix_bracket_and_raw_path() {
+        let text = "@[.env.local] /var/folders/8h/ddvbjjrn74q1v55wywphwkdc0000gn/T/clipboard-2026-07-05-123507-F13776EE.png\n\nhello";
+        let (blocks, remaining) = lift_paths_from_text(text);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].kind, "file");
+        assert_eq!(blocks[0].file_path.as_deref().unwrap(), ".env.local");
+        assert_eq!(blocks[1].kind, "image");
+        assert_eq!(blocks[1].image_src.as_deref().unwrap(), "/var/folders/8h/ddvbjjrn74q1v55wywphwkdc0000gn/T/clipboard-2026-07-05-123507-F13776EE.png");
+        assert_eq!(remaining, "hello");
+    }
+}
+

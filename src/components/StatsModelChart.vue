@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 按 model 的 cost 横向条形图。每个模型一个分类色 —— 比从 brand 派生 HSL 旋转
-// 更清晰，因为模型名一般不超过 8 个（Opus / Sonnet / Haiku / GPT-5.x / Gemini ...）。
+// 更清晰，因为模型名一般不超过 8 个（Opus / Sonnet / Haiku / GPT-5.x ...）。
 
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Chart } from '@antv/g2'

@@ -39,13 +39,11 @@ describe('chatComposerOptions', () => {
     expect(permissionLabelKey('nope')).toBe('chat.composer.permission.acceptEdits')
   })
 
-  it('Claude / Codex 有模型与 effort 候选；Gemini 暂无', () => {
+  it('Claude / Codex 有模型与 effort 候选', () => {
     expect(hasModelChoice('claude')).toBe(true)
     expect(hasModelChoice('codex')).toBe(true)
-    expect(hasModelChoice('gemini')).toBe(false)
     expect(hasEffortChoice('claude')).toBe(true)
     expect(hasEffortChoice('codex')).toBe(true)
-    expect(hasEffortChoice('gemini')).toBe(false)
   })
 
   it('Claude 模型用完整标准 id（主列表 + More），且一律不带 [1m]', () => {
@@ -96,7 +94,7 @@ describe('chatComposerOptions', () => {
   })
 
   it('关键回归：任何下发模型 id 都不含 [1m]（否则会触发 1M-context credits 报错）', () => {
-    for (const agent of ['claude', 'codex', 'gemini'] as const) {
+    for (const agent of ['claude', 'codex', 'agy'] as const) {
       for (const m of allModels(agent)) {
         expect(m.value).not.toContain('[1m]')
       }
@@ -155,21 +153,18 @@ describe('chatComposerOptions', () => {
     expect(effortLevelsFor('codex', 'gpt-5.4')).toEqual(['minimal', 'low', 'medium', 'high'])
   })
 
-  it('modelSupportsEffort：Haiku 无 effort；Opus/Sonnet 有；Gemini agent 一律无', () => {
+  it('modelSupportsEffort：Haiku 无 effort；Opus/Sonnet 有', () => {
     expect(modelSupportsEffort('claude', 'claude-opus-4-8')).toBe(true)
     expect(modelSupportsEffort('claude', 'claude-sonnet-5')).toBe(true)
     expect(modelSupportsEffort('claude', 'claude-haiku-4-5-20251001')).toBe(false)
     // 未指定模型时按「支持」处理（滑杆默认展示）。
     expect(modelSupportsEffort('claude', undefined)).toBe(true)
-    // agent 本身无 effort 概念则恒 false，与模型无关。
-    expect(modelSupportsEffort('gemini', 'whatever')).toBe(false)
   })
 
   it('effectiveEffort：Haiku 抹掉 effort；ultracode 落到 max（headless 天花板）；其余透传', () => {
     expect(effectiveEffort('claude', 'claude-opus-4-8', 'high')).toBe('high')
     expect(effectiveEffort('claude', 'claude-opus-4-8', 'ultracode')).toBe('max')
     expect(effectiveEffort('claude', 'claude-haiku-4-5-20251001', 'high')).toBeUndefined()
-    expect(effectiveEffort('gemini', 'whatever', 'high')).toBeUndefined()
   })
 
   it('fallbackEffort：切到不支持当前档的模型 → 退最高可用档；否则原样', () => {
@@ -198,9 +193,7 @@ describe('chatComposerOptions', () => {
   it('defaultModel / defaultEffort：明确起步值（无 "default" 概念）', () => {
     expect(defaultModel('claude')).toBeUndefined()
     expect(defaultModel('codex')).toBe('gpt-5.4')
-    expect(defaultModel('gemini')).toBeUndefined()
     expect(defaultEffort('claude')).toBeUndefined()
     expect(defaultEffort('codex')).toBe('medium')
-    expect(defaultEffort('gemini')).toBeUndefined()
   })
 })

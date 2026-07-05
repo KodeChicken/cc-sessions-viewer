@@ -20,13 +20,13 @@ import {
 const cliLabels: Record<string, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
-  gemini: 'Gemini CLI',
+  agy: 'Antigravity CLI',
 }
 
 const cliUrls: Record<string, string> = {
   claude: 'https://docs.anthropic.com/en/docs/claude-code/overview',
   codex: 'https://developers.openai.com/codex/cli',
-  gemini: 'https://geminicli.com/',
+  agy: 'https://antigravity.google/docs/cli/getting-started',
 }
 
 const pmLabels: Record<string, string> = {

@@ -376,7 +376,7 @@ pub struct DailyActivity {
 #[derive(Serialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStat {
-    /// 该会话所属 agent（"claude" / "codex" / "gemini"），跨 agent 聚合时区分用。
+    /// 该会话所属 agent（"claude" / "codex"），跨 agent 聚合时区分用。
     pub agent: String,
     pub session_id: String,
     pub path: String,
@@ -438,7 +438,7 @@ pub enum TimeRange {
 #[derive(Serialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentStats {
-    /// "all" / "claude" / "codex" / "gemini"。前端按这值给小标题。
+    /// "all" / "claude" / "codex"。前端按这值给小标题。
     pub scope: String,
     pub session_count: usize,
     pub message_count: usize,

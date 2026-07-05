@@ -58,6 +58,7 @@ import IconSelectRaw from '~icons/lucide/list-checks'
 import IconPlusRaw from '~icons/lucide/plus'
 import IconHistoryRaw from '~icons/lucide/history'
 import IconStarRaw from '~icons/lucide/star'
+import IconCalendarClockRaw from '~icons/lucide/calendar-clock'
 import IconExportHistoryRaw from '~icons/lucide/clock-arrow-down'
 import IconMoreRaw from '~icons/lucide/more-horizontal'
 import IconPriceTagRaw from '~icons/lucide/circle-dollar-sign'
@@ -79,7 +80,6 @@ import IconEyeOffRaw from '~icons/lucide/eye-off'
 import IconEyeRaw from '~icons/lucide/eye'
 import IconGitBranchRaw from '~icons/lucide/git-branch'
 import IconClaudeRaw from '~icons/material-icon-theme/claude'
-import IconGeminiRaw from '~icons/material-icon-theme/gemini-ai'
 import IconKeyboardRaw from '~icons/lucide/keyboard'
 import IconSlidersRaw from '~icons/lucide/sliders-horizontal'
 import IconPaperclipRaw from '~icons/lucide/paperclip'
@@ -137,6 +137,7 @@ export const IconSelect = IconSelectRaw
 export const IconPlus = IconPlusRaw
 export const IconHistory = IconHistoryRaw
 export const IconStar = IconStarRaw
+export const IconCalendarClock = IconCalendarClockRaw
 export const IconExportHistory = IconExportHistoryRaw
 export const IconMore = IconMoreRaw
 export const IconPriceTag = IconPriceTagRaw
@@ -310,14 +311,32 @@ export const terminalIcons: Record<TerminalApp, Component> = {
   warp: IconWarpRaw,
 }
 
-// Brand marks for the two agents, pulled from iconify at build time so
+// Antigravity CLI (agy) brand mark — official rainbow arch "A" icon.
+// PNG in public/antigravity-icon.png, referenced as absolute URL (Vite serves public/ at root).
+const IconAgyRaw = defineComponent({
+  name: 'IconAgy',
+  setup() {
+    return () =>
+      h('img', {
+        src: '/antigravity-icon.png',
+        width: 16,
+        height: 16,
+        alt: 'agy',
+        'aria-hidden': 'true',
+        class: 'iconify',
+        style: 'vertical-align: middle',
+      })
+  },
+})
+
+// Brand marks for the three agents, pulled from iconify at build time so
 // runtime stays offline-friendly. Sources: `material-icon-theme:claude`,
-// our own `assets/codex.svg`, and `material-icon-theme:gemini-ai`.
+// our own `assets/codex.svg`, and inline render for agy.
 // Re-exported individually for direct use and aggregated into `agentIcons`
 // for dispatch-by-agent.
 export const IconClaude = IconClaudeRaw
 export const IconCodex = IconCodexRaw
-export const IconGemini = IconGeminiRaw
+export const IconAgy = IconAgyRaw
 
 /**
  * Global dictionary of agent → brand-mark icon component. Use as
@@ -328,7 +347,7 @@ export const IconGemini = IconGeminiRaw
 export const agentIcons: Record<Agent, Component> = {
   claude: IconClaudeRaw,
   codex: IconCodexRaw,
-  gemini: IconGeminiRaw,
+  agy: IconAgyRaw,
 }
 
 // ---- 文件附件按扩展名分型的图标 ----

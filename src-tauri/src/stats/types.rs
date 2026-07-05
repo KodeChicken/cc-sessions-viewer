@@ -18,7 +18,7 @@ pub struct CallRecord {
     /// 上游 API 给的消息 id（Claude 是 `message.id` = "msg_..."）。
     /// 用于跨文件去重 —— Claude 会话 fork / continue / sub-agent 之间常常出现同一条
     /// assistant 消息被多个 JSONL 复制，按 id 跳过可避免 cost / token 翻倍。
-    /// None = 不参与去重（Codex / Gemini 没有等价字段，但它们的会话拓扑也不会复制）。
+    /// None = 不参与去重（Codex 没有等价字段，但它的会话拓扑也不会复制）。
     pub message_id: Option<String>,
     /// 这次调用的 token 用量（Codex 把所有调用合并到一行 token_count 事件里，
     /// 那种情况下我们把整段 usage 记到该 session 的最后一个 call 上）。

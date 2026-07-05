@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2.3.3"
 serde = { version = "1", features = ["derive"] }
@@ -62,9 +62,10 @@ dev-mcp = ["tauri-plugin-mcp-bridge"]
 
 [profile.release]
 strip = true
-lto = false
+lto = true
 codegen-units = 1
-opt-level = 2
+opt-level = "z"
+panic = "abort"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

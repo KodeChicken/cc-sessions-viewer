@@ -10,10 +10,10 @@
 //     快照，避免太频繁的 IPC 抖动。完成时 emit 一次 final done。
 //   - **数据源**：SessionSource::read_turns(path) 走的是与 read_session 不同的轻量
 //     解析路径——只抽 model / usage / tools / bash / mcp，不构造 UI Block。
-//   - **scope**：'all' = claude + codex + gemini 全部聚合；'claude' / 'codex' /
-//     'gemini' = 单 agent；'session:<path>:<agent>' = 单个 session（per-session
-//     统计页面用）。
-//   - **range**：'today' / 'days7' / 'days30' / 'month' / 'months6'。窗口按本地日历日切，
+//   - **scope**：'all' = claude + codex 全部聚合；'claude' / 'codex' = 单 agent；
+//     'session:<path>:<agent>' = 单个 session（per-session 统计页面用）。
+//   - **range**：'today' / 'days7' / 'days30' / 'month' / 'months3' / 'months6' /
+//     'custom:YYYY-MM-DD:YYYY-MM-DD'。窗口按本地日历日切，
 //     和 codeburn / 各家 dashboard 一致 —— 「Today」= 本地 00:00:00 到现在，
 //     不是滚动 24h（滚动会把昨晚的长会话错算到今天的总成本里，曾经把数字
 //     放大 ~7x）。两层过滤：
@@ -89,10 +89,9 @@ fn run_worker(
     request_id: u64,
 ) -> Result<crate::types::AgentStats, String> {
     let agents_to_scan: Vec<&'static str> = match scope {
-        "all" => vec!["claude", "codex", "gemini"],
+        "all" => vec!["claude", "codex"],
         "claude" => vec!["claude"],
         "codex" => vec!["codex"],
-        "gemini" => vec!["gemini"],
         other => {
             // session 模式：scope = "session:<agent>:<path>"
             if let Some(rest) = other.strip_prefix("session:") {
@@ -105,7 +104,6 @@ fn run_worker(
                     .filter_map(|name| match name {
                         "claude" => Some("claude"),
                         "codex" => Some("codex"),
-                        "gemini" => Some("gemini"),
                         _ => None,
                     })
                     .collect()
@@ -153,7 +151,7 @@ fn run_worker(
                 Err(_) => continue,
             };
             for s in sessions {
-                if !in_window(s.modified, lo_ms, hi_ms) {
+                if !in_window(s.modified, lo_ms, None) {
                     continue;
                 }
                 pending.push(Pending {
@@ -308,7 +306,7 @@ fn emit_progress(
 }
 
 fn parse_range(range: &str) -> Result<(Option<u64>, Option<u64>), String> {
-    use chrono::{Datelike, Duration as CDuration, Local, Months, TimeZone};
+    use chrono::{Datelike, Duration as CDuration, Local, Months, NaiveDate, TimeZone};
 
     // 「Today」= 本地 00:00:00（用户所在时区）。codeburn 也这么干 ——
     // 滚动 24h 会把昨晚 23:50 的长会话错算进今天。
@@ -321,6 +319,57 @@ fn parse_range(range: &str) -> Result<(Option<u64>, Option<u64>), String> {
         let ts = t.timestamp_millis();
         if ts < 0 { 0 } else { ts as u64 }
     };
+    if let Some(rest) = range.strip_prefix("custom:") {
+        let mut parts = rest.split(':');
+        let start_s = parts.next().ok_or_else(|| "missing custom range start".to_string())?;
+        let end_s = parts.next().ok_or_else(|| "missing custom range end".to_string())?;
+        if parts.next().is_some() {
+            return Err("invalid custom stats range".to_string());
+        }
+        let start_date = NaiveDate::parse_from_str(start_s, "%Y-%m-%d")
+            .map_err(|_| "invalid custom range start date".to_string())?;
+        let end_date = NaiveDate::parse_from_str(end_s, "%Y-%m-%d")
+            .map_err(|_| "invalid custom range end date".to_string())?;
+        if start_date > end_date {
+            return Err("custom range start must be before end".to_string());
+        }
+
+        let start = Local
+            .from_local_datetime(
+                &start_date
+                    .and_hms_opt(0, 0, 0)
+                    .ok_or_else(|| "invalid custom range start time".to_string())?,
+            )
+            .single()
+            .ok_or_else(|| "failed to resolve custom range start".to_string())?;
+        let end_next_date = end_date
+            .succ_opt()
+            .ok_or_else(|| "invalid custom range end date".to_string())?;
+        let end_start = Local
+            .from_local_datetime(
+                &end_date
+                    .and_hms_opt(0, 0, 0)
+                    .ok_or_else(|| "invalid custom range end time".to_string())?,
+            )
+            .single()
+            .ok_or_else(|| "failed to resolve custom range end".to_string())?;
+        let end_next = Local
+            .from_local_datetime(
+                &end_next_date
+                    .and_hms_opt(0, 0, 0)
+                    .ok_or_else(|| "invalid custom range end time".to_string())?,
+            )
+            .single()
+            .ok_or_else(|| "failed to resolve custom range end".to_string())?;
+        let min_start = end_start
+            .checked_sub_months(Months::new(12))
+            .ok_or_else(|| "failed to compute custom range limit".to_string())?;
+        if start < min_start {
+            return Err("custom stats range cannot exceed 1 year".to_string());
+        }
+        return Ok((Some(to_ms(start)), Some(to_ms(end_next) - 1)));
+    }
+
     match range {
         "today" => Ok((Some(to_ms(today_midnight)), None)),
         // 「过去 7 天 / 30 天」= 包含今天在内、向前数 7 / 30 个完整日历日。
@@ -337,6 +386,12 @@ fn parse_range(range: &str) -> Result<(Option<u64>, Option<u64>), String> {
                 .single()
                 .ok_or_else(|| "failed to resolve month start".to_string())?;
             Ok((Some(to_ms(month_start)), None))
+        }
+        "months3" => {
+            let lo = today_midnight
+                .checked_sub_months(Months::new(3))
+                .ok_or_else(|| "failed to compute -3 months".to_string())?;
+            Ok((Some(to_ms(lo)), None))
         }
         // 「过去 6 个月」—— 之前是 "all"（全部时间），但全盘扫描成本巨大且基本没
         // 人真的关心 1 年前的数据。改成 6 个日历月：从本地午夜起向前减 6 个月
@@ -393,12 +448,38 @@ mod tests {
         let (lo, hi) = parse_range("days7").unwrap();
         assert!(lo.is_some());
         assert!(hi.is_none());
+        let (lo3, hi3) = parse_range("months3").unwrap();
+        assert!(lo3.is_some(), "months3 must be bounded, not unbounded");
+        assert!(hi3.is_none());
         let (lo6, hi6) = parse_range("months6").unwrap();
         assert!(lo6.is_some(), "months6 must be bounded, not unbounded");
         assert!(hi6.is_none());
         assert!(parse_range("nope").is_err());
         // 之前的 "all" key 不再认 —— 旧 localStorage 值会回退到 settings 默认。
         assert!(parse_range("all").is_err());
+    }
+
+    #[test]
+    fn parse_range_custom_uses_local_full_days_and_caps_one_year() {
+        use chrono::{Local, TimeZone};
+        let (lo, hi) = parse_range("custom:2025-07-05:2026-07-05").unwrap();
+        let expected_lo = Local
+            .with_ymd_and_hms(2025, 7, 5, 0, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let expected_hi = Local
+            .with_ymd_and_hms(2026, 7, 6, 0, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64
+            - 1;
+        assert_eq!(lo, Some(expected_lo));
+        assert_eq!(hi, Some(expected_hi));
+
+        assert!(parse_range("custom:2025-07-04:2026-07-05").is_err());
+        assert!(parse_range("custom:2026-07-05:2026-01-05").is_err());
+        assert!(parse_range("custom:bad:2026-01-05").is_err());
     }
 
     /// 「过去 6 个月」= 本地午夜 - 6 个日历月。之前是 "all"（全部时间），
