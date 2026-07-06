@@ -111,7 +111,7 @@ jobs:
 
           const mapping = [
             { ext: '.app.tar.gz', sig: '.app.tar.gz.sig', key: ['darwin-x86_64', 'darwin-aarch64'] },
-            { ext: '.msi', sig: '.msi.sig', key: ['windows-x86_64'] },
+            { ext: '-setup.exe', sig: '-setup.exe.sig', key: ['windows-x86_64'] },
             { ext: '.AppImage', sig: '.AppImage.sig', key: ['linux-x86_64'] },
           ]
 
