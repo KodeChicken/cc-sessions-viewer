@@ -206,39 +206,53 @@ describe('agent visibility (enabledAgents / visibleAgents / setAgentEnabled)', (
 
   it('defaults to all agents enabled when nothing is stored', async () => {
     const mod = await freshAgents()
-    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'agy'])
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'agy', 'opencode'])
   })
 
   it('restores a persisted subset, preserving the canonical order', async () => {
-    const mod = await freshAgents(JSON.stringify({ claude: true, codex: false, agy: true }))
+    const mod = await freshAgents(
+      JSON.stringify({ claude: true, codex: false, agy: true, opencode: false }),
+    )
     expect(mod.visibleAgents.value).toEqual(['claude', 'agy'])
   })
 
+  it('treats agents missing from stored data as enabled (new agent rollout)', async () => {
+    // 旧版本存的 JSON 没有 opencode 键 —— 升级后它应默认可见。
+    const mod = await freshAgents(JSON.stringify({ claude: true, codex: false, agy: false }))
+    expect(mod.visibleAgents.value).toEqual(['claude', 'opencode'])
+  })
+
   it('falls back to all-enabled when stored data has every agent off', async () => {
-    const mod = await freshAgents(JSON.stringify({ claude: false, codex: false, agy: false }))
-    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'agy'])
+    const mod = await freshAgents(
+      JSON.stringify({ claude: false, codex: false, agy: false, opencode: false }),
+    )
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'agy', 'opencode'])
   })
 
   it('falls back to all-enabled on corrupt JSON', async () => {
     const mod = await freshAgents('{not json')
-    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'agy'])
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'agy', 'opencode'])
   })
 
   it('setAgentEnabled disables an agent and persists', async () => {
     const mod = await freshAgents()
     mod.setAgentEnabled('agy', false)
-    expect(mod.visibleAgents.value).toEqual(['claude', 'codex'])
+    expect(mod.visibleAgents.value).toEqual(['claude', 'codex', 'opencode'])
     expect(JSON.parse(localStorage.getItem('enabledAgents:v1')!).agy).toBe(false)
   })
 
   it('refuses to disable the last remaining agent', async () => {
-    const mod = await freshAgents(JSON.stringify({ claude: true, codex: false, agy: false }))
+    const mod = await freshAgents(
+      JSON.stringify({ claude: true, codex: false, agy: false, opencode: false }),
+    )
     mod.setAgentEnabled('claude', false)
     expect(mod.visibleAgents.value).toEqual(['claude'])
   })
 
   it('re-enables a previously hidden agent', async () => {
-    const mod = await freshAgents(JSON.stringify({ claude: true, codex: false, agy: false }))
+    const mod = await freshAgents(
+      JSON.stringify({ claude: true, codex: false, agy: false, opencode: false }),
+    )
     mod.setAgentEnabled('codex', true)
     expect(mod.visibleAgents.value).toEqual(['claude', 'codex'])
   })

@@ -1,4 +1,4 @@
-export type Agent = 'claude' | 'codex' | 'agy'
+export type Agent = 'claude' | 'codex' | 'agy' | 'opencode'
 
 export interface ProjectInfo {
   dirName: string
@@ -424,7 +424,7 @@ export interface TrayStats {
 // ---- CLI 环境检测 ----
 
 export interface CliVersionInfo {
-  cli: 'claude' | 'codex' | 'agy'
+  cli: 'claude' | 'codex' | 'agy' | 'opencode'
   npmPackage: string
   currentVersion: string | null
   latestVersion: string | null
@@ -442,7 +442,7 @@ export interface CliInstallation {
 }
 
 export interface CliDiagnosisResult {
-  cli: 'claude' | 'codex' | 'agy'
+  cli: 'claude' | 'codex' | 'agy' | 'opencode'
   binaryName: string
   installations: CliInstallation[]
   hasConflict: boolean
@@ -450,7 +450,7 @@ export interface CliDiagnosisResult {
 }
 
 export interface CliUpgradeResult {
-  cli: 'claude' | 'codex' | 'agy'
+  cli: 'claude' | 'codex' | 'agy' | 'opencode'
   success: boolean
   newVersion: string | null
   error: string | null

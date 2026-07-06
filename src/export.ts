@@ -47,6 +47,7 @@ function avatarSvg(role: string, agent: Agent): string {
   if (role === 'user') return AVATAR_SVG.user
   if (agent === 'codex') return AVATAR_SVG.codex
   if (agent === 'agy') return AVATAR_SVG.claude // agy 暂复用 claude 的 SVG 头像
+  if (agent === 'opencode') return AVATAR_SVG.claude // opencode 同样复用
   return AVATAR_SVG.claude
 }
 
@@ -55,6 +56,7 @@ function roleLabel(role: string, agent: Agent): string {
   if (role === 'user') return t('chat.role.me')
   if (agent === 'codex') return 'Codex'
   if (agent === 'agy') return 'agy'
+  if (agent === 'opencode') return 'opencode'
   return 'Claude'
 }
 

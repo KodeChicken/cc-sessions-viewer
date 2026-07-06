@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Agent, ProjectInfo, SessionMeta, UsageSummary } from '../types'
 import { formatSize, formatTime, formatTokens, highlightSegments, shortName } from '../format'
 import { t } from '../i18n'
@@ -33,10 +33,15 @@ import {
   IconSelect,
   IconClose,
   IconExitPane,
+  IconSplitH,
+  IconSplitV,
   IconTerminal,
   IconChat,
   agentIcons,
 } from '../components/icons'
+import { PaneActionsKey } from '../paneActions'
+
+const pa = inject(PaneActionsKey)!
 
 const props = defineProps<{
   agent: Agent
@@ -485,6 +490,14 @@ function pickRefresh() {
   ctxMenuPos.value = null
   emit('refresh')
 }
+function pickSplitH() {
+  ctxMenuPos.value = null
+  pa.splitH()
+}
+function pickSplitV() {
+  ctxMenuPos.value = null
+  pa.splitV()
+}
 function onNewMenuDocClick(e: MouseEvent) {
   if (newMenuOpen.value && !newMenuEl.value?.contains(e.target as Node)) {
     newMenuOpen.value = false
@@ -535,6 +548,15 @@ defineExpose({ scrollEl })
       <button type="button" class="new-menu-item" role="menuitem" @click="pickRefresh">
         <IconRefresh class="new-menu-ic" />
         <span>{{ t('list.action.refresh') }}</span>
+      </button>
+      <div class="new-menu-sep" role="separator" />
+      <button type="button" class="new-menu-item" role="menuitem" @click="pickSplitH">
+        <IconSplitH class="new-menu-ic" />
+        <span>{{ t('pane.splitH') }}</span>
+      </button>
+      <button type="button" class="new-menu-item" role="menuitem" @click="pickSplitV">
+        <IconSplitV class="new-menu-ic" />
+        <span>{{ t('pane.splitV') }}</span>
       </button>
     </div>
     <div class="list-head-actions">
@@ -784,6 +806,7 @@ defineExpose({ scrollEl })
           <IconPlay />
         </button>
         <button
+          v-if="agent !== 'opencode'"
           class="icon-btn"
           v-tooltip="t('list.action.reveal')"
           @click.stop="emit('reveal', s.path)"

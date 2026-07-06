@@ -93,16 +93,6 @@ fn file_fingerprint(path: &str) -> Option<(std::time::SystemTime, u64)> {
     Some((md.modified().ok()?, md.len()))
 }
 
-fn preferred_transcript_str(path: &str) -> String {
-    let p = std::path::Path::new(path);
-    let full = p.with_file_name("transcript_full.jsonl");
-    if full.exists() {
-        full.to_string_lossy().to_string()
-    } else {
-        path.to_string()
-    }
-}
-
 fn watch_root_for(path: &Path) -> Result<PathBuf, String> {
     path.parent()
         .map(Path::to_path_buf)
@@ -131,20 +121,20 @@ struct PathPayload {
 /// 订阅一条会话的 file watch。再次调用会替换上一个 watcher（旧 watcher 自动 drop）。
 /// 不存在的路径返回错误；前端可以选择降级到不 tail。
 pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), String> {
-    let p = PathBuf::from(&path);
-    if !p.exists() {
-        return Err(format!("File does not exist: {path}"));
+    let src = agents::source(&agent)?;
+    // 实际盯的磁盘文件由 agent 决定：文件型 = 会话文件自身；agy = transcript_full 优先；
+    // opencode（虚拟路径）= 库的 -wal 文件。notify 挂在目标文件的父目录上（原子替换兜底）。
+    let target = src
+        .watch_target(&path)
+        .ok_or_else(|| format!("No watchable file for: {path}"))?;
+    if !target.exists() {
+        return Err(format!("File does not exist: {}", target.display()));
     }
-    let watch_root = watch_root_for(&p)?;
-
-    let target_path = if agent == "agy" {
-        preferred_transcript_str(&path)
-    } else {
-        path.clone()
-    };
+    let watch_root = watch_root_for(&target)?;
+    let target_path = target.to_string_lossy().to_string();
+    let p = PathBuf::from(&path);
 
     // 先把 baseline 写好，避免 watcher 起来后回调先到 process_change 时拿不到 count。
-    let src = agents::source(&agent)?;
     let initial = src.read_session(&path).unwrap_or_default();
     {
         let mut m = last_count_map().lock().map_err(|e| e.to_string())?;
@@ -264,7 +254,16 @@ fn process_change(app: &AppHandle, agent: &str, path: &str) {
         }
     }
 
-    if !Path::new(path).exists() {
+    let src = match agents::source(agent) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let target_path = src
+        .watch_target(path)
+        .map(|t| t.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string());
+
+    if !Path::new(&target_path).exists() {
         let _ = app.emit(
             "session:gone",
             PathPayload {
@@ -283,12 +282,6 @@ fn process_change(app: &AppHandle, agent: &str, path: &str) {
         return;
     }
 
-    let target_path = if agent == "agy" {
-        preferred_transcript_str(path)
-    } else {
-        path.to_string()
-    };
-
     // 廉价短路：目标文件指纹（mtime+size）与上次处理时相同 → 这次事件是同目录里**别的**文件在写,
     // 直接返回,别对大文件做全量 read_session。真有追加会改指纹,走到下面重读。
     let cur_fp = file_fingerprint(&target_path);
@@ -303,10 +296,6 @@ fn process_change(app: &AppHandle, agent: &str, path: &str) {
         }
     }
 
-    let src = match agents::source(agent) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
     let msgs = match src.read_session(path) {
         Ok(m) => m,
         Err(_) => return,

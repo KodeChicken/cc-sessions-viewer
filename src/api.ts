@@ -176,6 +176,10 @@ export const openPathExternal = (path: string, cwd?: string, line?: number, col?
 export const writeFile = (path: string, content: string) =>
   invoke<string>('write_file', { path, content })
 
+/** 写入二进制文件（base64 编码）。 */
+export const writeBinaryFile = (path: string, base64: string) =>
+  invoke<string>('write_binary_file', { path, base64 })
+
 /** Live tail：让后端开始监听一个 JSONL 文件，新增片段会通过 `session:append` 事件
  *  推送过来。同一时刻只有一个 watcher —— 再调一次会自动替换前一个。 */
 export const watchSession = (agent: Agent, path: string) =>

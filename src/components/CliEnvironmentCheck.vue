@@ -21,12 +21,14 @@ const cliLabels: Record<string, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
   agy: 'Antigravity CLI',
+  opencode: 'opencode',
 }
 
 const cliUrls: Record<string, string> = {
   claude: 'https://docs.anthropic.com/en/docs/claude-code/overview',
   codex: 'https://developers.openai.com/codex/cli',
   agy: 'https://antigravity.google/docs/cli/getting-started',
+  opencode: 'https://opencode.ai/docs/',
 }
 
 const pmLabels: Record<string, string> = {
@@ -35,6 +37,7 @@ const pmLabels: Record<string, string> = {
   nvm: 'nvm',
   volta: 'Volta',
   fnm: 'fnm',
+  bun: 'bun',
   npm: 'npm global',
   system: 'system',
   unknown: 'unknown',

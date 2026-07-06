@@ -69,6 +69,21 @@ export async function renderAllMermaid(root: HTMLElement | null): Promise<void> 
     try {
       const { svg } = await mermaid.render(id, src)
       el.innerHTML = svg
+      // 甘特图等宽图表：mermaid 把 SVG width 设为容器宽度导致内容挤压看不清。
+      // 读 viewBox 的固有宽度作为 min-width，容器 overflow:auto 提供滚动。
+      const svgEl = el.querySelector('svg')
+      if (svgEl) {
+        const vb = svgEl.getAttribute('viewBox')
+        if (vb) {
+          const parts = vb.split(/[\s,]+/)
+          const vbWidth = parseFloat(parts[2])
+          if (vbWidth > 0) {
+            svgEl.style.minWidth = `${vbWidth}px`
+            svgEl.removeAttribute('width')
+          }
+        }
+      }
+      addExportButton(el)
       el.setAttribute('data-rendered', '1')
     } catch (e) {
       // 语法错误 / 渲染失败：把 .md-mermaid 改成 .md-mermaid-error，露出源码 + 一行错误。
@@ -100,4 +115,80 @@ function escapeHtml(s: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+}
+
+const DOWNLOAD_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
+
+function addExportButton(container: HTMLElement): void {
+  if (container.querySelector('.mermaid-export')) return
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'mermaid-export'
+  btn.setAttribute('aria-label', 'Export as PNG')
+  btn.innerHTML = DOWNLOAD_SVG
+  btn.addEventListener('click', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const svgEl = container.querySelector('svg')
+    if (!svgEl) return
+    void exportSvgAsPng(svgEl)
+  })
+  container.appendChild(btn)
+}
+
+async function exportSvgAsPng(svgEl: SVGSVGElement): Promise<void> {
+  const { save: saveDialog } = await import('@tauri-apps/plugin-dialog')
+  const { writeBinaryFile, revealInFinder } = await import('./api')
+
+  const chosen = await saveDialog({
+    defaultPath: `mermaid-${Date.now()}.png`,
+    filters: [{ name: 'PNG Image', extensions: ['png'] }],
+  })
+  if (!chosen) return
+
+  const clone = svgEl.cloneNode(true) as SVGSVGElement
+  const vb = svgEl.getAttribute('viewBox')
+  const rect = svgEl.getBoundingClientRect()
+  const w = parseFloat(clone.getAttribute('width') || '') || (vb ? parseFloat(vb.split(/[\s,]+/)[2]) : rect.width)
+  const h = parseFloat(clone.getAttribute('height') || '') || (vb ? parseFloat(vb.split(/[\s,]+/)[3]) : rect.height)
+  clone.setAttribute('width', `${w}`)
+  clone.setAttribute('height', `${h}`)
+  if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+
+  const styles = document.querySelectorAll('style')
+  const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style')
+  let css = ''
+  styles.forEach((s) => { css += s.textContent || '' })
+  styleEl.textContent = css
+  clone.insertBefore(styleEl, clone.firstChild)
+
+  const scale = 2
+  const serialized = new XMLSerializer().serializeToString(clone)
+  const blob = new Blob([serialized], { type: 'image/svg+xml;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+
+  await new Promise<void>((resolve) => {
+    const img = new Image()
+    img.onload = async () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = w * scale
+      canvas.height = h * scale
+      const ctx = canvas.getContext('2d')!
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      URL.revokeObjectURL(url)
+      const pngBlob = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/png'))
+      if (pngBlob) {
+        const buf = await pngBlob.arrayBuffer()
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)))
+        await writeBinaryFile(chosen, base64)
+        revealInFinder(chosen)
+      }
+      resolve()
+    }
+    img.onerror = () => { URL.revokeObjectURL(url); resolve() }
+    img.src = url
+  })
 }

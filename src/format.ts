@@ -79,9 +79,25 @@ function inline(text: string): string {
     const idx = codes.push(code) - 1
     return `${SENT}CODE${idx}${SENT}`
   })
+  // 行内数学 $...$ → 占位（保护内容不被后续 pass 误改）
+  s = s.replace(/\$([^\$\n]+?)\$/g, (_m, expr) => {
+    const idx = codes.push(`MATH:${expr}`) - 1
+    return `${SENT}CODE${idx}${SENT}`
+  })
+  // 行内代码 ~~~code~~~（opencode 用的非标准语法）
+  s = s.replace(/~~~([^~\n]+?)~~~/g, (_m, code) => {
+    const idx = codes.push(code) - 1
+    return `${SENT}CODE${idx}${SENT}`
+  })
   s = escapeHtml(s)
   s = s.replace(URL_RE, (url) => `<a href="${url}" target="_blank" rel="noopener">${url}</a>`)
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+  s = s.replace(/(?<![*\\])\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>')
+  s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>')
+  s = s.replace(/==([^=\n]+)==/g, '<mark class="md-mark">$1</mark>')
+  s = s.replace(/\^([^\^\s]+)\^/g, '<sup>$1</sup>')
+  s = s.replace(/~([^~\s]+)~/g, '<sub>$1</sub>')
+  s = s.replace(/\[\^(\w+)\]/g, '<sup class="md-fn-ref">[$1]</sup>')
   s = s.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>')
   s = s.replace(/^#####\s+(.+)$/gm, '<h6>$1</h6>')
   s = s.replace(/^####\s+(.+)$/gm, '<h5>$1</h5>')
@@ -96,11 +112,15 @@ function inline(text: string): string {
   if (codes.length) {
     const codeRe = new RegExp(`${SENT}CODE(\\d+)${SENT}`, 'g')
     s = s.replace(codeRe, (_m, n) => {
-      const code = codes[Number(n)] ?? ''
-      if (FILE_REF_RE.test(code)) {
-        return `<code class="file-ref" data-file-ref="${escapeHtmlAttr(code)}">${escapeHtml(code)}</code>`
+      const raw = codes[Number(n)] ?? ''
+      if (raw.startsWith('MATH:')) {
+        const expr = raw.slice(5)
+        return `<span class="md-math-inline" data-math="${escapeHtmlAttr(expr)}">${escapeHtml(expr)}</span>`
       }
-      return `<code>${escapeHtml(code)}</code>`
+      if (FILE_REF_RE.test(raw)) {
+        return `<code class="file-ref" data-file-ref="${escapeHtmlAttr(raw)}">${escapeHtml(raw)}</code>`
+      }
+      return `<code>${escapeHtml(raw)}</code>`
     })
   }
   if (links.length) {
@@ -339,9 +359,17 @@ function renderTableHtml(
 const HR_RE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/
 
 const BULLET_ITEM_RE = /^\s*[-*]\s+(.+?)\s*$/
+const ORDERED_ITEM_RE = /^\s*\d+[.)]\s+(.+?)\s*$/
+const TASK_ITEM_RE = /^\[([xX ])\]\s+(.+)$/
+const DEF_TERM_RE = /^\S/
+const DEF_LINE_RE = /^:\s+(.+)$/
 
 function isBulletItem(line: string): boolean {
   return BULLET_ITEM_RE.test(line)
+}
+
+function isOrderedItem(line: string): boolean {
+  return ORDERED_ITEM_RE.test(line)
 }
 
 function bulletItemText(line: string): string {
@@ -349,15 +377,38 @@ function bulletItemText(line: string): string {
   return m?.[1] ?? line.trim()
 }
 
+function orderedItemText(line: string): string {
+  const m = ORDERED_ITEM_RE.exec(line)
+  return m?.[1] ?? line.trim()
+}
+
+function renderListItemHtml(text: string): string {
+  const task = TASK_ITEM_RE.exec(text)
+  if (task) {
+    const checked = task[1].toLowerCase() === 'x'
+    const icon = checked
+      ? '<span class="md-check checked">&#9745;</span>'
+      : '<span class="md-check">&#9744;</span>'
+    return `<li class="md-task">${icon}${inline(task[2])}</li>`
+  }
+  return `<li>${inline(text)}</li>`
+}
+
 function renderBulletListHtml(items: string[]): string {
-  const body = items.map((item) => `<li>${inline(item)}</li>`).join('')
+  const body = items.map(renderListItemHtml).join('')
   return `<ul class="md-list">${body}</ul>`
+}
+
+function renderOrderedListHtml(items: string[]): string {
+  const body = items.map(renderListItemHtml).join('')
+  return `<ol class="md-list md-list-ol">${body}</ol>`
 }
 
 type MdSegment =
   | { kind: 'table'; html: string }
   | { kind: 'list'; html: string }
   | { kind: 'rule' }
+  | { kind: 'blockquote'; html: string }
   | { kind: 'text'; text: string }
 
 /** 把一段非代码块文本按 markdown table / bullet list 切片。未命中的部分保留原换行，
@@ -399,6 +450,18 @@ function extractMarkdownBlocks(text: string): MdSegment[] {
       i++
       continue
     }
+    if (line.startsWith('> ') || line === '>') {
+      flushBuf()
+      const qLines: string[] = [line.replace(/^>\s?/, '')]
+      let j = i + 1
+      while (j < lines.length && (lines[j].startsWith('> ') || lines[j] === '>')) {
+        qLines.push(lines[j].replace(/^>\s?/, ''))
+        j++
+      }
+      segs.push({ kind: 'blockquote', html: `<blockquote class="md-quote">${inline(qLines.join('\n'))}</blockquote>` })
+      i = j
+      continue
+    }
     if (isBulletItem(line)) {
       flushBuf()
       const items: string[] = [bulletItemText(line)]
@@ -408,6 +471,42 @@ function extractMarkdownBlocks(text: string): MdSegment[] {
         j++
       }
       segs.push({ kind: 'list', html: renderBulletListHtml(items) })
+      i = j
+      continue
+    }
+    if (isOrderedItem(line)) {
+      flushBuf()
+      const items: string[] = [orderedItemText(line)]
+      let j = i + 1
+      while (j < lines.length && isOrderedItem(lines[j])) {
+        items.push(orderedItemText(lines[j]))
+        j++
+      }
+      segs.push({ kind: 'list', html: renderOrderedListHtml(items) })
+      i = j
+      continue
+    }
+    // 定义列表: term + `: definition`
+    if (DEF_TERM_RE.test(line) && i + 1 < lines.length && DEF_LINE_RE.test(lines[i + 1])) {
+      flushBuf()
+      let html = '<dl class="md-dl">'
+      let j = i
+      while (j < lines.length) {
+        if (DEF_TERM_RE.test(lines[j]) && j + 1 < lines.length && DEF_LINE_RE.test(lines[j + 1])) {
+          html += `<dt>${inline(lines[j])}</dt>`
+          j++
+          while (j < lines.length && DEF_LINE_RE.test(lines[j])) {
+            html += `<dd>${inline(DEF_LINE_RE.exec(lines[j])![1])}</dd>`
+            j++
+          }
+        } else if (lines[j].trim() === '') {
+          j++
+        } else {
+          break
+        }
+      }
+      html += '</dl>'
+      segs.push({ kind: 'list', html })
       i = j
       continue
     }
@@ -470,6 +569,7 @@ function renderTextImpl(raw: string): string {
     for (const seg of extractMarkdownBlocks(part)) {
       if (seg.kind === 'table') html += seg.html
       else if (seg.kind === 'list') html += seg.html
+      else if (seg.kind === 'blockquote') html += seg.html
       else if (seg.kind === 'rule') html += '<hr class="md-hr">'
       else if (seg.kind === 'text') {
         // 去掉文本段首尾的空行、并把 3+ 连续空行压成最多一行 —— 标题/代码块/表格
@@ -485,6 +585,42 @@ function renderTextImpl(raw: string): string {
 
   let i = 0
   while (i < lines.length) {
+    // 块级数学 $$...$$
+    if (lines[i].trim() === '$$') {
+      const body: string[] = []
+      let j = i + 1
+      let closed = false
+      for (; j < lines.length; j++) {
+        if (lines[j].trim() === '$$') { closed = true; break }
+        body.push(lines[j])
+      }
+      flushText()
+      const expr = body.join('\n')
+      html += `<div class="md-math-block" data-math="${escapeHtmlAttr(expr)}"><pre>${escapeHtml(expr)}</pre></div>`
+      i = closed ? j + 1 : j
+      continue
+    }
+    // <details> 折叠
+    if (lines[i].trim().startsWith('<details')) {
+      const block: string[] = [lines[i]]
+      let j = i + 1
+      let closed = false
+      for (; j < lines.length; j++) {
+        block.push(lines[j])
+        if (lines[j].trim().includes('</details>')) { closed = true; j++; break }
+      }
+      if (!closed) j = lines.length
+      flushText()
+      const raw = block.join('\n')
+      const summary = /<summary>([\s\S]*?)<\/summary>/.exec(raw)?.[1]?.trim() ?? ''
+      const content = raw
+        .replace(/<\/?details[^>]*>/g, '')
+        .replace(/<summary>[\s\S]*?<\/summary>/, '')
+        .trim()
+      html += `<details class="md-details"><summary>${escapeHtml(summary)}</summary><div class="md-details-body">${renderText(content)}</div></details>`
+      i = j
+      continue
+    }
     // 开围栏：缩进 ≤3、≥3 个连续反引号、信息串里不含反引号（CommonMark）。
     const open = lines[i].match(/^( {0,3})(`{3,})(.*)$/)
     if (open && !open[3].includes('`')) {

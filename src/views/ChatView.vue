@@ -6,6 +6,7 @@ import { renderText, formatTime, isCaveatOnlyMsg, parseSystemEvent, cleanMetaTex
 import type { MetaField } from '../format'
 import { prettifyAndHighlightJson } from '../jsonHighlight'
 import { renderAllMermaid, resetMermaidForTheme } from '../mermaid'
+import { renderAllMath } from '../mathRender'
 import { highlightAllCodeBlocks, rehighlightAllCodeBlocks } from '../shikiHighlight'
 import { decorateCodeBlocks } from '../codeCopy'
 import { theme } from '../settings'
@@ -205,6 +206,8 @@ const FILE_MUTATING_TOOLS = new Set([
   'MultiEdit',
   'NotebookEdit',
   'apply_patch',
+  'edit',
+  'write',
 ])
 
 // 搜索范围分类 —— 给 .msg-row / tool_use <details> 打 data-search-scope，
@@ -402,12 +405,11 @@ function isImagePath(path: string): boolean {
   return IMAGE_CHIP_EXTS.has(path.split('.').pop()?.toLowerCase() ?? '')
 }
 function fileBlocks(m: Msg): Block[] {
-  // 同条消息已有图片缩略图时，跳过图片类文件 chip —— 避免和上方缩略图重复（如 Codex 的
-  // 「Files mentioned」会把贴的图也列进文件清单，Claude 贴图同理）。
   const hasThumbs = m.blocks.some((b) => b.kind === 'image' && b.imageSrc)
-  return m.blocks.filter(
+  const files = m.blocks.filter(
     (b) => b.kind === 'file' && b.filePath && !(hasThumbs && isImagePath(b.filePath)),
   )
+  return files
 }
 // 文件名 = 路径 basename（兼容 `/` 与 `\`）；空则回退整段路径。
 function fileName(path: string): string {
@@ -417,10 +419,7 @@ function fileName(path: string): string {
 }
 function openFile(b: Block) {
   if (!b.filePath) return
-  // 相对路径按会话 cwd 解析；后端校验存在性并用系统默认程序打开。
-  void openPathExternal(b.filePath, props.session?.cwd).catch((e) => {
-    console.warn('[chat] open file failed:', e)
-  })
+  void openPathExternal(b.filePath, props.cwd || props.session?.cwd).catch(() => {})
 }
 
 // `/context` 报告（`## Context Usage` markdown）有两条来源：① live stream —— 一条
@@ -537,7 +536,7 @@ watch(
 // 不再弹自定义菜单。
 
 const assistantName = computed(() =>
-  props.agent === 'codex' ? 'Codex' : props.agent === 'agy' ? 'agy' : 'Claude',
+  props.agent === 'codex' ? 'Codex' : props.agent === 'agy' ? 'agy' : props.agent === 'opencode' ? 'opencode' : 'Claude',
 )
 
 function formatModelName(modelName: string): string {
@@ -1171,6 +1170,7 @@ function decorateVisible() {
   const root = innerEl.value ?? null
   if (toolsCollapsed.value) sweepDetails(false)
   renderAllMermaid(root)
+  renderAllMath(root)
   highlightAllCodeBlocks(root)
   decorateCodeBlocks(root)
 }
@@ -1515,7 +1515,7 @@ function onDocClick(e: MouseEvent) {
     </button>
     <!-- 打开目录 / 导出：read 与 live chat 两种模式都需要。 -->
     <button
-      v-if="!trashed"
+      v-if="!trashed && agent !== 'opencode'"
       class="icon-btn"
       v-tooltip="t('chat.action.reveal')"
       @click="$emit('reveal')"

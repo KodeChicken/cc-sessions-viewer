@@ -83,16 +83,16 @@ export function setQuickOpenTarget(v: QuickOpenTarget) {
   localStorage.setItem(QUICK_OPEN_KEY, v)
 }
 
-export type LaunchArgs = { claude: string; codex: string; agy: string }
+export type LaunchArgs = { claude: string; codex: string; agy: string; opencode: string }
 function readLaunchArgs(): LaunchArgs {
   try {
     const v = localStorage.getItem(LAUNCH_ARGS_KEY)
     if (v) {
       const parsed = JSON.parse(v) as Partial<LaunchArgs>
-      return { claude: parsed.claude ?? '', codex: parsed.codex ?? '', agy: parsed.agy ?? '' }
+      return { claude: parsed.claude ?? '', codex: parsed.codex ?? '', agy: parsed.agy ?? '', opencode: parsed.opencode ?? '' }
     }
   } catch { /* ignore */ }
-  return { claude: '', codex: '', agy: '' }
+  return { claude: '', codex: '', agy: '', opencode: '' }
 }
 export const launchArgs = ref<LaunchArgs>(readLaunchArgs())
 
@@ -103,12 +103,12 @@ export function setLaunchArgs(agent: keyof LaunchArgs, args: string) {
 
 // ---------- Agent 显隐开关 ----------
 // 只用 cc 的用户可以把 codex 关掉，让侧栏/主页的 agent 切换更清爽。
-// 固定顺序 claude → codex → agy；至少保留一个启用，否则整个 app 无内容可看。
-export const ALL_AGENTS: Agent[] = ['claude', 'codex', 'agy']
+// 固定顺序 claude → codex → agy → opencode；至少保留一个启用，否则整个 app 无内容可看。
+export const ALL_AGENTS: Agent[] = ['claude', 'codex', 'agy', 'opencode']
 type EnabledAgents = Record<Agent, boolean>
 
 function readEnabledAgents(): EnabledAgents {
-  const all: EnabledAgents = { claude: true, codex: true, agy: true }
+  const all: EnabledAgents = { claude: true, codex: true, agy: true, opencode: true }
   try {
     const v = localStorage.getItem(ENABLED_AGENTS_KEY)
     if (v) {
@@ -117,6 +117,7 @@ function readEnabledAgents(): EnabledAgents {
         claude: parsed.claude ?? true,
         codex: parsed.codex ?? true,
         agy: parsed.agy ?? true,
+        opencode: parsed.opencode ?? true,
       }
       // 防御：localStorage 里若全是 false（脏数据/手改）就回退到全开。
       if (ALL_AGENTS.some((a) => merged[a])) return merged
@@ -242,7 +243,7 @@ export function clearAppCache() {
   localStorage.removeItem(LAUNCH_ARGS_KEY)
   terminalApp.value = 'terminal'
   useExternalTerminal.value = false
-  launchArgs.value = { claude: '', codex: '', agy: '' }
+  launchArgs.value = { claude: '', codex: '', agy: '', opencode: '' }
 }
 
 // ---------- Statistics 页的 scope / range 持久化 ----------

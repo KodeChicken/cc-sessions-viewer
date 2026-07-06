@@ -323,7 +323,7 @@ pub fn list_for_ui() -> Vec<PricingEntry> {
         // 会被 version_tuple 解析成 [120]，排到 gpt-5 [5] 前面 —— 用户反馈过这个。
         // 一并干掉 image / audio / realtime / transcribe / search-preview，那都是
         // 独立 API 不是 chat 模型；以及 `gpt-35-*` Azure 命名重复（`gpt-3.5-*` 已在表里）。
-        let is_codex_noise = lower.contains("gpt-oss")
+        let is_noise = lower.contains("gpt-oss")
             || lower.contains("oss:")
             || lower.contains("-image")
             || lower.contains("-audio")
@@ -331,9 +331,11 @@ pub fn list_for_ui() -> Vec<PricingEntry> {
             || lower.contains("-transcribe")
             || lower.contains("-search-preview")
             || lower.contains("-search-api")
+            || lower.contains("-video")
+            || lower.contains("imagine-")
             || lower.starts_with("gpt-35-")
             || lower == "gpt-35";
-        if is_codex_noise {
+        if is_noise {
             continue;
         }
         let family: &'static str = if lower.starts_with("claude-") {
@@ -342,13 +344,23 @@ pub fn list_for_ui() -> Vec<PricingEntry> {
             || lower.contains("-codex")
             || lower.starts_with("gpt-")
             || lower.starts_with("o1-")
+            || lower.starts_with("o3-")
+            || lower.starts_with("o4-")
             || lower == "o1"
+            || lower == "o3"
+            || lower == "o4"
         {
             "codex"
         } else if lower.starts_with("gemini-") {
             "agy"
+        } else if lower.starts_with("text-embedding-")
+            || lower.starts_with("tts-")
+            || lower.starts_with("whisper-")
+            || lower.starts_with("dall-e-")
+        {
+            continue; // 非聊天模型，不进价格表
         } else {
-            continue;
+            "opencode"
         };
         out.push(PricingEntry {
             name: raw_name.clone(),
@@ -364,6 +376,7 @@ pub fn list_for_ui() -> Vec<PricingEntry> {
         "claude" => 0,
         "codex" => 1,
         "agy" => 2,
+        "opencode" => 3,
         _ => 9,
     };
     // 同 family 内："版本号倒序" 主键 + "naked > 日期 pin 倒序" tiebreak。
@@ -545,15 +558,52 @@ fn save_to_cache(table: &HashMap<String, ModelCosts>) {
 }
 
 /// 解析 models.dev 的根 JSON：`{ <provider>: { models: { <id>: { cost, limit, … } } } }`。
-/// 只取两家 CLI 实际会跑的 provider（anthropic / openai）—— 其余 130+ 个
-/// provider 多是镜像网关（openrouter / bedrock / vercel / …），模型 ID 还带前缀，
-/// 入表只是噪声；裸 ID 入表后 `lookup()` 的 canonical / 前缀匹配逻辑原样工作。
+///
+/// 两步：
+///   1. anthropic / openai / google —— 三家原生 CLI 的模型，直接入表。
+///   2. opencode 专属模型（白名单，来源 opencode 官方文档）：逐个在各厂商直连
+///      provider 里查价格（官方价为准），查不到的在 `opencode` provider 里兜底。
 pub(crate) fn parse_models_dev_json(body: &str) -> Option<HashMap<String, ModelCosts>> {
-    const PROVIDERS: &[&str] = &["anthropic", "openai", "google"];
+    const NATIVE_PROVIDERS: &[&str] = &["anthropic", "openai", "google"];
+    const OPENCODE_DIRECT: &[&str] = &[
+        "deepseek", "kimi-for-coding", "minimax", "zhipuai", "xiaomi", "xai",
+        "alibaba-cn",
+    ];
+    // opencode 文档列出的非 claude/gpt/gemini 模型（合并 go + zen 两份文档去重）。
+    // 来源：https://opencode.ai/docs/zh-cn/go/#模型
+    //       https://opencode.ai/docs/zh-cn/zen/#定价
+    const OPENCODE_MODELS: &[&str] = &[
+        "big-pickle",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-free",
+        "deepseek-v4-pro",
+        "glm-5",
+        "glm-5.1",
+        "glm-5.2",
+        "grok-build-0.1",
+        "kimi-k2.5",
+        "kimi-k2.6",
+        "kimi-k2.7-code",
+        "mimo-v2.5",
+        "mimo-v2.5-free",
+        "mimo-v2.5-pro",
+        "minimax-m2.5",
+        "minimax-m2.7",
+        "minimax-m3",
+        "nemotron-3-ultra-free",
+        "north-mini-code-free",
+        "qwen3.5-plus",
+        "qwen3.6-plus",
+        "qwen3.7-max",
+        "qwen3.7-plus",
+    ];
+
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     let root = value.as_object()?;
     let mut out: HashMap<String, ModelCosts> = HashMap::with_capacity(128);
-    for prov in PROVIDERS {
+
+    // Step 1: 三家原生 CLI
+    for prov in NATIVE_PROVIDERS {
         let Some(models) = root
             .get(*prov)
             .and_then(|p| p.get("models"))
@@ -566,6 +616,39 @@ pub(crate) fn parse_models_dev_json(body: &str) -> Option<HashMap<String, ModelC
                 continue;
             };
             out.insert(name.clone(), costs);
+        }
+    }
+
+    // Step 2: opencode 专属模型——各厂商直连价优先，opencode provider 兜底
+    let mut direct_all: HashMap<String, ModelCosts> = HashMap::new();
+    for prov in OPENCODE_DIRECT {
+        if let Some(models) = root
+            .get(*prov)
+            .and_then(|p| p.get("models"))
+            .and_then(|m| m.as_object())
+        {
+            for (name, entry) in models.iter() {
+                if let Some(costs) = parse_models_dev_entry(entry) {
+                    direct_all.insert(name.to_ascii_lowercase(), costs);
+                }
+            }
+        }
+    }
+    let oc_models = root
+        .get("opencode")
+        .and_then(|p| p.get("models"))
+        .and_then(|m| m.as_object());
+
+    for id in OPENCODE_MODELS {
+        let lower = id.to_ascii_lowercase();
+        // "-free" 是 opencode 的免费套餐标签，底层模型有厂商官方价——去掉后缀再查。
+        let base = lower.strip_suffix("-free").unwrap_or(&lower);
+        if let Some(costs) = direct_all.get(base).or_else(|| direct_all.get(&lower)) {
+            out.insert(id.to_string(), *costs);
+        } else if let Some(entry) = oc_models.and_then(|m| m.get(*id)) {
+            if let Some(costs) = parse_models_dev_entry(entry) {
+                out.insert(id.to_string(), costs);
+            }
         }
     }
     if out.is_empty() {

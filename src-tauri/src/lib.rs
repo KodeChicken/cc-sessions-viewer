@@ -44,7 +44,6 @@ use crate::types::{
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 #[allow(unused_imports)]
 use tauri::{Emitter, Manager};
-use crate::util::is_jsonl;
 
 /// 全局搜索的取消代际 —— 每次新搜索把自己的 `request_id` 写进来，正在跑的搜索循环
 /// 不停 check；一旦发现 gen ≠ 自己的 id 就主动 bail。`cancel_search()` 直接 bump 它。
@@ -262,13 +261,10 @@ fn cancel_search() {
 #[tauri::command]
 fn rename_session(agent: String, path: String, name: String) -> Result<(), String> {
     let fp = PathBuf::from(&path);
-    if !fp.exists() {
-        return Err("Session file does not exist".to_string());
-    }
-    if !is_jsonl(&fp) {
-        return Err("Not a JSONL file".to_string());
-    }
-    agents::source(&agent)?.rename_session(&fp, &name)
+    let src = agents::source(&agent)?;
+    // 路径合法性由 agent 自查：文件型 = 存在且 .jsonl；opencode = opencode:// 虚拟路径。
+    src.validate_session_path(&fp)?;
+    src.rename_session(&fp, &name)
 }
 
 /// `/fork`：把既有会话克隆成一个全新、独立的磁盘 transcript（新 session id），打上 `title`，
@@ -282,7 +278,7 @@ fn fork_session(
     title: String,
 ) -> Result<String, String> {
     if source_id.is_empty()
-        || !source_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        || !source_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err("Invalid session ID".to_string());
     }
@@ -337,7 +333,7 @@ fn pty_spawn(
     if session_id.is_empty()
         || !session_id
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err("Invalid session ID".to_string());
     }
@@ -438,7 +434,7 @@ fn agent_chat_start(
     }
     // 续聊时校验 session id（会被拼进 --resume）。新开会话 session_id 为空。
     if let Some(id) = session_id.as_deref() {
-        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
             return Err("Invalid session ID".to_string());
         }
     }
@@ -594,7 +590,7 @@ fn resume_session(
     if session_id.is_empty()
         || !session_id
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err("Invalid session ID".to_string());
     }
@@ -871,8 +867,8 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
 fn command_session_id(command: &AgentCommand) -> Option<&str> {
     command.args().iter().find_map(|arg| {
         (arg.len() > 8
-            && arg.contains('-')
-            && arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+            && (arg.contains('-') || arg.contains('_'))
+            && arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
         .then_some(arg.as_str())
     })
 }
@@ -992,6 +988,22 @@ fn write_file(path: String, content: String) -> Result<String, String> {
         }
     }
     fs::write(&p, content).map_err(|e| format!("Failed to write file: {e}"))?;
+    Ok(p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn write_binary_file(path: String, base64: String) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&base64)
+        .map_err(|e| format!("Invalid base64: {e}"))?;
+    let p = PathBuf::from(&path);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;
+        }
+    }
+    fs::write(&p, bytes).map_err(|e| format!("Failed to write file: {e}"))?;
     Ok(p.to_string_lossy().to_string())
 }
 
@@ -1211,14 +1223,23 @@ fn open_path_external(
         }
     }
     if !p.exists() {
-        // 聊天里点的「文件引用」常是部分路径（如 `bank/refund_detail.dart`），直接拼 cwd 找不到。
-        // 在项目树里按目录段后缀搜真身（`lib/pages/wallet/bank/refund_detail.dart`）。
-        if let Some(found) = cwd
-            .as_deref()
-            .filter(|c| !c.is_empty())
-            .and_then(|base| util::resolve_file_ref(base, &path))
-        {
-            p = found;
+        if let Some(base) = cwd.as_deref().filter(|c| !c.is_empty()) {
+            // 在 cwd 树里按目录段后缀搜（如 `bank/refund_detail.dart` → `lib/.../bank/refund_detail.dart`）
+            if let Some(found) = util::resolve_file_ref(base, &path) {
+                p = found;
+            }
+            // cwd 可能是子目录（如 src-tauri），往父目录逐级尝试
+            if !p.exists() {
+                let mut ancestor = Path::new(base).parent();
+                while let Some(dir) = ancestor {
+                    let candidate = dir.join(&path);
+                    if candidate.exists() {
+                        p = candidate;
+                        break;
+                    }
+                    ancestor = dir.parent();
+                }
+            }
         }
     }
     if !p.exists() {
@@ -1629,6 +1650,7 @@ pub fn run() {
             git_current_branch,
             list_project_files,
             write_file,
+            write_binary_file,
             set_titlebar_theme,
             add_bookmark,
             remove_bookmark,

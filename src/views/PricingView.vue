@@ -21,6 +21,7 @@ import {
   IconClaude,
   IconCodex,
   IconAgy,
+  IconOpencode,
   IconSearch,
   IconClose,
   IconExternalLink,
@@ -70,11 +71,12 @@ async function onRefresh() {
 onMounted(load)
 
 // 按 family 分桶 —— 后端已排好序（family, input 升序），这里仅做分组。
-type Family = 'claude' | 'codex' | 'agy'
+type Family = 'claude' | 'codex' | 'agy' | 'opencode'
 const FAMILIES: { key: Family; icon: Component; label: string }[] = [
   { key: 'claude', icon: IconClaude, label: 'pricing.family.claude' },
   { key: 'codex', icon: IconCodex, label: 'pricing.family.codex' },
   { key: 'agy', icon: IconAgy, label: 'pricing.family.agy' },
+  { key: 'opencode', icon: IconOpencode, label: 'pricing.family.opencode' },
 ]
 // 价格页同样跟随设置里的 agent 显隐：只展示启用的 family（锚点 chip + 模型分段）。
 const visibleFamilies = computed(() =>
@@ -99,7 +101,7 @@ const filtered = computed<PricingEntry[]>(() => {
 })
 
 const grouped = computed(() => {
-  const map: Record<Family, PricingEntry[]> = { claude: [], codex: [], agy: [] }
+  const map: Record<Family, PricingEntry[]> = { claude: [], codex: [], agy: [], opencode: [] }
   for (const e of filtered.value) {
     if (e.family in map) map[e.family].push(e)
   }
@@ -141,6 +143,7 @@ const sectionEls = ref<Record<Family, HTMLElement | null>>({
   claude: null,
   codex: null,
   agy: null,
+  opencode: null,
 })
 const activeFamily = ref<Family>('claude')
 

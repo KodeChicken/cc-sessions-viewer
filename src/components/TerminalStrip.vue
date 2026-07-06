@@ -3,7 +3,7 @@
 // 再后面是当前 (agent, projectKey) 范围内的所有活跃 PTY tab。
 // 隐藏的 PTY/view tab（别的项目 / 别的 agent）不在这里出现，但仍在后台活着。
 
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Agent } from '../types'
 import type { TerminalTab, SavedTab } from '../terminals'
 import {
@@ -25,10 +25,15 @@ import {
   IconList,
   IconPlus,
   IconReader,
+  IconSplitH,
+  IconSplitV,
   IconTerminal,
   agentIcons,
 } from './icons'
 import { t } from '../i18n'
+import { PaneActionsKey } from '../paneActions'
+
+const pa = inject(PaneActionsKey)!
 
 const props = defineProps<{
   /** 本 strip 所属的分屏格子。tab 过滤 / active 判定 / 拖拽都以它为准。 */
@@ -1279,6 +1284,23 @@ onUnmounted(() => {
     </div>
 
     <div
+      class="term-tab-new"
+      style="flex-shrink:0"
+      v-tooltip:bottom="t('pane.splitH')"
+      role="button"
+      tabindex="0"
+      @click="pa.splitH()"
+    ><IconSplitH /></div>
+    <div
+      class="term-tab-new"
+      style="flex-shrink:0"
+      v-tooltip:bottom="t('pane.splitV')"
+      role="button"
+      tabindex="0"
+      @click="pa.splitV()"
+    ><IconSplitV /></div>
+
+    <div
       v-if="stripCtx"
       class="ctx-menu term-strip-ctx-menu"
       :style="{ left: stripCtx.x + 'px', top: stripCtx.y + 'px' }"
@@ -1395,17 +1417,17 @@ onUnmounted(() => {
       @click.stop
       @contextmenu.prevent.stop
     >
-      <button type="button" class="ctx-item" @click="closeViewTabCtx(); emit('viewRename', viewTabCtx!.vt)">
+      <button type="button" class="ctx-item" @click="const vt = viewTabCtx!.vt; closeViewTabCtx(); emit('viewRename', vt)">
         <span>{{ t('chat.tui.tabRenameView') }}</span>
       </button>
       <div class="ctx-sep" />
-      <button type="button" class="ctx-item" @click="closeViewTabCtx(); emit('viewClose', viewTabCtx!.vt.uiId)">
+      <button type="button" class="ctx-item" @click="const id = viewTabCtx!.vt.uiId; closeViewTabCtx(); emit('viewClose', id)">
         <span>{{ t('chat.tui.tabClose') }}</span>
       </button>
-      <button type="button" class="ctx-item" @click="closeViewTabCtx(); emit('viewCloseOthers', viewTabCtx!.vt)">
+      <button type="button" class="ctx-item" @click="const vt = viewTabCtx!.vt; closeViewTabCtx(); emit('viewCloseOthers', vt)">
         <span>{{ t('chat.tui.tabCloseOthersView', { type: viewTabCtx!.typeLabel }) }}</span>
       </button>
-      <button type="button" class="ctx-item danger" @click="closeViewTabCtx(); emit('viewCloseProject', viewTabCtx!.vt.type)">
+      <button type="button" class="ctx-item danger" @click="const tp = viewTabCtx!.vt.type; closeViewTabCtx(); emit('viewCloseProject', tp)">
         <span>{{ t('chat.tui.tabCloseProjectView', { type: viewTabCtx!.typeLabel }) }}</span>
       </button>
       <div class="ctx-sep" />

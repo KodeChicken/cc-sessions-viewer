@@ -89,9 +89,10 @@ fn run_worker(
     request_id: u64,
 ) -> Result<crate::types::AgentStats, String> {
     let agents_to_scan: Vec<&'static str> = match scope {
-        "all" => vec!["claude", "codex"],
+        "all" => vec!["claude", "codex", "opencode"],
         "claude" => vec!["claude"],
         "codex" => vec!["codex"],
+        "opencode" => vec!["opencode"],
         other => {
             // session 模式：scope = "session:<agent>:<path>"
             if let Some(rest) = other.strip_prefix("session:") {
@@ -104,6 +105,7 @@ fn run_worker(
                     .filter_map(|name| match name {
                         "claude" => Some("claude"),
                         "codex" => Some("codex"),
+                        "opencode" => Some("opencode"),
                         _ => None,
                     })
                     .collect()

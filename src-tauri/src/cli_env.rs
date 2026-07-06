@@ -43,6 +43,14 @@ const CLI_SPECS: &[CliSpec] = &[
             "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/{platform}.json",
         ),
     },
+    CliSpec {
+        name: "opencode",
+        binary: "opencode",
+        npm_package: "opencode-ai",
+        brew_upgrade: Some("opencode"),
+        builtin_update: Some("opencode upgrade"),
+        manifest_url: None,
+    },
 ];
 
 fn find_spec(cli_name: &str) -> Result<&'static CliSpec, String> {
@@ -282,6 +290,9 @@ fn resolve_upgrade_cmd(spec: &CliSpec) -> String {
                 }
             }
         }
+        "bun" if !spec.npm_package.is_empty() => {
+            return format!("bun add -g {}@latest", spec.npm_package);
+        }
         _ => {}
     }
 
@@ -427,6 +438,8 @@ fn detect_package_manager(resolved: &str) -> String {
         "volta".into()
     } else if r.contains("/.fnm/") || r.contains("\\.fnm\\") {
         "fnm".into()
+    } else if r.contains("/.bun/") || r.contains("\\.bun\\") {
+        "bun".into()
     } else if r.contains("/node_modules/") || r.contains("\\node_modules\\") {
         "npm".into()
     } else {

@@ -11,7 +11,7 @@
 
 [English](README.md) · **中文** · [日本語](README.ja.md) · [CHANGELOG](CHANGELOG.md)
 
-<p align="center">一个专为 <strong>Claude Code</strong>、<strong>Codex</strong> 和 <strong>Antigravity CLI</strong> 打造的原生桌面浏览器。<br/>在一处读取、搜索并管理三个 CLI 的本地会话记录。</p>
+<p align="center">一个专为 <strong>Claude Code</strong>、<strong>Codex</strong>、<strong>Antigravity CLI</strong> 和 <strong>opencode</strong> 打造的原生桌面浏览器。<br/>在一处读取、搜索并管理四个 CLI 的本地会话记录。</p>
 
 </div>
 

@@ -232,7 +232,10 @@ const codexSessionOptions = computed(() => ({
 }))
 
 function sessionListOptions() {
-  return agent.value === 'codex' ? codexSessionOptions.value : undefined
+  if (agent.value === 'codex') return codexSessionOptions.value
+  // opencode 有同款「归档」语义（session.time_archived）——挂在同一个偏好上。
+  if (agent.value === 'opencode') return { includeCodexArchived: codexShowArchivedSessions.value }
+  return undefined
 }
 
 /** 顶栏刷新：重新拉取项目 + 当前列表 + 当前打开的对话，全部静默，不动选中与滚动。 */
@@ -484,7 +487,7 @@ const activeProject = computed(() =>
   projects.value.find((p) => p.dirName === activeDir.value),
 )
 const activeAgentLabel = computed(() =>
-  agent.value === 'codex' ? 'Codex' : agent.value === 'agy' ? 'agy' : 'Claude',
+  agent.value === 'codex' ? 'Codex' : agent.value === 'agy' ? 'agy' : agent.value === 'opencode' ? 'opencode' : 'Claude',
 )
 const topbarContextTitle = computed(() => {
   if (showStats.value) return t('sidebar.stats')
@@ -3316,6 +3319,8 @@ provide<PaneActions>(PaneActionsKey, {
   exportFromList,
   refreshSessions,
   exitPane,
+  splitH: () => splitFocusedPane('row'),
+  splitV: () => splitFocusedPane('col'),
   loadMore,
   onListScroll,
   batchDeleteSessions,

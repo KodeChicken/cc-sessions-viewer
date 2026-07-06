@@ -569,10 +569,11 @@ fn add_view_item(menu: &NSMenu, mtm: objc2::MainThreadMarker, view: Retained<Any
 
 fn brand_color(agent: &str) -> (f64, f64, f64) {
     match agent {
-        "claude" => (204.0 / 255.0, 124.0 / 255.0,  94.0 / 255.0),
-        "codex"  => ( 73.0 / 255.0, 163.0 / 255.0, 176.0 / 255.0),
-        "agy"    => (139.0 / 255.0,  92.0 / 255.0, 246.0 / 255.0),
-        _        => (0.5, 0.5, 0.5),
+        "claude"   => (204.0 / 255.0, 124.0 / 255.0,  94.0 / 255.0),
+        "codex"    => ( 73.0 / 255.0, 163.0 / 255.0, 176.0 / 255.0),
+        "agy"      => (139.0 / 255.0,  92.0 / 255.0, 246.0 / 255.0),
+        "opencode" => (113.0 / 255.0, 113.0 / 255.0, 122.0 / 255.0),
+        _          => (0.5, 0.5, 0.5),
     }
 }
 
@@ -581,10 +582,11 @@ fn make_agent_card(
     a: &crate::types::TrayAgentSummary,
 ) -> Retained<AnyObject> {
     let name = match a.agent.as_str() {
-        "claude" => "Claude Code",
-        "codex"  => "Codex CLI",
-        "agy"    => "Antigravity CLI",
-        _        => &a.agent,
+        "claude"   => "Claude Code",
+        "codex"    => "Codex CLI",
+        "agy"      => "Antigravity CLI",
+        "opencode" => "opencode",
+        _          => &a.agent,
     };
     let (br, bg, bb) = brand_color(&a.agent);
     let card_w: f64 = 380.0;

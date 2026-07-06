@@ -103,6 +103,7 @@ const SNIPPET_WIN: usize = 60;
 pub mod agy;
 pub mod claude;
 pub mod codex;
+pub mod opencode;
 
 /// 程序化聊天（GUI chat）里，agent 子进程 stdout 的一行被归一成的事件。
 /// 各 agent 的 [`SessionSource::parse_chat_line`] 把自家 stream-json / JSON 行翻成这套
@@ -350,6 +351,40 @@ pub trait SessionSource: Send + Sync {
     fn discover_session_companions(&self, _path: &str) -> Vec<SessionMeta> {
         Vec::new()
     }
+
+    /// 会话「数据源」的 mtime —— usage / 搜索文本缓存的失效锚点。
+    /// 文件型 agent = 会话文件自身的 mtime（默认实现）；库型 agent（opencode 的
+    /// `opencode://` 虚拟路径没有对应文件，fs mtime 恒 0 会让缓存永不失效）重写成
+    /// 库文件的 mtime。
+    fn source_mtime(&self, path: &str) -> u64 {
+        mtime_of(path)
+    }
+
+    /// 全文搜索预筛：会话原始数据里是否包含 `q_lower`（ASCII 大小写不敏感）。
+    /// 只是粗筛 —— 命中后仍由 `find_text_hit` 在「用户消息 text 块」里精确匹配。
+    /// 默认 = 字节层扫会话文件；库型 agent 重写成 SQL。
+    fn contains_text(&self, path: &str, q_lower: &str) -> bool {
+        file_contains_ci(path, q_lower)
+    }
+
+    /// 实时 tail（watch.rs）需要盯的真实磁盘文件。默认 = 会话文件自身；
+    /// agy 重写成 transcript_full 优先，opencode 重写成库的 -wal 文件。
+    /// 返回 None 表示该会话没有可盯的文件（前端静默降级为一次性读取）。
+    fn watch_target(&self, path: &str) -> Option<std::path::PathBuf> {
+        Some(std::path::PathBuf::from(path))
+    }
+
+    /// rename 等写操作前的路径合法性检查（lib.rs 统一调用，不再自带 exists/.jsonl
+    /// 硬编码）。文件型 agent 用默认实现；虚拟路径 agent（opencode）重写。
+    fn validate_session_path(&self, path: &Path) -> Result<(), String> {
+        if !path.exists() {
+            return Err("Session file does not exist".to_string());
+        }
+        if !crate::util::is_jsonl(path) {
+            return Err("Not a JSONL file".to_string());
+        }
+        Ok(())
+    }
 }
 
 // ============================ 用量缓存（按文件 mtime 失效） ============================
@@ -382,7 +417,7 @@ pub fn session_usage(
     src: &(dyn SessionSource + Sync),
     path: &str,
 ) -> Result<UsageSummary, String> {
-    let mt = mtime_of(path);
+    let mt = src.source_mtime(path);
     if let Some(u) = cached_usage(path, mt) {
         return Ok(u);
     }
@@ -576,7 +611,7 @@ fn classify_hit(
             return None;
         }
         // 缓存热时直接内存扫描，跳过磁盘 I/O
-        let mtime = mtime_of(&session.path);
+        let mtime = src.source_mtime(&session.path);
         let cached = cached_user_text(&session.path, mtime);
         if let Some(ref texts) = cached {
             match scan_user_text(texts, q) {
@@ -588,14 +623,14 @@ fn classify_hit(
                 None => return None,
             }
         } else {
-            // 冷路径：字节层粗筛 → JSON 解析
-            if !file_contains_ci(&session.path, q) {
+            // 冷路径：粗筛（文件型 = 字节扫描；库型 = SQL）→ JSON 解析
+            if !src.contains_text(&session.path, q) {
                 return None;
             }
             if cancel.cancelled() {
                 return None;
             }
-            match find_text_hit(|p| src.read_session(p), &session.path, q) {
+            match find_text_hit(|p| src.read_session(p), &session.path, mtime, q) {
                 Some(hit) => {
                     match_msg_index = Some(hit.msg_index);
                     match_msg_uuid = hit.msg_uuid;
@@ -632,11 +667,12 @@ struct TextHit {
 /// 走 `USER_TEXT_CACHE`：相同 (path, mtime) 第二次搜索直接拿纯文本，跳过
 /// JSONL 反序列化。冷启动仍然走 `read_session`（FnOnce 闭包提供），但解析完
 /// 立刻把「用户消息正文」抽出来缓存，下一次搜任何关键词都是 in-memory 操作。
-fn find_text_hit<F>(read: F, path: &str, q: &str) -> Option<TextHit>
+/// `mtime` 由调用方经 `SessionSource::source_mtime` 提供（虚拟路径的 fs mtime 恒 0，
+/// 不能在这里自己 stat）。
+fn find_text_hit<F>(read: F, path: &str, mtime: u64, q: &str) -> Option<TextHit>
 where
     F: FnOnce(&str) -> Result<Vec<Msg>, String>,
 {
-    let mtime = mtime_of(path);
     if let Some(cached) = cached_user_text(path, mtime) {
         return scan_user_text(&cached, q);
     }
@@ -763,6 +799,7 @@ pub fn source(agent: &str) -> Result<Box<dyn SessionSource>, String> {
         "agy" => Ok(Box::new(agy::AgySource)),
         "claude" => Ok(Box::new(claude::ClaudeSource)),
         "codex" => Ok(Box::new(codex::CodexSource)),
+        "opencode" => Ok(Box::new(opencode::OpencodeSource)),
         other => Err(format!("Unknown agent: {other}")),
     }
 }
@@ -855,7 +892,7 @@ mod tests {
         let msgs = vec![msg(vec![tool_call, tool_result])];
         let read = move |_p: &str| Ok(msgs);
         let p = unique_path("tool_blocks");
-        assert!(find_text_hit(read, &p, "needle").is_none());
+        assert!(find_text_hit(read, &p, 0,"needle").is_none());
     }
 
     #[test]
@@ -863,7 +900,7 @@ mod tests {
         let msgs = vec![msg(vec![block("text", Some("hello world"))])];
         let read = move |_p: &str| Ok(msgs);
         let p = unique_path("user_text");
-        let hit = find_text_hit(read, &p, "world").expect("expected a hit");
+        let hit = find_text_hit(read, &p, 0,"world").expect("expected a hit");
         assert_eq!(hit.msg_index, 0);
     }
 
@@ -875,7 +912,7 @@ mod tests {
         )];
         let read = move |_p: &str| Ok(msgs);
         let p = unique_path("assistant");
-        assert!(find_text_hit(read, &p, "needle").is_none());
+        assert!(find_text_hit(read, &p, 0,"needle").is_none());
     }
 
     #[test]
@@ -883,7 +920,7 @@ mod tests {
         let msgs = vec![msg(vec![block("thinking", Some("planning carefully"))])];
         let read = move |_p: &str| Ok(msgs);
         let p = unique_path("thinking");
-        assert!(find_text_hit(read, &p, "carefully").is_none());
+        assert!(find_text_hit(read, &p, 0,"carefully").is_none());
     }
 
     #[test]
@@ -894,7 +931,7 @@ mod tests {
         ];
         let read = move |_p: &str| Ok(msgs);
         let p = unique_path("first_user");
-        let hit = find_text_hit(read, &p, "needle").expect("expected a hit");
+        let hit = find_text_hit(read, &p, 0,"needle").expect("expected a hit");
         assert_eq!(hit.msg_index, 1);
     }
 
@@ -904,12 +941,12 @@ mod tests {
         let msgs = vec![msg(vec![block("text", Some("cached message"))])];
         let read1 = move |_p: &str| Ok(msgs);
         let p = unique_path("warm_cache");
-        find_text_hit(read1, &p, "cached").expect("first call should hit");
+        find_text_hit(read1, &p, 0, "cached").expect("first call should hit");
         // 第二次：闭包应该完全不被调用（断言 panic 来证明）
         let read2 = |_p: &str| -> Result<Vec<Msg>, String> {
             panic!("read closure must not be called on warm cache")
         };
-        let hit = find_text_hit(read2, &p, "message").expect("second call should still hit");
+        let hit = find_text_hit(read2, &p, 0, "message").expect("second call should still hit");
         assert_eq!(hit.msg_index, 0);
     }
 

@@ -60,6 +60,8 @@ export interface PaneActions {
   refreshSessions: () => void
   /** 退出指定分屏格子：关闭并释放该格所有 tab（二次确认后调用）。 */
   exitPane: (paneId: number) => void
+  splitH: () => void
+  splitV: () => void
   loadMore: () => void
   onListScroll: (scrollTop: number) => void
   batchDeleteSessions: () => void

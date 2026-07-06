@@ -29,8 +29,10 @@ const emit = defineEmits<{
 }>()
 
 const agentLabel = (a: Agent) =>
-  a === 'codex' ? 'Codex' : a === 'agy' ? 'agy' : 'Claude'
+  a === 'codex' ? 'Codex' : a === 'agy' ? 'agy' : a === 'opencode' ? 'opencode' : 'Claude'
 const agentName = computed(() => agentLabel(props.agent))
+// 3 个及以上 agent 时分段控件放不下 icon+文字 —— 收成纯图标，名字挪进 tooltip。
+const switcherIconsOnly = computed(() => visibleAgents.value.length > 2)
 
 function prefKey(p: ProjectInfo): string {
   return `${props.agent}::${p.dirName}`
@@ -240,15 +242,20 @@ defineExpose({ exitSelect })
     class="sidebar"
   >
     <div class="sidebar-top">
-      <div v-if="visibleAgents.length > 1" class="agent-switch">
+      <div
+        v-if="visibleAgents.length > 1"
+        class="agent-switch"
+        :class="{ 'icons-only': switcherIconsOnly }"
+      >
         <button
           v-for="a in visibleAgents"
           :key="a"
           :class="{ active: agent === a }"
+          v-tooltip="switcherIconsOnly ? agentLabel(a) : ''"
           @click="emit('switch-agent', a)"
         >
           <component :is="agentIcons[a]" />
-          <span>{{ agentLabel(a) }}</span>
+          <span v-if="!switcherIconsOnly">{{ agentLabel(a) }}</span>
         </button>
       </div>
       <div class="sidebar-sub">

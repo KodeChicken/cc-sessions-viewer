@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::types::{Block, Msg, ProjectFileEntry};
+use crate::types::{Block, DiffHunk, DiffLine, Msg, ProjectFileEntry};
 
 /// `@` 文件浮层永远跳过的重目录（构建产物 / 依赖 / VCS）。点文件（`.codex` 等）保留 ——
 /// 用户就是要 @ 它们。
@@ -262,6 +262,75 @@ pub fn parse_iso8601_ms(s: &str) -> Option<i64> {
     days += (day - 1) as i64;
     let secs = days * 86400 + (h as i64) * 3600 + (m as i64) * 60 + sec as i64;
     Some(secs * 1000 + ms as i64)
+}
+
+/// 解析 unified diff 文本为结构化 DiffHunk（agent 无关的通用文本格式解析，
+/// agy 的 CODE_ACTION 与 opencode 的 edit metadata.diff 共用）。
+pub fn parse_unified_diff(text: &str) -> Vec<DiffHunk> {
+    let mut hunks = Vec::new();
+    let mut current: Option<DiffHunk> = None;
+    let mut old_line: u32 = 0;
+    let mut new_line: u32 = 0;
+
+    for raw_line in text.lines() {
+        if let Some((os, ns)) = parse_hunk_header(raw_line) {
+            if let Some(h) = current.take() {
+                hunks.push(h);
+            }
+            old_line = os;
+            new_line = ns;
+            current = Some(DiffHunk {
+                old_start: os,
+                new_start: ns,
+                lines: Vec::new(),
+            });
+        } else if let Some(ref mut hunk) = current {
+            if let Some(rest) = raw_line.strip_prefix('+') {
+                hunk.lines.push(DiffLine {
+                    kind: "add".into(),
+                    old_no: None,
+                    new_no: Some(new_line),
+                    text: rest.to_string(),
+                });
+                new_line += 1;
+            } else if let Some(rest) = raw_line.strip_prefix('-') {
+                hunk.lines.push(DiffLine {
+                    kind: "del".into(),
+                    old_no: Some(old_line),
+                    new_no: None,
+                    text: rest.to_string(),
+                });
+                old_line += 1;
+            } else {
+                let text = raw_line.strip_prefix(' ').unwrap_or(raw_line);
+                hunk.lines.push(DiffLine {
+                    kind: "ctx".into(),
+                    old_no: Some(old_line),
+                    new_no: Some(new_line),
+                    text: text.to_string(),
+                });
+                old_line += 1;
+                new_line += 1;
+            }
+        }
+    }
+    if let Some(h) = current {
+        hunks.push(h);
+    }
+    hunks
+}
+
+pub fn parse_hunk_header(line: &str) -> Option<(u32, u32)> {
+    // @@ -old_start[,old_count] +new_start[,new_count] @@
+    let line = line.strip_prefix("@@ ")?;
+    let end = line.find(" @@")?;
+    let range_part = &line[..end];
+    let mut parts = range_part.split(' ');
+    let old_part = parts.next()?.strip_prefix('-')?;
+    let new_part = parts.next()?.strip_prefix('+')?;
+    let old_start: u32 = old_part.split(',').next()?.parse().ok()?;
+    let new_start: u32 = new_part.split(',').next()?.parse().ok()?;
+    Some((old_start, new_start))
 }
 
 /// 校验 rename 名称：去空白后非空且不过长。返回 trimmed 切片。
@@ -660,6 +729,9 @@ mod tests {
 
 pub fn post_process_session_msgs(msgs: &mut [Msg]) {
     for msg in msgs {
+        if msg.role != "user" {
+            continue;
+        }
         let mut new_blocks = Vec::new();
         for block in std::mem::take(&mut msg.blocks) {
             if block.kind == "text" {
@@ -721,9 +793,10 @@ fn lift_paths_from_text(text: &str) -> (Vec<Block>, String) {
     cleaned_text = temp;
 
     // 3. 提取行内绝对路径 / 家目录路径（支持中文粘连，如 "前缀/var/path.png"）
+    // 排除 URL 中的路径段（`://` 后面不是文件路径）
     let re_abs = regex_lite::Regex::new(
         r#"(?x)
-        (?: ^ | \s | [^\x00-\x7F] | [^\w.@-] )
+        (?: ^ | \s | [^\x00-\x7F] | [^\w.@/:=-] )
         (
             (?: ~[/\\] | /[a-zA-Z0-9] | [a-zA-Z]:[/\\] )
             (?: [\w.@~-]+ [/\\] )*
@@ -772,20 +845,19 @@ fn lift_paths_from_text(text: &str) -> (Vec<Block>, String) {
 }
 
 fn lift_path_block(path: &str, lifted: &mut Vec<Block>) {
+    if path.contains('{') || path.contains('}') || path.contains('$')
+        || path.contains('|') || path.contains('^') || path.contains('*')
+    {
+        return;
+    }
     let path_buf = expand_home(path);
     let exists = path_buf.exists();
     let is_dir = exists && path_buf.is_dir();
 
-    let is_image = if exists && !is_dir {
-        is_image_file(&path_buf)
-    } else {
-        is_image_ext(path)
-    };
-
-    if is_image {
+    if exists && !is_dir && is_image_file(&path_buf) {
         lifted.push(Block {
             kind: "image".to_string(),
-            image_src: Some(path.to_string()),
+            image_src: Some(path_buf.to_string_lossy().to_string()),
             ..Default::default()
         });
     } else {
@@ -864,16 +936,8 @@ fn expand_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn is_image_file(path: &Path) -> bool {
+pub fn is_image_file(path: &Path) -> bool {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        is_image_ext_str(ext)
-    } else {
-        false
-    }
-}
-
-fn is_image_ext(path_str: &str) -> bool {
-    if let Some(ext) = path_str.split('.').next_back() {
         is_image_ext_str(ext)
     } else {
         false
@@ -905,8 +969,9 @@ mod path_lifting_tests {
         let text = "/var/folders/some_image.png\n\nSome normal message\n/Users/jerry/document.pdf\nDone.";
         let (blocks, remaining) = lift_paths_from_text(text);
         assert_eq!(blocks.len(), 2);
-        assert_eq!(blocks[0].kind, "image");
-        assert_eq!(blocks[0].image_src.as_deref().unwrap(), "/var/folders/some_image.png");
+        // 文件不存在时一律 file chip（不渲染破碎图片）
+        assert_eq!(blocks[0].kind, "file");
+        assert_eq!(blocks[0].file_path.as_deref().unwrap(), "/var/folders/some_image.png");
         assert_eq!(blocks[1].kind, "file");
         assert_eq!(blocks[1].file_path.as_deref().unwrap(), "/Users/jerry/document.pdf");
         assert_eq!(remaining, "Some normal message\n\nDone.");
@@ -927,8 +992,8 @@ mod path_lifting_tests {
         let text = "这个应该像Claude一样/var/folders/8h/ddvbjjrn74q1v55wywphwkdc0000gn/T/clipboard-2026-07-05-122944-350E5680.png";
         let (blocks, remaining) = lift_paths_from_text(text);
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].kind, "image");
-        assert_eq!(blocks[0].image_src.as_deref().unwrap(), "/var/folders/8h/ddvbjjrn74q1v55wywphwkdc0000gn/T/clipboard-2026-07-05-122944-350E5680.png");
+        assert_eq!(blocks[0].kind, "file");
+        assert_eq!(blocks[0].file_path.as_deref().unwrap(), "/var/folders/8h/ddvbjjrn74q1v55wywphwkdc0000gn/T/clipboard-2026-07-05-122944-350E5680.png");
         assert_eq!(remaining, "这个应该像Claude一样");
     }
 
@@ -939,8 +1004,8 @@ mod path_lifting_tests {
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].kind, "file");
         assert_eq!(blocks[0].file_path.as_deref().unwrap(), ".env.local");
-        assert_eq!(blocks[1].kind, "image");
-        assert_eq!(blocks[1].image_src.as_deref().unwrap(), "/var/folders/8h/ddvbjjrn74q1v55wywphwkdc0000gn/T/clipboard-2026-07-05-123507-F13776EE.png");
+        assert_eq!(blocks[1].kind, "file");
+        assert_eq!(blocks[1].file_path.as_deref().unwrap(), "/var/folders/8h/ddvbjjrn74q1v55wywphwkdc0000gn/T/clipboard-2026-07-05-123507-F13776EE.png");
         assert_eq!(remaining, "hello");
     }
 }

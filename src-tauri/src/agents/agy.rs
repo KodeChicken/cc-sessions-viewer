@@ -32,11 +32,11 @@ use super::SessionSource;
 use crate::agent_command::AgentCommand;
 use crate::stats::types::{CallRecord, Turn};
 use crate::types::{
-    Block, DiffHunk, DiffLine, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary,
+    Block, DiffHunk, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary,
 };
 use crate::util::{
     append_jsonl_line, clean_title, home, mtime_millis, parse_iso8601_ms,
-    text_block, validate_rename_name,
+    parse_unified_diff, text_block, validate_rename_name,
 };
 
 pub struct AgySource;
@@ -345,73 +345,6 @@ fn parse_diff_from_code_action(content: &str) -> Option<(String, Vec<DiffHunk>)>
         return None;
     }
     Some((file_path.unwrap_or_default(), hunks))
-}
-
-fn parse_unified_diff(text: &str) -> Vec<DiffHunk> {
-    let mut hunks = Vec::new();
-    let mut current: Option<DiffHunk> = None;
-    let mut old_line: u32 = 0;
-    let mut new_line: u32 = 0;
-
-    for raw_line in text.lines() {
-        if let Some((os, ns)) = parse_hunk_header(raw_line) {
-            if let Some(h) = current.take() {
-                hunks.push(h);
-            }
-            old_line = os;
-            new_line = ns;
-            current = Some(DiffHunk {
-                old_start: os,
-                new_start: ns,
-                lines: Vec::new(),
-            });
-        } else if let Some(ref mut hunk) = current {
-            if let Some(rest) = raw_line.strip_prefix('+') {
-                hunk.lines.push(DiffLine {
-                    kind: "add".into(),
-                    old_no: None,
-                    new_no: Some(new_line),
-                    text: rest.to_string(),
-                });
-                new_line += 1;
-            } else if let Some(rest) = raw_line.strip_prefix('-') {
-                hunk.lines.push(DiffLine {
-                    kind: "del".into(),
-                    old_no: Some(old_line),
-                    new_no: None,
-                    text: rest.to_string(),
-                });
-                old_line += 1;
-            } else {
-                let text = raw_line.strip_prefix(' ').unwrap_or(raw_line);
-                hunk.lines.push(DiffLine {
-                    kind: "ctx".into(),
-                    old_no: Some(old_line),
-                    new_no: Some(new_line),
-                    text: text.to_string(),
-                });
-                old_line += 1;
-                new_line += 1;
-            }
-        }
-    }
-    if let Some(h) = current {
-        hunks.push(h);
-    }
-    hunks
-}
-
-fn parse_hunk_header(line: &str) -> Option<(u32, u32)> {
-    // @@ -old_start[,old_count] +new_start[,new_count] @@
-    let line = line.strip_prefix("@@ ")?;
-    let end = line.find(" @@")?;
-    let range_part = &line[..end];
-    let mut parts = range_part.split(' ');
-    let old_part = parts.next()?.strip_prefix('-')?;
-    let new_part = parts.next()?.strip_prefix('+')?;
-    let old_start: u32 = old_part.split(',').next()?.parse().ok()?;
-    let new_start: u32 = new_part.split(',').next()?.parse().ok()?;
-    Some((old_start, new_start))
 }
 
 // ── 标题提取 ──
@@ -1084,6 +1017,11 @@ impl SessionSource for AgySource {
         extract_title(&read_path)
     }
 
+    fn watch_target(&self, path: &str) -> Option<PathBuf> {
+        // CHECKPOINT 会整文件重写 transcript_full；tail 盯内容更全的那个。
+        Some(preferred_transcript(Path::new(path)))
+    }
+
     fn resume_command(&self, session_id: &str, _path: &str) -> AgentCommand {
         AgentCommand::new("agy").arg("--conversation").arg(session_id)
     }
@@ -1114,6 +1052,7 @@ impl SessionSource for AgySource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::parse_hunk_header;
 
     #[test]
     fn extract_user_request_strips_xml_wrapper() {

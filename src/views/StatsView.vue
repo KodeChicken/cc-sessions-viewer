@@ -24,6 +24,7 @@ import {
   IconRefresh,
   IconWallet,
   IconZap,
+  agentIcons,
 } from '../components/icons'
 import { useStatsStream } from '../stats'
 import { statsRange, statsScope, visibleAgents } from '../settings'
@@ -416,13 +417,20 @@ const dailyData = computed(() => {
   }))
 })
 
+const MODEL_TOP_N = 6
 const modelData = computed(() => {
   const s = stats.value
   if (!s) return []
-  return s.byModel.map((m) => ({
+  const all = s.byModel.map((m) => ({
     label: m.label || m.model,
     cost: m.costUsd,
   }))
+  if (all.length <= MODEL_TOP_N + 1) return all
+  const top = all.slice(0, MODEL_TOP_N)
+  const rest = all.slice(MODEL_TOP_N)
+  const othersCost = rest.reduce((sum, m) => sum + m.cost, 0)
+  top.push({ label: t('stats.byModel.others'), cost: Number(othersCost.toFixed(4)) })
+  return top
 })
 
 const activityData = computed(() => {
@@ -476,14 +484,18 @@ function asAgent(name: string): Agent {
           <div class="stats-pill-group">
             <span class="stats-pill-label">{{ t('stats.scope.label') }}:</span>
             <div class="stats-pills">
+              <!-- agent 项只放品牌图标（名字进 tooltip），与侧栏切换器的图标语言一致；
+                   「全部 agent」没有品牌标，保留文字。 -->
               <button
                 v-for="s in SCOPES"
                 :key="s.value"
                 class="stats-pill"
-                :class="{ active: scope === s.value }"
+                :class="{ active: scope === s.value, 'stats-pill-agent': s.value !== 'all' }"
+                v-tooltip="s.value !== 'all' ? t(s.key) : ''"
                 @click="scope = s.value"
               >
-                {{ t(s.key) }}
+                <component :is="agentIcons[s.value as Agent]" v-if="s.value !== 'all'" />
+                <template v-else>{{ t(s.key) }}</template>
               </button>
             </div>
           </div>

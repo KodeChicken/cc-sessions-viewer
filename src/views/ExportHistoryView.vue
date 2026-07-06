@@ -13,7 +13,7 @@ const emit = defineEmits<{
 const records = computed(() => history.value)
 
 function agentLabel(a: Agent): string {
-  return a === 'codex' ? 'Codex' : a === 'agy' ? 'agy' : 'Claude'
+  return a === 'codex' ? 'Codex' : a === 'agy' ? 'agy' : a === 'opencode' ? 'opencode' : 'Claude'
 }
 
 // hover 跟随浮块：与会话 / 回收站列表一致的滑块交互。鼠标移到某张卡片上，把它的

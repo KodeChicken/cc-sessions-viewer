@@ -168,6 +168,21 @@ export const IconSkill = IconSkillRaw
 export const IconContextWindow = IconContextWindowRaw
 // 「已 pin」状态的小圆点指示器；6×6 实心圆，自己拼比拉一整个集合便宜。
 import { defineComponent, h, type Component } from 'vue'
+
+export const IconSplitH = defineComponent({
+  name: 'IconSplitH',
+  render: () => h('svg', { xmlns: 'http://www.w3.org/2000/svg', width: '16', height: '16', viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.3', 'stroke-linecap': 'round' }, [
+    h('rect', { x: '1.5', y: '1.5', width: '13', height: '13', rx: '2' }),
+    h('line', { x1: '8', y1: '1.5', x2: '8', y2: '14.5' }),
+  ]),
+})
+export const IconSplitV = defineComponent({
+  name: 'IconSplitV',
+  render: () => h('svg', { xmlns: 'http://www.w3.org/2000/svg', width: '16', height: '16', viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.3', 'stroke-linecap': 'round' }, [
+    h('rect', { x: '1.5', y: '1.5', width: '13', height: '13', rx: '2' }),
+    h('line', { x1: '1.5', y1: '8', x2: '14.5', y2: '8' }),
+  ]),
+})
 import type { Agent } from '../types'
 export const IconPinFilled = defineComponent({
   name: 'IconPinFilled',
@@ -329,14 +344,33 @@ const IconAgyRaw = defineComponent({
   },
 })
 
-// Brand marks for the three agents, pulled from iconify at build time so
+// opencode brand mark — official icon PNG in public/opencode-icon.png,
+// referenced as absolute URL (Vite serves public/ at root)，与 agy 同款 <img> 方案。
+const IconOpencodeRaw = defineComponent({
+  name: 'IconOpencode',
+  setup() {
+    return () =>
+      h('img', {
+        src: '/opencode-icon.png',
+        width: 16,
+        height: 16,
+        alt: 'opencode',
+        'aria-hidden': 'true',
+        class: 'iconify',
+        style: 'vertical-align: middle',
+      })
+  },
+})
+
+// Brand marks for the agents, pulled from iconify at build time so
 // runtime stays offline-friendly. Sources: `material-icon-theme:claude`,
-// our own `assets/codex.svg`, and inline render for agy.
+// our own `assets/codex.svg`, and inline render for agy / opencode.
 // Re-exported individually for direct use and aggregated into `agentIcons`
 // for dispatch-by-agent.
 export const IconClaude = IconClaudeRaw
 export const IconCodex = IconCodexRaw
 export const IconAgy = IconAgyRaw
+export const IconOpencode = IconOpencodeRaw
 
 /**
  * Global dictionary of agent → brand-mark icon component. Use as
@@ -348,6 +382,7 @@ export const agentIcons: Record<Agent, Component> = {
   claude: IconClaudeRaw,
   codex: IconCodexRaw,
   agy: IconAgyRaw,
+  opencode: IconOpencodeRaw,
 }
 
 // ---- 文件附件按扩展名分型的图标 ----

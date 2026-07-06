@@ -11,7 +11,7 @@
 
 **English** · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [CHANGELOG](CHANGELOG.md)
 
-<p align="center">A native desktop browser for <strong>Claude Code</strong>, <strong>Codex</strong>, and <strong>Antigravity CLI</strong>.<br/>Read, search, and manage local session transcripts from all three in one place.</p>
+<p align="center">A native desktop browser for <strong>Claude Code</strong>, <strong>Codex</strong>, <strong>Antigravity CLI</strong>, and <strong>opencode</strong>.<br/>Read, search, and manage local session transcripts from all four in one place.</p>
 
 </div>
 

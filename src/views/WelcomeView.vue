@@ -29,7 +29,9 @@ const emit = defineEmits<{
 }>()
 
 const agentLabel = (a: Agent) =>
-  a === 'codex' ? 'Codex' : a === 'agy' ? 'agy' : 'Claude'
+  a === 'codex' ? 'Codex' : a === 'agy' ? 'agy' : a === 'opencode' ? 'opencode' : 'Claude'
+// 与侧栏 agent-switch 同规则：3 个及以上 agent 时分段控件放不下 icon+文字。
+const iconsOnly = computed(() => visibleAgents.value.length > 2)
 
 // 最近打开过的项目：拿 recents 里的 dirName 去当前 projects 取真身，
 // 过滤掉已删除 / 换 agent 后不存在的（getRecents 读 recents.value，computed 自动随它刷新）。
@@ -75,17 +77,22 @@ const modKey = isMac ? '⌘' : 'Ctrl'
       <div class="welcome-logo"><img :src="appIcon" alt="" /></div>
       <h1 class="welcome-title">Sessions Viewer</h1>
 
-      <!-- 当前 agent 切换 -->
-      <div v-if="visibleAgents.length > 1" class="welcome-agents">
+      <!-- 当前 agent 切换；≥3 个时收成纯图标（名字进 tooltip），与侧栏切换器同规则 -->
+      <div
+        v-if="visibleAgents.length > 1"
+        class="welcome-agents"
+        :class="{ 'icons-only': iconsOnly }"
+      >
         <button
           v-for="a in visibleAgents"
           :key="a"
           class="welcome-agent"
           :class="{ active: a === agent }"
+          v-tooltip="iconsOnly ? agentLabel(a) : ''"
           @click="emit('switch-agent', a)"
         >
           <component :is="agentIcons[a]" />
-          {{ agentLabel(a) }}
+          <template v-if="!iconsOnly">{{ agentLabel(a) }}</template>
         </button>
       </div>
 

@@ -11,7 +11,7 @@
 
 [English](README.md) · [中文](README.zh-CN.md) · **日本語** · [CHANGELOG](CHANGELOG.md)
 
-<p align="center"><strong>Claude Code</strong>、<strong>Codex</strong>、<strong>Antigravity CLI</strong> 専用のネイティブデスクトップブラウザ。<br/>3 つの CLI のローカルセッション履歴を一元的に読み取り、検索し、管理します。</p>
+<p align="center"><strong>Claude Code</strong>、<strong>Codex</strong>、<strong>Antigravity CLI</strong>、<strong>opencode</strong> 専用のネイティブデスクトップブラウザ。<br/>4 つの CLI のローカルセッション履歴を一元的に読み取り、検索し、管理します。</p>
 
 </div>
 
