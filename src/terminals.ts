@@ -19,6 +19,7 @@
 // 重启相当于关掉所有"窗口"，跟系统终端语义一致。
 
 const _isMac = /Mac/i.test(navigator.platform)
+const _isWindows = /Win/i.test(navigator.platform)
 
 import { markRaw, nextTick, reactive, ref, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
@@ -69,6 +70,34 @@ async function _handleTerminalPaste(term: Terminal, e: ClipboardEvent) {
       return
     }
   }
+}
+
+async function pasteWindowsClipboardText(term: Terminal) {
+  try {
+    const text = await navigator.clipboard?.readText?.()
+    if (text) term.paste(text)
+  } catch {
+    /* Clipboard read can be denied by the webview; swallowing keeps Ctrl+V from reaching Codex. */
+  }
+}
+
+function handleWindowsCodexPaste(term: Terminal, ev: KeyboardEvent, agent: Agent): boolean {
+  if (
+    !_isWindows ||
+    agent !== 'codex' ||
+    ev.type !== 'keydown' ||
+    ev.key.toLowerCase() !== 'v' ||
+    !ev.ctrlKey ||
+    ev.shiftKey ||
+    ev.altKey ||
+    ev.metaKey
+  ) {
+    return false
+  }
+  ev.preventDefault()
+  ev.stopImmediatePropagation()
+  void pasteWindowsClipboardText(term)
+  return true
 }
 
 export interface TerminalTab {
@@ -831,6 +860,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   tabs.value.push(tab)
   activateTabInPane(tab)
   term.attachCustomKeyEventHandler((ev) => {
+    if (handleWindowsCodexPaste(term, ev, opts.agent)) return false
     if (ev.type !== 'keydown' || ev.altKey) return true
     const key = ev.key.toLowerCase()
 
