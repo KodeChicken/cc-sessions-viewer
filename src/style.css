@@ -4292,6 +4292,9 @@ body.is-tab-reordering * {
   color: var(--text-mute);
   line-height: 1.5;
 }
+.set-update-error {
+  color: var(--danger);
+}
 /* 次要操作：查看更新日志 */
 .set-update-notes {
   display: inline-flex;

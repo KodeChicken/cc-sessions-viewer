@@ -37,6 +37,9 @@ export const updateProgress = ref<number | null>(null)
 /** 下载/安装是否进行中。**模块级**状态 —— 关掉再打开 SettingsModal 不会丢，
  *  UI 据此把按钮置灰显示「下载中」，避免重复点出第二个下载进程。 */
 export const updateDownloading = ref(false)
+/** 最近一次下载/安装的错误。与 updateAvailable 无关 —— updateAvailable 为 true
+ *  时 updateMsg 的 v-if 会把错误藏掉，所以需要独立的 ref。 */
+export const updateInstallError = ref<string | null>(null)
 
 function loadCache(): Cached | null {
   try {
@@ -116,6 +119,7 @@ export async function checkAppUpdate(): Promise<UpdateInfo> {
   updaterUpdate.value = null
   updateDownloaded.value = false
   updateProgress.value = null
+  updateInstallError.value = null
 
   try {
     const update = await checkTauriUpdate()
@@ -154,6 +158,7 @@ export function downloadAndInstallUpdate(): Promise<void> {
   updateDownloading.value = true
   updateDownloaded.value = false
   updateProgress.value = 0
+  updateInstallError.value = null
   let downloaded = 0
   let total: number | undefined
 

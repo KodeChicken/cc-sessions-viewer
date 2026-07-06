@@ -59,6 +59,7 @@ import {
   relaunchApp,
   updateDownloaded,
   updateDownloading,
+  updateInstallError,
   updateProgress,
   updateAvailable,
   updaterUpdate,
@@ -285,14 +286,14 @@ async function doCheck() {
 }
 
 async function installUpdate() {
-  // 模块级守卫：下载中（哪怕是上次开着 modal 时点的）直接忽略，绝不开第二个。
   if (updateDownloading.value) return
   updateMsg.value = t('settings.updateDownloading')
   try {
     await downloadAndInstallUpdate()
     updateMsg.value = t('settings.updateReady')
   } catch (e) {
-    updateMsg.value = t('settings.updateInstallFail', { e: String(e) })
+    updateInstallError.value = String(e)
+    updateMsg.value = ''
   }
 }
 
@@ -692,12 +693,17 @@ async function installClaudeHooks() {
               <span class="set-update-progress-pct">{{ updateProgress }}%</span>
             </div>
 
-            <!-- 检查结果 / 错误信息（无新版本、非下载中时显示，如"已是最新"或失败原因） -->
+            <!-- 下载/安装失败（不受 updateAvailable 门控） -->
+            <p v-if="updateInstallError && !updateDownloading" class="set-update-status set-update-error">
+              {{ t('settings.updateInstallFail', { e: updateInstallError }) }}
+            </p>
+
+            <!-- 检查结果（无新版本时显示，如"已是最新"或检查失败原因） -->
             <p v-if="updateMsg && !updateAvailable && !updateDownloading" class="set-update-status">
               {{ updateMsg }}
             </p>
 
-            <!-- 次要操作：查看更新日志 -->
+            <!-- 次要操作：查看更新日志 / 手动下载 -->
             <button v-if="updateAvailable" class="set-update-notes" @click="openReleasePage()">
               <IconExternalLink />
               {{ t('settings.viewRelease', { v: latestVersion ?? '' }) }}

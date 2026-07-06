@@ -92,7 +92,8 @@ jobs:
           if (!repo) throw new Error('GITHUB_REPOSITORY is required')
 
           function releaseAssetUrl(file) {
-            return `https://github.com/${repo}/releases/download/${releaseTag}/${encodeURIComponent(file)}`
+            // GitHub replaces spaces with dots in release asset download URLs
+            return `https://github.com/${repo}/releases/download/${releaseTag}/${file.replace(/ /g, '.')}`
           }
 
           function walk(dir) {
@@ -215,7 +216,8 @@ jobs:
           if (!repo) throw new Error('GITHUB_REPOSITORY is required')
 
           function releaseAssetUrl(file) {
-            return `https://github.com/${repo}/releases/download/${releaseTag}/${encodeURIComponent(file)}`
+            // GitHub replaces spaces with dots in release asset download URLs
+            return `https://github.com/${repo}/releases/download/${releaseTag}/${file.replace(/ /g, '.')}`
           }
 
           function walk(dir) {
@@ -234,19 +236,24 @@ jobs:
             throw new Error('No updater latest.json files found in downloaded artifacts')
           }
 
+          // Collect ALL files in dist/ — artifact download may rename files
+          // (e.g. spaces → dots), so we need the actual on-disk names for URLs.
+          function walkAll(dir) {
+            let files = []
+            for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, e.name)
+              if (e.isDirectory()) files.push(...walkAll(full))
+              else files.push(full)
+            }
+            return files
+          }
+          const allDistFiles = walkAll(root)
+
           let merged = null
           for (const file of manifests) {
             const json = JSON.parse(fs.readFileSync(file, 'utf8'))
             if (!json.version || !json.platforms || typeof json.platforms !== 'object') {
               throw new Error(`Invalid updater manifest: ${file}`)
-            }
-            for (const platform of Object.values(json.platforms)) {
-              if (typeof platform?.url !== 'string' || !platform.url) {
-                throw new Error(`Invalid updater platform URL in ${file}`)
-              }
-              if (!/^https?:\/\//.test(platform.url)) {
-                platform.url = releaseAssetUrl(path.basename(platform.url))
-              }
             }
             if (!merged) {
               merged = {
@@ -259,6 +266,22 @@ jobs:
               throw new Error(`Updater manifest version mismatch: ${merged.version} vs ${json.version} in ${file}`)
             }
             Object.assign(merged.platforms, json.platforms)
+          }
+
+          // Re-derive URLs from actual files in dist/ — artifact upload/download
+          // can replace spaces with dots in file names, making the build-job URLs stale.
+          const extToKeys = [
+            ['.app.tar.gz', ['darwin-x86_64', 'darwin-aarch64']],
+            ['.msi',        ['windows-x86_64']],
+            ['.AppImage',   ['linux-x86_64']],
+          ]
+          for (const [ext, keys] of extToKeys) {
+            const actual = allDistFiles.find(f => f.endsWith(ext) && !f.endsWith('.sig'))
+            if (!actual) continue
+            const url = releaseAssetUrl(path.basename(actual))
+            for (const k of keys) {
+              if (merged.platforms[k]) merged.platforms[k].url = url
+            }
           }
 
           const required = ['windows-x86_64', 'linux-x86_64']
@@ -277,6 +300,9 @@ jobs:
           fs.writeFileSync(path.join(root, 'latest.json'), `${JSON.stringify(merged, null, 2)}\n`)
           console.log(`Merged ${manifests.length} updater manifests into dist/latest.json`)
           console.log(`Platforms: ${Object.keys(merged.platforms).sort().join(', ')}`)
+          for (const [k, p] of Object.entries(merged.platforms)) {
+            console.log(`  ${k}: ${p.url}`)
+          }
           NODE
 
       - name: Generate release notes
