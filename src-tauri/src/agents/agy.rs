@@ -945,12 +945,16 @@ impl SessionSource for AgySource {
         let ws_map = load_workspace_map();
         let mut map: HashMap<String, (usize, u64)> = HashMap::new();
 
+        let home_str = home().to_string_lossy().to_string();
         for (conv_id, transcript_path, _from_ide) in all_conversations() {
-            let workspace = ws_map
+            let mut workspace = ws_map
                 .get(&conv_id)
                 .cloned()
                 .or_else(|| infer_workspace_from_transcript(&preferred_transcript(&transcript_path)))
                 .unwrap_or_else(|| "outside-of-project".to_string());
+            if workspace == home_str {
+                workspace = "outside-of-project".to_string();
+            }
             let mt = mtime_millis(&transcript_path);
             let entry = map.entry(workspace).or_insert((0, 0));
             entry.0 += 1;
@@ -994,14 +998,18 @@ impl SessionSource for AgySource {
         _include_codex_archived: bool,
     ) -> Result<SessionPage, String> {
         let ws_map = load_workspace_map();
+        let home_str = home().to_string_lossy().to_string();
         let mut matched: Vec<(String, PathBuf, u64, bool)> = Vec::new();
 
         for (conv_id, transcript_path, from_ide) in all_conversations() {
-            let workspace = ws_map
+            let mut workspace = ws_map
                 .get(&conv_id)
                 .cloned()
                 .or_else(|| infer_workspace_from_transcript(&preferred_transcript(&transcript_path)))
                 .unwrap_or_else(|| "outside-of-project".to_string());
+            if workspace == home_str {
+                workspace = "outside-of-project".to_string();
+            }
             if workspace == project_key {
                 let mt = mtime_millis(&transcript_path);
                 matched.push((conv_id, transcript_path, mt, from_ide));
