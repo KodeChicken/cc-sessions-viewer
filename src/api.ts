@@ -19,6 +19,10 @@ import type {
   TrayStats,
   SearchHit,
   UsageSummary,
+  DiffHunk,
+  GitCommit,
+  GitFileStatus,
+  GitDiffFile,
 } from './types'
 
 export interface CodexVisibilityOptions {
@@ -72,6 +76,9 @@ export const readSession = (agent: Agent, path: string) =>
  *  后端按 (path, mtime) 缓存，重复调用不会重复扫描文件。 */
 export const sessionUsage = (agent: Agent, path: string) =>
   invoke<UsageSummary>('session_usage', { agent, path })
+
+export const sessionLastPrompt = (agent: Agent, path: string) =>
+  invoke<string | null>('session_last_prompt', { agent, path })
 
 /** 续聊种子：会话最后一条 usage（≈当前上下文规模），区别于 sessionUsage 的累加。 */
 export const sessionContextUsage = (agent: Agent, path: string) =>
@@ -359,6 +366,24 @@ export const pathIsDir = (path: string) => invoke<boolean>('path_is_dir', { path
 /** 会话 cwd 所在仓库的当前 git 分支名；无仓库 / 读不到时为 null（chat 头部展示用）。 */
 export const gitCurrentBranch = (cwd: string) =>
   invoke<string | null>('git_current_branch', { cwd })
+
+/** cwd 是否是一个 git 仓库；前端据此决定是否显示 Git Changes 入口。 */
+export const gitHasRepo = (cwd: string) => invoke<boolean>('git_has_repo', { cwd })
+
+/** commit 列表（hash / author / date / message），按最近优先。 */
+export const gitLog = (cwd: string, limit?: number) =>
+  invoke<GitCommit[]>('git_log', { cwd, limit })
+
+/** 未提交的 working changes 文件列表。 */
+export const gitStatus = (cwd: string) => invoke<GitFileStatus[]>('git_status', { cwd })
+
+/** 某个 ref（`"working"` 或 commit hash）的变更文件列表 + 增删行数统计。 */
+export const gitDiffFiles = (cwd: string, gitRef: string) =>
+  invoke<GitDiffFile[]>('git_diff_files', { cwd, gitRef })
+
+/** 某个 ref 下单个文件的 unified diff，已解析成 DiffHunk[]（复用 DiffBlock.vue）。 */
+export const gitDiffFile = (cwd: string, gitRef: string, path: string) =>
+  invoke<DiffHunk[]>('git_diff_file', { cwd, gitRef, path })
 
 /** GUI chat 输入框 `@` 文件浮层：列出会话 cwd 下的目录/文件（相对路径）。
  *  `query` 空 → 顶层直接子项；非空 → 递归子串匹配（大小写不敏感）。 */

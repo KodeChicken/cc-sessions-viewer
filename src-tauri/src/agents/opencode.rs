@@ -369,6 +369,11 @@ fn load_messages(conn: &Connection, sid: &str) -> Result<Vec<(String, Value, i64
 
 /// `<system-reminder>` 开头的 text part 是 opencode IDE 自动注入的系统上下文
 /// （如"用户打开了某文件"），不是用户手敲的——拆成独立的系统 Msg。
+fn is_injected_context_text(text: &str) -> bool {
+    let t = text.trim_start();
+    (t.len() > 500 && t.starts_with("# ")) || t.starts_with("Called the Read tool")
+}
+
 fn is_system_text(text: &str) -> bool {
     let t = text.trim_start();
     t.starts_with("<system-reminder>") || t.starts_with("<system_reminder>")
@@ -585,6 +590,28 @@ fn read(conn: &Connection, sid: &str) -> Result<Vec<Msg>, String> {
         });
     }
     Ok(msgs)
+}
+
+fn last_user_text_sql(conn: &Connection, sid: &str) -> Option<String> {
+    let mut stmt = conn.prepare(
+        "SELECT p.data FROM part p \
+         JOIN message m ON p.message_id = m.id \
+         WHERE m.session_id = ?1 \
+         AND json_extract(m.data, '$.role') = 'user' \
+         AND json_extract(p.data, '$.type') = 'text' \
+         ORDER BY m.time_created DESC \
+         LIMIT 10"
+    ).ok()?;
+    let mut rows = stmt.query(rusqlite::params![sid]).ok()?;
+    while let Ok(Some(row)) = rows.next() {
+        let raw: String = row.get(0).ok()?;
+        let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+        let text = v.get("text").and_then(Value::as_str).unwrap_or("");
+        if is_system_text(text) || is_injected_context_text(text) { continue; }
+        let clean = crate::util::truncate_subtitle(text);
+        if !clean.is_empty() { return Some(clean); }
+    }
+    None
 }
 
 fn read_turns_impl(conn: &Connection, sid: &str) -> Result<Vec<Turn>, String> {
@@ -951,6 +978,12 @@ impl SessionSource for OpencodeSource {
             }
         }
         Ok(UsageSummary::default())
+    }
+
+    fn last_prompt(&self, path: &str) -> Result<Option<String>, String> {
+        let sid = session_id_of(path)?;
+        let conn = open_db()?;
+        Ok(last_user_text_sql(&conn, sid))
     }
 
     fn read_turns(&self, path: &str) -> Result<Vec<Turn>, String> {

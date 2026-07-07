@@ -759,6 +759,30 @@ pub fn classify_turn_state(value: &Value) -> Option<&'static str> {
 
 // ── read_turns（统计用） ──
 
+fn last_user_text(fp: &Path) -> Option<String> {
+    let raw = fs::read(fp).ok()?;
+    for line in raw.rsplit(|&b| b == b'\n') {
+        if line.is_empty() { continue; }
+        let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
+        if v.get("type").and_then(Value::as_str) != Some("USER_INPUT") { continue; }
+        let content = v.get("content").and_then(Value::as_str)?;
+        // 提取 <USER_REQUEST>...</USER_REQUEST> 中的文本
+        let text = if let Some(start) = content.find("<USER_REQUEST>") {
+            let after = &content[start + "<USER_REQUEST>".len()..];
+            if let Some(end) = after.find("</USER_REQUEST>") {
+                after[..end].trim()
+            } else {
+                after.trim()
+            }
+        } else {
+            content.trim()
+        };
+        let clean = crate::util::truncate_subtitle(text);
+        if !clean.is_empty() { return Some(clean); }
+    }
+    None
+}
+
 fn read_turns(fp: &Path) -> Vec<Turn> {
     let read_path = preferred_transcript(fp);
     let Ok(file) = fs::File::open(&read_path) else {
@@ -1036,6 +1060,10 @@ impl SessionSource for AgySource {
 
     fn usage_summary(&self, _path: &str) -> Result<UsageSummary, String> {
         Ok(UsageSummary::default())
+    }
+
+    fn last_prompt(&self, path: &str) -> Result<Option<String>, String> {
+        Ok(last_user_text(Path::new(path)))
     }
 
     fn read_turns(&self, path: &str) -> Result<Vec<Turn>, String> {

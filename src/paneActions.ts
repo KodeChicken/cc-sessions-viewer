@@ -22,7 +22,7 @@ export interface PaneActions {
   onTuiViewClose: (uiId: number) => void
   onViewRename: (vt: ViewTab) => void
   onViewCloseOthers: (vt: ViewTab) => void
-  onViewCloseProject: (type: 'session' | 'chat') => void
+  onViewCloseProject: (type: 'session' | 'chat' | 'git') => void
   onCloseOthersAll: (keepUiId: number, keepKind: 'tui' | 'view') => void
   onCloseAll: () => void
   onTuiTabClosed: () => void
@@ -62,6 +62,7 @@ export interface PaneActions {
   exitPane: (paneId: number) => void
   splitH: () => void
   splitV: () => void
+  openGitChanges: () => void
   loadMore: () => void
   onListScroll: (scrollTop: number) => void
   batchDeleteSessions: () => void

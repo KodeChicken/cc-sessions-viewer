@@ -118,6 +118,7 @@ import {
   activeViewTabId,
   activeViewTab,
   createViewTab,
+  suppressActivation,
   findViewTab,
   removeViewTab,
   setActiveViewTab,
@@ -129,6 +130,7 @@ import {
 import {
   currentAgent as panesAgent,
   currentProjectKey as panesProject,
+  panes,
   focusedPane,
   focusPane,
   currentLayout,
@@ -1987,7 +1989,7 @@ function onViewCloseOthers(vt: ViewTab) {
   }
 }
 
-function onViewCloseProject(type: 'session' | 'chat') {
+function onViewCloseProject(type: 'session' | 'chat' | 'git') {
   const targets = viewTabs.value.filter(t => t.type === type && t.agent === agent.value && t.projectKey === (activeDir.value ?? ''))
   for (const t of [...targets]) {
     if (t.type === 'chat') closeLiveChat(t.uiId)
@@ -2605,6 +2607,34 @@ function newDefaultAction() {
   }
 }
 
+function nextGitDiffNumber(projectKey: string): number {
+  const used = new Set(
+    viewTabs.value
+      .filter(t => t.type === 'git' && t.projectKey === projectKey)
+      .map(t => parseInt(t.title.replace('Git Diff ', ''), 10))
+      .filter(n => !isNaN(n)),
+  )
+  let n = 1
+  while (used.has(n)) n++
+  return n
+}
+
+async function openGitChangesTab() {
+  const proj = activeProject.value
+  if (!proj) return
+  const cwd = proj.displayPath
+  const has = await api.gitHasRepo(cwd).catch(() => false)
+  if (!has) return
+  createViewTab({
+    type: 'git',
+    agent: agent.value,
+    projectKey: activeDir.value ?? '',
+    title: `Git Diff ${nextGitDiffNumber(activeDir.value ?? '')}`,
+    gitCwd: cwd,
+    gitRef: 'working',
+  })
+}
+
 // 顶栏右上角的仓库入口
 const REPO_URL = 'https://github.com/jerrywu001/cc-sessions-viewer'
 function openRepo() {
@@ -2885,29 +2915,54 @@ onMounted(() => {
     const savedVT = loadSavedViewTabs()
     const savedChatTabs = savedVT.tabs.filter(t => t.type === 'chat')
     let restoredActiveIdx: number | null = null
-    for (let i = 0; i < savedVT.tabs.length; i++) {
-      const sv = savedVT.tabs[i]
-      if (sv.type === 'chat') continue // chat tabs 由 reconnectChats 处理
-      if (!sv.session) continue
-      const tab = createViewTab({
-        type: 'session',
-        agent: sv.agent,
-        projectKey: sv.projectKey,
-        paneId: sv.paneId,
-        title: sv.title,
-        createdAt: sv.createdAt,
-        session: sv.session,
-        loadingMsgs: true,
-        trashAgent: sv.trashAgent,
-        importedAgent: sv.importedAgent,
-      })
-      if (i === savedVT.activeIdx) restoredActiveIdx = tab.uiId
-      api.readSession(sv.agent, sv.session.path).then(msgs => {
-        tab.msgs = msgs
-        tab.loadingMsgs = false
-      }).catch(() => {
-        removeViewTab(tab.uiId)
-      })
+    const activeTabs: ViewTab[] = []
+    suppressActivation(() => {
+      for (let i = 0; i < savedVT.tabs.length; i++) {
+        const sv = savedVT.tabs[i]
+        if (sv.type === 'chat') continue
+        if (sv.type === 'git') {
+          if (!sv.gitCwd) continue
+          const tab = createViewTab({
+            type: 'git',
+            agent: sv.agent,
+            projectKey: sv.projectKey,
+            paneId: sv.paneId,
+            title: sv.title,
+            createdAt: sv.createdAt,
+            gitCwd: sv.gitCwd,
+            gitRef: sv.gitRef || 'working',
+            gitSelectedPath: sv.gitSelectedPath || null,
+          })
+          if (sv.isActive) activeTabs.push(tab)
+          if (i === savedVT.activeIdx) restoredActiveIdx = tab.uiId
+          continue
+        }
+        if (!sv.session) continue
+        const tab = createViewTab({
+          type: 'session',
+          agent: sv.agent,
+          projectKey: sv.projectKey,
+          paneId: sv.paneId,
+          title: sv.title,
+          createdAt: sv.createdAt,
+          session: sv.session,
+          loadingMsgs: true,
+          trashAgent: sv.trashAgent,
+          importedAgent: sv.importedAgent,
+        })
+        if (sv.isActive) activeTabs.push(tab)
+        if (i === savedVT.activeIdx) restoredActiveIdx = tab.uiId
+        api.readSession(sv.agent, sv.session.path).then(msgs => {
+          tab.msgs = msgs
+          tab.loadingMsgs = false
+        }).catch(() => {
+          removeViewTab(tab.uiId)
+        })
+      }
+    })
+    for (const tab of activeTabs) {
+      const pane = panes.get(tab.paneId)
+      if (pane) pane.activeViewTabId = tab.uiId
     }
     // 页面刷新后重连后端仍存活的 chat 进程 → 每个重连的 chat 创建一个 chat tab
     const reconnected = await reconnectChats()
@@ -3088,6 +3143,8 @@ onMounted(() => {
         e.preventDefault(); chatNavigate(1)
       } else if (key === 'g' && e.shiftKey) {
         e.preventDefault(); chatNavigate(-1)
+      } else if (key === 'b' && e.shiftKey) {
+        e.preventDefault(); openGitChangesTab()
       } else if (key === 'n' && !e.shiftKey) {
         e.preventDefault(); newDefaultAction()
       } else if (key === 'o' && !e.shiftKey) {
@@ -3321,6 +3378,7 @@ provide<PaneActions>(PaneActionsKey, {
   exitPane,
   splitH: () => splitFocusedPane('row'),
   splitV: () => splitFocusedPane('col'),
+  openGitChanges: openGitChangesTab,
   loadMore,
   onListScroll,
   batchDeleteSessions,

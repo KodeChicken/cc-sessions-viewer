@@ -145,6 +145,32 @@ pub fn clean_title(raw: &str) -> String {
     collapsed.chars().take(100).collect()
 }
 
+/// 从用户消息提取副标题：取第一行非空文本，去掉 @file 引用、markdown 语法，截断到 120 字符。
+pub fn truncate_subtitle(raw: &str) -> String {
+    use once_cell::sync::Lazy;
+    static RE_STRIP: Lazy<regex_lite::Regex> = Lazy::new(|| {
+        regex_lite::Regex::new(r"@\[?[A-Za-z0-9_./-]+\]?|\[Image[^\]]*\]|\!\[[^\]]*\]").unwrap()
+    });
+    let line = raw.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('<') && !l.starts_with("Caveat:"))
+        .find_map(|l| {
+            let stripped = RE_STRIP.replace_all(l, "");
+            let trimmed = stripped.trim().to_string();
+            if trimmed.is_empty() { None } else { Some(trimmed) }
+        })
+        .unwrap_or_default();
+    let cleaned = std::borrow::Cow::Borrowed(line.as_str());
+    let collapsed: String = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= 120 {
+        collapsed
+    } else {
+        let mut s: String = collapsed.chars().take(117).collect();
+        s.push('…');
+        s
+    }
+}
+
 pub fn text_block(kind: &str, s: &str) -> Block {
     Block {
         kind: kind.to_string(),

@@ -12,7 +12,7 @@ import {
   toggleSessionSelected,
   exitSessionSelectMode,
 } from '../sessionsToolbar'
-import { searchSessions, cancelSearch, nextSearchRequestId, sessionUsage } from '../api'
+import { searchSessions, cancelSearch, nextSearchRequestId, sessionUsage, sessionLastPrompt } from '../api'
 import {
   IconTrash,
   IconPlay,
@@ -33,12 +33,8 @@ import {
   IconSelect,
   IconClose,
   IconExitPane,
-  IconSplitH,
-  IconSplitV,
-  IconTerminal,
-  IconChat,
-  agentIcons,
 } from '../components/icons'
+import NewMenu from '../components/NewMenu.vue'
 import { PaneActionsKey } from '../paneActions'
 
 const pa = inject(PaneActionsKey)!
@@ -229,6 +225,28 @@ function fetchUsage(path: string) {
     })
 }
 
+const subtitleMap = ref<Map<string, { text: string; mtime: string }>>(new Map())
+const subtitleInFlight = new Set<string>()
+
+function fetchSubtitle(path: string) {
+  if (subtitleInFlight.has(path)) return
+  const session = props.sessions.find((s) => s.path === path)
+  const mtime = String(session?.modified ?? '')
+  const cached = subtitleMap.value.get(path)
+  if (cached && cached.mtime === mtime) return
+  subtitleInFlight.add(path)
+  sessionLastPrompt(props.agent, path)
+    .then((text) => {
+      if (text) {
+        const next = new Map(subtitleMap.value)
+        next.set(path, { text, mtime })
+        subtitleMap.value = next
+      }
+    })
+    .catch(() => {})
+    .finally(() => { subtitleInFlight.delete(path) })
+}
+
 // Vue ref callback：每张卡片 mounted 时把 element 注册到 observer；unmount 时取消。
 function observeUsageCard(path: string, el: Element | null) {
   if (!usageIO || !el) return
@@ -245,7 +263,7 @@ onMounted(() => {
         const p = (e.target as HTMLElement).dataset.usagePath
         if (!p) continue
         fetchUsage(p)
-        // 已经发了请求，停止观察这个节点，避免反复滚回滚去重复触发
+        fetchSubtitle(p)
         usageIO?.unobserve(e.target)
       }
     },
@@ -498,6 +516,11 @@ function pickSplitV() {
   ctxMenuPos.value = null
   pa.splitV()
 }
+function pickGitChanges() {
+  newMenuOpen.value = false
+  ctxMenuPos.value = null
+  pa.openGitChanges()
+}
 function onNewMenuDocClick(e: MouseEvent) {
   if (newMenuOpen.value && !newMenuEl.value?.contains(e.target as Node)) {
     newMenuOpen.value = false
@@ -532,32 +555,18 @@ defineExpose({ scrollEl })
       :style="{ left: ctxMenuPos.x + 'px', top: ctxMenuPos.y + 'px' }"
       @click.stop
     >
-      <button type="button" class="new-menu-item" role="menuitem" @click="pickNewAgent">
-        <component :is="agentIcons[agent]" class="new-menu-ic" />
-        <span>{{ t('list.action.newSessionTui') }}</span>
-      </button>
-      <button v-if="agent === 'claude'" type="button" class="new-menu-item" role="menuitem" @click="pickNewGui">
-        <IconChat class="new-menu-ic" />
-        <span>{{ t('list.action.newSessionGui') }}</span>
-      </button>
-      <button type="button" class="new-menu-item" role="menuitem" @click="pickNewShell">
-        <IconTerminal class="new-menu-ic" />
-        <span>{{ t('list.action.newTerminal') }}</span>
-      </button>
-      <div class="new-menu-sep" role="separator" />
-      <button type="button" class="new-menu-item" role="menuitem" @click="pickRefresh">
-        <IconRefresh class="new-menu-ic" />
-        <span>{{ t('list.action.refresh') }}</span>
-      </button>
-      <div class="new-menu-sep" role="separator" />
-      <button type="button" class="new-menu-item" role="menuitem" @click="pickSplitH">
-        <IconSplitH class="new-menu-ic" />
-        <span>{{ t('pane.splitH') }}</span>
-      </button>
-      <button type="button" class="new-menu-item" role="menuitem" @click="pickSplitV">
-        <IconSplitV class="new-menu-ic" />
-        <span>{{ t('pane.splitV') }}</span>
-      </button>
+      <NewMenu
+        :agent="agent"
+        show-refresh
+        show-split
+        @new-session="pickNewAgent"
+        @new-gui="pickNewGui"
+        @new-shell="pickNewShell"
+        @git-changes="pickGitChanges"
+        @refresh="pickRefresh"
+        @split-h="pickSplitH"
+        @split-v="pickSplitV"
+      />
     </div>
     <div class="list-head-actions">
       <template v-if="sessionSelectMode">
@@ -655,18 +664,7 @@ defineExpose({ scrollEl })
             <IconPlus />
           </button>
           <div v-if="newMenuOpen" class="new-menu" role="menu">
-            <button type="button" class="new-menu-item" role="menuitem" @click="pickNewAgent">
-              <component :is="agentIcons[agent]" class="new-menu-ic" />
-              <span>{{ t('list.action.newSessionTui') }}</span>
-            </button>
-            <button v-if="agent === 'claude'" type="button" class="new-menu-item" role="menuitem" @click="pickNewGui">
-              <IconChat class="new-menu-ic" />
-              <span>{{ t('list.action.newSessionGui') }}</span>
-            </button>
-            <button type="button" class="new-menu-item" role="menuitem" @click="pickNewShell">
-              <IconTerminal class="new-menu-ic" />
-              <span>{{ t('list.action.newTerminal') }}</span>
-            </button>
+            <NewMenu :agent="agent" show-split @new-session="pickNewAgent" @new-gui="pickNewGui" @new-shell="pickNewShell" @git-changes="pickGitChanges" @split-h="pickSplitH" @split-v="pickSplitV" />
           </div>
         </div>
         <button
@@ -748,6 +746,7 @@ defineExpose({ scrollEl })
             <IconPencil />
           </button>
         </div>
+        <div v-if="subtitleMap.get(s.path)?.text" class="session-subtitle">{{ subtitleMap.get(s.path)!.text }}</div>
         <div class="session-meta">
           <span>{{ t('list.messages', { n: s.messageCount }) }}</span>
           <span>{{ formatSize(s.size) }}</span>

@@ -100,6 +100,7 @@ export default {
   'list.action.newSessionGui': '新增會話（GUI）',
   'list.action.openChat': '以 Chat 開啟（GUI）',
   'list.action.newTerminal': '新增終端機',
+  'list.action.gitChanges': 'Git 變更',
   'list.action.rename': '重新命名',
   'list.action.trash': '移到垃圾桶',
   'list.footer.loading': '載入更多…',
@@ -716,4 +717,9 @@ export default {
   'tray.month': '本月',
   'tray.total': '合計',
   'tray.sessions': '個會話',
+  'git.working': '未提交變更',
+  'git.files': '檔案',
+  'git.noDiff': '無變更',
+  'git.selectFile': '選擇檔案以查看差異',
+  'git.recentCommits': '僅顯示最近 {n} 筆提交',
 }

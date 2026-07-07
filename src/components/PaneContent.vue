@@ -26,6 +26,7 @@ import TerminalPaneSlot from './TerminalPaneSlot.vue'
 import ChatView from '../views/ChatView.vue'
 import SessionsView from '../views/SessionsView.vue'
 import WelcomeView from '../views/WelcomeView.vue'
+import GitChangesView from '../views/GitChangesView.vue'
 
 const props = defineProps<{
   pane: Pane
@@ -159,6 +160,8 @@ const liveChatMeta = computed<SessionMeta>(() => {
       @new-default="actions.newDefaultAction"
       @new-gui-session="actions.newGuiSession"
       @new-shell="actions.newShellSession"
+      @git-changes="actions.openGitChanges"
+      @refresh="actions.refreshSessions"
       @hydrate-saved="actions.hydrateSavedTab"
     />
 
@@ -213,6 +216,16 @@ const liveChatMeta = computed<SessionMeta>(() => {
             @open-session-stats="actions.openSessionStats"
           />
         </template>
+
+        <GitChangesView
+          v-else-if="paneViewTab?.type === 'git' && paneViewTab.gitCwd"
+          :key="paneViewTab.uiId"
+          :cwd="paneViewTab.gitCwd"
+          :git-ref="paneViewTab.gitRef || 'working'"
+          :selected-path="paneViewTab.gitSelectedPath"
+          @ref-change="(r: string) => { if (paneViewTab) paneViewTab.gitRef = r }"
+          @path-change="(p: string | null) => { if (paneViewTab) paneViewTab.gitSelectedPath = p }"
+        />
 
         <SessionsView
           v-else-if="activeProject"

@@ -325,6 +325,12 @@ pub trait SessionSource: Send + Sync {
         Ok(UsageSummary::default())
     }
 
+    /// 取会话中最后一条用户消息的纯文本（截断到首行 ≤120 字符），用于列表副标题。
+    /// 默认返回 None；各 agent 按自己的存储格式从尾部快速读取。
+    fn last_prompt(&self, _path: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
     /// 把一个 JSONL 解析成 `Turn` 列表，给统计聚合器（stats）使用。
     /// 一个 Turn = 一条用户消息 + 紧随其后的 N 个 assistant API call；
     /// 每个 call 记录该次调用用了哪个模型、产生了多少 token、调用了哪些工具

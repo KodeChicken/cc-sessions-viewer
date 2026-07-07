@@ -15,7 +15,7 @@ let nextViewTabId = 1
 
 export interface ViewTab {
   uiId: number
-  type: 'session' | 'chat'
+  type: 'session' | 'chat' | 'git'
   agent: Agent
   projectKey: string
   /** 所属分屏格子 id（见 panes.ts）。 */
@@ -37,6 +37,10 @@ export interface ViewTab {
   trashAgent: Agent | null
   // 导出历史来源 agent（可能与侧栏 agent 不同）
   importedAgent: Agent | null
+  // git tab：仓库工作目录 + 当前查看的 ref（"working" 或 commit hash）
+  gitCwd: string | null
+  gitRef: string | null
+  gitSelectedPath: string | null
 }
 
 export const viewTabs = ref<ViewTab[]>([])
@@ -65,6 +69,13 @@ function activateViewTabInPane(tab: ViewTab) {
   }
 }
 
+let _suppressActivate = false
+
+export function suppressActivation(fn: () => void) {
+  _suppressActivate = true
+  try { fn() } finally { _suppressActivate = false }
+}
+
 export function createViewTab(partial: Partial<ViewTab> & Pick<ViewTab, 'type' | 'agent' | 'projectKey'>): ViewTab {
   const uiId = nextViewTabId++
   const tab: ViewTab = {
@@ -79,6 +90,9 @@ export function createViewTab(partial: Partial<ViewTab> & Pick<ViewTab, 'type' |
     liveFadeTimer: 0,
     trashAgent: null,
     importedAgent: null,
+    gitCwd: null,
+    gitRef: null,
+    gitSelectedPath: null,
     ...partial,
     // paneId 放在 spread 之后并带兜底：恢复旧数据（无 paneId）或 partial 显式传了 undefined 时，
     // 仍回落到本项目聚焦格子，而不是被 undefined 覆盖。
@@ -88,7 +102,7 @@ export function createViewTab(partial: Partial<ViewTab> & Pick<ViewTab, 'type' |
   viewTabs.value.push(tab)
   // Return the reactive proxy, not the plain object, so callers' mutations trigger reactivity
   const proxy = viewTabs.value[viewTabs.value.length - 1]
-  activateViewTabInPane(proxy)
+  if (!_suppressActivate) activateViewTabInPane(proxy)
   return proxy
 }
 
@@ -140,7 +154,7 @@ export function closeViewTabsByProject(projectKey: string) {
 const SAVED_VIEW_TABS_KEY = 'savedViewTabs:v1'
 
 export interface SavedViewTab {
-  type: 'session' | 'chat'
+  type: 'session' | 'chat' | 'git'
   agent: Agent
   projectKey: string
   /** 上次退出时所属分屏格子 id；恢复时回落到本项目聚焦格子（见 activateViewTabInPane）。 */
@@ -151,11 +165,19 @@ export interface SavedViewTab {
   sessionId: string | null
   trashAgent: Agent | null
   importedAgent: Agent | null
+  gitCwd?: string | null
+  gitRef?: string | null
+  gitSelectedPath?: string | null
+  isActive?: boolean
 }
 
 export function persistViewTabs() {
+  const activePaneTabIds = new Set<number>()
+  for (const pane of panes.values()) {
+    if (pane.activeViewTabId != null) activePaneTabIds.add(pane.activeViewTabId)
+  }
   const items: SavedViewTab[] = viewTabs.value
-    .filter(t => (t.type === 'session' && t.session) || t.type === 'chat')
+    .filter(t => (t.type === 'session' && t.session) || t.type === 'chat' || t.type === 'git')
     .map(t => ({
       type: t.type,
       agent: t.agent,
@@ -167,6 +189,10 @@ export function persistViewTabs() {
       sessionId: t.chatSession?.sessionId ?? t.session?.id ?? null,
       trashAgent: t.trashAgent,
       importedAgent: t.importedAgent,
+      gitCwd: t.gitCwd,
+      gitRef: t.gitRef,
+      gitSelectedPath: t.gitSelectedPath,
+      isActive: activePaneTabIds.has(t.uiId),
     }))
   try {
     localStorage.setItem(SAVED_VIEW_TABS_KEY, JSON.stringify({
@@ -185,14 +211,13 @@ export function loadSavedViewTabs(): { tabs: SavedViewTab[]; activeIdx: number |
     const data = JSON.parse(raw)
     if (!data || !Array.isArray(data.tabs)) return { tabs: [], activeIdx: null }
     const valid = data.tabs.filter((t: any) => t && t.agent && (
-      (t.type === 'session' && t.session) || t.type === 'chat'
+      (t.type === 'session' && t.session) || t.type === 'chat' || (t.type === 'git' && t.gitCwd)
     )) as SavedViewTab[]
-    // Dedup: keep last occurrence per (type, agent, sessionId/path)
     const seen = new Set<string>()
     const deduped: SavedViewTab[] = []
     for (let i = valid.length - 1; i >= 0; i--) {
       const t = valid[i]
-      const key = `${t.type}:${t.agent}:${t.sessionId ?? t.session?.path ?? ''}`
+      const key = `${t.type}:${t.agent}:${t.type === 'git' ? `${t.gitCwd}:${t.title}` : (t.sessionId ?? t.session?.path ?? '')}`
       if (seen.has(key)) continue
       seen.add(key)
       deduped.unshift(t)

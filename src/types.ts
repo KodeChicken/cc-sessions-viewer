@@ -50,6 +50,25 @@ export interface DiffHunk {
   lines: DiffLine[]
 }
 
+export interface GitCommit {
+  hash: string
+  author: string
+  date: string
+  message: string
+}
+
+export interface GitFileStatus {
+  path: string
+  status: string
+}
+
+export interface GitDiffFile {
+  path: string
+  additions: number
+  deletions: number
+  status: string
+}
+
 export interface Block {
   kind: BlockKind
   text?: string

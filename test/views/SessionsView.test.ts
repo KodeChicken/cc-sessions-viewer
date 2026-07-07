@@ -211,9 +211,9 @@ describe('SessionsView', () => {
       const wrapper = factory()
       // Click the "+" button to open the dropdown
       await findByLabel(wrapper, 'New session').trigger('click')
-      // Menu now has three items: TUI / GUI / Terminal.
+      // Menu items: TUI / GUI / Terminal / Git Changes / Split H / Split V
       const items = wrapper.findAll('.new-menu-item')
-      expect(items.length).toBe(3)
+      expect(items.length).toBe(6)
       await items[0].trigger('click')
       expect(wrapper.emitted('new-session')).toHaveLength(1)
     })

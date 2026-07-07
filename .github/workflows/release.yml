@@ -272,7 +272,7 @@ jobs:
           // can replace spaces with dots in file names, making the build-job URLs stale.
           const extToKeys = [
             ['.app.tar.gz', ['darwin-x86_64', 'darwin-aarch64']],
-            ['.msi',        ['windows-x86_64']],
+            ['-setup.exe', ['windows-x86_64']],
             ['.AppImage',   ['linux-x86_64']],
           ]
           for (const [ext, keys] of extToKeys) {

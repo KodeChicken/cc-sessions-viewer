@@ -18,6 +18,7 @@ mod agent_command;
 mod bookmarks;
 mod claude_config;
 mod cli_env;
+mod git;
 #[cfg(target_os = "macos")]
 mod menu;
 mod pty;
@@ -190,6 +191,12 @@ fn session_usage(agent: String, path: String) -> Result<UsageSummary, String> {
 fn session_context_usage(agent: String, path: String) -> Result<UsageSummary, String> {
     let src = agents::source(&agent)?;
     src.context_usage(&path)
+}
+
+#[tauri::command]
+fn session_last_prompt(agent: String, path: String) -> Result<Option<String>, String> {
+    let src = agents::source(&agent)?;
+    src.last_prompt(&path)
 }
 
 /// 当前 agent 的统计概览：顶层标量 + 项目排行（按 token 降序）+ 日活时间轴。
@@ -1312,6 +1319,38 @@ fn git_current_branch(cwd: String) -> Option<String> {
     util::git_current_branch(&cwd)
 }
 
+#[tauri::command]
+fn git_has_repo(cwd: String) -> bool {
+    git::git_has_repo(&cwd)
+}
+
+#[tauri::command]
+fn git_log(cwd: String, limit: Option<u32>) -> Result<Vec<crate::types::GitCommit>, String> {
+    git::git_log(&cwd, limit)
+}
+
+#[tauri::command]
+fn git_status(cwd: String) -> Result<Vec<crate::types::GitFileStatus>, String> {
+    git::git_status(&cwd)
+}
+
+#[tauri::command]
+fn git_diff_files(
+    cwd: String,
+    git_ref: String,
+) -> Result<Vec<crate::types::GitDiffFile>, String> {
+    git::git_diff_files(&cwd, &git_ref)
+}
+
+#[tauri::command]
+fn git_diff_file(
+    cwd: String,
+    git_ref: String,
+    path: String,
+) -> Result<Vec<crate::types::DiffHunk>, String> {
+    git::git_diff_file(&cwd, &git_ref, &path)
+}
+
 /// GUI chat 输入框 `@` 文件浮层：列出会话 `cwd` 下的目录/文件（相对路径）。`query` 空 →
 /// 顶层直接子项；非空 → 递归子串匹配。详见 `util::list_project_files`。
 #[tauri::command]
@@ -1609,6 +1648,7 @@ pub fn run() {
             watch_session_turn,
             unwatch_session_turn,
             session_usage,
+            session_last_prompt,
             session_context_usage,
             agent_stats,
             start_agent_stats,
@@ -1648,6 +1688,11 @@ pub fn run() {
             save_clipboard_image,
             path_is_dir,
             git_current_branch,
+            git_has_repo,
+            git_log,
+            git_status,
+            git_diff_files,
+            git_diff_file,
             list_project_files,
             write_file,
             write_binary_file,

@@ -22,6 +22,7 @@ import { moveTabTo, dragState, resetDragState, sameRef, type DragKind } from '..
 import {
   IconClose,
   IconChat,
+  IconGitBranch,
   IconList,
   IconPlus,
   IconReader,
@@ -32,6 +33,7 @@ import {
 } from './icons'
 import { t } from '../i18n'
 import { PaneActionsKey } from '../paneActions'
+import NewMenu from './NewMenu.vue'
 
 const pa = inject(PaneActionsKey)!
 
@@ -55,7 +57,7 @@ const emit = defineEmits<{
   /** View tab 右键菜单操作 */
   viewRename: [vt: ViewTab]
   viewCloseOthers: [vt: ViewTab]
-  viewCloseProject: [type: 'session' | 'chat']
+  viewCloseProject: [type: 'session' | 'chat' | 'git']
   /** 关闭除指定 tab 外的所有 tab（终端 + view） */
   closeOthersAll: [keepUiId: number, keepKind: 'tui' | 'view']
   /** 关闭当前项目所有 tab（终端 + view） */
@@ -72,6 +74,9 @@ const emit = defineEmits<{
   /** 入口 1 - GUI：新开一个 live GUI chat */
   newGuiSession: []
   newShell: []
+  /** 入口 2 - 打开当前项目的 Git Changes tab */
+  gitChanges: []
+  refresh: []
   hydrateSaved: [saved: SavedTab]
   /** saved tab 右键「重命名」—— 复用会话重命名弹窗（saved 分支只改内存标题） */
   savedRename: [saved: SavedTab]
@@ -407,6 +412,18 @@ function pickNewShell() {
   newMenuOpen.value = false
   emit('newShell')
 }
+function pickGitChanges() {
+  newMenuOpen.value = false
+  emit('gitChanges')
+}
+function pickSplitH() {
+  newMenuOpen.value = false
+  pa.splitH()
+}
+function pickSplitV() {
+  newMenuOpen.value = false
+  pa.splitV()
+}
 function onNewMenuDocClick(e: MouseEvent) {
   if (!newMenuOpen.value) return
   if (newMenuEl.value?.contains(e.target as Node)) return
@@ -471,7 +488,7 @@ async function openNativeViewTabContextMenu(vt: ViewTab, ev: MouseEvent): Promis
       import('@tauri-apps/api/menu'),
       import('@tauri-apps/api/dpi'),
     ])
-    const typeLabel = vt.type === 'chat' ? t('chat.tui.chatTab') : t('chat.tui.viewTab')
+    const typeLabel = vt.type === 'chat' ? t('chat.tui.chatTab') : vt.type === 'git' ? t('chat.tui.diffTab') : t('chat.tui.viewTab')
     const menu = await Menu.new({
       items: [
         {
@@ -516,7 +533,7 @@ async function openNativeViewTabContextMenu(vt: ViewTab, ev: MouseEvent): Promis
 }
 
 function openFallbackViewTabContextMenu(vt: ViewTab, ev: MouseEvent) {
-  const typeLabel = vt.type === 'chat' ? t('chat.tui.chatTab') : t('chat.tui.viewTab')
+  const typeLabel = vt.type === 'chat' ? t('chat.tui.chatTab') : vt.type === 'git' ? t('chat.tui.diffTab') : t('chat.tui.viewTab')
   viewTabCtx.value = {
     x: Math.max(8, Math.min(ev.clientX, window.innerWidth - 220 - 8)),
     y: Math.max(8, Math.min(ev.clientY, window.innerHeight - 200 - 8)),
@@ -900,7 +917,6 @@ async function openNativeStripContextMenu(ev: MouseEvent): Promise<boolean> {
           text: t('list.action.newSessionTui'),
           action: () => emit('newSession'),
         },
-        // New chat (GUI) 目前只有 claude 支持；codex 先不放这一项。
         ...(props.agent === 'claude'
           ? [
               {
@@ -914,6 +930,12 @@ async function openNativeStripContextMenu(ev: MouseEvent): Promise<boolean> {
           id: 'strip-new-shell',
           text: t('list.action.newTerminal'),
           action: () => emit('newShell'),
+        },
+        { item: 'Separator' },
+        {
+          id: 'strip-git-changes',
+          text: t('list.action.gitChanges'),
+          action: () => emit('gitChanges'),
         },
       ],
     })
@@ -962,6 +984,22 @@ function newGuiFromStripCtx() {
 function newShellFromStripCtx() {
   closeTabCtx()
   emit('newShell')
+}
+function gitChangesFromStripCtx() {
+  closeTabCtx()
+  emit('gitChanges')
+}
+function refreshFromStripCtx() {
+  closeTabCtx()
+  emit('refresh')
+}
+function splitHFromStripCtx() {
+  closeTabCtx()
+  pa.splitH()
+}
+function splitVFromStripCtx() {
+  closeTabCtx()
+  pa.splitV()
 }
 
 function renameCtxTab() {
@@ -1237,7 +1275,7 @@ onUnmounted(() => {
           @keydown.enter.prevent="onViewTabClick(ut.vt.uiId)"
           @keydown.space.prevent="onViewTabClick(ut.vt.uiId)"
         >
-          <component :is="ut.vt.type === 'chat' ? IconChat : IconReader" class="term-tab-agent" />
+          <component :is="ut.vt.type === 'chat' ? IconChat : ut.vt.type === 'git' ? IconGitBranch : IconReader" class="term-tab-agent" />
           <span class="term-tab-title">{{ ut.vt.title ? shortTitle(ut.vt.title) : (ut.vt.type === 'chat' ? t('chat.tui.chatTab') : t('chat.tui.viewTab')) }}</span>
           <span v-if="modHintDown && shortcutForIndex(inProjectBrowse ? ut.orderIndex + 1 : ut.orderIndex)" class="term-tab-shortcut">{{ shortcutForIndex(inProjectBrowse ? ut.orderIndex + 1 : ut.orderIndex) }}</span>
           <span
@@ -1268,18 +1306,7 @@ onUnmounted(() => {
         <IconPlus />
       </div>
       <div v-if="newMenuOpen" class="new-menu" role="menu">
-        <button type="button" class="new-menu-item" role="menuitem" @click="pickNewAgent">
-          <component :is="agentIcons[agent]" class="new-menu-ic" />
-          <span>{{ t('list.action.newSessionTui') }}</span>
-        </button>
-        <button type="button" class="new-menu-item" role="menuitem" @click="pickNewGui">
-          <IconChat class="new-menu-ic" />
-          <span>{{ t('list.action.newSessionGui') }}</span>
-        </button>
-        <button type="button" class="new-menu-item" role="menuitem" @click="pickNewShell">
-          <IconTerminal class="new-menu-ic" />
-          <span>{{ t('list.action.newTerminal') }}</span>
-        </button>
+        <NewMenu :agent="agent" show-split @new-session="pickNewAgent" @new-gui="pickNewGui" @new-shell="pickNewShell" @git-changes="pickGitChanges" @split-h="pickSplitH" @split-v="pickSplitV" />
       </div>
     </div>
 
@@ -1302,36 +1329,13 @@ onUnmounted(() => {
 
     <div
       v-if="stripCtx"
-      class="ctx-menu term-strip-ctx-menu"
+      class="new-menu new-menu-floating"
+      role="menu"
       :style="{ left: stripCtx.x + 'px', top: stripCtx.y + 'px' }"
       @click.stop
       @contextmenu.prevent.stop
     >
-      <button
-        type="button"
-        class="ctx-item"
-        data-menu-action="strip-new-agent"
-        @click="newSessionFromStripCtx"
-      >
-        <span>{{ t('list.action.newSessionTui') }}</span>
-      </button>
-      <button
-        v-if="agent === 'claude'"
-        type="button"
-        class="ctx-item"
-        data-menu-action="strip-new-gui"
-        @click="newGuiFromStripCtx"
-      >
-        <span>{{ t('list.action.newSessionGui') }}</span>
-      </button>
-      <button
-        type="button"
-        class="ctx-item"
-        data-menu-action="strip-new-shell"
-        @click="newShellFromStripCtx"
-      >
-        <span>{{ t('list.action.newTerminal') }}</span>
-      </button>
+      <NewMenu :agent="agent" show-refresh show-split @new-session="newSessionFromStripCtx" @new-gui="newGuiFromStripCtx" @new-shell="newShellFromStripCtx" @git-changes="gitChangesFromStripCtx" @refresh="refreshFromStripCtx" @split-h="splitHFromStripCtx" @split-v="splitVFromStripCtx" />
     </div>
 
     <div
@@ -1493,7 +1497,7 @@ onUnmounted(() => {
         }"
       >
         <component
-          :is="dragPreview.vt.type === 'chat' ? IconChat : IconReader"
+          :is="dragPreview.vt.type === 'chat' ? IconChat : dragPreview.vt.type === 'git' ? IconGitBranch : IconReader"
           class="term-tab-agent"
         />
         <span class="term-tab-title">{{

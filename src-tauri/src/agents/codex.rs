@@ -1566,6 +1566,10 @@ impl SessionSource for CodexSource {
         usage_summary(Path::new(path))
     }
 
+    fn last_prompt(&self, path: &str) -> Result<Option<String>, String> {
+        Ok(last_user_text(Path::new(path)))
+    }
+
     fn read_turns(&self, path: &str) -> Result<Vec<Turn>, String> {
         Ok(read_turns(Path::new(path)))
     }
@@ -1643,6 +1647,32 @@ impl SessionSource for CodexSource {
 //   - usage：codex 在 token_count.info 里同时给 `last_token_usage`（这次调用的 delta）
 //     和 `total_token_usage`（自 session 开始累积）。优先取 last_*；老格式没 last_* 时
 //     从 total_* 相对前一帧的差值还原。两个连续帧 total_tokens 相同 → 重复事件，跳过。
+fn last_user_text(fp: &Path) -> Option<String> {
+    let raw = fs::read(fp).ok()?;
+    for line in raw.rsplit(|&b| b == b'\n') {
+        if line.is_empty() { continue; }
+        let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
+        // Codex user messages: event_msg wrapper or response_item.payload
+        let em = v.get("event_msg")
+            .or_else(|| v.get("payload"))
+            .or_else(|| v.get("response_item").and_then(|r| r.get("message")));
+        let Some(em) = em else { continue };
+        if em.get("role").and_then(Value::as_str) != Some("user") { continue; }
+        let text = em.get("content")
+            .and_then(Value::as_array)
+            .and_then(|arr| arr.iter().find(|c| {
+                let t = c.get("type").and_then(Value::as_str).unwrap_or("");
+                t == "input_text" || t == "text"
+            }))
+            .and_then(|c| c.get("text").and_then(Value::as_str));
+        if let Some(t) = text {
+            let clean = crate::util::truncate_subtitle(t);
+            if !clean.is_empty() { return Some(clean); }
+        }
+    }
+    None
+}
+
 fn read_turns(fp: &Path) -> Vec<Turn> {
     let file = match fs::File::open(fp) {
         Ok(f) => f,

@@ -67,6 +67,7 @@ fn list_projects_in(dir: &Path) -> Result<Vec<ProjectInfo>, String> {
             continue;
         }
         let display_path = cwd.unwrap_or_else(|| dir_name.replace('-', "/"));
+        let display_path = best_project_root(&dir_name, &display_path);
         let exists = Path::new(&display_path).is_dir();
         let (parent_dir_name, worktree_name) =
             if let Some(pos) = dir_name.find("--claude-worktrees-") {
@@ -301,12 +302,38 @@ impl SessionSource for ClaudeSource {
         Ok(last_context_usage(Path::new(path)))
     }
 
+    fn last_prompt(&self, path: &str) -> Result<Option<String>, String> {
+        Ok(last_user_text(Path::new(path)))
+    }
+
     fn read_turns(&self, path: &str) -> Result<Vec<Turn>, String> {
         Ok(read_turns(Path::new(path)))
     }
 }
 
 // ----- 内部解析 --------------------------------------------------------------
+
+/// 从 JSONL 尾部反向读，找最后一条 `role: human` 的文本。
+fn last_user_text(fp: &Path) -> Option<String> {
+    let raw = fs::read(fp).ok()?;
+    // 反向逐行扫描
+    for line in raw.rsplit(|&b| b == b'\n') {
+        if line.is_empty() { continue; }
+        let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
+        if v.get("type").and_then(Value::as_str) != Some("user") { continue; }
+        let content = v.get("message").and_then(|m| m.get("content"));
+        let text = content
+            .and_then(Value::as_array)
+            .and_then(|arr| arr.iter().find(|c| c.get("type").and_then(Value::as_str) == Some("text")))
+            .and_then(|c| c.get("text").and_then(Value::as_str))
+            .or_else(|| content.and_then(Value::as_str));
+        if let Some(t) = text {
+            let clean = crate::util::truncate_subtitle(t);
+            if !clean.is_empty() { return Some(clean); }
+        }
+    }
+    None
+}
 
 /// 一次性把整份 JSONL 走一遍，累加每条 assistant 消息里的 `message.usage` 字段。
 /// Claude 的形状：
@@ -388,6 +415,24 @@ fn last_context_usage(fp: &Path) -> UsageSummary {
         last = cur.finalize();
     }
     last
+}
+
+fn best_project_root(dir_name: &str, cwd: &str) -> String {
+    let mut path = Path::new(cwd);
+    loop {
+        let encoded = format!(
+            "-{}",
+            path.to_string_lossy().trim_start_matches('/').replace('/', "-")
+        );
+        if encoded == dir_name {
+            return path.to_string_lossy().into_owned();
+        }
+        match path.parent() {
+            Some(p) if p != path => path = p,
+            _ => break,
+        }
+    }
+    cwd.to_string()
 }
 
 fn last_cwd(fp: &Path) -> Option<String> {
