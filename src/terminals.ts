@@ -81,6 +81,47 @@ async function pasteWindowsClipboardText(term: Terminal) {
   }
 }
 
+type TerminalKeyEvent = Pick<
+  KeyboardEvent,
+  'type' | 'key' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'
+>
+
+export function shouldCopyWindowsTerminalSelection(
+  ev: TerminalKeyEvent,
+  hasSelection: boolean,
+  platform = navigator.platform,
+): boolean {
+  return (
+    /Win/i.test(platform) &&
+    hasSelection &&
+    ev.type === 'keydown' &&
+    ev.key.toLowerCase() === 'c' &&
+    ev.ctrlKey &&
+    !ev.shiftKey &&
+    !ev.altKey &&
+    !ev.metaKey
+  )
+}
+
+async function copyTerminalSelectionText(text: string) {
+  try {
+    await navigator.clipboard?.writeText?.(text)
+  } catch {
+    /* Clipboard write can be denied by the webview; still swallow Ctrl+C so it never kills the PTY. */
+  }
+}
+
+function handleWindowsTerminalSelectionCopy(term: Terminal, ev: KeyboardEvent): boolean {
+  if (!shouldCopyWindowsTerminalSelection(ev, term.hasSelection())) {
+    return false
+  }
+  ev.preventDefault()
+  ev.stopImmediatePropagation()
+  const text = term.getSelection()
+  if (text) void copyTerminalSelectionText(text)
+  return true
+}
+
 function handleWindowsCodexPaste(term: Terminal, ev: KeyboardEvent, agent: Agent): boolean {
   if (
     !_isWindows ||
@@ -860,6 +901,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   tabs.value.push(tab)
   activateTabInPane(tab)
   term.attachCustomKeyEventHandler((ev) => {
+    if (handleWindowsTerminalSelectionCopy(term, ev)) return false
     if (handleWindowsCodexPaste(term, ev, opts.agent)) return false
     if (ev.type !== 'keydown' || ev.altKey) return true
     const key = ev.key.toLowerCase()
@@ -1029,6 +1071,7 @@ export async function openShellTab(opts: {
   tabs.value.push(tab)
   activateTabInPane(tab)
   term.attachCustomKeyEventHandler((ev) => {
+    if (handleWindowsTerminalSelectionCopy(term, ev)) return false
     if (ev.type !== 'keydown' || ev.altKey) return true
     const key = ev.key.toLowerCase()
 
