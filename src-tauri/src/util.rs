@@ -105,6 +105,20 @@ pub fn home() -> PathBuf {
     dirs::home_dir().expect("无法定位用户主目录")
 }
 
+/// 构造不弹控制台窗口的子进程命令。打包后的 Windows GUI 进程没有控制台，
+/// 直接 spawn 会给每个子进程新开一个 conhost 黑框（dev 模式继承终端所以看不出来），
+/// 所有「后台静默执行」的子进程都必须走这里，别直接 `Command::new`。
+pub fn silent_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 pub fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

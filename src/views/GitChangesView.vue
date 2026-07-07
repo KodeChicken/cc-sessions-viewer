@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { GitCommit, GitDiffFile, DiffHunk } from '../types'
 import { gitLog, gitDiffFiles, gitDiffFile, gitStatus } from '../api'
 import { t } from '../i18n'
@@ -35,6 +35,8 @@ const currentLabel = computed(() => {
   return currentRef.value.slice(0, 7)
 })
 
+const expandState = reactive<Record<string, boolean>>({})
+
 const fileTree = computed(() => buildTree(files.value))
 
 interface TreeNode {
@@ -42,7 +44,10 @@ interface TreeNode {
   path: string
   file?: GitDiffFile
   children: TreeNode[]
-  expanded: boolean
+}
+
+function isExpanded(path: string): boolean {
+  return expandState[path] !== false
 }
 
 function buildTree(list: GitDiffFile[]): TreeNode[] {
@@ -57,7 +62,7 @@ function buildTree(list: GitDiffFile[]): TreeNode[] {
       const isLeaf = i === parts.length - 1
       let node = nodes.find((n) => n.name === name)
       if (!node) {
-        node = { name, path: pathSoFar, children: [], expanded: true }
+        node = { name, path: pathSoFar, children: [] }
         if (isLeaf) node.file = f
         nodes.push(node)
       }
@@ -82,7 +87,7 @@ function flatNodes(nodes: TreeNode[]): TreeNode[] {
   const out: TreeNode[] = []
   for (const n of nodes) {
     out.push(n)
-    if (n.children.length && n.expanded) {
+    if (n.children.length && isExpanded(n.path)) {
       out.push(...flatNodes(n.children))
     }
   }
@@ -90,7 +95,7 @@ function flatNodes(nodes: TreeNode[]): TreeNode[] {
 }
 
 function toggleDir(node: TreeNode) {
-  node.expanded = !node.expanded
+  expandState[node.path] = !isExpanded(node.path)
 }
 
 async function loadFiles() {
@@ -238,7 +243,7 @@ const selectedDiffFile = computed(() => files.value.find((f) => f.path === selec
             :style="{ paddingLeft: (node.path.split('/').length - 1) * 12 + 8 + 'px' }"
             @click="node.file ? loadDiff(node.path) : toggleDir(node)"
           >
-            <span v-if="node.children.length" class="git-dir-arrow" :class="{ open: node.expanded }">▸</span>
+            <span v-if="node.children.length" class="git-dir-arrow" :class="{ open: isExpanded(node.path) }">▸</span>
             <span
               v-if="node.file"
               class="git-status"

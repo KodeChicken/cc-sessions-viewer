@@ -97,7 +97,7 @@ export default {
   'list.action.newSession': 'ウィンドウで新規セッション',
   'list.action.newAgentSession': '新規エージェントセッション',
   'list.action.newSessionTui': '新規セッション（TUI）',
-  'list.action.newSessionGui': '新規セッション（GUI）',
+  'list.action.newSessionGui': '新規チャット（GUI）',
   'list.action.openChat': 'Chat で開く（GUI）',
   'list.action.newTerminal': '新規ターミナル',
   'list.action.gitChanges': 'Git 変更',
@@ -418,7 +418,7 @@ export default {
     'ピン留め / 沈め設定を削除します。セッションとゴミ箱には影響しません。',
   'dialog.clearCache.ok': '削除',
   'dialog.clearTabs.title': 'すべてのタブを削除',
-  'dialog.clearTabs.body': '実行中のすべてのターミナルを閉じ、保存済みのタブ状態をクリアします。セッションファイルには影響しません。',
+  'dialog.clearTabs.body': 'すべてのタブ（ターミナル、セッション表示、GUI チャット、Git Diff）を閉じ、保存済みのタブ状態をクリアします。セッションファイルには影響しません。',
   'dialog.clearTabs.ok': 'すべて削除',
 
   'toast.moved': 'ゴミ箱へ移動しました',
@@ -575,7 +575,7 @@ export default {
   'settings.reclaude.notRunning': 'ReClaude デーモンが実行されていません。',
   'settings.section.tabs': 'ターミナルタブ',
   'settings.clearTabs': 'すべてのタブを削除',
-  'settings.clearTabsDesc': '実行中のすべてのターミナルタブを閉じ、保存済みのタブ状態をクリアします。セッションファイルには影響しません。',
+  'settings.clearTabsDesc': 'すべてのタブ（ターミナル、セッション表示、GUI チャット、Git Diff）を閉じ、保存済みのタブ状態をクリアします。セッションファイルには影響しません。',
   'settings.clearCache': 'キャッシュを削除',
   'settings.clearCacheDesc':
     'ピン留め / 沈め設定を削除します。セッションとゴミ箱には影響しません。',

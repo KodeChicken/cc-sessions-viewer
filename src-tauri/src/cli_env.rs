@@ -281,7 +281,8 @@ fn resolve_upgrade_cmd(spec: &CliSpec) -> String {
             }
         }
         "homebrew" => {
-            return format!("HOMEBREW_NO_INSTALL_FROM_API=1 brew upgrade {}", spec.npm_package.rsplit('/').next().unwrap_or(spec.binary));
+            let formula = spec.brew_upgrade.unwrap_or_else(|| spec.npm_package.rsplit('/').next().unwrap_or(spec.binary));
+            return format!("HOMEBREW_NO_INSTALL_FROM_API=1 brew upgrade {formula}");
         }
         "nvm" | "fnm" | "volta" | "npm" => {
             if let Some(ref bin_path) = first {

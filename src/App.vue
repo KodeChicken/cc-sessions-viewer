@@ -125,6 +125,7 @@ import {
   visibleViewTabs,
   persistViewTabs,
   loadSavedViewTabs,
+  clearSavedViewTabs,
   type SavedViewTab,
 } from './viewTabs'
 import {
@@ -170,6 +171,7 @@ const WINDOW_CLOSE_PREF_KEY = 'windowCloseAction:v1'
 const windowClosePrompt = ref({ show: false, remember: false })
 const windowCloseRunning = ref(false)
 let windowCloseUnlisten: UnlistenFn | null = null
+let beforeQuitUnlisten: UnlistenFn | null = null
 function toggleSidebar() {
   sidebarOpen.value = !sidebarOpen.value
 }
@@ -393,6 +395,12 @@ watch(openSession, (val, old) => {
     clearLive()
     clearPendingLiveNotification()
     api.unwatchSession().catch(() => {})
+    if (val?.path) {
+      const tab = activeViewTab.value
+      if (tab?.type === 'session') {
+        api.watchSession(tab.agent, val.path).catch(() => {})
+      }
+    }
   }
   if (!val && old) {
     nextTick(() => {
@@ -938,6 +946,9 @@ async function runWindowCloseAction(action: WindowCloseAction) {
   if (windowClosePrompt.value.remember) {
     localStorage.setItem(WINDOW_CLOSE_PREF_KEY, action)
   }
+  // 退出前显式保存一次 tab 状态：exit 路径不会触发 visibilitychange/beforeunload，
+  // 不能只靠 500ms 防抖兜底（最后一次变更可能还没落）。
+  saveTabState()
   try {
     if (action === 'tray') await api.windowHideToTray()
     else await api.windowExitApp()
@@ -951,6 +962,12 @@ async function runWindowCloseAction(action: WindowCloseAction) {
 
 function chooseWindowCloseAction(action: WindowCloseAction) {
   runWindowCloseAction(action)
+}
+
+// Rust 侧退出拦截（ExitRequested → app://before-quit）给前端的最后保存机会：
+// 托盘 Quit / ⌘Q 这类不经过 runWindowCloseAction 的退出路径全靠这里兜底。
+async function installBeforeQuitSave() {
+  beforeQuitUnlisten = await listen('app://before-quit', () => saveTabState())
 }
 
 async function installWindowClosePrompt() {
@@ -2799,6 +2816,14 @@ function onClearTabs() {
     danger: true,
     onOk: () => {
       clearAllTabs()
+      // view tab（会话查看 / GUI chat / Git Diff）一并关闭：chat 先停子进程再摘 tab
+      for (const vt of [...viewTabs.value]) {
+        if (vt.type === 'chat') closeLiveChat(vt.uiId)
+        else removeViewTab(vt.uiId)
+      }
+      clearSavedViewTabs()
+      // 每项目「上次活跃终端」记忆同步清空，避免切项目时试图恢复已不存在的 tab
+      activeTuiByProject.clear()
       notify(t('toast.tabsCleared'))
     },
   })
@@ -3278,6 +3303,7 @@ async function installTerminalTurnListeners() {
 
 onMounted(() => {
   installWindowClosePrompt()
+  installBeforeQuitSave()
   installLiveTailListeners()
   installTerminalTurnListeners()
 })
@@ -3285,6 +3311,8 @@ onMounted(() => {
 onUnmounted(() => {
   windowCloseUnlisten?.()
   windowCloseUnlisten = null
+  beforeQuitUnlisten?.()
+  beforeQuitUnlisten = null
   menuUnlisten?.()
   menuUnlisten = null
   window.clearInterval(tuiTitleSyncTimer)

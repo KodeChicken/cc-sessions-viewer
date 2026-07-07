@@ -6,6 +6,39 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.2.10]
+
+### Features
+
+- **Dracula terminal theme** — embedded xterm terminal now uses the standard Dracula color palette when the Dracula theme is active, matching the app's `--bg` and accent colors.
+- **Git diff tree collapse/expand** — directory nodes in the git diff file tree now toggle correctly on click (fixed reactivity issue where expand state was lost on each computed re-evaluation).
+- **Git diff empty state** — when there are no working changes, the git diff panel shows a centered message instead of an empty split layout, with a hint to browse commit history.
+- **Live session watcher reconnect** — switching away from a session tab (to git/list/etc.) and back now correctly restarts the file watcher, restoring live-tailing updates from external CLI sessions.
+
+### Bug Fixes
+
+- **Homebrew upgrade formula** — opencode upgrade via Homebrew now uses the correct formula name (`opencode`) instead of the npm package name (`opencode-ai`), fixing "No available formula" errors.
+- **User bubble text selection** — user message bubbles now explicitly allow text selection in WKWebView, fixing inability to drag-select text in user messages.
+- **Windows console flash suppression** — background child processes (git, open-url, editor, resume) use `CREATE_NO_WINDOW` to prevent console window flashes on Windows.
+- **Tab state persistence on exit** — intercept `ExitRequested` to save tab state and flush WebView localStorage before exit, fixing lost or partial tab restore after quit.
+
+---
+
+## [v0.2.9]
+
+### Features
+
+- **Git diff viewer** — new diff tab type with a file tree sidebar, commit history dropdown, and syntax-highlighted diff output. Shows working-tree changes (git diff) by default; selecting a commit from the dropdown shows the diff against that commit. Empty state message when there are no working changes. Per-tab isolation via `:key`, per-project diff numbering (Diff 1/2/3), and per-pane active-tab restore across restarts. Tab context-menu labels adapt for git tabs ("Close other Diffs" / "Close project Diffs").
+- **NewMenu shared component** — extracted the `+` dropdown and right-click context menus (used across session list, detail view, and git tabs) into a reusable `NewMenu.vue` component.
+- **Per-session subtitle** — session cards now show a last-prompt subtitle line below the title for all four agents (Claude, Codex, agy, opencode), giving a quick glimpse of what each session is about without opening it.
+- **Project path correction** — when a session JSONL records a `cwd` that is a subdirectory of the actual project root, `best_project_root` now walks up to find the nearest VCS root, so sessions show under the correct project instead of fragmenting into phantom subdirectory projects.
+
+### Bug Fixes
+
+- **Terminal selection copy on Windows** — preserved terminal text selection when copying with Ctrl+C on Windows, preventing the selection from being cleared before the copy operation completes.
+
+---
+
 ## [v0.2.8]
 
 ### Features

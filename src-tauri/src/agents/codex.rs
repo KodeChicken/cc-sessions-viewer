@@ -10,7 +10,7 @@ use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -297,7 +297,7 @@ fn app_server_response(
 
 fn query_codex_app_thread_list() -> CodexAppListSnapshot {
     let result = (|| -> Result<CodexAppListSnapshot, String> {
-        let mut child = Command::new(codex_cli_path())
+        let mut child = crate::util::silent_command(codex_cli_path())
             .args(["app-server", "--stdio"])
             .env("PATH", augmented_path())
             .stdin(Stdio::piped())

@@ -204,6 +204,10 @@ export function persistViewTabs() {
   } catch {}
 }
 
+export function clearSavedViewTabs() {
+  try { localStorage.removeItem(SAVED_VIEW_TABS_KEY) } catch {}
+}
+
 export function loadSavedViewTabs(): { tabs: SavedViewTab[]; activeIdx: number | null } {
   try {
     const raw = localStorage.getItem(SAVED_VIEW_TABS_KEY)

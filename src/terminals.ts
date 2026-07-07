@@ -375,12 +375,39 @@ export function clearAllTabs() {
   savedTabs.value = []
   localStorage.removeItem(SAVED_TABS_KEY)
   localStorage.removeItem(SAVED_NAV_KEY)
+  localStorage.removeItem(SAVED_VIEWS_KEY)
+  localStorage.removeItem(SAVED_ACTIVE_TUI_KEY)
   activeUiId.value = null
 }
 
 // ============================ 主题 ============================
 
 function xtermTheme(isDark: boolean) {
+  if (theme.value === 'dracula') {
+    return {
+      background: '#282a36',
+      foreground: '#f8f8f2',
+      cursor: '#f8f8f2',
+      cursorAccent: '#282a36',
+      selectionBackground: 'rgba(255,255,255,0.18)',
+      black: '#21222c',
+      red: '#ff5555',
+      green: '#50fa7b',
+      yellow: '#f1fa8c',
+      blue: '#bd93f9',
+      magenta: '#ff79c6',
+      cyan: '#8be9fd',
+      white: '#f8f8f2',
+      brightBlack: '#6272a4',
+      brightRed: '#ff6e6e',
+      brightGreen: '#69ff94',
+      brightYellow: '#ffffa5',
+      brightBlue: '#d6acff',
+      brightMagenta: '#ff92df',
+      brightCyan: '#a4ffff',
+      brightWhite: '#ffffff',
+    }
+  }
   return isDark
     ? {
         background: '#0a0a0a',

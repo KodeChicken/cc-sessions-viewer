@@ -2389,12 +2389,13 @@ mark.locate-hl {
   word-break: break-word;
 }
 .bubble.user {
-  /* 用户消息：灰底圆角气泡 + 右对齐（参考微信/iMessage 风）。 */
   background: var(--surface-hover);
   color: var(--text);
   padding: 9px 14px;
   border-radius: 16px;
   max-width: 80%;
+  user-select: text;
+  -webkit-user-select: text;
 }
 /* 用户气泡不再显示「Me」抬头：右对齐 + 灰底气泡本身已表达「这是我」。 */
 .bubble.user .role-tag {
@@ -6592,7 +6593,7 @@ body.is-tab-reordering * {
 .git-file-row:hover { background: var(--surface-hover); }
 .git-file-row.selected { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .git-file-row.dir { color: var(--text-mute); font-weight: 500; }
-.git-dir-arrow { font-size: 10px; width: 12px; display: inline-block; transition: transform .1s; }
+.git-dir-arrow { font-size: 12px; width: 14px; display: inline-flex; align-items: center; justify-content: center; transition: transform .1s; flex-shrink: 0; }
 .git-dir-arrow.open { transform: rotate(90deg); }
 .git-status {
   font-size: 10px; font-weight: 700; width: 14px; text-align: center; flex-shrink: 0;

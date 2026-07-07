@@ -836,7 +836,8 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
         let ps_exe = crate::agent_command::windows_powershell_exe();
         // -ExecutionPolicy Bypass（仅本进程）：放行 npm 装的 claude/codex .ps1 垫片，
         // 否则 Win 默认 Restricted 策略会以 UnauthorizedAccess 拒跑 resume 命令。
-        std::process::Command::new("cmd")
+        // silent_command 只隐藏宿主 cmd 的黑框；`start` 仍会为 powershell 新开可见终端窗口。
+        crate::util::silent_command("cmd")
             .args(["/c", "start", "", ps_exe, "-NoExit", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &encoded])
             .spawn()
             .map_err(|e| format!("Failed to launch terminal: {e}"))?;
@@ -1086,7 +1087,7 @@ fn open_url(url: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
+        crate::util::silent_command("cmd")
             .args(["/c", "start", "", &url])
             .spawn()
             .map_err(|e| format!("Failed to open URL: {e}"))?;
@@ -1274,7 +1275,7 @@ fn open_path_external(
     #[cfg(target_os = "windows")]
     {
         // start 需要一个空标题占位，否则带空格的路径会被当成窗口标题。
-        std::process::Command::new("cmd")
+        crate::util::silent_command("cmd")
             .args(["/c", "start", ""])
             .arg(&p)
             .spawn()
@@ -1461,7 +1462,8 @@ fn open_with_editor(path: &str, line: Option<u32>, column: Option<u32>) -> Resul
         let Some(found) = find_in_path(bin) else {
             continue;
         };
-        let mut cmd = std::process::Command::new(found);
+        // Windows 上 code/cursor 等命令是 .cmd 批处理垫片，直接 spawn 会闪控制台窗口。
+        let mut cmd = crate::util::silent_command(found);
         for arg in *prefix {
             cmd.arg(arg);
         }
@@ -1510,7 +1512,7 @@ fn open_local_path(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
+        crate::util::silent_command("cmd")
             .args(["/c", "start", "", &file_path])
             .spawn()
             .map_err(|e| format!("Failed to open local file: {e}"))?;
@@ -1771,14 +1773,42 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app, _event| {
-            // Dock 图标点击（macOS Reopen）：close-to-tray 把窗口藏起来后，点 Dock
-            // 图标应能唤回它，否则只能从托盘菜单 "Show"。
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = _event {
-                if let Some(win) = _app.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
+        .run({
+            let exiting = std::sync::atomic::AtomicBool::new(false);
+            move |app, event| {
+                // Dock 图标点击（macOS Reopen）：close-to-tray 把窗口藏起来后，点 Dock
+                // 图标应能唤回它，否则只能从托盘菜单 "Show"。
+                #[cfg(target_os = "macos")]
+                if let tauri::RunEvent::Reopen { .. } = event {
+                    if let Some(win) = app.get_webview_window("main") {
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                    }
+                }
+                // 退出拦截：所有退出路径（X→退出的 window_exit_app、Windows 托盘 Quit、
+                // macOS ⌘Q / 托盘 terminate:）都先到这里。webview 的 localStorage 是
+                // 异步刷盘的，直接 exit 会硬杀 WebView2/WKWebView，丢掉最近几秒写入
+                // （表现为重开后 tab 恢复不全）。第一次到达时拦下：通知前端保存 tab
+                // 状态 → 销毁窗口让 webview 控制器干净关闭（这一步才会触发刷盘）→
+                // 再放行真正退出。
+                if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                    use std::sync::atomic::Ordering;
+                    if exiting.swap(true, Ordering::SeqCst) {
+                        return; // 第二次 ExitRequested（下面 thread 里触发的）→ 放行
+                    }
+                    api.prevent_exit();
+                    let _ = app.emit("app://before-quit", ());
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        // 给前端 before-quit 处理器一拍时间把状态写进 localStorage
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        for (_, w) in app.webview_windows() {
+                            let _ = w.destroy();
+                        }
+                        // 窗口销毁后浏览器进程开始正常收尾刷盘；稍等再退，避免抢跑
+                        std::thread::sleep(std::time::Duration::from_millis(400));
+                        app.exit(code.unwrap_or(0));
+                    });
                 }
             }
         });

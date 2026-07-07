@@ -454,7 +454,7 @@ fn recover_early_lines(transcript_dir: &Path, first_step: u64) -> Vec<String> {
     if !conv_dir.join(".git").is_dir() {
         return Vec::new();
     }
-    let log_output = std::process::Command::new("git")
+    let log_output = crate::util::silent_command("git")
         .args(["log", "--format=%H", "--reverse"])
         .current_dir(conv_dir)
         .output();
@@ -472,7 +472,7 @@ fn recover_early_lines(transcript_dir: &Path, first_step: u64) -> Vec<String> {
     let rel_full = ".system_generated/logs/transcript_full.jsonl";
 
     let starts_at_zero = |commit: &str| -> bool {
-        let show = std::process::Command::new("git")
+        let show = crate::util::silent_command("git")
             .args(["show", &format!("{commit}:{rel_full}")])
             .current_dir(conv_dir)
             .output();
@@ -503,7 +503,7 @@ fn recover_early_lines(transcript_dir: &Path, first_step: u64) -> Vec<String> {
     }
     let best = commits[lo - 1];
 
-    let show = std::process::Command::new("git")
+    let show = crate::util::silent_command("git")
         .args(["show", &format!("{best}:{rel_full}")])
         .current_dir(conv_dir)
         .output();
