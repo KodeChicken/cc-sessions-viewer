@@ -3,7 +3,7 @@
 // `Command::args`（无 shell 解释），但仍需白名单校验防止路径穿越或参数注入（如 `--upload-pack`）。
 
 use crate::types::{DiffHunk, GitCommit, GitDiffFile, GitFileStatus};
-use crate::util::parse_unified_diff;
+use crate::util::{parse_unified_diff, silent_command};
 
 fn valid_hash(s: &str) -> bool {
     (7..=40).contains(&s.len())
@@ -16,7 +16,7 @@ fn valid_path(p: &str) -> bool {
 }
 
 fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
-    let output = std::process::Command::new("git")
+    let output = silent_command("git")
         .arg("-C")
         .arg(cwd)
         .args(args)
@@ -29,7 +29,7 @@ fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
 }
 
 pub fn git_has_repo(cwd: &str) -> bool {
-    std::process::Command::new("git")
+    silent_command("git")
         .arg("-C")
         .arg(cwd)
         .arg("rev-parse")

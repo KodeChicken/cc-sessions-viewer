@@ -375,6 +375,8 @@ export function clearAllTabs() {
   savedTabs.value = []
   localStorage.removeItem(SAVED_TABS_KEY)
   localStorage.removeItem(SAVED_NAV_KEY)
+  localStorage.removeItem(SAVED_VIEWS_KEY)
+  localStorage.removeItem(SAVED_ACTIVE_TUI_KEY)
   activeUiId.value = null
 }
 

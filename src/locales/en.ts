@@ -420,7 +420,7 @@ export default {
   'dialog.clearCache.ok': 'Clear',
   'dialog.clearTabs.title': 'Clear all tabs',
   'dialog.clearTabs.body':
-    'This will close all running terminals and clear saved tab state. Session files are not affected.',
+    'This will close all tabs (terminals, session views, GUI chats, Git Diff) and clear saved tab state. Session files are not affected.',
   'dialog.clearTabs.ok': 'Clear all',
 
   'toast.moved': 'Moved to Trash',
@@ -576,10 +576,10 @@ export default {
     'When enabled, GUI chat subprocesses connect through the local ReClaude daemon instead of your Claude subscription.',
   'settings.reclaude.notInstalled': 'ReClaude is not installed.',
   'settings.reclaude.notRunning': 'ReClaude daemon is not running.',
-  'settings.section.tabs': 'Terminal Tabs',
+  'settings.section.tabs': 'Tabs',
   'settings.clearTabs': 'Clear all tabs',
   'settings.clearTabsDesc':
-    'Closes all running terminal tabs and clears saved tab state. Session files are not affected.',
+    'Closes all tabs (terminals, session views, GUI chats, Git Diff) and clears saved tab state. Session files are not affected.',
   'settings.clearCache': 'Clear cache',
   'settings.clearCacheDesc':
     'Clears pin / sink preferences. Sessions and Trash are not affected.',

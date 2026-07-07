@@ -97,7 +97,7 @@ export default {
   'list.action.newSession': '在視窗中新增會話',
   'list.action.newAgentSession': '新增 Agent 會話',
   'list.action.newSessionTui': '新增會話（TUI）',
-  'list.action.newSessionGui': '新增會話（GUI）',
+  'list.action.newSessionGui': '新增chat（GUI）',
   'list.action.openChat': '以 Chat 開啟（GUI）',
   'list.action.newTerminal': '新增終端機',
   'list.action.gitChanges': 'Git 變更',
@@ -415,7 +415,7 @@ export default {
     '將清除釘選 / 沉底偏好等快取設定，不影響會話和垃圾桶資料。',
   'dialog.clearCache.ok': '清除',
   'dialog.clearTabs.title': '清除所有分頁',
-  'dialog.clearTabs.body': '將關閉所有正在執行的終端並清除已儲存的分頁狀態，不影響會話檔案。',
+  'dialog.clearTabs.body': '將關閉所有分頁（終端、會話檢視、GUI chat、Git Diff）並清除已儲存的分頁狀態，不影響會話檔案。',
   'dialog.clearTabs.ok': '全部清除',
 
   'toast.moved': '已移到垃圾桶',
@@ -569,7 +569,7 @@ export default {
   'settings.reclaude.notRunning': 'ReClaude 守護程序未執行。',
   'settings.section.tabs': '終端分頁',
   'settings.clearTabs': '清除所有分頁',
-  'settings.clearTabsDesc': '關閉所有正在執行的終端分頁並清除已儲存的分頁狀態，不影響會話檔案。',
+  'settings.clearTabsDesc': '關閉所有分頁（終端、會話檢視、GUI chat、Git Diff）並清除已儲存的分頁狀態，不影響會話檔案。',
   'settings.clearCache': '清除快取',
   'settings.clearCacheDesc':
     '清除釘選 / 沉底偏好等快取設定，不影響會話和垃圾桶。',
