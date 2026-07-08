@@ -544,6 +544,9 @@ export default {
   'settings.terminalDesc':
     '「セッション再開」と「新規セッション」を、内蔵ターミナルで開くか外部ターミナルアプリで開くかを選択します。',
   'settings.useExternalTerminal': '外部ターミナルを使用',
+  'settings.autoRestoreTerminalTabs': '起動時にターミナルタブを自動復元',
+  'settings.autoRestoreTerminalTabsDesc':
+    'アプリ起動時に現在のプロジェクトの保存済みターミナルタブを起動します。CLI が更新・ログイン・確認プロンプトを表示することがあります。',
   'settings.terminalApp.label': 'ターミナルアプリ',
   'settings.terminalApp.terminal': 'Terminal.app',
   'settings.terminalApp.iterm2': 'iTerm2',

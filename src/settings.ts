@@ -10,6 +10,7 @@ const PREFS_KEY = 'projPrefs:v1'
 const STATS_SCOPE_KEY = 'statsScope:v1'
 const STATS_RANGE_KEY = 'statsRange:v1'
 const EXTERNAL_TERMINAL_KEY = 'useExternalTerminal:v1'
+const AUTO_RESTORE_TERMINAL_TABS_KEY = 'autoRestoreTerminalTabs:v1'
 const TERMINAL_APP_KEY = 'terminalApp:v1'
 const CODEX_SHOW_INTERNAL_KEY = 'codexShowInternalSessions:v1'
 const CODEX_SHOW_ARCHIVED_KEY = 'codexShowArchivedSessions:v1'
@@ -56,6 +57,7 @@ export const theme = ref<Theme>(readTheme())
 export type TerminalApp = 'terminal' | 'iterm2' | 'ghostty' | 'cmux' | 'warp'
 
 export const useExternalTerminal = ref(localStorage.getItem(EXTERNAL_TERMINAL_KEY) === '1')
+export const autoRestoreTerminalTabs = ref(localStorage.getItem(AUTO_RESTORE_TERMINAL_TABS_KEY) === '1')
 export const terminalApp = ref<TerminalApp>(
   (localStorage.getItem(TERMINAL_APP_KEY) as TerminalApp | null) ?? 'terminal',
 )
@@ -179,6 +181,11 @@ export function setTheme(t: Theme) {
 export function setUseExternalTerminal(v: boolean) {
   useExternalTerminal.value = v
   localStorage.setItem(EXTERNAL_TERMINAL_KEY, v ? '1' : '0')
+}
+
+export function setAutoRestoreTerminalTabs(v: boolean) {
+  autoRestoreTerminalTabs.value = v
+  localStorage.setItem(AUTO_RESTORE_TERMINAL_TABS_KEY, v ? '1' : '0')
 }
 
 export function setTerminalApp(v: TerminalApp) {
