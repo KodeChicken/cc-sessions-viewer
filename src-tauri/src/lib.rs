@@ -42,7 +42,6 @@ use crate::agent_command::AgentCommand;
 use crate::types::{
     AgentStats, ClaudeRuntimeInfo, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, TrayStats, UsageSummary,
 };
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[allow(unused_imports)]
 use tauri::{Emitter, Manager};
 

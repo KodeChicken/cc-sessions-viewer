@@ -547,9 +547,9 @@ export default {
   'settings.terminalDesc':
     'Choose where Resume and New Session open — in the built-in terminal or an external terminal app.',
   'settings.useExternalTerminal': 'Use external terminal',
-  'settings.autoRestoreTerminalTabs': 'Auto-restore terminal tabs on startup',
+  'settings.autoRestoreTerminalTabs': 'Auto-activate pending terminal tabs on startup',
   'settings.autoRestoreTerminalTabsDesc':
-    'Starts saved terminal tabs for the current project when the app opens. CLIs may show update, login, or confirmation prompts.',
+    'Automatically activates terminal tabs from your last session when the app opens. CLIs may show update, login, or confirmation prompts.',
   'settings.terminalApp.label': 'Terminal app',
   'settings.terminalApp.terminal': 'Terminal.app',
   'settings.terminalApp.iterm2': 'iTerm2',
