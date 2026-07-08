@@ -540,6 +540,8 @@ export default {
   'settings.section.terminal': '終端',
   'settings.terminalDesc': '選擇「恢復會話」和「新建會話」的開啟方式——使用內嵌終端還是外部終端應用程式。',
   'settings.useExternalTerminal': '使用外部終端',
+  'settings.autoRestoreTerminalTabs': '啟動時自動恢復終端分頁',
+  'settings.autoRestoreTerminalTabsDesc': '開啟應用後自動啟動目前專案中已儲存的終端分頁。CLI 可能顯示升級、登入或確認提示。',
   'settings.terminalApp.label': '終端應用程式',
   'settings.terminalApp.terminal': 'Terminal.app',
   'settings.terminalApp.iterm2': 'iTerm2',

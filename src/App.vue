@@ -14,6 +14,7 @@ import {
   theme,
   nativeAppearance,
   useExternalTerminal,
+  autoRestoreTerminalTabs,
   launchArgs,
   terminalApp,
   applyTerminalDefault,
@@ -2562,6 +2563,45 @@ async function hydrateSavedTab(saved: SavedTab) {
   }
 }
 
+async function hydrateStartupTerminalTabs(
+  nav: SavedNav | null,
+  hydrateTarget: SavedTab | undefined,
+  restoredActiveViewId: number | null,
+) {
+  if (!autoRestoreTerminalTabs.value) {
+    if (hydrateTarget) {
+      removeSavedTab(hydrateTarget.sessionPath ? hydrateTarget.sessionPath : hydrateTarget)
+      await hydrateSavedTab(hydrateTarget)
+    }
+    return
+  }
+
+  const restoreFocusedPaneId = focusedPane.value?.id ?? null
+  const targets = activeDir.value
+    ? savedTabs.value
+        .filter((s) => s.agent === agent.value && s.projectKey === activeDir.value)
+        .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
+    : []
+  const ordered = hydrateTarget
+    ? [...targets.filter((s) => s !== hydrateTarget), hydrateTarget]
+    : targets
+
+  for (const saved of ordered) {
+    if (!savedTabs.value.includes(saved)) continue
+    removeSavedTab(saved.sessionPath ? saved.sessionPath : saved)
+    await hydrateSavedTab(saved)
+  }
+
+  if (nav?.view !== 'tui') {
+    for (const pane of currentPanes.value) pane.activeUiId = null
+    if (nav?.view === 'view' && restoredActiveViewId != null) {
+      setActiveViewTab(restoredActiveViewId)
+    } else if (restoreFocusedPaneId != null) {
+      focusPane(restoreFocusedPaneId)
+    }
+  }
+}
+
 /** 开一个全新会话 —— 根据设置决定走窗口内 TUI 还是外部终端。 */
 let _spawnLock = false
 async function newSession() {
@@ -3077,11 +3117,8 @@ onMounted(() => {
     } else if (savedVT.tabs.length > 0 && nav?.view !== 'view') {
       setActiveViewTab(null)
     }
-    // 退出时停在终端 tab → 水合并激活它（上面的 View tab 仍作为背景 tab 常驻）。
-    if (hydrateTarget) {
-      removeSavedTab(hydrateTarget.sessionPath ? hydrateTarget.sessionPath : hydrateTarget)
-      await hydrateSavedTab(hydrateTarget)
-    }
+    // 开关关闭时只恢复上次激活的终端 tab；开启时串行恢复当前项目全部 saved terminal tabs。
+    await hydrateStartupTerminalTabs(nav, hydrateTarget, restoredActiveIdx)
   })
   // 启动时拉一次回收站，让顶栏红点从一开始就准确（不必先打开回收站视图）
   api.listTrash().then((items) => { trash.value = items }).catch(() => {})

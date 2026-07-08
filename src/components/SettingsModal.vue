@@ -12,6 +12,7 @@ import {
   setTheme,
   setFontScale,
   setUseExternalTerminal,
+  setAutoRestoreTerminalTabs,
   setTerminalApp,
   applyTerminalDefault,
   launchArgs,
@@ -19,6 +20,7 @@ import {
   theme,
   fontScale,
   useExternalTerminal,
+  autoRestoreTerminalTabs,
   terminalApp,
   enabledAgents,
   visibleAgents,
@@ -488,6 +490,16 @@ async function installClaudeHooks() {
                 <p class="set-row-desc">{{ t('settings.terminalDesc') }}</p>
               </div>
               <span class="set-toggle-track set-row-control" :class="{ on: useExternalTerminal }">
+                <span class="set-toggle-thumb" />
+              </span>
+            </label>
+
+            <label class="set-row set-row-clickable" @click.prevent="setAutoRestoreTerminalTabs(!autoRestoreTerminalTabs)">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.autoRestoreTerminalTabs') }}</div>
+                <p class="set-row-desc">{{ t('settings.autoRestoreTerminalTabsDesc') }}</p>
+              </div>
+              <span class="set-toggle-track set-row-control" :class="{ on: autoRestoreTerminalTabs }">
                 <span class="set-toggle-thumb" />
               </span>
             </label>
