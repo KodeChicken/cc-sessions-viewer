@@ -335,6 +335,7 @@ const activeViewByProject = new Map<string, { viewUiId: number | null; wasTui: b
 // 而不是回到欢迎页要求再点一次。undefined / null 表示上次停在欢迎页。
 const lastDirByAgent = new Map<Agent, string | null>()
 const viewKey = (a: string, dir: string) => a + ' ' + dir
+const hydratingSavedTabs = new Set<string>()
 function persistTuiMap() {
   const out: SavedActiveTui[] = []
   for (const [k, v] of activeTuiByProject) {
@@ -343,6 +344,70 @@ function persistTuiMap() {
     out.push({ agent: k.slice(0, sep) as Agent, dir: k.slice(sep + 1), sessionPath: v.sessionPath, ...(v.isShell ? { isShell: true } : {}) })
   }
   persistActiveTui(out)
+}
+
+function savedTabKey(saved: SavedTab): string {
+  return saved.sessionPath || [
+    saved.agent,
+    saved.projectKey,
+    saved.isShell ? 'shell' : 'session',
+    saved.sessionId,
+    saved.cwd,
+    String(saved.createdAt ?? 0),
+  ].join('\n')
+}
+
+function removeSavedAfterHydrate(saved: SavedTab) {
+  removeSavedTab(saved.sessionPath ? saved.sessionPath : saved)
+}
+
+async function hydrateSavedTabOnce(saved: SavedTab): Promise<boolean> {
+  const key = savedTabKey(saved)
+  if (hydratingSavedTabs.has(key)) return true
+  hydratingSavedTabs.add(key)
+  try {
+    const ok = await hydrateSavedTab(saved)
+    if (ok) removeSavedAfterHydrate(saved)
+    return ok
+  } finally {
+    hydratingSavedTabs.delete(key)
+  }
+}
+
+function projectLiveTuiTabs(dir: string): TerminalTab[] {
+  return tuiTabs.value.filter(
+    (t) => t.agent === agent.value && t.projectKey === dir && isTabProcessAlive(t),
+  )
+}
+
+function findProjectSavedTui(
+  dir: string,
+  remembered?: { sessionPath: string; isShell?: boolean },
+): SavedTab | undefined {
+  const saved = savedTabs.value.filter((s) => s.agent === agent.value && s.projectKey === dir)
+  if (!saved.length) return undefined
+  if (remembered?.isShell) {
+    const shell = saved.find((s) => s.isShell)
+    if (shell) return shell
+  } else if (remembered?.sessionPath) {
+    const byPath = saved.find((s) => s.sessionPath === remembered.sessionPath)
+    if (byPath) return byPath
+  }
+  return [...saved].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))[0]
+}
+
+async function maybeActivateProjectTui(dir: string, remembered?: { uiId?: number; sessionPath: string; isShell?: boolean }): Promise<boolean> {
+  if (!autoRestoreTerminalTabs.value) return false
+  const saved = findProjectSavedTui(dir, remembered)
+  if (!saved) return false
+  const live = saved.isShell
+    ? projectLiveTuiTabs(dir).find((t) => t.isShell)
+    : projectLiveTuiTabs(dir).find((t) => t.sessionPath === saved.sessionPath)
+  if (live) {
+    if (activeUiId.value !== live.uiId) setActiveTui(live.uiId)
+    return true
+  }
+  return hydrateSavedTabOnce(saved)
 }
 // 非空表示当前打开的会话来自回收站（只读查看）—— 详情页据此切换为「回收站模式」。
 const openTrashItem = ref<TrashItem | null>(null)
@@ -1123,10 +1188,13 @@ function switchAgent(a: Agent) {
   })
 }
 
-async function selectProject(dir: string) {
-  const rememberedTui = activeDir.value !== dir
-    ? activeTuiByProject.get(viewKey(agent.value, dir))
-    : undefined
+async function selectProject(dir: string, opts: { activateTerminal?: boolean } = {}) {
+  const shouldActivateTerminal = opts.activateTerminal === true
+  const rememberedTui = activeTuiByProject.get(viewKey(agent.value, dir))
+  const sameProject = activeDir.value === dir && !showTrash.value && !showStats.value
+  if (sameProject && shouldActivateTerminal && await maybeActivateProjectTui(dir, rememberedTui)) {
+    return
+  }
   // 记住当前项目活跃的 view tab 和 TUI tab
   if (activeDir.value && activeDir.value !== dir) {
     rememberActiveNav()
@@ -1136,7 +1204,7 @@ async function selectProject(dir: string) {
   // 再次点击当前已选中的项目：
   //   - 有 view tab → 取消 view tab 激活，回到列表
   //   - 无 view tab → 收起项目
-  if (activeDir.value === dir && !showTrash.value && !showStats.value) {
+  if (sameProject) {
     if (activeViewTab.value) {
       setActiveViewTab(null)
       return
@@ -1183,25 +1251,7 @@ async function selectProject(dir: string) {
   } finally {
     loadingList.value = false
   }
-  // 恢复 TUI tab
-  if (rememberedTui) {
-    const liveMatch = rememberedTui.uiId != null
-      ? tuiTabs.value.find((t) => t.uiId === rememberedTui.uiId)
-      : rememberedTui.isShell
-        ? tuiTabs.value.find((t) => t.isShell && t.agent === agent.value && t.projectKey === dir)
-        : tuiTabs.value.find((t) => t.sessionPath === rememberedTui.sessionPath)
-    if (liveMatch) {
-      setActiveTui(liveMatch.uiId)
-    } else {
-      const savedMatch = rememberedTui.isShell
-        ? savedTabs.value.find((s) => s.isShell && s.agent === agent.value && s.projectKey === dir)
-        : savedTabs.value.find((s) => s.sessionPath === rememberedTui.sessionPath)
-      if (savedMatch) {
-        removeSavedTab(savedMatch.sessionPath || savedMatch)
-        await hydrateSavedTab(savedMatch)
-      }
-    }
-  }
+  if (shouldActivateTerminal) await maybeActivateProjectTui(dir, rememberedTui)
 }
 
 async function loadMore() {
@@ -2535,7 +2585,7 @@ async function resumeHere(s: SessionMeta) {
   }
 }
 
-async function hydrateSavedTab(saved: SavedTab) {
+async function hydrateSavedTab(saved: SavedTab): Promise<boolean> {
   try {
     if (saved.isShell) {
       await openShellTab({
@@ -2558,40 +2608,19 @@ async function hydrateSavedTab(saved: SavedTab) {
         ...(saved.userRenamed ? { userRenamed: true } : {}),
       })
     }
+    return true
   } catch (e) {
     notify(`${e}`, true)
+    return false
   }
 }
 
 async function hydrateStartupTerminalTabs(
   nav: SavedNav | null,
-  hydrateTarget: SavedTab | undefined,
+  _hydrateTarget: SavedTab | undefined,
   restoredActiveViewId: number | null,
 ) {
-  if (!autoRestoreTerminalTabs.value) {
-    if (hydrateTarget) {
-      removeSavedTab(hydrateTarget.sessionPath ? hydrateTarget.sessionPath : hydrateTarget)
-      await hydrateSavedTab(hydrateTarget)
-    }
-    return
-  }
-
   const restoreFocusedPaneId = focusedPane.value?.id ?? null
-  const targets = activeDir.value
-    ? savedTabs.value
-        .filter((s) => s.agent === agent.value && s.projectKey === activeDir.value)
-        .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
-    : []
-  const ordered = hydrateTarget
-    ? [...targets.filter((s) => s !== hydrateTarget), hydrateTarget]
-    : targets
-
-  for (const saved of ordered) {
-    if (!savedTabs.value.includes(saved)) continue
-    removeSavedTab(saved.sessionPath ? saved.sessionPath : saved)
-    await hydrateSavedTab(saved)
-  }
-
   if (nav?.view !== 'tui') {
     for (const pane of currentPanes.value) pane.activeUiId = null
     if (nav?.view === 'view' && restoredActiveViewId != null) {
@@ -3117,7 +3146,7 @@ onMounted(() => {
     } else if (savedVT.tabs.length > 0 && nav?.view !== 'view') {
       setActiveViewTab(null)
     }
-    // 开关关闭时只恢复上次激活的终端 tab；开启时串行恢复当前项目全部 saved terminal tabs。
+    // 启动阶段不水合终端 tab；终端恢复延后到用户点击左侧项目或 saved tab 时触发。
     await hydrateStartupTerminalTabs(nav, hydrateTarget, restoredActiveIdx)
   })
   // 启动时拉一次回收站，让顶栏红点从一开始就准确（不必先打开回收站视图）
@@ -3418,7 +3447,7 @@ provide<PaneActions>(PaneActionsKey, {
   newDefaultAction,
   newGuiSession,
   newShellSession,
-  hydrateSavedTab,
+  hydrateSavedTab: (saved) => { void hydrateSavedTabOnce(saved) },
   closeLiveChat,
   openRenameLiveChat,
   forkLiveChat,
@@ -3537,7 +3566,7 @@ provide<PaneActions>(PaneActionsKey, {
       :proj-prefs="projPrefs"
       :refreshing="refreshing"
       @switch-agent="switchAgent"
-      @select-project="selectProject"
+      @select-project="(dir) => selectProject(dir, { activateTerminal: true })"
       @context-menu="openCtxMenu"
       @open-settings="(tab) => { settingsTab = tab ?? 'general'; showSettings = true }"
       @refresh="refreshAll"

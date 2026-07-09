@@ -231,7 +231,6 @@ const visible = computed(
 )
 
 function onSavedClick(saved: SavedTab) {
-  removeSavedTab(saved.sessionPath ? saved.sessionPath : saved)
   emit('hydrateSaved', saved)
 }
 
