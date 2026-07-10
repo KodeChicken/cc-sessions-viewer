@@ -171,7 +171,11 @@ export interface SavedViewTab {
   isActive?: boolean
 }
 
+let _viewTabsRestoreComplete = false
+export function markViewTabsRestored() { _viewTabsRestoreComplete = true }
+
 export function persistViewTabs() {
+  if (!_viewTabsRestoreComplete) return
   const activePaneTabIds = new Set<number>()
   for (const pane of panes.values()) {
     if (pane.activeViewTabId != null) activePaneTabIds.add(pane.activeViewTabId)

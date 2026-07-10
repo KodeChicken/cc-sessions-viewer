@@ -4,26 +4,27 @@
 // 带 1–5 数字快捷键 + 勾选；上开菜单、点外面关、数字键直选。
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { t } from '../i18n'
-import { CHAT_PERMISSION_MODES, permissionLabelKey, permissionModeDisabled } from '../chatComposerOptions'
+import { permissionModesFor, permissionLabelKey, permissionModeDisabled } from '../chatComposerOptions'
+import type { Agent } from '../types'
 import { IconCheck } from './icons'
 
-const props = defineProps<{ selected: string; model?: string; disabled?: boolean }>()
+const props = defineProps<{ agent: Agent; selected: string; model?: string; disabled?: boolean }>()
 const emit = defineEmits<{ (e: 'pick', value: string): void }>()
 
 const open = ref(false)
 const rootEl = ref<HTMLElement>()
 
 const items = computed(() =>
-  CHAT_PERMISSION_MODES.map((m, i) => ({
+  permissionModesFor(props.agent).map((m, i) => ({
     value: m.value,
     label: t(m.labelKey),
     key: i + 1,
-    off: permissionModeDisabled(m.value, props.model),
+    off: permissionModeDisabled(props.agent, m.value, props.model),
   })),
 )
-const currentLabel = computed(() => t(permissionLabelKey(props.selected)))
-// 只有最高危的 bypassPermissions 才保留金色底作为危险提示；其余模式走中性无底样式。
-const danger = computed(() => props.selected === 'bypassPermissions')
+const currentLabel = computed(() => t(permissionLabelKey(props.agent, props.selected)))
+// Claude: bypassPermissions 金色危险提示；Codex: fullAccess 同理。
+const danger = computed(() => props.selected === 'bypassPermissions' || props.selected === 'fullAccess')
 
 function toggle() {
   if (props.disabled) return

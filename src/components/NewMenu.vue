@@ -10,6 +10,7 @@ import {
   agentIcons,
 } from './icons'
 import { t } from '../i18n'
+import { chatSupported } from '../chatComposerOptions'
 
 defineProps<{
   agent: Agent
@@ -33,7 +34,7 @@ defineEmits<{
     <component :is="agentIcons[agent]" class="new-menu-ic" />
     <span>{{ t('list.action.newSessionTui') }}</span>
   </button>
-  <button v-if="agent === 'claude'" type="button" class="new-menu-item" role="menuitem" @click="$emit('newGui')">
+  <button v-if="chatSupported(agent)" type="button" class="new-menu-item" role="menuitem" @click="$emit('newGui')">
     <IconChat class="new-menu-ic" />
     <span>{{ t('list.action.newSessionGui') }}</span>
   </button>

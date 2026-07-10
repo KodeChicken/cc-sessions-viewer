@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CHAT_PERMISSION_MODES,
+  CLAUDE_PERMISSION_MODES,
+  CODEX_PERMISSION_MODES,
+  permissionModesFor,
+  defaultPermissionMode,
   CHAT_MODEL_MENU,
   CLAUDE_ALIAS_MODEL_MENU,
   CHAT_EFFORT_LEVELS,
@@ -21,11 +24,12 @@ import {
   permissionLabelKey,
   permissionModeDisabled,
   fallbackPermissionMode,
+  chatSupported,
 } from '../src/chatComposerOptions'
 
 describe('chatComposerOptions', () => {
-  it('权限五档，顺序对齐 Claude Code「Mode」菜单', () => {
-    expect(CHAT_PERMISSION_MODES.map((m) => m.value)).toEqual([
+  it('Claude 权限五档，顺序对齐 Claude Code「Mode」菜单', () => {
+    expect(CLAUDE_PERMISSION_MODES.map((m) => m.value)).toEqual([
       'default',
       'acceptEdits',
       'plan',
@@ -34,9 +38,30 @@ describe('chatComposerOptions', () => {
     ])
   })
 
-  it('permissionLabelKey：命中返回对应 key，未知回退 acceptEdits', () => {
-    expect(permissionLabelKey('plan')).toBe('chat.composer.permission.plan')
-    expect(permissionLabelKey('nope')).toBe('chat.composer.permission.acceptEdits')
+  it('Codex 权限四档，独立于 Claude', () => {
+    expect(CODEX_PERMISSION_MODES.map((m) => m.value)).toEqual([
+      'ask',
+      'approve',
+      'fullAccess',
+      'custom',
+    ])
+  })
+
+  it('permissionModesFor 按 agent 返回独立列表', () => {
+    expect(permissionModesFor('claude')).toBe(CLAUDE_PERMISSION_MODES)
+    expect(permissionModesFor('codex')).toBe(CODEX_PERMISSION_MODES)
+  })
+
+  it('defaultPermissionMode：Claude → acceptEdits，Codex → approve', () => {
+    expect(defaultPermissionMode('claude')).toBe('acceptEdits')
+    expect(defaultPermissionMode('codex')).toBe('approve')
+  })
+
+  it('permissionLabelKey：按 agent 从对应列表查找，未知回退首项', () => {
+    expect(permissionLabelKey('claude', 'plan')).toBe('chat.composer.permission.plan')
+    expect(permissionLabelKey('claude', 'nope')).toBe('chat.composer.permission.ask')
+    expect(permissionLabelKey('codex', 'fullAccess')).toBe('chat.composer.permission.codex.fullAccess')
+    expect(permissionLabelKey('codex', 'nope')).toBe('chat.composer.permission.codex.ask')
   })
 
   it('Claude / Codex 有模型与 effort 候选', () => {
@@ -106,7 +131,7 @@ describe('chatComposerOptions', () => {
 
   it('Claude effort 五档，Codex reasoning effort 四档', () => {
     expect(CHAT_EFFORT_LEVELS.claude).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
-    expect(CHAT_EFFORT_LEVELS.codex).toEqual(['minimal', 'low', 'medium', 'high'])
+    expect(CHAT_EFFORT_LEVELS.codex).toEqual(['low', 'medium', 'high', 'xhigh'])
   })
 
   it('候选 value 仅 [A-Za-z0-9._-]（与后端 valid_flag_token 对齐，可被 posix_quote 安全转义）', () => {
@@ -135,8 +160,8 @@ describe('chatComposerOptions', () => {
     expect(effortLabel(undefined)).toBe('')
   })
 
-  it('effortLabel：各档首字母大写（xhigh → Xhigh、ultracode → Ultracode）', () => {
-    expect(effortLabel('xhigh')).toBe('Xhigh')
+  it('effortLabel：特殊值走映射（xhigh → Extra High），其余首字母大写', () => {
+    expect(effortLabel('xhigh')).toBe('Extra High')
     expect(effortLabel('ultracode')).toBe('Ultracode')
     expect(effortLabel('max')).toBe('Max')
     expect(effortLabel('low')).toBe('Low')
@@ -150,7 +175,10 @@ describe('chatComposerOptions', () => {
     expect(effortLevelsFor('claude', 'claude-opus-4-6')).toEqual(base)
     expect(effortLevelsFor('claude', 'claude-sonnet-5')).toEqual(base)
     expect(effortLevelsFor('claude', undefined)).toEqual(base)
-    expect(effortLevelsFor('codex', 'gpt-5.4')).toEqual(['minimal', 'low', 'medium', 'high'])
+    expect(effortLevelsFor('codex', 'gpt-5.4')).toEqual(['low', 'medium', 'high', 'xhigh'])
+    expect(effortLevelsFor('codex', 'gpt-5.6-luna')).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(effortLevelsFor('codex', 'gpt-5.6-terra')).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+    expect(effortLevelsFor('codex', 'gpt-5.6-sol')).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
   })
 
   it('modelSupportsEffort：Haiku 无 effort；Opus/Sonnet 有', () => {
@@ -176,24 +204,64 @@ describe('chatComposerOptions', () => {
     expect(fallbackEffort(undefined, 'claude', 'claude-sonnet-5')).toBeUndefined()
   })
 
-  it('Haiku 不支持 auto 权限模式；其它模型不受限', () => {
-    expect(permissionModeDisabled('auto', 'claude-haiku-4-5-20251001')).toBe(true)
-    expect(permissionModeDisabled('auto', 'claude-opus-4-8')).toBe(false)
-    expect(permissionModeDisabled('auto', 'claude-sonnet-5')).toBe(false)
-    expect(permissionModeDisabled('acceptEdits', 'claude-haiku-4-5-20251001')).toBe(false)
-    expect(permissionModeDisabled('auto', undefined)).toBe(false)
+  it('Claude: Haiku 不支持 auto 权限模式；其它模型不受限', () => {
+    expect(permissionModeDisabled('claude', 'auto', 'claude-haiku-4-5-20251001')).toBe(true)
+    expect(permissionModeDisabled('claude', 'auto', 'claude-opus-4-8')).toBe(false)
+    expect(permissionModeDisabled('claude', 'auto', 'claude-sonnet-5')).toBe(false)
+    expect(permissionModeDisabled('claude', 'acceptEdits', 'claude-haiku-4-5-20251001')).toBe(false)
+    expect(permissionModeDisabled('claude', 'auto', undefined)).toBe(false)
   })
 
-  it('fallbackPermissionMode：Haiku+auto → acceptEdits，其余原样返回', () => {
-    expect(fallbackPermissionMode('auto', 'claude-haiku-4-5-20251001')).toBe('acceptEdits')
-    expect(fallbackPermissionMode('auto', 'claude-opus-4-8')).toBe('auto')
-    expect(fallbackPermissionMode('plan', 'claude-haiku-4-5-20251001')).toBe('plan')
+  it('Codex: 权限模式无禁用限制', () => {
+    expect(permissionModeDisabled('codex', 'fullAccess', 'gpt-5.5')).toBe(false)
+    expect(permissionModeDisabled('codex', 'ask', 'gpt-5.4')).toBe(false)
+  })
+
+  it('fallbackPermissionMode：Claude Haiku+auto → acceptEdits，其余原样返回', () => {
+    expect(fallbackPermissionMode('claude', 'auto', 'claude-haiku-4-5-20251001')).toBe('acceptEdits')
+    expect(fallbackPermissionMode('claude', 'auto', 'claude-opus-4-8')).toBe('auto')
+    expect(fallbackPermissionMode('claude', 'plan', 'claude-haiku-4-5-20251001')).toBe('plan')
+    expect(fallbackPermissionMode('codex', 'fullAccess', 'gpt-5.5')).toBe('fullAccess')
   })
 
   it('defaultModel / defaultEffort：明确起步值（无 "default" 概念）', () => {
     expect(defaultModel('claude')).toBeUndefined()
-    expect(defaultModel('codex')).toBe('gpt-5.4')
+    expect(defaultModel('codex')).toBe('gpt-5.5')
     expect(defaultEffort('claude')).toBeUndefined()
-    expect(defaultEffort('codex')).toBe('medium')
+    expect(defaultEffort('codex')).toBe('high')
+  })
+
+  it('Codex 模型列表：5.6-sol 为首、旧模型在 More', () => {
+    expect(CHAT_MODEL_MENU.codex.primary.map((m) => m.value)).toEqual([
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+      'gpt-5.5',
+    ])
+    expect(CHAT_MODEL_MENU.codex.more.map((m) => m.value)).toEqual([
+      'gpt-5.4',
+      'gpt-5.4-mini',
+      'gpt-5.3-codex-spark',
+    ])
+    expect(CHAT_MODEL_MENU.codex.showFastMode).toBe(false)
+  })
+
+  it('Codex modelLabel 返回展示名', () => {
+    expect(modelLabel('codex', 'gpt-5.5')).toBe('GPT-5.5')
+    expect(modelLabel('codex', 'gpt-5.4-mini')).toBe('GPT-5.4-Mini')
+    expect(modelLabel('codex', 'unknown-model')).toBe('unknown-model')
+  })
+
+  it('chatSupported：Claude 和 Codex 支持 chat，agy/opencode 不支持', () => {
+    expect(chatSupported('claude')).toBe(true)
+    expect(chatSupported('codex')).toBe(true)
+    expect(chatSupported('agy')).toBe(false)
+    expect(chatSupported('opencode')).toBe(false)
+  })
+
+  it('Codex 权限模式 value 仅含安全字符', () => {
+    for (const m of CODEX_PERMISSION_MODES) {
+      expect(m.value).toMatch(/^[A-Za-z0-9._-]+$/)
+    }
   })
 })

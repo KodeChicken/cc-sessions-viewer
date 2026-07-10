@@ -16,6 +16,7 @@ const CODEX_SHOW_INTERNAL_KEY = 'codexShowInternalSessions:v1'
 const CODEX_SHOW_ARCHIVED_KEY = 'codexShowArchivedSessions:v1'
 const LAUNCH_ARGS_KEY = 'launchArgs:v1'
 const FONT_SCALE_KEY = 'fontScale:v1'
+const FONT_FAMILY_KEY = 'fontFamily:v1'
 const ENABLED_AGENTS_KEY = 'enabledAgents:v1'
 const QUICK_OPEN_KEY = 'quickOpenTarget:v1'
 const USE_RECLAUDE_KEY = 'useReclaude:v1'
@@ -142,31 +143,64 @@ export function setAgentEnabled(a: Agent, enabled: boolean) {
   localStorage.setItem(ENABLED_AGENTS_KEY, JSON.stringify(enabledAgents.value))
 }
 
-export type FontScale = 'small' | 'normal' | 'large'
+export type FontScale = number
+
+const FONT_SCALE_DEFAULT = 14
+const FONT_SCALE_MIN = 12
+const FONT_SCALE_MAX = 18
 
 function readFontScale(): FontScale {
-  const v = localStorage.getItem(FONT_SCALE_KEY)
-  return v === 'small' || v === 'normal' || v === 'large' ? v : 'normal'
+  const raw = localStorage.getItem(FONT_SCALE_KEY)
+  if (raw === 'small') return 13
+  if (raw === 'normal') return FONT_SCALE_DEFAULT
+  if (raw === 'large') return 15
+  const n = Number(raw)
+  return n >= FONT_SCALE_MIN && n <= FONT_SCALE_MAX ? n : FONT_SCALE_DEFAULT
 }
 export const fontScale = ref<FontScale>(readFontScale())
 
 export function setFontScale(s: FontScale) {
   fontScale.value = s
-  localStorage.setItem(FONT_SCALE_KEY, s)
+  localStorage.setItem(FONT_SCALE_KEY, String(s))
 }
 
-const FONT_ZOOM: Record<FontScale, number> = {
-  small: 0.9,
-  normal: 1,
-  large: 1.1,
-}
-
-function applyFontScale() {
-  const zoom = FONT_ZOOM[fontScale.value]
+function doApplyZoom(size: number) {
+  const zoom = size / FONT_SCALE_DEFAULT
   document.documentElement.style.setProperty('--app-zoom', String(zoom))
   document.body.style.zoom = String(zoom)
 }
-watchEffect(applyFontScale)
+
+export function applyFontScale() {
+  doApplyZoom(fontScale.value)
+}
+
+doApplyZoom(fontScale.value)
+
+const FONT_FAMILY_DEFAULT = ''
+
+function readFontFamily(): string {
+  return localStorage.getItem(FONT_FAMILY_KEY) ?? FONT_FAMILY_DEFAULT
+}
+export const fontFamily = ref<string>(readFontFamily())
+
+export function setFontFamily(v: string) {
+  fontFamily.value = v
+  localStorage.setItem(FONT_FAMILY_KEY, v)
+}
+
+function doApplyFontFamily(v: string) {
+  if (v) {
+    document.documentElement.style.setProperty('font-family', v)
+  } else {
+    document.documentElement.style.removeProperty('font-family')
+  }
+}
+
+export function applyFontFamily() {
+  doApplyFontFamily(fontFamily.value)
+}
+
+doApplyFontFamily(fontFamily.value)
 
 export function setLang(l: Lang) {
   lang.value = l

@@ -251,6 +251,9 @@ export interface ChatImageAttachment {
   data: string
   /** 文件名（来自文件选择/拖拽；粘贴的截图回退 image.png）。仅前端展示用。 */
   name?: string
+  /** 原始磁盘路径（文件选择器 / 拖拽得到）。粘贴板截图无此字段。
+   *  Codex 等 OneShot agent 用 `@"path"` 引用本地文件而非传 base64。 */
+  sourcePath?: string
 }
 
 /** agent_chat_send 透传给后端的图片输入（与 Rust ChatImageInput 同形）。 */
@@ -312,6 +315,10 @@ export interface RunningChatInfo {
   projectKey: string
   cwd: string
   sessionId: string | null
+  title?: string
+  messages?: Msg[]
+  turnState?: ChatTurnState
+  turnStartedAtMs?: number | null
   permissionMode: string
   model: string | null
   effort: string | null
@@ -346,7 +353,7 @@ export interface ChatResultPayload { chatId: number; ok: boolean; usage?: UsageS
 export interface ChatStderrPayload { chatId: number; line: string }
 export interface ChatExitPayload { chatId: number; code: number }
 
-/** token 级流式增量（仅 Claude --include-partial-messages）。 */
+/** token 级流式增量（Claude stream_event / Codex app-server delta）。 */
 export interface ChatDelta {
   index: number
   /** 'start' | 'delta' | 'stop' —— 内容块生命周期。 */

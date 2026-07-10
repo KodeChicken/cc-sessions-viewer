@@ -127,6 +127,7 @@ import {
   persistViewTabs,
   loadSavedViewTabs,
   clearSavedViewTabs,
+  markViewTabsRestored,
   type SavedViewTab,
 } from './viewTabs'
 import {
@@ -145,6 +146,7 @@ import {
 } from './panes'
 import { paneViewsOf } from './paneRegistry'
 import { PaneActionsKey, type PaneActions } from './paneActions'
+import { chatSupported, defaultPermissionMode } from './chatComposerOptions'
 
 // ---------- 状态 ----------
 // 默认进首个可见 agent —— 用户若在设置里关掉了 claude，启动时就不该停在隐藏的 agent 上。
@@ -397,16 +399,28 @@ function findProjectSavedTui(
 }
 
 async function maybeActivateProjectTui(dir: string, remembered?: { uiId?: number; sessionPath: string; isShell?: boolean }): Promise<boolean> {
-  if (!autoRestoreTerminalTabs.value) return false
-  const saved = findProjectSavedTui(dir, remembered)
-  if (!saved) return false
-  const live = saved.isShell
-    ? projectLiveTuiTabs(dir).find((t) => t.isShell)
-    : projectLiveTuiTabs(dir).find((t) => t.sessionPath === saved.sessionPath)
-  if (live) {
-    if (activeUiId.value !== live.uiId) setActiveTui(live.uiId)
+  // 1) 有对应「活着」的 tab（同会话内切项目 / 切 agent 时 PTY 仍在 tuiTabs）→ 直接激活，
+  //    便宜、无进程重开、无闪烁，且**不受 autoRestore 开关限制** —— 激活态本就该恢复，
+  //    与 chat/read/git view tab 的持久化对称（0.2.10 即如此，被懒恢复改动误伤）。
+  const liveTabs = projectLiveTuiTabs(dir)
+  const liveMatch = remembered?.uiId != null
+    ? liveTabs.find((t) => t.uiId === remembered.uiId)
+    : remembered?.isShell
+      ? liveTabs.find((t) => t.isShell)
+      : remembered?.sessionPath
+        ? liveTabs.find((t) => t.sessionPath === remembered.sessionPath)
+        : undefined
+  if (liveMatch) {
+    if (activeUiId.value !== liveMatch.uiId) setActiveTui(liveMatch.uiId)
     return true
   }
+  // 2) 没有活着的对应 tab → 从 saved pill 重开进程。有明确 remembered 命中就重开「那一个」
+  //    （对齐 0.2.10：刷新/重启后也恢复上次激活的终端）；只有在完全没 remembered、只能兜底取
+  //    「第一个 pill」时才尊重 autoRestore 开关，避免切项目时误开一个不相干的终端。
+  const saved = findProjectSavedTui(dir, remembered)
+  if (!saved) return false
+  const hasRemembered = remembered?.uiId != null || !!remembered?.isShell || !!remembered?.sessionPath
+  if (!hasRemembered && !autoRestoreTerminalTabs.value) return false
   return hydrateSavedTabOnce(saved)
 }
 // 非空表示当前打开的会话来自回收站（只读查看）—— 详情页据此切换为「回收站模式」。
@@ -942,7 +956,10 @@ async function confirmRename() {
     const vt = viewTabs.value.find(t => t.uiId === m.viewTabUiId)
     if (vt) {
       vt.title = name
-      if (vt.chatSession) vt.chatSession.title = name
+      if (vt.chatSession) {
+        vt.chatSession.title = name
+        if (vt.chatSession.chatId) api.agentChatSetTitle(vt.chatSession.chatId, name)
+      }
     }
     m.show = false
     notify(t('toast.renamed'))
@@ -951,7 +968,10 @@ async function confirmRename() {
   }
   if (m.liveChatUiId != null) {
     // 全新 GUI 会话：只改内存里的 live 标题（reactive proxy，原地改即可刷新头部）。
-    if (liveChat.value?.uiId === m.liveChatUiId) liveChat.value.title = name
+    if (liveChat.value?.uiId === m.liveChatUiId) {
+      liveChat.value.title = name
+      if (liveChat.value.chatId) api.agentChatSetTitle(liveChat.value.chatId, name)
+    }
     // Views 历史里这条（按 session id 记录的）新建 chat 标题也同步。
     setViewTitle(m.agent, m.id, name)
     m.show = false
@@ -976,6 +996,7 @@ async function confirmRename() {
       if (vt.type === 'chat' && vt.chatSession && vt.chatSession.sessionId === m.id) {
         vt.chatSession.title = name
         vt.title = name
+        if (vt.chatSession.chatId) api.agentChatSetTitle(vt.chatSession.chatId, name)
       }
     }
     // Views 历史里那条同源 view 的标题也跟着更新（按 session id，回退 path）。
@@ -1251,7 +1272,9 @@ async function selectProject(dir: string, opts: { activateTerminal?: boolean } =
   } finally {
     loadingList.value = false
   }
-  if (shouldActivateTerminal) await maybeActivateProjectTui(dir, rememberedTui)
+  // 上次停在 TUI（wasTui）→ 无条件恢复那一个终端/会话 tab 的激活态（不止 sidebar 显式点击，
+  // 切 agent 走的 selectProject 也要），与 view tab 恢复对称，修复「终端/会话 tab 切换后掉回 List」。
+  if (shouldActivateTerminal || remembered?.wasTui) await maybeActivateProjectTui(dir, rememberedTui)
 }
 
 async function loadMore() {
@@ -2269,6 +2292,7 @@ watch(
       if (derived) {
         tab.chatSession.title = derived
         tab.title = derived
+        if (tab.chatSession.chatId) api.agentChatSetTitle(tab.chatSession.chatId, derived)
       }
     }
   },
@@ -2331,26 +2355,32 @@ async function startLiveChat(opts: {
     notify(t('toast.resumeNoCwd'), true)
     return
   }
-  activeUiId.value = null
+  // tab 立刻出现：不提前清 activeUiId（否则 await 后端握手期间本 pane 无 active → 掉回 List），
+  // 而是用 startChat 的 onReady 在 reactive session 一建好就 createViewTab —— activateViewTabInPane
+  // 会原子地清 activeUiId + 指向新 chat。Codex 走 app-server，握手要几秒，这样既不闪 List、也不
+  // 干等；session 是 reactive，spawning→running 自动反映到 ChatView。失败时 startChat 内部置
+  // status='error'，tab 已在、显示错误态即可。
   try {
-    const session = await startChat({
+    await startChat({
       agent: opts.agent,
       projectKey: opts.projectKey,
       cwd: opts.cwd,
       sessionId: opts.sessionId,
       title: opts.title,
       created: opts.created,
-      permissionMode: 'acceptEdits',
+      permissionMode: defaultPermissionMode(opts.agent),
       preloadMsgs: opts.preloadMsgs,
       initialUsage: opts.initialUsage,
-    })
-    createViewTab({
-      type: 'chat',
-      agent: opts.agent,
-      projectKey: opts.projectKey,
-      title: opts.title,
-      chatSession: session,
-      sourceSession: null,
+      onReady: (session) => {
+        createViewTab({
+          type: 'chat',
+          agent: opts.agent,
+          projectKey: opts.projectKey,
+          title: opts.title,
+          chatSession: session,
+          sourceSession: null,
+        })
+      },
     })
   } catch (e) {
     notify(`${e}`, true)
@@ -2400,7 +2430,8 @@ async function resumeChatFromSession(s: SessionMeta) {
     sessionId: s.id,
     title: s.title,
     created: s.created,
-    permissionMode: 'acceptEdits',
+    permissionMode: defaultPermissionMode(chatAgent.value),
+    model: lastAssistantModel(preload),
     preloadMsgs: preload,
     initialUsage,
   })
@@ -2424,6 +2455,20 @@ async function resumeChatFromSession(s: SessionMeta) {
 /** 列表行「chat」图标：把该会话作为 live GUI chat 打开。 */
 async function chatFromList(s: SessionMeta) {
   await resumeChatFromSession(s)
+}
+
+function notifyArchivedBlock(cmd: string) {
+  ask({
+    title: t('toast.archivedBlock.title'),
+    message: t('toast.archivedBlock.message', { cmd }),
+    okText: t('toast.archivedBlock.copy'),
+    danger: false,
+    onOk: () => {
+      void navigator.clipboard.writeText(cmd).catch(() => {})
+      notify(t('toast.copied'))
+      void newShellSession()
+    },
+  })
 }
 
 /** 入口 1(GUI)：在当前项目里新开一个空的 live GUI chat。 */
@@ -2493,6 +2538,22 @@ async function forkLiveChat() {
     })
     notify(t('toast.forked', { title }))
     void loadProjects()
+  } catch (e) {
+    notify(`${e}`, true)
+  }
+}
+
+async function archiveLiveChat() {
+  const c = liveChat.value
+  if (!c || c.agent !== 'codex' || !c.sessionId) {
+    notify(t('toast.archiveUnavailable'), true)
+    return
+  }
+  try {
+    await api.codexArchiveSession(c.sessionId)
+    notify(t('toast.archived'))
+    closeLiveChat()
+    await refreshSessions()
   } catch (e) {
     notify(`${e}`, true)
   }
@@ -2617,17 +2678,22 @@ async function hydrateSavedTab(saved: SavedTab): Promise<boolean> {
 
 async function hydrateStartupTerminalTabs(
   nav: SavedNav | null,
-  _hydrateTarget: SavedTab | undefined,
+  hydrateTarget: SavedTab | undefined,
   restoredActiveViewId: number | null,
 ) {
   const restoreFocusedPaneId = focusedPane.value?.id ?? null
-  if (nav?.view !== 'tui') {
-    for (const pane of currentPanes.value) pane.activeUiId = null
-    if (nav?.view === 'view' && restoredActiveViewId != null) {
-      setActiveViewTab(restoredActiveViewId)
-    } else if (restoreFocusedPaneId != null) {
-      focusPane(restoreFocusedPaneId)
-    }
+  if (nav?.view === 'tui') {
+    // 上次停在 TUI（终端/会话）tab → 恢复「那一个」的激活态（水合它、切到它）。这一步之前
+    // 被漏掉了（hydrateTarget 参数没用），导致刷新后终端/会话 tab 掉回 List —— 而 chat/read/git
+    // view tab 却正常恢复。autoRestore 开关只决定是否**连带**恢复其它非激活终端，这里只管激活那个。
+    if (hydrateTarget) await hydrateSavedTabOnce(hydrateTarget)
+    return
+  }
+  for (const pane of currentPanes.value) pane.activeUiId = null
+  if (nav?.view === 'view' && restoredActiveViewId != null) {
+    setActiveViewTab(restoredActiveViewId)
+  } else if (restoreFocusedPaneId != null) {
+    focusPane(restoreFocusedPaneId)
   }
 }
 
@@ -2678,12 +2744,11 @@ async function newShellSession() {
 }
 
 // 双击 tab 条空白处 / ⌘N / ⌘T 的「默认新建」手势 —— 按设置分流到 session/terminal/chat。
-// chat 只有 claude 支持；codex 选了 chat 时先提示，不做任何打开。
 function newDefaultAction() {
   if (quickOpenTarget.value === 'terminal') {
     newShellSession()
   } else if (quickOpenTarget.value === 'chat') {
-    if (agent.value !== 'claude') {
+    if (!chatSupported(agent.value)) {
       notify(t('toast.chatUnsupported'))
       return
     }
@@ -2780,49 +2845,49 @@ const menuHandlers: MenuHandlers = {
 
 const windowMenus = computed<WindowMenuGroup[]>(() => [
   {
-    label: 'File',
+    label: t('menu.file'),
     items: [
-      { type: 'item', id: 'new-session', label: 'New Session in Current Project', shortcut: 'Ctrl+N', disabled: !activeProject.value },
-      { type: 'item', id: 'new-tab', label: 'New Tab', shortcut: 'Ctrl+T', disabled: !activeProject.value },
-      { type: 'item', id: 'close-tab', label: 'Close Tab', shortcut: 'Ctrl+W', disabled: !activeUiId.value && !openSession.value },
-      { type: 'item', id: 'rename-tab', label: 'Rename Tab', shortcut: 'Ctrl+R', disabled: !activeUiId.value },
-      { type: 'item', id: 'add-folder', label: 'Add Folder...', shortcut: 'Ctrl+O' },
+      { type: 'item', id: 'new-session', label: t('menu.file.newSession'), shortcut: 'Ctrl+N', disabled: !activeProject.value },
+      { type: 'item', id: 'new-tab', label: t('menu.file.newTab'), shortcut: 'Ctrl+T', disabled: !activeProject.value },
+      { type: 'item', id: 'close-tab', label: t('menu.file.closeTab'), shortcut: 'Ctrl+W', disabled: !activeUiId.value && !openSession.value },
+      { type: 'item', id: 'rename-tab', label: t('menu.file.renameTab'), shortcut: 'Ctrl+R', disabled: !activeUiId.value },
+      { type: 'item', id: 'add-folder', label: t('menu.file.addFolder'), shortcut: 'Ctrl+O' },
       { type: 'separator' },
-      { type: 'item', id: 'export-session', label: 'Export Session...', shortcut: 'Ctrl+E', disabled: !openSession.value },
+      { type: 'item', id: 'export-session', label: t('menu.file.export'), shortcut: 'Ctrl+E', disabled: !openSession.value },
     ],
   },
   {
-    label: 'Edit',
+    label: t('menu.edit'),
     items: [
-      { type: 'item', id: 'edit:undo', label: 'Undo', shortcut: 'Ctrl+Z' },
-      { type: 'item', id: 'edit:redo', label: 'Redo', shortcut: 'Ctrl+Y' },
+      { type: 'item', id: 'edit:undo', label: t('menu.edit.undo'), shortcut: 'Ctrl+Z' },
+      { type: 'item', id: 'edit:redo', label: t('menu.edit.redo'), shortcut: 'Ctrl+Y' },
       { type: 'separator' },
-      { type: 'item', id: 'edit:cut', label: 'Cut', shortcut: 'Ctrl+X' },
-      { type: 'item', id: 'edit:copy', label: 'Copy', shortcut: 'Ctrl+C' },
-      { type: 'item', id: 'edit:paste', label: 'Paste', shortcut: 'Ctrl+V' },
-      { type: 'item', id: 'edit:select-all', label: 'Select All', shortcut: 'Ctrl+A' },
+      { type: 'item', id: 'edit:cut', label: t('menu.edit.cut'), shortcut: 'Ctrl+X' },
+      { type: 'item', id: 'edit:copy', label: t('menu.edit.copy'), shortcut: 'Ctrl+C' },
+      { type: 'item', id: 'edit:paste', label: t('menu.edit.paste'), shortcut: 'Ctrl+V' },
+      { type: 'item', id: 'edit:select-all', label: t('menu.edit.selectAll'), shortcut: 'Ctrl+A' },
     ],
   },
   {
-    label: 'View',
+    label: t('menu.view'),
     items: [
-      { type: 'item', id: 'toggle-sidebar', label: 'Toggle Sidebar', shortcut: 'Ctrl+B' },
-      { type: 'item', id: 'open-stats', label: 'Statistics', shortcut: 'Ctrl+Shift+S' },
+      { type: 'item', id: 'toggle-sidebar', label: t('menu.view.toggleSidebar'), shortcut: 'Ctrl+B' },
+      { type: 'item', id: 'open-stats', label: t('menu.view.stats'), shortcut: 'Ctrl+Shift+S' },
       { type: 'separator' },
       {
         type: 'submenu',
-        label: 'Theme',
+        label: t('menu.view.theme'),
         items: [
-          { type: 'item', id: 'theme:light', label: 'Light', checked: theme.value === 'light' },
-          { type: 'item', id: 'theme:dark', label: 'Dark', checked: theme.value === 'dark' },
-          { type: 'item', id: 'theme:system', label: 'System', checked: theme.value === 'system' },
-          { type: 'item', id: 'theme:codex', label: 'Codex', checked: theme.value === 'codex' },
-          { type: 'item', id: 'theme:dracula', label: 'Dracula', checked: theme.value === 'dracula' },
+          { type: 'item', id: 'theme:light', label: t('menu.view.theme.light'), checked: theme.value === 'light' },
+          { type: 'item', id: 'theme:dark', label: t('menu.view.theme.dark'), checked: theme.value === 'dark' },
+          { type: 'item', id: 'theme:system', label: t('menu.view.theme.system'), checked: theme.value === 'system' },
+          { type: 'item', id: 'theme:codex', label: t('menu.view.theme.codex'), checked: theme.value === 'codex' },
+          { type: 'item', id: 'theme:dracula', label: t('menu.view.theme.dracula'), checked: theme.value === 'dracula' },
         ],
       },
       {
         type: 'submenu',
-        label: 'Language',
+        label: t('menu.view.language'),
         items: [
           { type: 'item', id: 'lang:en', label: 'English', checked: lang.value === 'en' },
           { type: 'item', id: 'lang:zh', label: '简体中文', checked: lang.value === 'zh' },
@@ -2833,31 +2898,31 @@ const windowMenus = computed<WindowMenuGroup[]>(() => [
     ],
   },
   {
-    label: 'Find',
+    label: t('menu.find'),
     items: [
-      { type: 'item', id: 'find-in-session', label: 'Find in Session...', shortcut: 'Ctrl+F' },
-      { type: 'item', id: 'find-next', label: 'Find Next', shortcut: 'Ctrl+G' },
-      { type: 'item', id: 'find-prev', label: 'Find Previous', shortcut: 'Ctrl+Shift+G' },
+      { type: 'item', id: 'find-in-session', label: t('menu.find.inSession'), shortcut: 'Ctrl+F' },
+      { type: 'item', id: 'find-next', label: t('menu.find.next'), shortcut: 'Ctrl+G' },
+      { type: 'item', id: 'find-prev', label: t('menu.find.prev'), shortcut: 'Ctrl+Shift+G' },
       { type: 'separator' },
-      { type: 'item', id: 'open-global-search', label: 'Find in All Sessions...', shortcut: 'Ctrl+Shift+F' },
+      { type: 'item', id: 'open-global-search', label: t('menu.find.inAll'), shortcut: 'Ctrl+Shift+F' },
     ],
   },
   {
-    label: 'Window',
+    label: t('menu.window'),
     items: [
-      { type: 'item', id: 'window:minimize', label: 'Minimize' },
-      { type: 'item', id: 'window:maximize', label: 'Maximize' },
+      { type: 'item', id: 'window:minimize', label: t('menu.window.minimize') },
+      { type: 'item', id: 'window:maximize', label: t('menu.window.maximize') },
       { type: 'separator' },
-      { type: 'item', id: 'open-trash', label: 'Trash', shortcut: 'Ctrl+Shift+T' },
-      { type: 'item', id: 'window:fullscreen', label: 'Toggle Full Screen' },
+      { type: 'item', id: 'open-trash', label: t('menu.window.trash'), shortcut: 'Ctrl+Shift+T' },
+      { type: 'item', id: 'window:fullscreen', label: t('menu.window.fullscreen') },
     ],
   },
   {
-    label: 'Help',
+    label: t('menu.help'),
     items: [
-      { type: 'item', id: 'help-docs', label: 'Documentation' },
-      { type: 'item', id: 'help-repo', label: 'GitHub Repository' },
-      { type: 'item', id: 'help-issue', label: 'Report an Issue' },
+      { type: 'item', id: 'help-docs', label: t('menu.help.docs') },
+      { type: 'item', id: 'help-repo', label: t('menu.help.repo') },
+      { type: 'item', id: 'help-issue', label: t('menu.help.issue') },
     ],
   },
 ])
@@ -3066,7 +3131,8 @@ onMounted(() => {
       session.title = title
       if (saved?.session?.path) {
         try {
-          session.msgs = await api.readSession(session.agent, saved.session.path)
+          const diskMsgs = await api.readSession(session.agent, saved.session.path)
+          if (diskMsgs.length > session.msgs.length) session.msgs = diskMsgs
           if (!session.lastModel) session.lastModel = lastAssistantModel(session.msgs)
         } catch {}
       }
@@ -3109,7 +3175,7 @@ onMounted(() => {
           sessionId: s.id,
           title: sv.title,
           created: s.created,
-          permissionMode: 'acceptEdits',
+          permissionMode: defaultPermissionMode(sv.agent),
           preloadMsgs: preload,
           initialUsage,
         })
@@ -3148,6 +3214,7 @@ onMounted(() => {
     }
     // 启动阶段不水合终端 tab；终端恢复延后到用户点击左侧项目或 saved tab 时触发。
     await hydrateStartupTerminalTabs(nav, hydrateTarget, restoredActiveIdx)
+    markViewTabsRestored()
   })
   // 启动时拉一次回收站，让顶栏红点从一开始就准确（不必先打开回收站视图）
   api.listTrash().then((items) => { trash.value = items }).catch(() => {})
@@ -3451,6 +3518,7 @@ provide<PaneActions>(PaneActionsKey, {
   closeLiveChat,
   openRenameLiveChat,
   forkLiveChat,
+  archiveLiveChat,
   switchLiveChatToRead,
   openLiveChatStats,
   exportLiveChat,
@@ -3467,6 +3535,7 @@ provide<PaneActions>(PaneActionsKey, {
   openSessionStats,
   reveal,
   chatFromList,
+  notifyArchivedBlock,
   exportFromList,
   refreshSessions,
   exitPane,

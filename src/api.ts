@@ -145,6 +145,9 @@ export const forkSession = (
   title: string,
 ) => invoke<string>('fork_session', { agent, projectKey, sourceId, title })
 
+export const codexArchiveSession = (sessionId: string) =>
+  invoke<void>('codex_archive_session', { sessionId })
+
 export const softDeleteSession = (
   agent: Agent,
   path: string,
@@ -317,6 +320,8 @@ export const agentChatStart = (
   effort?: string,
   fork?: boolean,
   useReclaude?: boolean,
+  preloadMessages?: Msg[],
+  title?: string,
 ) =>
   invoke<ChatStartInfo>('agent_chat_start', {
     agent,
@@ -328,10 +333,15 @@ export const agentChatStart = (
     effort,
     fork,
     useReclaude,
+    preloadMessages,
+    title,
   })
 
 export const agentChatListRunning = () =>
   invoke<RunningChatInfo[]>('agent_chat_list_running')
+
+export const agentChatSetTitle = (id: number, title: string) =>
+  invoke<void>('agent_chat_set_title', { id, title })
 
 /** 向某个 chat 子进程发送一条用户消息（含可选图片附件 + 本轮 model/effort/权限）。
  *  one-shot agent（Codex）据此每轮切换；长驻 agent（Claude）后端忽略这三者（在 start
@@ -384,6 +394,10 @@ export const gitDiffFiles = (cwd: string, gitRef: string) =>
 /** 某个 ref 下单个文件的 unified diff，已解析成 DiffHunk[]（复用 DiffBlock.vue）。 */
 export const gitDiffFile = (cwd: string, gitRef: string, path: string) =>
   invoke<DiffHunk[]>('git_diff_file', { cwd, gitRef, path })
+
+/** 粘贴板图片无磁盘路径，存到临时目录供 Codex 等 agent 通过 @"path" 引用。 */
+export const saveTempImage = (base64: string, mediaType: string) =>
+  invoke<string>('save_temp_image', { base64, mediaType })
 
 /** GUI chat 输入框 `@` 文件浮层：列出会话 cwd 下的目录/文件（相对路径）。
  *  `query` 空 → 顶层直接子项；非空 → 递归子串匹配（大小写不敏感）。 */
@@ -477,6 +491,9 @@ import type { CliVersionInfo, CliDiagnosisResult, CliUpgradeResult } from './typ
 
 export const checkCliVersions = () =>
   invoke<CliVersionInfo[]>('check_cli_versions')
+
+export const installCli = (cliName: string) =>
+  invoke<CliUpgradeResult>('install_cli', { cliName })
 
 export const upgradeCli = (cliName: string) =>
   invoke<CliUpgradeResult>('upgrade_cli', { cliName })

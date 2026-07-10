@@ -636,7 +636,9 @@ fn augment_apply_patch_input(input: &str, changes: &Value) -> Option<String> {
     let mut sections = Vec::new();
     let mut used_paths: HashMap<String, bool> = HashMap::new();
     for path in apply_patch_section_order(input) {
-        let Some(change) = changes.get(&path) else { continue };
+        let Some(change) = changes.get(&path) else {
+            continue;
+        };
         let Some(section) = build_apply_patch_section(&path, change) else {
             continue;
         };
@@ -676,8 +678,17 @@ fn agent_message_phase(payload: &Value) -> Option<&str> {
 /// hi
 /// ```
 ///
+/// 去掉 `@"path"` 和 `@path` 引用（图片已从 response_item 捕获，避免 post_process 重复提取）。
+fn strip_at_paths(text: &str) -> String {
+    let re = regex_lite::Regex::new(r#"@"[^"]+"|@\S+"#).expect("valid regex");
+    re.replace_all(text, "").trim().to_string()
+}
+
 /// 把每个 `## <name>: <path>` 抽成 `file` 块（点击外部打开），正文换成 `## My request for
 /// Codex:` 之后的真实请求。没有这个结构就原样返回（文件块为空）。
+pub fn extract_codex_files_pub(text: &str) -> (Vec<Block>, String) {
+    extract_codex_files(text)
+}
 fn extract_codex_files(text: &str) -> (Vec<Block>, String) {
     const HEADER: &str = "# Files mentioned by the user:";
     const REQUEST: &str = "## My request for Codex:";
@@ -696,11 +707,20 @@ fn extract_codex_files(text: &str) -> (Vec<Block>, String) {
         if let Some((_, path)) = rest.split_once(": ") {
             let path = path.trim();
             if !path.is_empty() {
-                files.push(Block {
-                    kind: "file".to_string(),
-                    file_path: Some(path.to_string()),
-                    ..Default::default()
-                });
+                let pb = std::path::Path::new(path);
+                if pb.exists() && crate::util::is_image_file(pb) {
+                    files.push(Block {
+                        kind: "image".to_string(),
+                        image_src: Some(path.to_string()),
+                        ..Default::default()
+                    });
+                } else {
+                    files.push(Block {
+                        kind: "file".to_string(),
+                        file_path: Some(path.to_string()),
+                        ..Default::default()
+                    });
+                }
             }
         }
     }
@@ -715,12 +735,14 @@ fn user_message_has_content(payload: &Value) -> bool {
         .get("message")
         .and_then(Value::as_str)
         .is_some_and(|message| !message.trim().is_empty())
-        || ["images", "local_images", "text_elements"].iter().any(|key| {
-            payload
-                .get(key)
-                .and_then(Value::as_array)
-                .is_some_and(|items| !items.is_empty())
-        })
+        || ["images", "local_images", "text_elements"]
+            .iter()
+            .any(|key| {
+                payload
+                    .get(key)
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| !items.is_empty())
+            })
 }
 
 /// Classify a Codex JSONL entry for turn-state inference.
@@ -752,7 +774,11 @@ fn rename_system_reminder(name: &str) -> String {
 }
 
 fn rename_system_msg(ts: Option<String>, name: &str) -> Msg {
-    simple_msg("user", ts, text_block("text", &rename_system_reminder(name)))
+    simple_msg(
+        "user",
+        ts,
+        text_block("text", &rename_system_reminder(name)),
+    )
 }
 
 fn should_synthesize_title_rename(
@@ -824,8 +850,7 @@ fn scan(
                 continue;
             }
             if pt == "user_message"
-                || (pt == "agent_message"
-                    && agent_message_phase(p) != Some("commentary"))
+                || (pt == "agent_message" && agent_message_phase(p) != Some("commentary"))
             {
                 message_count += 1;
             }
@@ -924,10 +949,7 @@ fn read_with_title_index(
         match (t, pt) {
             ("session_meta", _) => {
                 if session_id.is_none() {
-                    session_id = p
-                        .get("id")
-                        .and_then(|x| x.as_str())
-                        .map(|s| s.to_string());
+                    session_id = p.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
                 }
                 if created_ms.is_none() {
                     created_ms = p
@@ -970,10 +992,15 @@ fn read_with_title_index(
             }
             ("event_msg", "user_message") => {
                 let text = p.get("message").and_then(|x| x.as_str()).unwrap_or("");
-                // 带文件提问的 message 是「# Files mentioned…」固定结构：抽出 file 块，
-                // 正文换成真实请求（标题也用真实请求，别把文件头当标题）。
                 let (file_blocks, body) = extract_codex_files(text);
                 let mut blocks: Vec<Block> = std::mem::take(&mut pending_user_images);
+                // 图片已由 response_item 捕获到 pending_user_images，body 里的 @"path"
+                // 引用会被 post_process 再次提取出图片导致重复——提前清掉。
+                let body = if !blocks.is_empty() {
+                    strip_at_paths(&body)
+                } else {
+                    body
+                };
                 if first_user_title.is_empty() {
                     let clean = clean_title(&body);
                     if !clean.is_empty() {
@@ -1114,10 +1141,9 @@ fn read_with_title_index(
                     continue;
                 };
                 let original = block.tool_input.clone().unwrap_or_default();
-                if let Some(next_input) = augment_apply_patch_input(
-                    &original,
-                    p.get("changes").unwrap_or(&Value::Null),
-                ) {
+                if let Some(next_input) =
+                    augment_apply_patch_input(&original, p.get("changes").unwrap_or(&Value::Null))
+                {
                     block.tool_input = Some(next_input);
                 }
             }
@@ -1247,6 +1273,21 @@ fn chat_item_to_msg(item: &Value) -> Option<Msg> {
             Some(simple_msg("assistant", None, text_block("text", text)))
         }
         "reasoning" => None,
+        "error" => {
+            let msg = item.get("message").and_then(Value::as_str).unwrap_or("");
+            if msg.is_empty() {
+                return None;
+            }
+            // codex_hooks 弃用等纯信息性 CLI 警告：静默丢弃。
+            if msg.contains("is deprecated") {
+                return None;
+            }
+            Some(simple_msg(
+                "assistant",
+                None,
+                text_block("system_event", msg),
+            ))
+        }
         "command_execution" => {
             let command = item.get("command").and_then(Value::as_str).unwrap_or("");
             let output = item
@@ -1284,7 +1325,11 @@ fn chat_item_to_msg(item: &Value) -> Option<Msg> {
         other if !other.is_empty() => {
             let mut summary = serde_json::to_string(item).unwrap_or_default();
             if summary.chars().count() > CHAT_ITEM_FALLBACK_CAP {
-                summary = summary.chars().take(CHAT_ITEM_FALLBACK_CAP).collect::<String>() + " …";
+                summary = summary
+                    .chars()
+                    .take(CHAT_ITEM_FALLBACK_CAP)
+                    .collect::<String>()
+                    + " …";
             }
             Some(simple_msg(
                 "assistant",
@@ -1515,7 +1560,8 @@ impl SessionSource for CodexSource {
         let parent = idx_path
             .parent()
             .ok_or_else(|| "session_index parent directory does not exist".to_string())?;
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create .codex directory: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create .codex directory: {e}"))?;
         let tmp_path = parent.join(format!(".session_index.{}.tmp", now_ms));
         {
             let mut tmp = fs::File::create(&tmp_path)
@@ -1528,7 +1574,8 @@ impl SessionSource for CodexSource {
             }
             tmp.flush().map_err(|e| format!("flush failed: {e}"))?;
         }
-        fs::rename(&tmp_path, &idx_path).map_err(|e| format!("Failed to replace session_index: {e}"))?;
+        fs::rename(&tmp_path, &idx_path)
+            .map_err(|e| format!("Failed to replace session_index: {e}"))?;
 
         // 3) 真正权威：~/.codex/state_<N>.sqlite 的 threads.title 列。
         // 如果只改 session_index.jsonl 不改 sqlite，picker 仍会显示旧 title。
@@ -1574,6 +1621,28 @@ impl SessionSource for CodexSource {
         Ok(read_turns(Path::new(path)))
     }
 
+    fn chat_slash_commands(&self, cwd: &str) -> Vec<crate::types::SlashCommand> {
+        use std::path::Path;
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        let proj_name = super::claude::project_basename(cwd);
+
+        // 项目级 skills: .codex/skills/ 和 .agents/skills/
+        let proj_codex = Path::new(cwd).join(".codex").join("skills");
+        super::claude::scan_skills_dir(&proj_codex, "project", proj_name.as_deref(), None, &mut out, &mut seen);
+        let proj_agents = Path::new(cwd).join(".agents").join("skills");
+        super::claude::scan_skills_dir(&proj_agents, "project", proj_name.as_deref(), None, &mut out, &mut seen);
+
+        // 用户级 skills: ~/.codex/skills/ 和 ~/.agents/skills/
+        let user_codex = home().join(".codex").join("skills");
+        super::claude::scan_skills_dir(&user_codex, "user", None, None, &mut out, &mut seen);
+        let user_agents = home().join(".agents").join("skills");
+        super::claude::scan_skills_dir(&user_agents, "user", None, None, &mut out, &mut seen);
+
+        out
+    }
+
     fn chat_process_model(&self) -> ChatProcessModel {
         // codex exec 一轮一进程 + resume 续上下文。
         ChatProcessModel::OneShotResume
@@ -1594,7 +1663,7 @@ impl SessionSource for CodexSource {
         }
         cmd = cmd.arg("--json").arg("--skip-git-repo-check");
         // 模型 / effort：每轮重新下发即免费即时生效。model 走 `-m`；effort 是
-        // reasoning 档位，经 `-c model_reasoning_effort=`（minimal|low|medium|high）。
+        // reasoning 档位，经 `-c model_reasoning_effort=`（low|medium|high|xhigh|max|ultra）。
         // None 走 config.toml 默认（不下发）。
         if let Some(m) = model {
             cmd = cmd.arg("-m").arg(m);
@@ -1602,20 +1671,22 @@ impl SessionSource for CodexSource {
         if let Some(e) = effort {
             cmd = cmd.arg("-c").arg(format!("model_reasoning_effort=\"{e}\""));
         }
-        // 权限模式 → codex sandbox。统一用 `-c sandbox_mode=`：`exec` / `exec resume` 两个
-        // 子命令都接受它，而 `-s/--sandbox` 在 `exec resume` 上并不存在。codex exec 无内联
-        // 审批，sandbox 即唯一闸门。
+        // 权限模式 → codex sandbox。统一用 `-c sandbox_mode=`：`exec` 和 `exec resume`
+        // 两个子命令都接受它，而 `-s/--sandbox` 在 `exec resume` 上不存在。
+        // Codex 前端独立四档：ask / approve / fullAccess / custom。
+        // 另兼容 Claude 的旧值以防续聊/reconnect 期间残留旧值。
         match permission_mode {
-            "bypassPermissions" => {
-                cmd = cmd.arg("--dangerously-bypass-approvals-and-sandbox");
-            }
-            "plan" => {
+            "ask" | "plan" => {
                 cmd = cmd.arg("-c").arg("sandbox_mode=\"read-only\"");
             }
-            // default / acceptEdits / 其它 → 可写工作区
-            _ => {
+            "approve" | "default" | "acceptEdits" => {
                 cmd = cmd.arg("-c").arg("sandbox_mode=\"workspace-write\"");
             }
+            "fullAccess" | "bypassPermissions" => {
+                cmd = cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+            }
+            // custom / 其它 → 不传 sandbox 参数，使用 config.toml 设定
+            _ => {}
         }
         Some(cmd.arg(prompt))
     }
@@ -1650,24 +1721,43 @@ impl SessionSource for CodexSource {
 fn last_user_text(fp: &Path) -> Option<String> {
     let raw = fs::read(fp).ok()?;
     for line in raw.rsplit(|&b| b == b'\n') {
-        if line.is_empty() { continue; }
-        let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
         // Codex user messages: event_msg wrapper or response_item.payload
-        let em = v.get("event_msg")
+        let em = v
+            .get("event_msg")
             .or_else(|| v.get("payload"))
             .or_else(|| v.get("response_item").and_then(|r| r.get("message")));
         let Some(em) = em else { continue };
-        if em.get("role").and_then(Value::as_str) != Some("user") { continue; }
-        let text = em.get("content")
+        if em.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let text = em
+            .get("content")
             .and_then(Value::as_array)
-            .and_then(|arr| arr.iter().find(|c| {
-                let t = c.get("type").and_then(Value::as_str).unwrap_or("");
-                t == "input_text" || t == "text"
-            }))
+            .and_then(|arr| {
+                arr.iter().find(|c| {
+                    let t = c.get("type").and_then(Value::as_str).unwrap_or("");
+                    t == "input_text" || t == "text"
+                })
+            })
             .and_then(|c| c.get("text").and_then(Value::as_str));
         if let Some(t) = text {
+            let trimmed = t.trim_start();
+            if trimmed.starts_with("<skill>")
+                || trimmed.starts_with("<context>")
+                || trimmed.starts_with("<environment_context>")
+            {
+                continue;
+            }
             let clean = crate::util::truncate_subtitle(t);
-            if !clean.is_empty() { return Some(clean); }
+            if !clean.is_empty() {
+                return Some(clean);
+            }
         }
     }
     None
@@ -1812,7 +1902,9 @@ fn read_turns(fp: &Path) -> Vec<Turn> {
                 if info.is_null() {
                     continue;
                 }
-                let Some(tt) = info.get("total_token_usage") else { continue };
+                let Some(tt) = info.get("total_token_usage") else {
+                    continue;
+                };
                 let cum_total = tt.get("total_tokens").and_then(Value::as_u64).unwrap_or(0);
 
                 // 同一 cumulative 重复出现 —— 跳过（codex 偶尔会重发；codeburn 同样处理）。
@@ -1829,23 +1921,44 @@ fn read_turns(fp: &Path) -> Vec<Turn> {
                 let (in_t, cached_t, out_t, rea_t);
                 if let Some(l) = last.filter(|x| !x.is_null()) {
                     in_t = l.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
-                    cached_t = l.get("cached_input_tokens").and_then(Value::as_u64).unwrap_or(0);
+                    cached_t = l
+                        .get("cached_input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
                     out_t = l.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
-                    rea_t = l.get("reasoning_output_tokens").and_then(Value::as_u64).unwrap_or(0);
+                    rea_t = l
+                        .get("reasoning_output_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
                 } else {
                     let ti = tt.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
-                    let tc = tt.get("cached_input_tokens").and_then(Value::as_u64).unwrap_or(0);
+                    let tc = tt
+                        .get("cached_input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
                     let to = tt.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
-                    let tr = tt.get("reasoning_output_tokens").and_then(Value::as_u64).unwrap_or(0);
+                    let tr = tt
+                        .get("reasoning_output_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
                     in_t = ti.saturating_sub(prev_input);
                     cached_t = tc.saturating_sub(prev_cached);
                     out_t = to.saturating_sub(prev_output);
                     rea_t = tr.saturating_sub(prev_reasoning);
                 }
                 // 不管走 last_* 还是差值路径，prev_* 都按 cumulative 推进。
-                prev_input = tt.get("input_tokens").and_then(Value::as_u64).unwrap_or(prev_input);
-                prev_cached = tt.get("cached_input_tokens").and_then(Value::as_u64).unwrap_or(prev_cached);
-                prev_output = tt.get("output_tokens").and_then(Value::as_u64).unwrap_or(prev_output);
+                prev_input = tt
+                    .get("input_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(prev_input);
+                prev_cached = tt
+                    .get("cached_input_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(prev_cached);
+                prev_output = tt
+                    .get("output_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(prev_output);
                 prev_reasoning = tt
                     .get("reasoning_output_tokens")
                     .and_then(Value::as_u64)
@@ -2035,10 +2148,14 @@ mod tests {
 
     #[test]
     fn chat_thread_started_becomes_init_with_thread_id() {
-        let line = r#"{"type":"thread.started","thread_id":"019f01ae-6cd3-7493-b29c-243ab87ecf28"}"#;
+        let line =
+            r#"{"type":"thread.started","thread_id":"019f01ae-6cd3-7493-b29c-243ab87ecf28"}"#;
         match parse_chat_line(line) {
             ChatEvent::Init { session_id, .. } => {
-                assert_eq!(session_id.as_deref(), Some("019f01ae-6cd3-7493-b29c-243ab87ecf28"));
+                assert_eq!(
+                    session_id.as_deref(),
+                    Some("019f01ae-6cd3-7493-b29c-243ab87ecf28")
+                );
             }
             _ => panic!("expected Init"),
         }
@@ -2046,8 +2163,7 @@ mod tests {
 
     #[test]
     fn chat_agent_message_item_becomes_assistant_text() {
-        let line =
-            r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"banana42"}}"#;
+        let line = r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"banana42"}}"#;
         match parse_chat_line(line) {
             ChatEvent::Message(m) => {
                 assert_eq!(m.role, "assistant");
@@ -2094,8 +2210,7 @@ mod tests {
 
     #[test]
     fn chat_unknown_item_falls_back_to_tool_use_not_dropped() {
-        let line =
-            r#"{"type":"item.completed","item":{"id":"i","type":"file_change","status":"completed"}}"#;
+        let line = r#"{"type":"item.completed","item":{"id":"i","type":"file_change","status":"completed"}}"#;
         match parse_chat_line(line) {
             ChatEvent::Message(m) => {
                 assert_eq!(m.blocks[0].kind, "tool_use");
@@ -2149,17 +2264,23 @@ mod tests {
             &CodexSource,
             None,
             "hello world",
-            "acceptEdits",
+            "approve",
             None,
             None,
         )
         .expect("codex supports chat");
         let shell = cmd.to_posix_shell();
         assert!(shell.contains("'exec'"), "{shell}");
-        assert!(!shell.contains("'resume'"), "new turn must not resume: {shell}");
+        assert!(
+            !shell.contains("'resume'"),
+            "new turn must not resume: {shell}"
+        );
         assert!(shell.contains("'--json'"));
         assert!(shell.contains("'--skip-git-repo-check'"));
-        assert!(shell.contains(r#"'sandbox_mode="workspace-write"'"#), "{shell}");
+        assert!(
+            shell.contains(r#"'sandbox_mode="workspace-write"'"#),
+            "{shell}"
+        );
         assert!(
             shell.ends_with("'hello world'"),
             "prompt is the trailing positional: {shell}"
@@ -2172,7 +2293,7 @@ mod tests {
             &CodexSource,
             Some("019f-abc"),
             "again",
-            "acceptEdits",
+            "approve",
             None,
             None,
         )
@@ -2187,35 +2308,53 @@ mod tests {
 
     #[test]
     fn chat_turn_command_permission_mode_maps_to_sandbox() {
-        let plan = <CodexSource as crate::agents::SessionSource>::chat_turn_command(
+        // ask → sandbox_mode="read-only"
+        let ask = <CodexSource as crate::agents::SessionSource>::chat_turn_command(
             &CodexSource,
             None,
             "p",
-            "plan",
+            "ask",
             None,
             None,
         )
         .unwrap()
         .to_posix_shell();
-        assert!(plan.contains(r#"'sandbox_mode="read-only"'"#), "{plan}");
+        assert!(ask.contains(r#"'sandbox_mode="read-only"'"#), "{ask}");
 
-        let bypass = <CodexSource as crate::agents::SessionSource>::chat_turn_command(
+        // fullAccess → --dangerously-bypass-approvals-and-sandbox
+        let full = <CodexSource as crate::agents::SessionSource>::chat_turn_command(
             &CodexSource,
             None,
             "p",
-            "bypassPermissions",
+            "fullAccess",
             None,
             None,
         )
         .unwrap()
         .to_posix_shell();
         assert!(
-            bypass.contains("'--dangerously-bypass-approvals-and-sandbox'"),
-            "{bypass}"
+            full.contains("'--dangerously-bypass-approvals-and-sandbox'"),
+            "{full}"
+        );
+
+        // custom → no sandbox_mode
+        let custom = <CodexSource as crate::agents::SessionSource>::chat_turn_command(
+            &CodexSource,
+            None,
+            "p",
+            "custom",
+            None,
+            None,
+        )
+        .unwrap()
+        .to_posix_shell();
+        assert!(
+            !custom.contains("sandbox_mode"),
+            "custom must not pass sandbox: {custom}"
         );
         assert!(
-            !bypass.contains("sandbox_mode"),
-            "bypass uses no sandbox_mode: {bypass}"
+            !custom.contains("--dangerously-bypass"),
+            "custom must not bypass: {custom}"
         );
     }
 
@@ -2336,13 +2475,16 @@ mod tests {
         // session_meta.originator 是字符串（"codex-tui"），model 字段不存在 → 全 session $0。
         // 现在 turn_context.payload.model 是真正的 model 源。
         crate::stats::pricing::seed_test_prices();
-        let p = write_temp("codex-turn-context-model.jsonl", &[
-            r#"{"type":"session_meta","payload":{"id":"abc","cwd":"/tmp","originator":"codex-tui"}}"#,
-            r#"{"type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5"}}"#,
-            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hi"}}"#,
-            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"hey"}}"#,
-            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":500,"reasoning_output_tokens":0,"total_tokens":1500}}}}"#,
-        ]);
+        let p = write_temp(
+            "codex-turn-context-model.jsonl",
+            &[
+                r#"{"type":"session_meta","payload":{"id":"abc","cwd":"/tmp","originator":"codex-tui"}}"#,
+                r#"{"type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"hi"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"agent_message","message":"hey"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":500,"reasoning_output_tokens":0,"total_tokens":1500}}}}"#,
+            ],
+        );
         let turns = read_turns(&p);
         let last_call = turns
             .last()
@@ -2365,16 +2507,19 @@ mod tests {
         // 期望：一个 turn 里 3 个 function_call + 1 个 agent_message + 1 个 token_count
         // → 一条 CallRecord，且 tools/bash 全部归并到这条上。
         crate::stats::pricing::seed_test_prices();
-        let p = write_temp("codex-one-call-per-token-count.jsonl", &[
-            r#"{"type":"session_meta","payload":{"id":"abc","cwd":"/tmp","originator":"codex-tui"}}"#,
-            r#"{"type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5"}}"#,
-            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hi"}}"#,
-            r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":\"ls /tmp\"}"}}"#,
-            r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":\"pwd\"}"}}"#,
-            r#"{"type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{\"path\":\"a.txt\"}"}}"#,
-            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"done"}}"#,
-            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":500,"reasoning_output_tokens":0,"total_tokens":1700},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":500,"reasoning_output_tokens":0,"total_tokens":1700}}}}"#,
-        ]);
+        let p = write_temp(
+            "codex-one-call-per-token-count.jsonl",
+            &[
+                r#"{"type":"session_meta","payload":{"id":"abc","cwd":"/tmp","originator":"codex-tui"}}"#,
+                r#"{"type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"hi"}}"#,
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":\"ls /tmp\"}"}}"#,
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":\"pwd\"}"}}"#,
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{\"path\":\"a.txt\"}"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"agent_message","message":"done"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":500,"reasoning_output_tokens":0,"total_tokens":1700},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":500,"reasoning_output_tokens":0,"total_tokens":1700}}}}"#,
+            ],
+        );
         let turns = read_turns(&p);
         assert_eq!(turns.len(), 1, "expected exactly 1 turn");
         let calls = &turns[0].calls;
@@ -2385,7 +2530,11 @@ mod tests {
             calls.len(),
         );
         let c = &calls[0];
-        assert_eq!(c.tools.len(), 3, "all 3 tool names should be folded into the call");
+        assert_eq!(
+            c.tools.len(),
+            3,
+            "all 3 tool names should be folded into the call"
+        );
         assert!(c.tools.contains(&"shell".to_string()));
         assert!(c.tools.contains(&"read_file".to_string()));
         assert_eq!(c.bash_commands.len(), 2, "both shell commands captured");
@@ -2399,14 +2548,17 @@ mod tests {
         // codex 偶尔会重发上一帧的 token_count（同一个 total_tokens 出现两次）。
         // 我们必须只计一条 —— 否则 calls 会被多算，cost 会双倍。
         crate::stats::pricing::seed_test_prices();
-        let p = write_temp("codex-dup-token-count.jsonl", &[
-            r#"{"type":"session_meta","payload":{"id":"abc","cwd":"/tmp"}}"#,
-            r#"{"type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5"}}"#,
-            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hi"}}"#,
-            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150}}}}"#,
-            // 同样的 cumulative 重发一次 —— 必须跳过
-            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150}}}}"#,
-        ]);
+        let p = write_temp(
+            "codex-dup-token-count.jsonl",
+            &[
+                r#"{"type":"session_meta","payload":{"id":"abc","cwd":"/tmp"}}"#,
+                r#"{"type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"hi"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150}}}}"#,
+                // 同样的 cumulative 重发一次 —— 必须跳过
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":150}}}}"#,
+            ],
+        );
         let turns = read_turns(&p);
         let calls = &turns[0].calls;
         assert_eq!(calls.len(), 1, "expected dedup to drop the second event");
@@ -2449,9 +2601,13 @@ mod tests {
         );
 
         let title_index = HashMap::new();
-        let msgs =
-            read_with_title_index(p.to_string_lossy().as_ref(), &title_index).expect("session should parse");
-        assert_eq!(msgs.len(), 6, "commentary + final answers should all render");
+        let msgs = read_with_title_index(p.to_string_lossy().as_ref(), &title_index)
+            .expect("session should parse");
+        assert_eq!(
+            msgs.len(),
+            6,
+            "commentary + final answers should all render"
+        );
         assert_eq!(msgs[0].role, "user");
         assert_eq!(msgs[0].blocks[0].text.as_deref(), Some("hi"));
         assert_eq!(msgs[1].role, "assistant");
@@ -2467,7 +2623,10 @@ mod tests {
 
         let meta = meta(&p).expect("meta");
         let session = scan(&p, &meta, &title_index, CodexThreadFlags::default());
-        assert_eq!(session.message_count, 4, "commentary should not inflate session counts");
+        assert_eq!(
+            session.message_count, 4,
+            "commentary should not inflate session counts"
+        );
     }
 
     #[test]
@@ -2491,8 +2650,8 @@ mod tests {
             },
         );
 
-        let msgs =
-            read_with_title_index(p.to_string_lossy().as_ref(), &title_index).expect("session should parse");
+        let msgs = read_with_title_index(p.to_string_lossy().as_ref(), &title_index)
+            .expect("session should parse");
         let rename = msgs
             .iter()
             .find(|m| {
@@ -2504,7 +2663,10 @@ mod tests {
                         .unwrap_or(false)
             })
             .expect("rename system event should be synthesized");
-        assert_eq!(rename.timestamp.as_deref(), Some("2026-06-08T04:43:09.162Z"));
+        assert_eq!(
+            rename.timestamp.as_deref(),
+            Some("2026-06-08T04:43:09.162Z")
+        );
     }
 
     #[test]
@@ -2519,8 +2681,8 @@ mod tests {
         );
 
         let title_index = HashMap::new();
-        let msgs =
-            read_with_title_index(p.to_string_lossy().as_ref(), &title_index).expect("session should parse");
+        let msgs = read_with_title_index(p.to_string_lossy().as_ref(), &title_index)
+            .expect("session should parse");
         let tool_use = msgs
             .iter()
             .flat_map(|m| m.blocks.iter())

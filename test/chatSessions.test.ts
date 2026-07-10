@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { invokeMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -17,12 +17,17 @@ import {
   enqueuePrompt,
   interruptChat,
   parseRetryLine,
+  reconnectChats,
   removeQueued,
   respondPermission,
   respondQuestion,
   startChat,
 } from '../src/chatSessions'
 import type { ChatPermissionRequest, ChatQuestionRequest } from '../src/types'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('chatSessions Claude API-key compatibility', () => {
   beforeEach(() => {
@@ -114,6 +119,46 @@ describe('chatSessions Claude API-key compatibility', () => {
     expect(session.msgs).toHaveLength(1)
     expect(session.msgs[0].role).toBe('user')
     expect(session.msgs[0].blocks[0].text).toBe('[Request interrupted by user]')
+  })
+})
+
+describe('reconnectChats — restored live messages', () => {
+  beforeEach(() => {
+    invokeMock.mockReset()
+  })
+
+  it('normalizes missing timestamps and assistant model labels', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-09T12:58:00.000Z'))
+    invokeMock.mockResolvedValueOnce([
+      {
+        chatId: 77,
+        agent: 'codex',
+        projectKey: 'proj',
+        cwd: '/tmp',
+        sessionId: 'thread-1',
+        messages: [
+          {
+            role: 'assistant',
+            sidechain: false,
+            timestamp: null,
+            blocks: [{ kind: 'text', text: 'hi', isError: false }],
+          },
+        ],
+        turnState: 'idle',
+        turnStartedAtMs: null,
+        permissionMode: 'approve',
+        model: 'gpt-5.4',
+        effort: 'high',
+        processModel: 'codexAppServer',
+      },
+    ])
+
+    const [session] = await reconnectChats()
+
+    expect(session.msgs[0].timestamp).toBe('2026-07-09T12:58:00.000Z')
+    expect(session.msgs[0].model).toBe('gpt-5.4')
+    expect(session.lastModel).toBe('gpt-5.4')
   })
 })
 

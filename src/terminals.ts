@@ -457,23 +457,188 @@ function xtermTheme(isDark: boolean) {
       }
 }
 
+function systemDarkActive(): boolean {
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+}
+
 function isDarkActive(): boolean {
-  return document.documentElement.classList.contains('theme-dark')
+  return theme.value === 'dark' || theme.value === 'dracula' || (theme.value === 'system' && systemDarkActive())
 }
 
 function terminalColorScheme(): 'light' | 'dark' {
   return isDarkActive() ? 'dark' : 'light'
 }
 
-function applyTerminalTheme(tab: TerminalTab) {
-  tab.term.options.theme = xtermTheme(isDarkActive())
+const XTERM_COLOR_MODE_MASK = 0x3000000
+const XTERM_COLOR_VALUE_MASK = 0xffffff
+const XTERM_COLOR_MODE_P16 = 0x1000000
+const XTERM_COLOR_MODE_P256 = 0x2000000
+const XTERM_COLOR_MODE_RGB = 0x3000000
+const XTERM_FG_INVERSE = 0x4000000
+
+type XtermMutableCell = {
+  fg: number
+  bg: number
+  getChars?: () => string
+  getBgColorMode?: () => number
+  getBgColor?: () => number
+  getFgColorMode?: () => number
+  getFgColor?: () => number
 }
 
-// 主题切换：把所有活跃 Terminal 的 theme 选项替换；xterm 自己会重绘。
-watch(theme, () => {
+type XtermMutableBufferLine = {
+  length: number
+  isWrapped?: boolean
+  translateToString?: (trimRight?: boolean, startColumn?: number, endColumn?: number) => string
+  loadCell: (index: number, cell: XtermMutableCell) => XtermMutableCell
+  setCell: (index: number, cell: XtermMutableCell) => void
+}
+
+function rgbFromPacked(value: number): [number, number, number] {
+  return [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff]
+}
+
+function rgbToPacked(r: number, g: number, b: number): number {
+  return ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff)
+}
+
+function isExtremeNeutralRgb(value: number): boolean {
+  const [r, g, b] = rgbFromPacked(value)
+  if (Math.max(r, g, b) - Math.min(r, g, b) > 3) return false
+  return r >= 220 || r <= 48
+}
+
+function isNeutralPaletteIndex(value: number): boolean {
+  return value === 0 || value === 7 || value === 8 || value === 15 || (value >= 232 && value <= 255)
+}
+
+function isNeutralForegroundCell(cell: XtermMutableCell): boolean {
+  const mode = cell.getFgColorMode?.() ?? (cell.fg & XTERM_COLOR_MODE_MASK)
+  const color = cell.getFgColor?.() ?? (cell.fg & XTERM_COLOR_VALUE_MASK)
+  if (cell.fg & XTERM_FG_INVERSE) return true
+  if (mode === 0) return true
+  if (mode === XTERM_COLOR_MODE_RGB) return isExtremeNeutralRgb(color)
+  if (mode === XTERM_COLOR_MODE_P16 || mode === XTERM_COLOR_MODE_P256) return isNeutralPaletteIndex(color)
+  return false
+}
+
+function codexUserMessageThemeColors(): { bg: number; fg: number } {
+  if (theme.value === 'dracula') {
+    return { bg: rgbToPacked(0x44, 0x47, 0x5a), fg: rgbToPacked(0xf8, 0xf8, 0xf2) }
+  }
+  if (isDarkActive()) {
+    return { bg: rgbToPacked(0x1f, 0x1f, 0x1f), fg: rgbToPacked(0xed, 0xed, 0xed) }
+  }
+  return { bg: rgbToPacked(0xf4, 0xf4, 0xf4), fg: rgbToPacked(0x17, 0x17, 0x17) }
+}
+
+function setCellCodexUserMessageColors(cell: XtermMutableCell, colors: { bg: number; fg: number }) {
+  const hasText = (cell.getChars?.() ?? '') !== ''
+  const shouldSetFg = hasText && isNeutralForegroundCell(cell)
+  cell.fg &= ~XTERM_FG_INVERSE
+  cell.bg = (cell.bg & ~(XTERM_COLOR_MODE_MASK | XTERM_COLOR_VALUE_MASK)) | XTERM_COLOR_MODE_RGB | colors.bg
+  if (shouldSetFg) {
+    cell.fg = (cell.fg & ~(XTERM_COLOR_MODE_MASK | XTERM_COLOR_VALUE_MASK)) | XTERM_COLOR_MODE_RGB | colors.fg
+  }
+}
+
+function activeMutableXtermLines(term: Terminal): { length: number; get: (index: number) => XtermMutableBufferLine | undefined } | null {
+  const core = (term as unknown as { _core?: unknown })._core as
+    | {
+        buffers?: { active?: { lines?: { length: number; get: (index: number) => XtermMutableBufferLine | undefined } } }
+        _bufferService?: { buffer?: { lines?: { length: number; get: (index: number) => XtermMutableBufferLine | undefined } } }
+      }
+    | undefined
+  return core?.buffers?.active?.lines ?? core?._bufferService?.buffer?.lines ?? null
+}
+
+function repairCodexUserMessageBufferColors(tab: TerminalTab): boolean {
+  if (tab.agent !== 'codex' || tab.isShell) return false
+  const lines = activeMutableXtermLines(tab.term)
+  if (!lines) return false
+
+  const cell = tab.term.buffer.active.getNullCell() as unknown as XtermMutableCell
+  const targetRows = new Set<number>()
+  let changed = false
+
+  for (let y = 0; y < lines.length; y++) {
+    const line = lines.get(y)
+    if (!line) continue
+
+    const text = line.translateToString?.(true) ?? ''
+    const isUserMessageStart: boolean = text.trimStart().startsWith('›')
+    if (!isUserMessageStart) continue
+
+    let start = y
+    const previousLine = lines.get(y - 1)
+    const previousText = previousLine?.translateToString?.(true) ?? ''
+    if (previousLine && previousText.trim() === '') {
+      start = y - 1
+    }
+
+    let end = y
+    while (end + 1 < lines.length && lines.get(end + 1)?.isWrapped) end++
+    const wrappedEnd = end
+    const nextLine = lines.get(wrappedEnd + 1)
+    const nextText = nextLine?.translateToString?.(true) ?? ''
+    if (nextLine && nextText.trim() === '') {
+      end = wrappedEnd + 1
+    }
+
+    for (let target = start; target <= end; target++) targetRows.add(target)
+  }
+
+  if (targetRows.size === 0) return false
+
+  const colors = codexUserMessageThemeColors()
+  for (const y of targetRows) {
+    const line = lines.get(y)
+    if (!line) continue
+    for (let x = 0; x < line.length; x++) {
+      line.loadCell(x, cell)
+      setCellCodexUserMessageColors(cell, colors)
+      line.setCell(x, cell)
+      changed = true
+    }
+  }
+
+  return changed
+}
+
+const codexUserMessageRepairFrames = new WeakMap<Terminal, number>()
+
+function scheduleCodexUserMessageBufferRepair(tab: TerminalTab) {
+  if (tab.agent !== 'codex' || tab.isShell) return
+  if (codexUserMessageRepairFrames.has(tab.term)) return
+  const frame = requestAnimationFrame(() => {
+    codexUserMessageRepairFrames.delete(tab.term)
+    if (repairCodexUserMessageBufferColors(tab)) {
+      tab.term.clearTextureAtlas()
+      tab.term.refresh(0, Math.max(0, tab.term.rows - 1))
+    }
+  })
+  codexUserMessageRepairFrames.set(tab.term, frame)
+}
+
+function applyTerminalTheme(tab: TerminalTab) {
+  const dark = isDarkActive()
+  const newTheme = xtermTheme(dark)
+  if (tab.agent === 'codex' && !tab.isShell) tab.container.classList.add('terminal-codex-tui')
+  tab.term.options.theme = newTheme
+  const repaired = repairCodexUserMessageBufferColors(tab)
+  if (repaired) tab.term.clearTextureAtlas()
+  tab.term.refresh(0, Math.max(0, tab.term.rows - 1))
+}
+
+export function refreshAllTerminalThemes() {
   for (const tab of tabs.value) {
     applyTerminalTheme(tab)
   }
+}
+
+watch(theme, refreshAllTerminalThemes)
+window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (theme.value === 'system') refreshAllTerminalThemes()
 })
 
 // ============================ base64 双向 ============================
@@ -516,6 +681,20 @@ function isDarkRgb(r: string, g: string, b: string): boolean {
   return rv * 0.299 + gv * 0.587 + bv * 0.114 < 96
 }
 
+function isLightAnsiColor(value: string): boolean {
+  const n = Number(value)
+  if (!Number.isInteger(n)) return false
+  return n === 7 || n === 15 || (n >= 245 && n <= 255)
+}
+
+function isLightRgb(r: string, g: string, b: string): boolean {
+  const rv = Number(r)
+  const gv = Number(g)
+  const bv = Number(b)
+  if (![rv, gv, bv].every((v) => Number.isInteger(v) && v >= 0 && v <= 255)) return false
+  return rv * 0.299 + gv * 0.587 + bv * 0.114 > 180
+}
+
 function normalizeLightSgrSemicolon(params: string): string {
   const parts = params === '' ? ['0'] : params.split(';')
   const out: string[] = []
@@ -524,7 +703,7 @@ function normalizeLightSgrSemicolon(params: string): string {
     const part = parts[i] === '' ? '0' : parts[i]
 
     if (part === '7') {
-      out.push('30', '48', '2', '245', '245', '245')
+      out.push(part)
       continue
     }
     if (part === '40' || part === '47' || part === '100' || part === '107') {
@@ -569,6 +748,55 @@ function normalizeLightSgr(params: string): string | null {
   return normalized === params ? null : normalized
 }
 
+function normalizeDarkSgrSemicolon(params: string): string {
+  const parts = params === '' ? ['0'] : params.split(';')
+  const out: string[] = []
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i] === '' ? '0' : parts[i]
+    if (part === '7') {
+      out.push(part)
+      continue
+    }
+    if (part === '47' || part === '107') {
+      out.push('49')
+      continue
+    }
+    if (part === '48' && parts[i + 1] === '5' && isLightAnsiColor(parts[i + 2] ?? '')) {
+      out.push('49')
+      i += 2
+      continue
+    }
+    if (
+      part === '48' &&
+      parts[i + 1] === '2' &&
+      isLightRgb(parts[i + 2] ?? '', parts[i + 3] ?? '', parts[i + 4] ?? '')
+    ) {
+      out.push('49')
+      i += 4
+      continue
+    }
+    out.push(part)
+  }
+  return out.join(';')
+}
+
+function normalizeDarkSgrColon(params: string): string {
+  return params
+    .replace(/(^|;)48:5:(\d+)(?=;|$)/g, (match, sep: string, color: string) =>
+      isLightAnsiColor(color) ? `${sep}49` : match,
+    )
+    .replace(
+      /(^|;)48:2:(\d+):(\d+):(\d+)(?=;|$)/g,
+      (match, sep: string, r: string, g: string, b: string) =>
+        isLightRgb(r, g, b) ? `${sep}49` : match,
+    )
+}
+
+function normalizeDarkSgr(params: string): string | null {
+  const normalized = normalizeDarkSgrColon(normalizeDarkSgrSemicolon(params))
+  return normalized === params ? null : normalized
+}
+
 function findIncompleteCsiStart(bytes: Uint8Array): number {
   if (bytes.length > 0 && bytes[bytes.length - 1] === 0x1b) return bytes.length - 1
   for (let i = Math.max(0, bytes.length - 32); i < bytes.length - 1; i++) {
@@ -592,9 +820,10 @@ function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
   return out
 }
 
-function normalizeLightAnsiBackground(
+function normalizeAnsiBackground(
   bytes: Uint8Array,
   pending: Uint8Array | null,
+  sgrNormalizer: (params: string) => string | null,
 ): { bytes: Uint8Array; pending: Uint8Array | null } {
   bytes = pending ? concatBytes(pending, bytes) : bytes
   const incompleteStart = findIncompleteCsiStart(bytes)
@@ -614,7 +843,7 @@ function normalizeLightAnsiBackground(
       continue
     }
 
-    const normalized = normalizeLightSgr(asciiFromBytes(source, i + 2, end))
+    const normalized = sgrNormalizer(asciiFromBytes(source, i + 2, end))
     if (normalized === null) {
       i = end
       continue
@@ -881,7 +1110,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   term.loadAddon(fitAddon)
 
   const container = markRaw(document.createElement('div'))
-  container.className = 'terminal-host'
+  container.className = opts.agent === 'codex' ? 'terminal-host terminal-codex-tui' : 'terminal-host'
   // 提示 xterm 即将 attach；真正的 open(container) 推迟到 slot 把 container 放入
   // 可见 DOM 树之后，否则在 detached 节点上 open 会拿不到尺寸。
   term.open(container)
@@ -927,6 +1156,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   if (opts.userRenamed) tab.userRenamed = true
   tabs.value.push(tab)
   activateTabInPane(tab)
+  if (tab.agent === 'codex' && !tab.isShell) tab.container.classList.add('terminal-codex-tui')
   term.attachCustomKeyEventHandler((ev) => {
     if (handleWindowsTerminalSelectionCopy(term, ev)) return false
     if (handleWindowsCodexPaste(term, ev, opts.agent)) return false
@@ -992,10 +1222,11 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     if (e.payload.id !== ptyId) return
     tab.lastOutputAt = Date.now()
     const bytes = base64ToBytes(e.payload.base64)
-    if (tab.agent === 'codex' && terminalColorScheme() === 'light') {
-      const normalized = normalizeLightAnsiBackground(bytes, tab.pendingAnsiBytes)
+    if (tab.agent === 'codex') {
+      const normalizer = terminalColorScheme() === 'light' ? normalizeLightSgr : normalizeDarkSgr
+      const normalized = normalizeAnsiBackground(bytes, tab.pendingAnsiBytes, normalizer)
       tab.pendingAnsiBytes = normalized.pending
-      term.write(normalized.bytes)
+      term.write(normalized.bytes, () => scheduleCodexUserMessageBufferRepair(tab))
     } else {
       tab.pendingAnsiBytes = null
       term.write(bytes)

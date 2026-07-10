@@ -23,8 +23,13 @@ const SYSTEM_COMMANDS: SystemCmdDef[] = [
   { name: 'rename' },
   { name: 'clear' },
   { name: 'fork', agents: ['claude'] },
+  // { name: 'fork', agents: ['codex'] }, // TODO: Codex fork 暂未对接
+  { name: 'compact' },
+  { name: 'goal' },
+  { name: 'plan' },
+  { name: 'review', agents: ['codex'] },
+  { name: 'archive', agents: ['codex'] },
   { name: 'btw', agents: ['claude'] },
-  { name: 'compact', agents: ['claude'] },
   { name: 'context', agents: ['claude'] },
   { name: 'reload-skills', agents: ['claude'] },
 ]

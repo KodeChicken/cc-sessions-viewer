@@ -31,6 +31,11 @@ export interface ModelMenuOptions {
   claudeAliasTargets?: Partial<Record<'opus' | 'sonnet' | 'haiku' | 'fable', string>>
 }
 
+/** 该 agent 是否支持 GUI chat。入口 v-if / quick-open 守卫统一用此函数。 */
+export function chatSupported(agent: Agent): boolean {
+  return agent === 'claude' || agent === 'codex'
+}
+
 /** 标准模型菜单（按 agent）。Claude 用官方完整 id；Codex 给一组常见 gpt-5.x。 */
 export const CHAT_MODEL_MENU: Record<Agent, ModelMenuConfig> = {
   claude: {
@@ -54,11 +59,16 @@ export const CHAT_MODEL_MENU: Record<Agent, ModelMenuConfig> = {
   codex: {
     unavailable: [],
     primary: [
-      { value: 'gpt-5.4', label: 'gpt-5.4' },
-      { value: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
-      { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
+      { value: 'gpt-5.6-sol', label: 'GPT-5.6-Sol' },
+      { value: 'gpt-5.6-terra', label: 'GPT-5.6-Terra' },
+      { value: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
+      { value: 'gpt-5.5', label: 'GPT-5.5' },
     ],
-    more: [{ value: 'gpt-5.1-codex-max', label: 'gpt-5.1-codex-max' }],
+    more: [
+      { value: 'gpt-5.4', label: 'GPT-5.4' },
+      { value: 'gpt-5.4-mini', label: 'GPT-5.4-Mini' },
+      { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3-Codex-Spark' },
+    ],
     showFastMode: false,
   },
   agy: { unavailable: [], primary: [], more: [], showFastMode: false },
@@ -162,22 +172,28 @@ export function modelLabel(
  */
 export const CHAT_EFFORT_LEVELS: Record<Agent, string[]> = {
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
-  codex: ['minimal', 'low', 'medium', 'high'],
+  codex: ['low', 'medium', 'high', 'xhigh'],
   agy: [],
   opencode: [],
 }
 
-/** 多一档「ultracode」的模型（排在 max 之后，仅这些模型显示）。 */
+/** Claude 多一档「ultracode」的模型（排在 max 之后）。 */
 const ULTRACODE_MODELS = new Set(['claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7'])
 
-/**
- * 该 (agent, model) 实际的 effort 档位列表。
- * Opus 4.7 / 4.8 在 `max` 之后追加一档 `ultracode`（对齐 Claude 客户端的滑杆）。
- */
+/** Codex 5.6-luna: base + max */
+const CODEX_MAX_MODELS = new Set(['gpt-5.6-luna'])
+
+/** Codex 5.6-terra / 5.6-sol: base + max + ultra */
+const CODEX_ULTRA_MODELS = new Set(['gpt-5.6-sol', 'gpt-5.6-terra'])
+
 export function effortLevelsFor(agent: Agent, model: string | undefined): string[] {
   const base = CHAT_EFFORT_LEVELS[agent]
   if (agent === 'claude' && model && ULTRACODE_MODELS.has(model)) {
     return [...base, 'ultracode']
+  }
+  if (agent === 'codex' && model) {
+    if (CODEX_ULTRA_MODELS.has(model)) return [...base, 'max', 'ultra']
+    if (CODEX_MAX_MODELS.has(model)) return [...base, 'max']
   }
   return base
 }
@@ -236,8 +252,11 @@ export function fallbackEffort(
 
 /** 该 agent 的初始模型（= 主列表第一项；无则 undefined）。用户要求「不存在 default model」，
  *  故每个会话都以一个明确模型起步。 */
+const CODEX_DEFAULT_MODEL = 'gpt-5.5'
+
 export function defaultModel(agent: Agent): string | undefined {
   if (agent === 'claude') return undefined
+  if (agent === 'codex') return CODEX_DEFAULT_MODEL
   return modelMenuFor(agent).primary[0]?.value
 }
 
@@ -248,18 +267,22 @@ export function defaultEffort(agent: Agent): string | undefined {
   return lv[2] ?? lv[lv.length - 1]
 }
 
-/** effort 档位的展示名（首字母大写，如 high → High、xhigh → Xhigh）。 */
+const EFFORT_DISPLAY: Record<string, string> = {
+  xhigh: 'Extra High',
+}
+
+/** effort 档位的展示名。特殊值走映射表，其余首字母大写。 */
 export function effortLabel(level: string | undefined): string {
   if (!level) return ''
-  return level.charAt(0).toUpperCase() + level.slice(1)
+  return EFFORT_DISPLAY[level] ?? level.charAt(0).toUpperCase() + level.slice(1)
 }
 
 /**
- * 权限模式五档（对齐 Claude Code「Mode」菜单 / `--permission-mode` choices）。
+ * Claude 权限模式五档（对齐 Claude Code「Mode」菜单 / `--permission-mode` choices）。
  * 顺序 = Image#8：Ask permissions / Accept edits / Plan mode / Auto mode / Bypass。
  * headless 下需审批的模式（default/auto）会自动拒绝、不挂起（已实测），故全部可放。
  */
-export const CHAT_PERMISSION_MODES: { value: string; labelKey: string }[] = [
+export const CLAUDE_PERMISSION_MODES: { value: string; labelKey: string }[] = [
   { value: 'default', labelKey: 'chat.composer.permission.ask' },
   { value: 'acceptEdits', labelKey: 'chat.composer.permission.acceptEdits' },
   { value: 'plan', labelKey: 'chat.composer.permission.plan' },
@@ -267,23 +290,49 @@ export const CHAT_PERMISSION_MODES: { value: string; labelKey: string }[] = [
   { value: 'bypassPermissions', labelKey: 'chat.composer.permission.bypassPermissions' },
 ]
 
-/** 权限模式 value → labelKey（找不到回退 acceptEdits）。 */
-export function permissionLabelKey(value: string): string {
-  return (
-    CHAT_PERMISSION_MODES.find((m) => m.value === value)?.labelKey ??
-    'chat.composer.permission.acceptEdits'
-  )
+/**
+ * Codex 权限模式四档（独立于 Claude，对齐 Codex 桌面端截图）。
+ * Ask for approval / Approve for me / Full access / Custom (config.toml)。
+ * 后端通过 `-c sandbox_mode=` 映射（ask → read-only, approve → workspace-write,
+ * fullAccess → bypass, custom → 不传）。
+ */
+export const CODEX_PERMISSION_MODES: { value: string; labelKey: string }[] = [
+  { value: 'ask', labelKey: 'chat.composer.permission.codex.ask' },
+  { value: 'approve', labelKey: 'chat.composer.permission.codex.approve' },
+  { value: 'fullAccess', labelKey: 'chat.composer.permission.codex.fullAccess' },
+  { value: 'custom', labelKey: 'chat.composer.permission.codex.custom' },
+]
+
+/** 按 agent 返回对应的权限模式列表（独立数据源，不共用）。 */
+export function permissionModesFor(agent: Agent): { value: string; labelKey: string }[] {
+  if (agent === 'codex') return CODEX_PERMISSION_MODES
+  return CLAUDE_PERMISSION_MODES
+}
+
+/** 按 agent 返回默认权限模式（新会话初始值）。 */
+export function defaultPermissionMode(agent: Agent): string {
+  if (agent === 'codex') return 'approve'
+  return 'acceptEdits'
+}
+
+/** 权限模式 value → labelKey（按 agent 从对应列表查找）。 */
+export function permissionLabelKey(agent: Agent, value: string): string {
+  const modes = permissionModesFor(agent)
+  return modes.find((m) => m.value === value)?.labelKey ?? modes[0].labelKey
 }
 
 /**
  * 某个权限模式在当前模型下是否不可用。
- * 规则（对齐 Claude Code）：Haiku 不支持 `auto`（自动）权限模式。
+ * Claude：Haiku 不支持 `auto`（自动）权限模式。
+ * Codex：无此限制。
  */
-export function permissionModeDisabled(value: string, model: string | undefined): boolean {
+export function permissionModeDisabled(agent: Agent, value: string, model: string | undefined): boolean {
+  if (agent === 'codex') return false
   return value === 'auto' && !!model && /haiku/i.test(model)
 }
 
-/** 模型变更后，若当前权限模式在新模型下不可用，给一个可用的回退（acceptEdits）。 */
-export function fallbackPermissionMode(current: string, model: string | undefined): string {
-  return permissionModeDisabled(current, model) ? 'acceptEdits' : current
+/** 模型变更后，若当前权限模式在新模型下不可用，给一个可用的回退。 */
+export function fallbackPermissionMode(agent: Agent, current: string, model: string | undefined): string {
+  if (permissionModeDisabled(agent, current, model)) return defaultPermissionMode(agent)
+  return current
 }

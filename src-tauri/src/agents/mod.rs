@@ -620,13 +620,11 @@ fn classify_hit(
         let mtime = src.source_mtime(&session.path);
         let cached = cached_user_text(&session.path, mtime);
         if let Some(ref texts) = cached {
-            match scan_user_text(texts, q) {
-                Some(hit) => {
-                    match_msg_index = Some(hit.msg_index);
-                    match_msg_uuid = hit.msg_uuid;
-                    ("text", hit.snippet)
-                }
-                None => return None,
+            {
+                let hit = scan_user_text(texts, q)?;
+                match_msg_index = Some(hit.msg_index);
+                match_msg_uuid = hit.msg_uuid;
+                ("text", hit.snippet)
             }
         } else {
             // 冷路径：粗筛（文件型 = 字节扫描；库型 = SQL）→ JSON 解析
@@ -636,13 +634,11 @@ fn classify_hit(
             if cancel.cancelled() {
                 return None;
             }
-            match find_text_hit(|p| src.read_session(p), &session.path, mtime, q) {
-                Some(hit) => {
-                    match_msg_index = Some(hit.msg_index);
-                    match_msg_uuid = hit.msg_uuid;
-                    ("text", hit.snippet)
-                }
-                None => return None,
+            {
+                let hit = find_text_hit(|p| src.read_session(p), &session.path, mtime, q)?;
+                match_msg_index = Some(hit.msg_index);
+                match_msg_uuid = hit.msg_uuid;
+                ("text", hit.snippet)
             }
         }
     };

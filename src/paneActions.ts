@@ -38,6 +38,7 @@ export interface PaneActions {
   closeLiveChat: (tabUiId?: number) => void
   openRenameLiveChat: () => void
   forkLiveChat: () => void
+  archiveLiveChat: () => void
   switchLiveChatToRead: () => void
   openLiveChatStats: () => void
   exportLiveChat: (kind: ExportKind) => void
@@ -56,6 +57,7 @@ export interface PaneActions {
   reveal: (path: string) => void
   // —— SessionsView（项目主页 / 会话列表）——
   chatFromList: (s: SessionMeta) => void
+  notifyArchivedBlock: (cmd: string) => void
   exportFromList: (s: SessionMeta, kind: ExportKind) => void
   refreshSessions: () => void
   /** 退出指定分屏格子：关闭并释放该格所有 tab（二次确认后调用）。 */

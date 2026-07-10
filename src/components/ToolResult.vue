@@ -8,7 +8,10 @@ import { IconChevronRight } from './icons'
 import { highlightJsonInPlace, looksLikeJson } from '../jsonHighlight'
 import { highlightDiff, looksLikeDiff } from '../diffHighlight'
 
-const props = defineProps<{ block: Block; inUser?: boolean }>()
+const props = withDefaults(defineProps<{ block: Block; inUser?: boolean; persistOpen?: boolean }>(), {
+  persistOpen: undefined,
+})
+const emit = defineEmits<{ toggle: [open: boolean] }>()
 
 // 结果文本的渲染优先级：
 //   1. structured diff（block.diff，有 hunks）→ DiffBlock（保留交互）
@@ -62,7 +65,8 @@ const hasRenderableText = computed(() => {
     v-if="hasRenderableText"
     class="block-card"
     :class="{ 'in-user': inUser, 'auto-open': !!block.diff }"
-    :open="!!block.diff"
+    :open="persistOpen ?? !!block.diff"
+    @toggle="emit('toggle', ($event.target as HTMLDetailsElement).open)"
   >
     <summary class="block-summary">
       <span class="chev"><IconChevronRight /></span>

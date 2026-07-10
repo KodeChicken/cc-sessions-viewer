@@ -4,22 +4,54 @@
 // 不碰会话状态，只把用户的三选一以 `choose` 事件抛给 ChatView（再交给 respondPermission）。
 import { computed } from 'vue'
 import { t } from '../i18n'
-import type { ChatPermissionRequest } from '../types'
+import type { Agent, ChatPermissionRequest } from '../types'
 import { permissionCommandPreview, permissionHasSuggestions, type PermissionChoice } from '../chatPermission'
 import { IconShieldCheck, IconCheck, IconClose } from './icons'
 
-const props = defineProps<{ request: ChatPermissionRequest }>()
+const props = defineProps<{ request: ChatPermissionRequest; agent?: Agent }>()
 const emit = defineEmits<{ (e: 'choose', choice: PermissionChoice): void }>()
 
 const preview = computed(() => permissionCommandPreview(props.request))
 const hasSuggestions = computed(() => permissionHasSuggestions(props.request))
+const isCodex = computed(() => props.agent === 'codex')
+const title = computed(() =>
+  isCodex.value
+    ? t('chat.permission.codex.title')
+    : t('chat.permission.title', { tool: props.request.toolName }),
+)
+const alwaysAllowHint = computed(() =>
+  isCodex.value
+    ? t('chat.permission.codex.alwaysAllowHint')
+    : t('chat.permission.alwaysAllowHint'),
+)
+const input = computed<Record<string, unknown>>(() =>
+  props.request.input && typeof props.request.input === 'object' && !Array.isArray(props.request.input)
+    ? (props.request.input as Record<string, unknown>)
+    : {},
+)
+const environment = computed(() =>
+  typeof input.value.environment === 'string' ? input.value.environment : '',
+)
+const reason = computed(() =>
+  typeof input.value.reason === 'string' ? input.value.reason : '',
+)
 </script>
 
 <template>
   <div class="perm-prompt" role="alertdialog" aria-modal="false">
     <div class="perm-head">
       <IconShieldCheck class="perm-shield" />
-      <span class="perm-title">{{ t('chat.permission.title', { tool: request.toolName }) }}</span>
+      <span class="perm-title">{{ title }}</span>
+    </div>
+    <div v-if="isCodex && (environment || reason)" class="perm-meta">
+      <div v-if="environment" class="perm-meta-row">
+        <span>{{ t('chat.permission.environment') }}</span>
+        <strong>{{ environment }}</strong>
+      </div>
+      <div v-if="reason" class="perm-meta-row">
+        <span>{{ t('chat.permission.reason') }}</span>
+        <em>{{ reason }}</em>
+      </div>
     </div>
     <pre v-if="preview" class="perm-cmd">{{ preview }}</pre>
     <div v-if="request.description" class="perm-desc">{{ request.description }}</div>
@@ -32,7 +64,7 @@ const hasSuggestions = computed(() => permissionHasSuggestions(props.request))
         v-if="hasSuggestions"
         class="perm-btn perm-always"
         type="button"
-        v-tooltip="t('chat.permission.alwaysAllowHint')"
+        v-tooltip="alwaysAllowHint"
         @click="emit('choose', 'always-allow')"
       >
         <span>{{ t('chat.permission.alwaysAllow') }}</span>
@@ -87,6 +119,27 @@ const hasSuggestions = computed(() => permissionHasSuggestions(props.request))
   word-break: break-all;
   max-height: 9.5em;
   overflow: auto;
+}
+.perm-meta {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.perm-meta-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+.perm-meta-row strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.perm-meta-row em {
+  color: var(--text);
+  font-style: italic;
+  min-width: 0;
 }
 .perm-desc {
   font-size: 12px;

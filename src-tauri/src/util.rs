@@ -832,6 +832,30 @@ fn lift_paths_from_text(text: &str) -> (Vec<Block>, String) {
     temp.push_str(&cleaned_text[last..]);
     cleaned_text = temp;
 
+    // 2b. 提取 [name](path/) 形式的文件夹/文件 markdown 链接（Codex 文件夹引用格式）
+    let re_mdlink = regex_lite::Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").expect("valid regex");
+    let mut temp = String::new();
+    let mut last = 0;
+    for caps in re_mdlink.captures_iter(&cleaned_text) {
+        let whole = caps.get(0).unwrap();
+        let _name = caps.get(1).unwrap().as_str();
+        let path = caps.get(2).unwrap().as_str().trim();
+        if looks_like_file_path(path) {
+            temp.push_str(&cleaned_text[last..whole.start()]);
+            last = whole.end();
+            let is_dir = path.ends_with('/') || path.ends_with('\\')
+                || std::path::Path::new(path).is_dir();
+            lifted.push(Block {
+                kind: "file".to_string(),
+                file_path: Some(path.trim_end_matches('/').trim_end_matches('\\').to_string()),
+                is_dir: if is_dir { Some(true) } else { None },
+                ..Default::default()
+            });
+        }
+    }
+    temp.push_str(&cleaned_text[last..]);
+    cleaned_text = temp;
+
     // 3. 提取行内绝对路径 / 家目录路径（支持中文粘连，如 "前缀/var/path.png"）
     // 排除 URL 中的路径段（`://` 后面不是文件路径）
     let re_abs = regex_lite::Regex::new(
@@ -931,7 +955,28 @@ fn parse_line_as_path(line: &str) -> Option<String> {
         || (s.len() >= 2 && s.as_bytes()[1] == b':');
 
     if is_abs {
-        return Some(s.to_string());
+        if s.contains(char::is_whitespace) {
+            return None;
+        }
+        let after_root = if s.starts_with("~/") || s.starts_with("~\\") {
+            &s[2..]
+        } else if s.starts_with('/') || s.starts_with('\\') {
+            &s[1..]
+        } else {
+            &s[2..] // drive letter C:
+        };
+        let has_sep = after_root.contains('/') || after_root.contains('\\');
+        let has_ext = after_root.rsplit_once('.').map(|(_, ext)| {
+            !ext.is_empty() && ext.len() <= 10 && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        }).unwrap_or(false);
+        if has_sep || has_ext || std::path::Path::new(s).exists() {
+            return Some(s.to_string());
+        }
+        return None;
+    }
+
+    if s.contains(char::is_whitespace) {
+        return None;
     }
 
     let has_sep = s.contains('/') || s.contains('\\');

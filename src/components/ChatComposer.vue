@@ -13,6 +13,7 @@ import { parseChatSlashAction } from '../chatSlashActions'
 import { systemSlashCommands } from '../chatSystemCommands'
 import { openSideChat } from '../sideChat'
 import { useGitBranch } from '../gitBranch'
+import { formatElapsedSeconds } from '../format'
 import type { ChatImageAttachment, ChatFileAttachment, SlashCommand, ProjectFileEntry } from '../types'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
@@ -54,6 +55,7 @@ const emit = defineEmits<{
   openExport: []
   rename: []
   fork: []
+  archive: []
 }>()
 const claudeHasCustomBaseUrl = ref(false)
 const claudeAliasTargets = ref<Record<string, string | undefined>>({})
@@ -196,6 +198,7 @@ const elapsedSec = computed(() => {
   if (!running.value) return 0
   return Math.max(0, Math.floor((now.value - props.session.turnStartedAt) / 1000))
 })
+const elapsedLabel = computed(() => formatElapsedSeconds(elapsedSec.value))
 
 /** 网络重试态：有 retry 时状态行显示「请求失败 · 重试中 (n/N)」替代纯耗时。 */
 const retryLabel = computed(() => {
@@ -211,6 +214,7 @@ const retryLabel = computed(() => {
 // 长驻（Claude）由下一次 sendPrompt 检测到变更后 restart-with-resume。t() 让 label 随
 // 语言 / session 选择响应式刷新。
 const agent = computed(() => props.session.agent)
+const slashInsertChar = computed(() => agent.value === 'codex' ? '$' : '/')
 // 底栏当前 git 分支（与 ChatView 头部共用 useGitBranch）：非 git 仓库 → null 不渲染。
 const gitBranch = useGitBranch(() => props.session.cwd)
 // 拖拽投放区配色：用 agent 自己的品牌色 token（--brand-claude / -codex），
@@ -293,7 +297,7 @@ function onPickModel(v: string) {
   const model = v || undefined
   props.session.model = model
   // 新模型若不支持当前权限模式（如 Haiku 不支持 auto），自动回退到可用模式。
-  props.session.permissionMode = fallbackPermissionMode(props.session.permissionMode, model)
+  props.session.permissionMode = fallbackPermissionMode(agent.value, props.session.permissionMode, model)
   // 当前 effort 档在新模型下不存在（如从 4.8 的 ultracode 切到 Sonnet）→ 退到最高可用档。
   props.session.effort = fallbackEffort(props.session.effort, props.session.agent, model)
 }
@@ -479,7 +483,7 @@ const hlEl = ref<HTMLElement>()
 const recognizedNames = computed(() => new Set(slashCommands.value.map((c) => c.name)))
 // 开头是否为一条已识别的完整命令：`/<name>` 后跟空白或行尾，且 name 在扫描列表里。
 const leadingCommand = computed(() => {
-  const m = text.value.match(/^\/(\S+)(?=\s|$)/)
+  const m = text.value.match(/^[/$](\S+)(?=\s|$)/)
   return m && recognizedNames.value.has(m[1]) ? m[1] : null
 })
 const highlightActive = computed(() => leadingCommand.value !== null && !composing.value)
@@ -490,10 +494,11 @@ const leadingCommandObj = computed<SlashItem | null>(() => {
   return slashCommands.value.find((c) => c.name === name) ?? null
 })
 // argument-hint ghost：仅当命令已识别、且其后还没填任何参数（只剩空白）时才提示参数格式（对齐 Claude TUI）。
+const leadingPrefix = computed(() => text.value[0] === '$' || text.value[0] === '/' ? text.value[0] : '/')
 const argHintGhost = computed(() => {
   const cmd = leadingCommandObj.value
   if (!cmd?.argumentHint) return ''
-  const rest = text.value.slice(`/${cmd.name}`.length)
+  const rest = text.value.slice(`${leadingPrefix.value}${cmd.name}`.length)
   return rest.trim() === '' ? cmd.argumentHint : ''
 })
 function escapeHtml(s: string): string {
@@ -504,7 +509,7 @@ function escapeHtml(s: string): string {
 const highlightHtml = computed(() => {
   const cmd = leadingCommand.value
   if (!cmd) return ''
-  const token = `/${cmd}`
+  const token = `${leadingPrefix.value}${cmd}`
   const rest = text.value.slice(token.length)
   const ghost = argHintGhost.value
   const ghostHtml = ghost
@@ -530,7 +535,9 @@ function activeSlash(): { at: number; query: string } | null {
   if (!el) return null
   const caret = el.selectionStart ?? text.value.length
   const head = text.value.slice(0, caret)
-  const at = head.lastIndexOf('/')
+  const atSlash = head.lastIndexOf('/')
+  const atDollar = head.lastIndexOf('$')
+  const at = Math.max(atSlash, atDollar)
   if (at < 0) return null
   const between = head.slice(at + 1)
   if (/\s/.test(between)) return null
@@ -560,7 +567,8 @@ function detectSlash() {
 /** 选中指令：把触发处的 `/query` 段替换成 `/<name> `（保留前后文，光标落在插入串尾）。 */
 function pickSlash(item: SlashItem) {
   const start = slashStart.value
-  const insert = `/${item.name} `
+  const prefix = item.origin === 'system' ? '/' : slashInsertChar.value
+  const insert = `${prefix}${item.name} `
   if (start < 0) {
     text.value = insert
   } else {
@@ -1050,7 +1058,7 @@ async function addPath(path: string) {
   if (VISION_EXTS.has(extOf(path))) {
     try {
       const { mediaType, data } = await api.readFileBase64(path)
-      images.value.push({ dataUrl: `data:${mediaType};base64,${data}`, mediaType, data, name: baseName(path) })
+      images.value.push({ dataUrl: `data:${mediaType};base64,${data}`, mediaType, data, name: baseName(path), sourcePath: path })
       return
     } catch {
       // 读取失败就退化成普通文件引用
@@ -1099,12 +1107,11 @@ async function submit() {
   if (!text.value.trim() && images.value.length === 0 && files.value.length === 0) return
   const body = text.value
   exitHistory()
-  // 客户端 slash 指令：在输入框里**拦截**、不发进主聊。/fork 仅 Claude（--fork-session）有意义；
-  // /model 仅在模型面板可见时才拦截 —— 都不满足时落回普通发送。
   const action = parseChatSlashAction(body)
   const intercept =
     !!action &&
     !(action.kind === 'fork' && props.session.agent !== 'claude') &&
+    !(action.kind === 'archive' && props.session.agent !== 'codex') &&
     !(action.kind === 'model' && !showModelPicker.value)
   if (action && intercept) {
     text.value = ''
@@ -1130,6 +1137,9 @@ async function submit() {
         break
       case 'model':
         modelMenuRef.value?.openMenu()
+        break
+      case 'archive':
+        emit('archive')
         break
     }
     return
@@ -1360,6 +1370,7 @@ function queuedLabel(q: QueuedMessage): string {
     <div class="cc-footer">
       <div class="cc-footer-left">
         <ChatModeMenu
+          :agent="agent"
           :selected="session.permissionMode"
           :model="session.model"
           :disabled="ended"
@@ -1425,7 +1436,7 @@ function queuedLabel(q: QueuedMessage): string {
         >{{ b.text }}</span>
         <span v-if="running" class="cc-running" :class="{ retrying: session.retry }">
           <span class="cc-star" :class="session.agent">✳</span>
-          <span v-if="session.retry" class="cc-retry">{{ retryLabel }} · </span>{{ elapsedSec }}s
+          <span v-if="session.retry" class="cc-retry">{{ retryLabel }} · </span>{{ elapsedLabel }}
         </span>
         <ChatModelMenu
           v-if="showModelPicker"
@@ -1704,6 +1715,7 @@ function queuedLabel(q: QueuedMessage): string {
   line-height: 1.5;
   max-height: 220px;
   padding: 2px 0;
+  overflow-x: hidden;
 }
 .cc-textarea::placeholder {
   color: var(--text-mute);

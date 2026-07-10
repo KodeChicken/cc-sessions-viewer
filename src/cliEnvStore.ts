@@ -4,6 +4,8 @@ import * as api from './api'
 
 export const cliVersions = ref<CliVersionInfo[]>([])
 export const loading = ref(false)
+export const installing = ref<Record<string, boolean>>({})
+export const installMsg = ref<Record<string, { ok: boolean; text: string } | undefined>>({})
 export const upgrading = ref<Record<string, boolean>>({})
 export const diagnosing = ref<Record<string, boolean>>({})
 export const diagnosisResults = ref<Record<string, CliDiagnosisResult | null>>({})
@@ -30,7 +32,26 @@ async function fetchVersions() {
 
 export async function refresh() {
   upgradeMsg.value = {}
+  installMsg.value = {}
   await fetchVersions()
+}
+
+export async function install(cli: string) {
+  installing.value = { ...installing.value, [cli]: true }
+  installMsg.value = { ...installMsg.value, [cli]: undefined }
+  try {
+    const r = await api.installCli(cli)
+    if (r.success) {
+      installMsg.value = { ...installMsg.value, [cli]: { ok: true, text: r.newVersion || '' } }
+    } else {
+      installMsg.value = { ...installMsg.value, [cli]: { ok: false, text: r.error || 'unknown' } }
+    }
+    await fetchVersions()
+  } catch (e) {
+    installMsg.value = { ...installMsg.value, [cli]: { ok: false, text: String(e) } }
+  } finally {
+    installing.value = { ...installing.value, [cli]: false }
+  }
 }
 
 export async function upgrade(cli: string) {

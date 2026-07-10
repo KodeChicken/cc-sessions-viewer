@@ -4,7 +4,7 @@
 // ChatSession，fork 自主聊以继承上下文）；本组件只负责浮框的呈现 + 拖动 + 紧凑输入。
 import { computed, nextTick, ref, watch } from 'vue'
 import { t } from '../i18n'
-import { renderText } from '../format'
+import { formatElapsedSeconds, renderText } from '../format'
 import { now, sendPrompt, interruptChat, type ChatSession } from '../chatSessions'
 import { closeSideChat } from '../sideChat'
 import type { Block, Msg } from '../types'
@@ -175,6 +175,7 @@ const running = computed(() => props.session.turnState === 'running')
 const elapsedSec = computed(() =>
   running.value ? Math.max(0, Math.floor((now.value - props.session.turnStartedAt) / 1000)) : 0,
 )
+const elapsedLabel = computed(() => formatElapsedSeconds(elapsedSec.value))
 const errored = computed(() => props.session.status === 'error' || props.session.status === 'exited')
 // fork 自主聊 = 带着上下文的旁支；否则是同目录下的全新会话。
 const contextLabel = computed(() =>
@@ -328,7 +329,7 @@ defineExpose({ focusInput: () => taEl.value?.focus() })
           </div>
         </div>
         <div v-else-if="running" class="sc-running">
-          <span class="sc-spinner" />{{ t('chat.btw.thinking') }} · {{ elapsedSec }}s
+          <span class="sc-spinner" />{{ t('chat.btw.thinking') }} · {{ elapsedLabel }}
         </div>
         <div v-if="errored" class="sc-error">{{ session.errorMessage || t('chat.btw.ended') }}</div>
       </div>
@@ -369,7 +370,7 @@ defineExpose({ focusInput: () => taEl.value?.focus() })
       <span class="sc-spinner" v-if="running" />
       <span class="sc-fab-ic" v-else><IconZap /></span>
       <span class="sc-fab-label">btw</span>
-      <span v-if="running" class="sc-fab-sec">{{ elapsedSec }}s</span>
+      <span v-if="running" class="sc-fab-sec">{{ elapsedLabel }}</span>
     </button>
   </Teleport>
 </template>

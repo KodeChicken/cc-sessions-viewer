@@ -33,6 +33,7 @@ import {
 } from './icons'
 import { t } from '../i18n'
 import { PaneActionsKey } from '../paneActions'
+import { chatSupported } from '../chatComposerOptions'
 import NewMenu from './NewMenu.vue'
 
 const pa = inject(PaneActionsKey)!
@@ -916,7 +917,7 @@ async function openNativeStripContextMenu(ev: MouseEvent): Promise<boolean> {
           text: t('list.action.newSessionTui'),
           action: () => emit('newSession'),
         },
-        ...(props.agent === 'claude'
+        ...(chatSupported(props.agent)
           ? [
               {
                 id: 'strip-new-gui',

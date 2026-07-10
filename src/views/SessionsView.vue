@@ -33,9 +33,11 @@ import {
   IconSelect,
   IconClose,
   IconExitPane,
+  IconChat,
 } from '../components/icons'
 import NewMenu from '../components/NewMenu.vue'
 import { PaneActionsKey } from '../paneActions'
+import { chatSupported } from '../chatComposerOptions'
 
 const pa = inject(PaneActionsKey)!
 
@@ -55,6 +57,7 @@ const emit = defineEmits<{
   (e: 'rename', s: SessionMeta): void
   (e: 'resume', s: SessionMeta): void
   (e: 'chat', s: SessionMeta): void
+  (e: 'archivedBlock', cmd: string): void
   (e: 'reveal', path: string): void
   (e: 'delete', s: SessionMeta): void
   (e: 'copy', text: string): void
@@ -746,7 +749,7 @@ defineExpose({ scrollEl })
             <IconPencil />
           </button>
         </div>
-        <div v-if="subtitleMap.get(s.path)?.text" class="session-subtitle">{{ subtitleMap.get(s.path)!.text }}</div>
+        <div v-if="subtitleMap.get(s.path)?.text && subtitleMap.get(s.path)!.text !== s.title" class="session-subtitle">{{ subtitleMap.get(s.path)!.text }}</div>
         <div class="session-meta">
           <span>{{ t('list.messages', { n: s.messageCount }) }}</span>
           <span>{{ formatSize(s.size) }}</span>
@@ -789,10 +792,10 @@ defineExpose({ scrollEl })
       </div>
       <div v-if="!sessionSelectMode" class="session-actions">
         <button
-          v-if="agent === 'claude' && project.exists"
+          v-if="chatSupported(agent) && project.exists"
           class="icon-btn"
           v-tooltip="t('list.action.openChat')"
-          @click.stop="emit('chat', s)"
+          @click.stop="s.codexArchived ? emit('archivedBlock', `codex unarchive ${s.id}`) : emit('chat', s)"
         >
           <IconChat />
         </button>
@@ -800,7 +803,7 @@ defineExpose({ scrollEl })
           v-if="project.exists"
           class="icon-btn"
           v-tooltip="s.cwd?.startsWith('ide://') ? t('list.action.resumeIde') : t('list.action.resume')"
-          @click.stop="emit('resume', s)"
+          @click.stop="s.codexArchived ? emit('archivedBlock', `codex unarchive ${s.id}`) : emit('resume', s)"
         >
           <IconPlay />
         </button>

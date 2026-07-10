@@ -12,8 +12,10 @@ describe('systemSlashCommands', () => {
       'rename',
       'clear',
       'fork',
-      'btw',
       'compact',
+      'goal',
+      'plan',
+      'btw',
       'context',
       'reload-skills',
     ])
@@ -25,9 +27,13 @@ describe('systemSlashCommands', () => {
   it('limits non-Claude agents to the universal client actions', () => {
     setLang('en')
     const names = systemSlashCommands('codex').map((c) => c.name)
-    expect(names).toEqual(['model', 'export', 'rename', 'clear'])
+    expect(names).toEqual([
+      'model', 'export', 'rename', 'clear', 'compact',
+      'goal', 'plan', 'review', 'archive',
+    ])
     expect(names).not.toContain('fork')
     expect(names).not.toContain('btw')
+    expect(names).not.toContain('context')
   })
 
   it('localizes descriptions via t()', () => {

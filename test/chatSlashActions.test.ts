@@ -28,11 +28,21 @@ describe('parseChatSlashAction', () => {
     expect(parseChatSlashAction('\t/Model\n')).toEqual({ kind: 'model' })
   })
 
-  it('does NOT intercept arg-less commands when trailing text is present', () => {
-    expect(parseChatSlashAction('/export now')).toBeNull()
+  it('does NOT intercept $-prefixed commands (Codex $ is for skills, not system commands)', () => {
+    expect(parseChatSlashAction('$model')).toBeNull()
+    expect(parseChatSlashAction('$export')).toBeNull()
+    expect(parseChatSlashAction('$rename')).toBeNull()
+  })
+
+  it('/model /export /rename intercept even with trailing text', () => {
+    expect(parseChatSlashAction('/model opus')).toEqual({ kind: 'model' })
+    expect(parseChatSlashAction('/export now')).toEqual({ kind: 'export' })
+    expect(parseChatSlashAction('/rename sd')).toEqual({ kind: 'rename' })
+  })
+
+  it('/clear and /fork require exact match (no trailing text)', () => {
     expect(parseChatSlashAction('/clear all')).toBeNull()
     expect(parseChatSlashAction('/fork please')).toBeNull()
-    expect(parseChatSlashAction('/model opus')).toBeNull()
   })
 
   it('passes through real CLI commands and plain prose (send normally)', () => {

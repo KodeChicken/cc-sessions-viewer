@@ -16,9 +16,9 @@ const mountSlider = (props: {
 describe('ChatEffortSlider', () => {
   it('shows the runtime defaultLevel (not a fabricated Low) when effort is unset', () => {
     // 续聊未改档：session.effort=undefined。CLI 不带 --effort 实际用 settings.effortLevel=xhigh，
-    // 故触发器应显示 Xhigh，而不是滑杆假定的最低档 Low。
+    // 故触发器应显示 Extra High，而不是滑杆假定的最低档 Low。
     const wrapper = mountSlider({ selected: undefined, defaultLevel: 'xhigh' })
-    expect(wrapper.find('.es-trigger').text()).toContain('Xhigh')
+    expect(wrapper.find('.es-trigger').text()).toContain('Extra High')
     expect(wrapper.find('.es-trigger').text()).not.toContain('Low')
   })
 

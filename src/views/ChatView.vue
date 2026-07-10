@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch, defineAsyncComponent } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, defineAsyncComponent } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import type { Agent, Msg, SessionMeta, Block } from '../types'
-import { renderText, formatTime, isCaveatOnlyMsg, parseSystemEvent, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage, stripImagePlaceholders, parseFileRef } from '../format'
+import { renderText, formatTime, formatElapsedSeconds, isCaveatOnlyMsg, parseSystemEvent, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage, stripImagePlaceholders, parseFileRef } from '../format'
 import type { MetaField } from '../format'
 import { prettifyAndHighlightJson } from '../jsonHighlight'
 import { renderAllMermaid, resetMermaidForTheme } from '../mermaid'
@@ -73,6 +73,7 @@ import { openPathExternal, agentChatSlashCommands } from '../api'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { useGitBranch } from '../gitBranch'
 import { showTooltipFor, hideTooltip } from '../tooltip'
+import { chatSupported } from '../chatComposerOptions'
 
 const props = defineProps<{
   agent: Agent
@@ -113,6 +114,7 @@ defineEmits<{
   /** 打开会话统计页 —— 原本住在 ChatTopbar 里，现挪进 chat-head 减少
    *  topbar + chat-head 两排 icon-only 按钮重叠的扫描负担。 */
   openSessionStats: []
+  archive: []
   /** 头部星标：把当前会话收藏 / 取消收藏到「Views」历史。 */
 }>()
 
@@ -122,6 +124,7 @@ const runningElapsedSec = computed(() => {
   if (!s || s.turnState !== 'running') return 0
   return Math.max(0, Math.floor((chatNow.value - s.turnStartedAt) / 1000))
 })
+const runningElapsedLabel = computed(() => formatElapsedSeconds(runningElapsedSec.value))
 /** 进行中状态动词：网络重试时 → 「请求失败 · 重试中 (n/N)」；流式 thinking → 「思考中」；
  *  否则「处理中」（参考 Claude 客户端）。 */
 const runningVerb = computed(() => {
@@ -143,8 +146,9 @@ function toggleTools() {
 }
 
 // Resume 按钮是否可用：回收站、缺 session id、缺 cwd 时禁用。
+const sessionArchived = computed(() => !!props.session.codexArchived)
 const canResumeHere = computed(
-  () => !props.trashed && !!props.session.id && !!props.cwd,
+  () => !props.trashed && !sessionArchived.value && !!props.session.id && !!props.cwd,
 )
 
 function shortId(id: string): string {
@@ -153,7 +157,7 @@ function shortId(id: string): string {
 }
 
 function isToolOnly(m: Msg): boolean {
-  return m.role === 'user' && m.blocks.every((b) => b.kind === 'tool_result')
+  return m.role === 'user' && m.blocks.every((b) => b.kind === 'tool_result' || (b.kind === 'image' && b.toolId))
 }
 
 function toolLabel(b: Block): string {
@@ -345,9 +349,9 @@ function bubbleText(m: Msg, raw: string): string {
 function renderBubble(m: Msg, raw: string): string {
   const text = bubbleText(m, raw)
   let html = renderText(text)
-  if (m.role === 'user' && /^\/\S/.test(text)) {
+  if (m.role === 'user' && /^[/$]\S/.test(text)) {
     html = html.replace(
-      /(<div class="text-run">)(\/[^\s<]+)/,
+      /(<div class="text-run">)([/$][^\s<]+)/,
       '$1<span class="cmd-name">$2</span>',
     )
   }
@@ -381,7 +385,7 @@ function injectCmdDesc(html: string): string {
   const map = cmdDesc.value
   if (!html.includes('cmd-name') || !Object.keys(map).length) return html
   return html.replace(
-    /<(code|span)([^>]*\bcmd-name\b[^>]*)>(\/[^<\s]+)<\/\1>/g,
+    /<(code|span)([^>]*\bcmd-name\b[^>]*)>([/$][^<\s]+)<\/\1>/g,
     (full, tag, attrs, name) => {
       const desc = map[name.slice(1)]
       return desc ? `<${tag}${attrs} data-cmd-desc="${escapeAttr(desc)}">${name}</${tag}>` : full
@@ -944,17 +948,48 @@ onUnmounted(() => {
 
 const innerEl = ref<HTMLElement>()
 
-// ---- 一键折叠/展开所有 <details> （工具调用 + thinking 块）
+// ---- 折叠状态持久化（虚拟滚动友好）
 //
-// 实现方式：当 toolsCollapsed 切换时，扫一遍 chat-inner 下所有 <details>，
-// 把它们的 `open` 属性同步过去。之后用户单独点哪个 <summary> 仍然能再次展开 /
-// 收起——直到下次点击 topbar 的折叠按钮全局再 sweep 一次。
+// 虚拟滚动会卸载并重建 DOM 行，原生 <details open> 状态随之丢失。
+// 用一个 reactive Set 保存哪些 details 被用户手动打开过（key = "msgIdx-blockIdx"），
+// 模板用 :open + @toggle 双向同步。一键折叠/展开时 clear / fill 整个 Set。
+const openDetails = reactive(new Set<string>())
+
+function detailKey(mi: number, bi: number, suffix?: string): string {
+  return suffix ? `${mi}-${bi}-${suffix}` : `${mi}-${bi}`
+}
+function isDetailOpen(mi: number, bi: number, suffix?: string): boolean {
+  return openDetails.has(detailKey(mi, bi, suffix))
+}
+function onDetailToggle(mi: number, bi: number, ev: Event) {
+  const el = ev.target as HTMLDetailsElement
+  if (el.open) openDetails.add(detailKey(mi, bi))
+  else openDetails.delete(detailKey(mi, bi))
+}
+function onResultToggle(mi: number, bi: number, open: boolean) {
+  const key = detailKey(mi, bi, 'r')
+  if (open) openDetails.add(key)
+  else openDetails.delete(key)
+}
+
 function sweepDetails(open: boolean) {
-  const root = innerEl.value
-  if (!root) return
-  for (const el of root.querySelectorAll<HTMLDetailsElement>('details')) {
-    if (!open && el.classList.contains('auto-open')) continue
-    el.open = open
+  if (open) {
+    for (let mi = 0; mi < props.messages.length; mi++) {
+      const m = props.messages[mi]
+      if (m.metaKind) openDetails.add(detailKey(mi, -1))
+      for (let bi = 0; bi < m.blocks.length; bi++) {
+        const b = m.blocks[bi]
+        if (b.kind === 'thinking' || b.kind === 'tool_use') {
+          openDetails.add(detailKey(mi, bi))
+          openDetails.add(detailKey(mi, bi, 'r'))
+        }
+        if (b.kind === 'tool_result') {
+          openDetails.add(detailKey(mi, bi, 'r'))
+        }
+      }
+    }
+  } else {
+    openDetails.clear()
   }
 }
 watch(toolsCollapsed, (v) => sweepDetails(!v))
@@ -1168,7 +1203,6 @@ watch(searchScope, () => {
 // 存在,这些函数都跳过已处理节点（:not([data-shiki]) 等）,所以每次只碰新进入的行,成本≈仅可见行。
 function decorateVisible() {
   const root = innerEl.value ?? null
-  if (toolsCollapsed.value) sweepDetails(false)
   renderAllMermaid(root)
   renderAllMath(root)
   highlightAllCodeBlocks(root)
@@ -1253,6 +1287,26 @@ watch(
       nextTick(() => pinToBottomFor(500))
     }
   },
+)
+
+// 权限确认 / 结构化提问不是 messages 的一部分，前面的消息 watcher 不会触发。
+// 这类卡片需要用户立即处理，所以一出现就强制带到视野底部。
+watch(
+  () => {
+    const s = props.liveSession
+    const permissions = s?.pendingPermissions ?? []
+    const questions = s?.pendingQuestions ?? []
+    const permTail = permissions.length ? permissions[permissions.length - 1].requestId : ''
+    const questionTail = questions.length ? questions[questions.length - 1].requestId : ''
+    return `${s?.pendingPermissions.length ?? 0}:${permTail}|${s?.pendingQuestions.length ?? 0}:${questionTail}`
+  },
+  (key, prev) => {
+    if (!props.liveSession || key === prev || key === '0:|0:') return
+    newCount.value = 0
+    wasAtBottomBeforeUpdate = true
+    nextTick(() => pinToBottomFor(700))
+  },
+  { flush: 'post' },
 )
 
 // 主题切换：mermaid 不能运行时换色，要把已渲染节点 reset 再 redraw。
@@ -1413,6 +1467,9 @@ function onDocClick(e: MouseEvent) {
         >
           <span class="live-dot" />
           <span class="live-label">{{ t('chat.live') }}</span>
+        </span>
+        <span v-if="sessionArchived" class="codex-special-tag">
+          {{ t('list.codex.archived') }}
         </span>
         <span v-if="session.id" class="session-id" v-tooltip="session.id">
           <span class="session-id-label">{{ t('session.id') }}</span>
@@ -1640,7 +1697,7 @@ function onDocClick(e: MouseEvent) {
               {{ assistantName }}
             </span>
           </div>
-          <details class="block-card">
+          <details class="block-card" :open="isDetailOpen(vr.index, -1)" @toggle="onDetailToggle(vr.index, -1, $event)">
             <summary class="block-summary">
               <span class="chev"><IconChevronRight /></span>
               <span class="label meta-summary-label">{{ metaKindLabel(m.metaKind) }}</span>
@@ -1667,6 +1724,8 @@ function onDocClick(e: MouseEvent) {
             <ToolResult
               v-if="!isInlinedResult(b) && !isAttachedResult(b) && !shouldHideToolResult(b)"
               :block="b"
+              :persist-open="isDetailOpen(vr.index, bi, 'r')"
+              @toggle="v => onResultToggle(vr.index, bi, v)"
             />
           </template>
         </div>
@@ -1728,6 +1787,8 @@ function onDocClick(e: MouseEvent) {
                 v-else-if="b.kind === 'thinking'"
                 class="block-card"
                 :class="{ 'in-user': m.role === 'user' }"
+                :open="isDetailOpen(vr.index, bi)"
+                @toggle="onDetailToggle(vr.index, bi, $event)"
               >
                 <summary class="block-summary">
                   <span class="chev"><IconChevronRight /></span>
@@ -1752,6 +1813,8 @@ function onDocClick(e: MouseEvent) {
                 class="block-card"
                 :class="{ 'in-user': m.role === 'user' }"
                 :data-search-scope="toolUseScope(b)"
+                :open="isDetailOpen(vr.index, bi)"
+                @toggle="onDetailToggle(vr.index, bi, $event)"
               >
                 <summary class="block-summary">
                   <span class="chev"><IconChevronRight /></span>
@@ -1762,6 +1825,8 @@ function onDocClick(e: MouseEvent) {
                   <ToolResult
                     v-if="inlinedResultFor(b)"
                     :block="inlinedResultFor(b)!"
+                    :persist-open="isDetailOpen(vr.index, bi, 'r')"
+                    @toggle="v => onResultToggle(vr.index, bi, v)"
                   />
                 </div>
               </details>
@@ -1775,6 +1840,8 @@ function onDocClick(e: MouseEvent) {
                 "
                 :block="b"
                 :in-user="m.role === 'user'"
+                :persist-open="isDetailOpen(vr.index, bi, 'r')"
+                @toggle="v => onResultToggle(vr.index, bi, v)"
               />
             </template>
           </CollapsibleBox>
@@ -1788,7 +1855,11 @@ function onDocClick(e: MouseEvent) {
               class="attached-result"
               data-search-scope="tools-edit"
             >
-              <ToolResult :block="attachedResultFor(b)!" />
+              <ToolResult
+                :block="attachedResultFor(b)!"
+                :persist-open="isDetailOpen(vr.index, bi, 'r')"
+                @toggle="v => onResultToggle(vr.index, bi, v)"
+              />
             </div>
           </template>
 
@@ -1843,7 +1914,7 @@ function onDocClick(e: MouseEvent) {
       >
         <component :is="agentIcons[agent]" class="chat-running-star" :class="agent" />
         <span class="chat-running-label" :data-text="runningVerb">{{ runningVerb }}</span>
-        <span class="chat-running-time">{{ runningElapsedSec }}s</span>
+        <span class="chat-running-time">{{ runningElapsedLabel }}</span>
         <button
           class="chat-running-stop"
           type="button"
@@ -1861,6 +1932,7 @@ function onDocClick(e: MouseEvent) {
         v-for="req in (liveSession ? liveSession.pendingPermissions : [])"
         :key="req.requestId"
         :request="req"
+        :agent="agent"
         @choose="(c: PermissionChoice) => liveSession && respondPermission(liveSession, req, c)"
       />
 
@@ -1891,9 +1963,8 @@ function onDocClick(e: MouseEvent) {
     >
       <IconReader />
     </button>
-    <!-- 切到 chat（GUI live chat）目前只有 claude 支持；codex 不显示这个 FAB。 -->
     <button
-      v-else-if="!liveSession && !trashed && canResumeHere && agent === 'claude'"
+      v-else-if="!liveSession && !trashed && !sessionArchived && canResumeHere && chatSupported(agent)"
       class="fab fab-accent"
       v-tooltip="t('chat.action.switchToChat')"
       @click="$emit('switchToChat')"
@@ -1934,6 +2005,7 @@ function onDocClick(e: MouseEvent) {
     @open-export="openExportFromComposer"
     @rename="$emit('rename')"
     @fork="$emit('fork')"
+    @archive="$emit('archive')"
   />
 
   <VueEasyLightbox

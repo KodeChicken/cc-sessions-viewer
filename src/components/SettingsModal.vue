@@ -11,6 +11,10 @@ import {
   setLang,
   setTheme,
   setFontScale,
+  applyFontScale,
+  fontFamily,
+  setFontFamily,
+  applyFontFamily,
   setUseExternalTerminal,
   setAutoRestoreTerminalTabs,
   setTerminalApp,
@@ -32,7 +36,6 @@ import {
   setUseReclaude,
   type Lang,
   type Theme,
-  type FontScale,
   type TerminalApp,
   type QuickOpenTarget,
 } from '../settings'
@@ -201,7 +204,11 @@ function onDocClick(e: MouseEvent) {
     terminalMenuOpen.value = false
 }
 onMounted(() => document.addEventListener('click', onDocClick, true))
-onUnmounted(() => document.removeEventListener('click', onDocClick, true))
+onUnmounted(() => {
+  document.removeEventListener('click', onDocClick, true)
+  applyFontScale()
+  applyFontFamily()
+})
 
 onMounted(async () => {
   try {
@@ -248,12 +255,13 @@ const themeOptions: ThemeOpt[] = [
   { v: 'dracula', key: 'settings.theme.dracula' },
 ]
 
-type FontScaleOpt = { v: FontScale; key: string }
-const fontScaleOptions: FontScaleOpt[] = [
-  { v: 'small', key: 'settings.fontSize.small' },
-  { v: 'normal', key: 'settings.fontSize.normal' },
-  { v: 'large', key: 'settings.fontSize.large' },
-]
+function onFontSlider(e: Event) {
+  setFontScale(Number((e.target as HTMLInputElement).value))
+}
+
+function onFontFamilyInput(e: Event) {
+  setFontFamily((e.target as HTMLInputElement).value.trim())
+}
 
 type QuickOpenOpt = { v: QuickOpenTarget; key: string }
 const quickOpenOptions: QuickOpenOpt[] = [
@@ -411,18 +419,38 @@ async function installClaudeHooks() {
               <div class="set-row-text">
                 <div class="set-row-title">{{ t('settings.section.fontSize') }}</div>
               </div>
-              <div class="set-segment set-row-control">
-                <button
-                  v-for="o in fontScaleOptions"
-                  :key="o.v"
-                  class="set-segment-btn"
-                  :class="{ active: fontScale === o.v }"
-                  @click="setFontScale(o.v)"
+              <div class="set-font-slider set-row-control">
+                <span class="set-font-label set-font-label-sm">A</span>
+                <input
+                  type="range" min="12" max="18" step="1"
+                  :value="fontScale"
+                  @input="onFontSlider"
+                  class="set-slider"
                 >
-                  <span class="set-segment-icon" :class="`set-segment-icon-${o.v}`">A</span>
-                  {{ t(o.key) }}
-                </button>
+                <span class="set-font-label set-font-label-lg">A</span>
+                <span class="set-font-value">{{ fontScale }}px</span>
               </div>
+            </div>
+            <div class="set-font-preview" :style="{ fontSize: fontScale + 'px' }">
+              {{ t('settings.fontPreview') }}
+            </div>
+
+            <div class="set-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.section.fontFamily') }}</div>
+              </div>
+              <div class="set-row-control">
+                <input
+                  type="text"
+                  class="set-input"
+                  :value="fontFamily"
+                  :placeholder="t('settings.fontFamilyPlaceholder')"
+                  @input="onFontFamilyInput"
+                >
+              </div>
+            </div>
+            <div class="set-font-preview" :style="{ fontSize: fontScale + 'px', fontFamily: fontFamily || undefined }">
+              {{ t('settings.fontPreview') }}
             </div>
           </div>
 
@@ -484,16 +512,6 @@ async function installClaudeHooks() {
             <div class="set-group-head">
               <div class="set-group-title">{{ t('settings.section.terminal') }}</div>
             </div>
-            <label class="set-row set-row-clickable" @click.prevent="setUseExternalTerminal(!useExternalTerminal)">
-              <div class="set-row-text">
-                <div class="set-row-title">{{ t('settings.useExternalTerminal') }}</div>
-                <p class="set-row-desc">{{ t('settings.terminalDesc') }}</p>
-              </div>
-              <span class="set-toggle-track set-row-control" :class="{ on: useExternalTerminal }">
-                <span class="set-toggle-thumb" />
-              </span>
-            </label>
-
             <label class="set-row set-row-clickable" @click.prevent="setAutoRestoreTerminalTabs(!autoRestoreTerminalTabs)">
               <div class="set-row-text">
                 <div class="set-row-title">{{ t('settings.autoRestoreTerminalTabs') }}</div>
@@ -504,7 +522,17 @@ async function installClaudeHooks() {
               </span>
             </label>
 
-            <div v-if="useExternalTerminal && isMacOS && terminalOptions.length > 1" class="set-row">
+            <label class="set-row set-row-clickable" @click.prevent="setUseExternalTerminal(!useExternalTerminal)">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.useExternalTerminal') }}</div>
+                <p class="set-row-desc">{{ t('settings.terminalDesc') }}</p>
+              </div>
+              <span class="set-toggle-track set-row-control" :class="{ on: useExternalTerminal }">
+                <span class="set-toggle-thumb" />
+              </span>
+            </label>
+
+            <div v-if="useExternalTerminal && isMacOS && terminalOptions.length > 1" class="set-row set-row-nosep">
               <div class="set-row-text">
                 <div class="set-row-title">{{ t('settings.terminalApp.label') }}</div>
               </div>

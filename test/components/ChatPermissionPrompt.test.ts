@@ -51,4 +51,27 @@ describe('ChatPermissionPrompt', () => {
     await always.trigger('click')
     expect(w.emitted('choose')).toEqual([['always-allow']])
   })
+
+  it('renders Codex approval details without Claude-specific title text', () => {
+    const w = mount(ChatPermissionPrompt, {
+      props: {
+        agent: 'codex',
+        request: req({
+          toolName: 'shell',
+          input: {
+            command: 'rtk rm -rf ai_completion',
+            environment: 'local',
+            reason: 'Needs elevated permissions',
+          },
+        }),
+      },
+      global: { directives: { tooltip: vTooltip } },
+    })
+    expect(w.find('.perm-title').text()).toBe('Would you like to run the following command?')
+    expect(w.find('.perm-cmd').text()).toBe('rtk rm -rf ai_completion')
+    expect(w.text()).toContain('Environment')
+    expect(w.text()).toContain('local')
+    expect(w.text()).toContain('Reason')
+    expect(w.text()).toContain('Needs elevated permissions')
+  })
 })

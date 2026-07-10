@@ -19,7 +19,7 @@ export function permissionCommandPreview(req: ChatPermissionRequest): string | u
   const input = inputObj(req)
   const str = (k: string): string | undefined =>
     typeof input[k] === 'string' && (input[k] as string).length ? (input[k] as string) : undefined
-  if (req.toolName === 'Bash') return str('command')
+  if (req.toolName === 'Bash' || req.toolName === 'shell') return str('command')
   // 文件类工具（Write / Edit / Read / NotebookEdit …）统一展示目标路径。
   return str('file_path') ?? str('path') ?? str('notebook_path') ?? str('pattern') ?? str('url')
 }

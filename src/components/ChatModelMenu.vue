@@ -19,6 +19,7 @@ const emit = defineEmits<{ (e: 'pick', value: string): void }>()
 const open = ref(false)
 const moreOpen = ref(false)
 const moreFlipRight = ref(false)
+const moreFlipUp = ref(false)
 const rootEl = ref<HTMLElement>()
 const moreWrapEl = ref<HTMLElement>()
 let moreTimer: ReturnType<typeof setTimeout> | undefined
@@ -33,6 +34,9 @@ function openMore() {
   // 别和主菜单连在一起）。仅当左侧也塞不下（主菜单贴到窗口左缘）时才回退往右。
   const r = moreWrapEl.value?.getBoundingClientRect()
   moreFlipRight.value = !!r && r.left - 170 < 8
+  const itemH = 36
+  const subH = (cfg.value.more.length * itemH) + 12
+  moreFlipUp.value = !!r && r.top + subH > window.innerHeight - 8
   moreOpen.value = true
 }
 function scheduleCloseMore() {
@@ -152,7 +156,7 @@ onBeforeUnmount(() => {
           <div
             v-if="moreOpen"
             class="mm-submenu"
-            :class="{ right: moreFlipRight }"
+            :class="{ right: moreFlipRight, 'flip-up': moreFlipUp }"
             role="listbox"
             @mouseenter="cancelCloseMore"
             @mouseleave="scheduleCloseMore"
@@ -318,6 +322,10 @@ onBeforeUnmount(() => {
 .mm-submenu.right {
   right: auto;
   left: calc(100% + 16px);
+}
+.mm-submenu.flip-up {
+  top: auto;
+  bottom: 0;
 }
 .mm-toggle {
   width: 30px;

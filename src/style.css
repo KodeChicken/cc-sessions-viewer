@@ -53,7 +53,7 @@
   --status-done: #10b981;
   --status-blocked: #f59e0b;
   --status-error: #ef4444;
-  --user-bubble: hsl(0 0% 96%);
+  --user-bubble: #f5f5f5;
   --assistant-bubble: transparent;
   --code-bg: hsl(0 0% 97%);
   --code-fg: hsl(0 0% 9%);
@@ -120,7 +120,7 @@
   --status-done: #34d399;
   --status-blocked: #fbbf24;
   --status-error: #f87171;
-  --user-bubble: hsl(0 0% 10%);
+  --user-bubble: #1a1a1a;
   --assistant-bubble: transparent;
   --code-bg: hsl(0 0% 8%);
   --code-fg: hsl(0 0% 93%);
@@ -228,6 +228,9 @@
 }
 :root:not(.theme-dark) .app.agent-opencode {
   --brand-soft: rgba(82, 82, 91, 0.10);
+}
+:root .xterm-rows .xterm-dim {
+  color: #999 !important;
 }
 * {
   box-sizing: border-box;
@@ -2389,7 +2392,7 @@ mark.locate-hl {
   word-break: break-word;
 }
 .bubble.user {
-  background: var(--surface-hover);
+  background: var(--user-bubble);
   color: var(--text);
   padding: 9px 14px;
   border-radius: 16px;
@@ -3944,14 +3947,12 @@ body.is-tab-reordering * {
   display: flex;
   flex-direction: column;
 }
-/* 聚焦不加边框（丑）。改走 cmux 风格：非聚焦格子整体淡出一档，内容/文字朝背景色淡化，读起来变
- * 浅灰；聚焦格子保持原色。只在多格子（.multi）时生效。用 opacity 而非深色遮罩 —— 遮罩会发闷发脏，
- * opacity 让文字变浅、更干净，正是想要的「非 active 文字浅灰」效果。 */
+/* 聚焦不加边框；非聚焦格子整体淡出一档，聚焦格子保持原色。只在多格子（.multi）时生效。 */
 .pane-grid.multi .pane {
   transition: opacity 0.16s ease;
 }
 .pane-grid.multi .pane:not(.pane-focused) {
-  opacity: 0.5;
+  opacity: 0.68;
 }
 /* 拖拽时被悬停的目标格子恢复满不透明，让落点高亮清晰可见。 */
 .pane-grid.multi .pane.pane-drop-target {
@@ -4006,6 +4007,18 @@ body.is-tab-reordering * {
   position: absolute;
   inset: 8px 12px;
 }
+.terminal-codex-tui {
+  --terminal-inverse-bg: #f4f4f4;
+  --terminal-inverse-fg: #171717;
+}
+.theme-dark .terminal-codex-tui {
+  --terminal-inverse-bg: #1f1f1f;
+  --terminal-inverse-fg: #ededed;
+}
+.theme-dracula .terminal-codex-tui {
+  --terminal-inverse-bg: #44475a;
+  --terminal-inverse-fg: #f8f8f2;
+}
 .terminal-host .xterm,
 .terminal-host .xterm-viewport {
   width: 100% !important;
@@ -4013,6 +4026,12 @@ body.is-tab-reordering * {
 }
 .terminal-host .xterm-viewport {
   background-color: transparent !important;
+}
+.terminal-codex-tui .xterm .xterm-rows .xterm-bg-257 {
+  background-color: var(--terminal-inverse-bg) !important;
+}
+.terminal-codex-tui .xterm .xterm-rows .xterm-fg-257 {
+  color: var(--terminal-inverse-fg) !important;
 }
 @keyframes live-pulse {
   0%   { box-shadow: 0 0 0 0   color-mix(in srgb, currentColor 70%, transparent); }
@@ -4297,6 +4316,9 @@ body.is-tab-reordering * {
 .set-row + .set-row {
   border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
+.set-row + .set-row-nosep {
+  border-top: none;
+}
 .set-row-clickable {
   cursor: pointer;
 }
@@ -4563,13 +4585,68 @@ body.is-tab-reordering * {
   color: var(--text);
   font-weight: 600;
 }
-.set-segment-icon {
-  font-weight: 700;
-  line-height: 1;
+.set-font-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.set-segment-icon-small { font-size: 10px; }
-.set-segment-icon-normal { font-size: 13px; }
-.set-segment-icon-large { font-size: 16px; }
+.set-font-label {
+  color: var(--text-secondary);
+  font-weight: 600;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.set-font-label-sm { font-size: 11px; }
+.set-font-label-lg { font-size: 17px; }
+.set-font-value {
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 32px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.set-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 120px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  outline: none;
+  cursor: pointer;
+}
+.set-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 2px solid var(--surface);
+  box-shadow: 0 1px 3px rgba(0,0,0,.2);
+  cursor: pointer;
+}
+.set-font-preview {
+  padding: 8px 16px 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.set-input {
+  width: 280px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+.set-input:focus { border-color: var(--accent); }
+.set-input::placeholder { color: var(--text-secondary); opacity: .6; }
 .theme-swatch {
   width: 26px;
   height: 26px;

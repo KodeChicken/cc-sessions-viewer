@@ -714,6 +714,19 @@ export function formatTime(input: number | string | undefined): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`
 }
 
+/** 把运行秒数压成短标签：7s、16m 40s、1h 02m。 */
+export function formatElapsedSeconds(input: number): string {
+  if (!Number.isFinite(input) || input <= 0) return '0s'
+  const total = Math.floor(input)
+  const seconds = total % 60
+  const minutesTotal = Math.floor(total / 60)
+  if (minutesTotal === 0) return `${seconds}s`
+  const minutes = minutesTotal % 60
+  const hours = Math.floor(minutesTotal / 60)
+  if (hours === 0) return `${minutes}m ${seconds}s`
+  return `${hours}h ${pad(minutes)}m`
+}
+
 /** 从完整路径取最后一段，作为项目短名。 */
 export function shortName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean)

@@ -15,6 +15,19 @@ fn valid_path(p: &str) -> bool {
     !p.is_empty() && !p.starts_with('/') && !p.split('/').any(|seg| seg == "..")
 }
 
+fn repo_root(cwd: &str) -> Result<String, String> {
+    let output = silent_command("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
     let output = silent_command("git")
         .arg("-C")
@@ -116,14 +129,15 @@ fn parse_numstat_output(text: &str) -> Vec<GitDiffFile> {
 }
 
 pub fn git_diff_files(cwd: &str, git_ref: &str) -> Result<Vec<GitDiffFile>, String> {
+    let root = repo_root(cwd)?;
     let out = if git_ref == "working" {
-        run_git(cwd, &["diff", "HEAD", "--numstat"])?
+        run_git(&root, &["diff", "HEAD", "--numstat"])?
     } else {
         if !valid_hash(git_ref) {
             return Err("Invalid commit hash".to_string());
         }
         run_git(
-            cwd,
+            &root,
             &["diff-tree", "-r", "--numstat", "--no-commit-id", git_ref],
         )?
     };
@@ -134,14 +148,15 @@ pub fn git_diff_file(cwd: &str, git_ref: &str, path: &str) -> Result<Vec<DiffHun
     if !valid_path(path) {
         return Err("Invalid path".to_string());
     }
+    let root = repo_root(cwd)?;
     let out = if git_ref == "working" {
-        run_git(cwd, &["diff", "HEAD", "--", path])?
+        run_git(&root, &["diff", "HEAD", "--", path])?
     } else {
         if !valid_hash(git_ref) {
             return Err("Invalid commit hash".to_string());
         }
         let range = format!("{git_ref}^..{git_ref}");
-        run_git(cwd, &["diff", &range, "--", path])?
+        run_git(&root, &["diff", &range, "--", path])?
     };
     Ok(parse_unified_diff(&out))
 }

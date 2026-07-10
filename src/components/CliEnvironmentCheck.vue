@@ -5,6 +5,8 @@ import { agentIcons } from './icons'
 import {
   cliVersions,
   loading,
+  installing,
+  installMsg,
   upgrading,
   diagnosisResults,
   upgradeMsg,
@@ -12,6 +14,7 @@ import {
   anyUpgrading,
   anyDiagnosing,
   refresh,
+  install,
   upgrade,
   upgradeAll,
   diagnoseAll,
@@ -56,6 +59,20 @@ function msgText(cli: string) {
   if (m.ok) return t('settings.cli.upgradeSuccess', { v: m.text })
   if (m.text === 'version_unchanged') return t('settings.cli.versionUnchanged')
   return t('settings.cli.upgradeFailed', { e: m.text })
+}
+
+function installMsgText(cli: string) {
+  const m = installMsg.value[cli]
+  if (!m) return ''
+  if (m.ok) return t('settings.cli.installSuccess', { v: m.text })
+  if (m.text === 'npm_not_found') return t('settings.cli.npmNotFound')
+  if (m.text === 'no_install_method') return t('settings.cli.noInstallMethod')
+  return t('settings.cli.installFailed', { e: m.text })
+}
+
+function showInstallFallbackLink(cli: string) {
+  const m = installMsg.value[cli]
+  return m && !m.ok && (m.text === 'npm_not_found' || m.text === 'no_install_method')
 }
 
 onMounted(() => {
@@ -139,10 +156,6 @@ onMounted(() => {
                 <span class="ce-ver-lat">{{ info.latestVersion }}</span>
               </template>
             </template>
-            <a v-else class="ce-install-link" :href="cliUrls[info.cli]" target="_blank">
-              {{ t('settings.cli.goInstall') }}
-              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h8v8"/><path d="M13 3L3 13"/></svg>
-            </a>
           </div>
           <div class="ce-actions">
             <button
@@ -154,12 +167,30 @@ onMounted(() => {
               <svg v-if="upgrading[info.cli]" class="ce-spin" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="6" opacity=".25"/><path d="M14 8a6 6 0 0 0-6-6"/></svg>
               {{ upgrading[info.cli] ? t('settings.cli.upgrading') : t('settings.cli.upgrade') }}
             </button>
+            <button
+              v-else-if="!info.installed"
+              class="ce-btn ce-btn-sm ce-btn-primary"
+              :disabled="installing[info.cli]"
+              @click="install(info.cli)"
+            >
+              <svg v-if="installing[info.cli]" class="ce-spin" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="6" opacity=".25"/><path d="M14 8a6 6 0 0 0-6-6"/></svg>
+              {{ installing[info.cli] ? t('settings.cli.installing') : t('settings.cli.install') }}
+            </button>
           </div>
         </div>
 
         <!-- upgrade message -->
         <div v-if="upgradeMsg[info.cli]" class="ce-msg" :class="upgradeMsg[info.cli]?.ok ? 'ce-msg-ok' : 'ce-msg-err'">
           {{ msgText(info.cli) }}
+        </div>
+
+        <!-- install message -->
+        <div v-if="installMsg[info.cli]" class="ce-msg" :class="installMsg[info.cli]?.ok ? 'ce-msg-ok' : 'ce-msg-err'">
+          {{ installMsgText(info.cli) }}
+          <a v-if="showInstallFallbackLink(info.cli)" class="ce-install-link" :href="cliUrls[info.cli]" target="_blank">
+            {{ t('settings.cli.goInstall') }}
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h8v8"/><path d="M13 3L3 13"/></svg>
+          </a>
         </div>
 
         <!-- diagnosis panel -->
@@ -351,9 +382,11 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 12px;
-  color: var(--text-mute);
-  text-decoration: none;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--accent, var(--text-mute));
+  text-decoration: underline;
+  text-underline-offset: 2px;
   transition: color 0.15s;
 }
 .ce-install-link:hover {

@@ -1472,7 +1472,9 @@ pub(crate) fn chat_slash_commands(cwd: &str) -> Vec<crate::types::SlashCommand> 
     // ---- 技能 ----
     let proj_skills = Path::new(cwd).join(".claude").join("skills");
     scan_skills_dir(&proj_skills, "project", proj_name.as_deref(), None, &mut out, &mut seen_skill);
+    scan_skills_dir(&Path::new(cwd).join(".agents").join("skills"), "project", proj_name.as_deref(), None, &mut out, &mut seen_skill);
     scan_skills_dir(&home().join(".claude").join("skills"), "user", None, None, &mut out, &mut seen_skill);
+    scan_skills_dir(&home().join(".agents").join("skills"), "user", None, None, &mut out, &mut seen_skill);
     for (plugin, install) in &plugins {
         let badge = prettify_name(plugin);
         scan_skills_dir(&install.join("skills"), "plugin", Some(&badge), Some(plugin), &mut out, &mut seen_skill);
@@ -1505,7 +1507,7 @@ fn origin_rank(origin: &str) -> u8 {
 }
 
 /// cwd 末段作为项目展示名（来源角标用）。
-fn project_basename(cwd: &str) -> Option<String> {
+pub(crate) fn project_basename(cwd: &str) -> Option<String> {
     Path::new(cwd)
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
@@ -1634,7 +1636,7 @@ fn scan_commands_dir(
 /// 基础名取 frontmatter `name`、回退目录名；`namespace=Some("codex")`（插件）时调用名前置
 /// `codex:` → `/codex:obsidian-cli`（与命令一致，对齐 Claude 的 `plugin:skill` 命名）。
 /// 展示名（title）美化**基础名**，描述优先 frontmatter `description`。
-fn scan_skills_dir(
+pub(crate) fn scan_skills_dir(
     skills_dir: &Path,
     origin: &str,
     origin_name: Option<&str>,

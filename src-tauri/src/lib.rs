@@ -13,8 +13,8 @@
 // an external consumer of the lib crate) can call into the dedup pipeline
 // directly. Everything else stays crate-private.
 mod agent_chat;
-pub mod agents;
 mod agent_command;
+pub mod agents;
 mod bookmarks;
 mod claude_config;
 mod cli_env;
@@ -23,24 +23,25 @@ mod git;
 mod menu;
 mod pty;
 pub mod stats;
+mod trash;
 #[cfg(target_os = "macos")]
 mod tray;
 #[cfg(target_os = "windows")]
 mod tray_windows;
-mod trash;
 mod turn;
 mod types;
 mod usage_api;
 mod util;
 mod watch;
 
-use std::fs;
 use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::agent_command::AgentCommand;
 use crate::types::{
-    AgentStats, ClaudeRuntimeInfo, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, TrayStats, UsageSummary,
+    AgentStats, ClaudeRuntimeInfo, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, TrayStats,
+    UsageSummary,
 };
 #[allow(unused_imports)]
 use tauri::{Emitter, Manager};
@@ -57,7 +58,8 @@ fn list_projects(
     include_codex_internal: bool,
     include_codex_archived: bool,
 ) -> Result<Vec<ProjectInfo>, String> {
-    let mut out = agents::source(&agent)?.list_projects(include_codex_internal, include_codex_archived)?;
+    let mut out =
+        agents::source(&agent)?.list_projects(include_codex_internal, include_codex_archived)?;
     let bm = bookmarks::load(&agent);
     for bp in bm {
         if out.iter().any(|p| p.display_path == bp) {
@@ -110,6 +112,24 @@ fn read_session(agent: String, path: String) -> Result<Vec<Msg>, String> {
     agents::source(&agent)?.read_session(&path)
 }
 
+#[tauri::command]
+fn codex_archive_session(session_id: String) -> Result<(), String> {
+    if !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("Invalid session id".to_string());
+    }
+    let output = std::process::Command::new("codex")
+        .arg("archive")
+        .arg(&session_id)
+        .output()
+        .map_err(|e| format!("failed to run codex archive: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("codex archive failed: {stderr}"))
+    }
+}
+
 /// 实时 tail：开始监听 path 文件的写入事件。
 /// 同一时刻只允许一个 watch；再次调用会替换上一个 watcher。
 /// 文件不存在返回 Err，前端可以静默降级（仅一次性读取）。
@@ -141,14 +161,7 @@ fn terminal_turn_signal(
     path: String,
     state: String,
 ) -> Result<(), String> {
-    turn::emit_turn_signal(
-        &app,
-        turn::TerminalTurnPayload {
-            agent,
-            path,
-            state,
-        },
-    )
+    turn::emit_turn_signal(&app, turn::TerminalTurnPayload { agent, path, state })
 }
 
 #[tauri::command]
@@ -284,7 +297,9 @@ fn fork_session(
     title: String,
 ) -> Result<String, String> {
     if source_id.is_empty()
-        || !source_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        || !source_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err("Invalid session ID".to_string());
     }
@@ -343,8 +358,18 @@ fn pty_spawn(
     {
         return Err("Invalid session ID".to_string());
     }
-    let command = agents::source(&agent)?.resume_command(&session_id, &path).with_extra_args(&extra_args);
-    pty::spawn(app, cwd, command, cols, rows, color_scheme.as_deref(), use_reclaude.unwrap_or(false))
+    let command = agents::source(&agent)?
+        .resume_command(&session_id, &path)
+        .with_extra_args(&extra_args);
+    pty::spawn(
+        app,
+        cwd,
+        command,
+        cols,
+        rows,
+        color_scheme.as_deref(),
+        use_reclaude.unwrap_or(false),
+    )
 }
 
 /// 启动一个 “new session” PTY（不带 --resume）。session_id 不需要 —— 由 CLI 自己生成新 id。
@@ -363,8 +388,18 @@ fn pty_spawn_new(
     if !Path::new(&cwd).is_dir() {
         return Err("Project directory no longer exists".to_string());
     }
-    let command = agents::source(&agent)?.new_session_command().with_extra_args(&extra_args);
-    pty::spawn(app, cwd, command, cols, rows, color_scheme.as_deref(), use_reclaude.unwrap_or(false))
+    let command = agents::source(&agent)?
+        .new_session_command()
+        .with_extra_args(&extra_args);
+    pty::spawn(
+        app,
+        cwd,
+        command,
+        cols,
+        rows,
+        color_scheme.as_deref(),
+        use_reclaude.unwrap_or(false),
+    )
 }
 
 /// 启动一个纯 shell PTY（不跑任何 agent CLI），用于在项目目录里执行任意命令。
@@ -410,11 +445,21 @@ fn valid_flag_token(s: &str) -> bool {
 }
 
 /// 权限模式允许列表（会进 shell 命令；虽已 posix_quote，仍只放行已知值）。
-/// 对齐 `claude --permission-mode` 的 choices（含 auto / dontAsk）。
+/// Claude：对齐 `claude --permission-mode` 的 choices（含 auto / dontAsk）。
+/// Codex：独立四档 ask / approve / fullAccess / custom。
 fn valid_permission_mode(mode: &str) -> bool {
     matches!(
         mode,
-        "default" | "acceptEdits" | "plan" | "auto" | "dontAsk" | "bypassPermissions"
+        "default"
+            | "acceptEdits"
+            | "plan"
+            | "auto"
+            | "dontAsk"
+            | "bypassPermissions"
+            | "ask"
+            | "approve"
+            | "fullAccess"
+            | "custom"
     )
 }
 
@@ -423,7 +468,7 @@ fn valid_permission_mode(mode: &str) -> bool {
 /// model/effort 为空走 CLI 自身默认）。
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-fn agent_chat_start(
+async fn agent_chat_start(
     app: tauri::AppHandle,
     agent: String,
     project_key: String,
@@ -434,13 +479,19 @@ fn agent_chat_start(
     effort: Option<String>,
     fork: Option<bool>,
     use_reclaude: Option<bool>,
+    preload_messages: Option<Vec<crate::types::Msg>>,
+    title: Option<String>,
 ) -> Result<crate::types::ChatStartInfo, String> {
     if !Path::new(&cwd).is_dir() {
         return Err("Project directory no longer exists".to_string());
     }
     // 续聊时校验 session id（会被拼进 --resume）。新开会话 session_id 为空。
     if let Some(id) = session_id.as_deref() {
-        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if id.is_empty()
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             return Err("Invalid session ID".to_string());
         }
     }
@@ -459,20 +510,35 @@ fn agent_chat_start(
         }
     }
     // 进程模型在 start 移走 agent 之前算（前端据此决定切设置走 restart 还是下轮 flag）。
-    let process_model = agents::source(&agent)?.chat_process_model().as_str().to_string();
-    let chat_id = agent_chat::start(
-        app,
-        agent,
-        project_key,
-        cwd,
-        session_id,
-        mode,
-        model,
-        effort,
-        fork.unwrap_or(false),
-        use_reclaude.unwrap_or(false),
-    )?;
-    Ok(crate::types::ChatStartInfo { chat_id, process_model })
+    let process_model = agents::source(&agent)?
+        .chat_process_model()
+        .as_str()
+        .to_string();
+    // start() 会**同步阻塞**：Codex 路径要 ensure_codex_cli_available（起 PowerShell 校验 PATH）
+    // + app-server 握手（init / thread.start，实测 ~1-2s）。若留在同步命令里，Tauri 会在主线程上
+    // 跑它 → 期间整个 webview 假死、鼠标转圈。挪到 blocking 线程池，主线程（UI）保持响应。
+    let chat_id = tauri::async_runtime::spawn_blocking(move || {
+        agent_chat::start(
+            app,
+            agent,
+            project_key,
+            cwd,
+            session_id,
+            mode,
+            model,
+            effort,
+            fork.unwrap_or(false),
+            use_reclaude.unwrap_or(false),
+            preload_messages,
+            title,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(crate::types::ChatStartInfo {
+        chat_id,
+        process_model,
+    })
 }
 
 #[tauri::command]
@@ -525,6 +591,11 @@ fn agent_chat_send(
 #[tauri::command]
 fn agent_chat_stop(id: u64) -> Result<(), String> {
     agent_chat::stop(id)
+}
+
+#[tauri::command]
+fn agent_chat_set_title(id: u64, title: String) {
+    agent_chat::set_title(id, title);
 }
 
 #[tauri::command]
@@ -600,17 +671,26 @@ fn resume_session(
     {
         return Err("Invalid session ID".to_string());
     }
-    let command = agents::source(&agent)?.resume_command(&session_id, &path).with_extra_args(&extra_args);
+    let command = agents::source(&agent)?
+        .resume_command(&session_id, &path)
+        .with_extra_args(&extra_args);
     spawn_terminal(&command, &cwd, &terminal_app)
 }
 
 /// 在终端里为某个项目目录开一个全新会话（不带 --resume）。
 #[tauri::command]
-fn new_session(agent: String, cwd: String, extra_args: String, terminal_app: String) -> Result<(), String> {
+fn new_session(
+    agent: String,
+    cwd: String,
+    extra_args: String,
+    terminal_app: String,
+) -> Result<(), String> {
     if !Path::new(&cwd).is_dir() {
         return Err("Project directory no longer exists".to_string());
     }
-    let command = agents::source(&agent)?.new_session_command().with_extra_args(&extra_args);
+    let command = agents::source(&agent)?
+        .new_session_command()
+        .with_extra_args(&extra_args);
     spawn_terminal(&command, &cwd, &terminal_app)
 }
 
@@ -639,7 +719,9 @@ fn resolve_bin(name: &str) -> Result<PathBuf, String> {
             return Ok(pb);
         }
     }
-    Err(format!("{name} not found — make sure it is installed and in your PATH"))
+    Err(format!(
+        "{name} not found — make sure it is installed and in your PATH"
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -705,7 +787,9 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                     .ok()
                     .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
                     .and_then(|json| {
-                        json["workspaces"].as_array()?.iter()
+                        json["workspaces"]
+                            .as_array()?
+                            .iter()
                             .find(|w| w["current_directory"].as_str() == Some(cwd))
                             .and_then(|w| w["ref"].as_str().map(String::from))
                     });
@@ -717,13 +801,18 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                     // 检查 workspace 里是否已有运行这个会话的 surface
                     let existing_surface = session_id.and_then(|sid| {
                         let o = std::process::Command::new(&cmux_bin)
-                            .args(["rpc", "surface.list", &format!("{{\"workspace_id\":\"{ws_ref}\"}}")])
+                            .args([
+                                "rpc",
+                                "surface.list",
+                                &format!("{{\"workspace_id\":\"{ws_ref}\"}}"),
+                            ])
                             .output()
                             .ok()?;
                         let json: serde_json::Value = serde_json::from_slice(&o.stdout).ok()?;
                         json["surfaces"].as_array()?.iter().find_map(|s| {
                             let title = s["title"].as_str().unwrap_or("");
-                            let checkpoint = s["resume_binding"]["checkpoint_id"].as_str().unwrap_or("");
+                            let checkpoint =
+                                s["resume_binding"]["checkpoint_id"].as_str().unwrap_or("");
                             let cmd = s["resume_binding"]["command"].as_str().unwrap_or("");
                             if title.contains(sid) || checkpoint == sid || cmd.contains(sid) {
                                 Some((
@@ -748,7 +837,13 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                             ])
                             .output();
                         let _ = std::process::Command::new(&cmux_bin)
-                            .args(["trigger-flash", "--workspace", &ws_ref, "--surface", &surface_ref])
+                            .args([
+                                "trigger-flash",
+                                "--workspace",
+                                &ws_ref,
+                                "--surface",
+                                &surface_ref,
+                            ])
                             .spawn();
                     } else {
                         // 新开 split
@@ -757,12 +852,20 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                             .output();
 
                         let split_dir = std::process::Command::new(&cmux_bin)
-                            .args(["rpc", "pane.list", &format!("{{\"workspace_id\":\"{ws_ref}\"}}")])
+                            .args([
+                                "rpc",
+                                "pane.list",
+                                &format!("{{\"workspace_id\":\"{ws_ref}\"}}"),
+                            ])
                             .output()
                             .ok()
-                            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+                            .and_then(|o| {
+                                serde_json::from_slice::<serde_json::Value>(&o.stdout).ok()
+                            })
                             .and_then(|json| {
-                                let pane = json["panes"].as_array()?.iter()
+                                let pane = json["panes"]
+                                    .as_array()?
+                                    .iter()
                                     .find(|p| p["focused"].as_bool() == Some(true))?;
                                 let w = pane["pixel_frame"]["width"].as_f64()?;
                                 let h = pane["pixel_frame"]["height"].as_f64()?;
@@ -771,7 +874,14 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                             .unwrap_or("down");
 
                         let _ = std::process::Command::new(&cmux_bin)
-                            .args(["new-split", split_dir, "--workspace", &ws_ref, "--focus", "true"])
+                            .args([
+                                "new-split",
+                                split_dir,
+                                "--workspace",
+                                &ws_ref,
+                                "--focus",
+                                "true",
+                            ])
                             .output();
                         let _ = std::process::Command::new(&cmux_bin)
                             .args(["send", "--workspace", &ws_ref, cli.as_str()])
@@ -837,14 +947,28 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
         // 否则 Win 默认 Restricted 策略会以 UnauthorizedAccess 拒跑 resume 命令。
         // silent_command 只隐藏宿主 cmd 的黑框；`start` 仍会为 powershell 新开可见终端窗口。
         crate::util::silent_command("cmd")
-            .args(["/c", "start", "", ps_exe, "-NoExit", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &encoded])
+            .args([
+                "/c",
+                "start",
+                "",
+                ps_exe,
+                "-NoExit",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                &encoded,
+            ])
             .spawn()
             .map_err(|e| format!("Failed to launch terminal: {e}"))?;
     }
 
     #[cfg(target_os = "linux")]
     {
-        let shell_cmd = format!("cd {} && {}", crate::agent_command::posix_quote(cwd), command.to_posix_shell());
+        let shell_cmd = format!(
+            "cd {} && {}",
+            crate::agent_command::posix_quote(cwd),
+            command.to_posix_shell()
+        );
         let terminals = ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"];
         let mut launched = false;
         for term in &terminals {
@@ -854,7 +978,10 @@ fn spawn_terminal(command: &AgentCommand, cwd: &str, _terminal_app: &str) -> Res
                     .spawn()
             } else {
                 std::process::Command::new(term)
-                    .args(["-e", &format!("bash -c '{}'", shell_cmd.replace('\'', "'\\''"))])
+                    .args([
+                        "-e",
+                        &format!("bash -c '{}'", shell_cmd.replace('\'', "'\\''")),
+                    ])
                     .spawn()
             };
             if result.is_ok() {
@@ -875,7 +1002,9 @@ fn command_session_id(command: &AgentCommand) -> Option<&str> {
     command.args().iter().find_map(|arg| {
         (arg.len() > 8
             && (arg.contains('-') || arg.contains('_'))
-            && arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            && arg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
         .then_some(arg.as_str())
     })
 }
@@ -931,6 +1060,13 @@ async fn check_cli_versions() -> Result<Vec<types::CliVersionInfo>, String> {
     tauri::async_runtime::spawn_blocking(cli_env::check_all_versions)
         .await
         .map_err(|e| format!("join: {e}"))
+}
+
+#[tauri::command]
+async fn install_cli(cli_name: String) -> Result<types::CliUpgradeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || cli_env::install_single(&cli_name))
+        .await
+        .map_err(|e| format!("join: {e}"))?
 }
 
 #[tauri::command]
@@ -1029,11 +1165,8 @@ fn save_clipboard_image(data: String, media_type: String) -> Result<String, Stri
     let name = format!("clipboard-{ts}.{ext}");
     let dir = std::env::temp_dir();
     let path = dir.join(&name);
-    let bytes = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        &data,
-    )
-    .map_err(|e| format!("base64 decode failed: {e}"))?;
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &data)
+        .map_err(|e| format!("base64 decode failed: {e}"))?;
     fs::write(&path, &bytes).map_err(|e| format!("write failed: {e}"))?;
     Ok(path.to_string_lossy().to_string())
 }
@@ -1178,16 +1311,36 @@ fn open_in_editor(p: &Path, line: Option<u32>, col: Option<u32>) -> bool {
 
     // ① 命令行工具型编辑器：bundle 里的 CLI（连上 App 后立即退出，安全）。Trae 放最前 —— 用户主力。
     let mut trae = bundle_bins("Trae.app/Contents/Resources/app/bin/trae");
-    trae.extend(bundle_bins("Trae CN.app/Contents/Resources/app/bin/trae-cn"));
+    trae.extend(bundle_bins(
+        "Trae CN.app/Contents/Resources/app/bin/trae-cn",
+    ));
     trae.extend(bundle_bins("Trae CN.app/Contents/Resources/app/bin/trae"));
     let cli_editors: Vec<(Vec<String>, Vec<String>)> = vec![
         (trae, code_args.clone()),
-        (bundle_bins("Visual Studio Code.app/Contents/Resources/app/bin/code"), code_args.clone()),
-        (bundle_bins("Cursor.app/Contents/Resources/app/bin/cursor"), code_args.clone()),
-        (bundle_bins("Windsurf.app/Contents/Resources/app/bin/windsurf"), code_args.clone()),
-        (bundle_bins("VSCodium.app/Contents/Resources/app/bin/codium"), code_args.clone()),
-        (bundle_bins("Zed.app/Contents/MacOS/cli"), vec![goto.clone()]),
-        (bundle_bins("Sublime Text.app/Contents/SharedSupport/bin/subl"), vec![goto.clone()]),
+        (
+            bundle_bins("Visual Studio Code.app/Contents/Resources/app/bin/code"),
+            code_args.clone(),
+        ),
+        (
+            bundle_bins("Cursor.app/Contents/Resources/app/bin/cursor"),
+            code_args.clone(),
+        ),
+        (
+            bundle_bins("Windsurf.app/Contents/Resources/app/bin/windsurf"),
+            code_args.clone(),
+        ),
+        (
+            bundle_bins("VSCodium.app/Contents/Resources/app/bin/codium"),
+            code_args.clone(),
+        ),
+        (
+            bundle_bins("Zed.app/Contents/MacOS/cli"),
+            vec![goto.clone()],
+        ),
+        (
+            bundle_bins("Sublime Text.app/Contents/SharedSupport/bin/subl"),
+            vec![goto.clone()],
+        ),
     ];
     for (bins, args) in &cli_editors {
         if let Some(bin) = bins.iter().find(|b| Path::new(b).exists()) {
@@ -1201,7 +1354,13 @@ fn open_in_editor(p: &Path, line: Option<u32>, col: Option<u32>) -> bool {
     //    不支持跳行 —— 见上面 ⚠️。
     for app in ["Android Studio.app", "IntelliJ IDEA.app"] {
         if let Some(bundle) = bundle_bins(app).into_iter().find(|b| Path::new(b).exists()) {
-            if Command::new("open").arg("-a").arg(&bundle).arg(&file).spawn().is_ok() {
+            if Command::new("open")
+                .arg("-a")
+                .arg(&bundle)
+                .arg(&file)
+                .spawn()
+                .is_ok()
+            {
                 return true;
             }
         }
@@ -1306,6 +1465,36 @@ fn read_file_base64(path: String) -> Result<crate::types::ChatImageInput, String
     })
 }
 
+/// 粘贴板图片无磁盘路径，存到临时目录供 Codex 等 agent 通过 @"path" 引用。
+#[tauri::command]
+fn save_temp_image(base64: String, media_type: String) -> Result<String, String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&base64)
+        .map_err(|e| format!("base64 decode: {e}"))?;
+    let ext = if media_type.contains("png") {
+        "png"
+    } else if media_type.contains("gif") {
+        "gif"
+    } else if media_type.contains("webp") {
+        "webp"
+    } else {
+        "jpg"
+    };
+    let dir = std::env::temp_dir().join("cc-sessions-viewer-images");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
+    let name = format!(
+        "chat-img-{}.{ext}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+    let path = dir.join(&name);
+    std::fs::write(&path, &bytes).map_err(|e| format!("write: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// GUI chat 附件：判断一个本地路径是否是目录。拖拽到输入框的路径可能是文件也可能是
 /// 文件夹，前端据此决定 chip 用文件夹图标 +「打开文件夹」还是文件图标 +「打开文件」。
 #[tauri::command]
@@ -1335,10 +1524,7 @@ fn git_status(cwd: String) -> Result<Vec<crate::types::GitFileStatus>, String> {
 }
 
 #[tauri::command]
-fn git_diff_files(
-    cwd: String,
-    git_ref: String,
-) -> Result<Vec<crate::types::GitDiffFile>, String> {
+fn git_diff_files(cwd: String, git_ref: String) -> Result<Vec<crate::types::GitDiffFile>, String> {
     git::git_diff_files(&cwd, &git_ref)
 }
 
@@ -1396,7 +1582,13 @@ fn find_in_path(bin: &str) -> Option<PathBuf> {
                 .map(OsString::from)
                 .collect()
         })
-        .unwrap_or_else(|| vec![OsString::from(".exe"), OsString::from(".cmd"), OsString::from(".bat")]);
+        .unwrap_or_else(|| {
+            vec![
+                OsString::from(".exe"),
+                OsString::from(".cmd"),
+                OsString::from(".bat"),
+            ]
+        });
     #[cfg(not(target_os = "windows"))]
     let exts: Vec<OsString> = vec![OsString::new()];
 
@@ -1420,7 +1612,12 @@ fn parse_local_target(input: &str) -> (String, Option<u32>, Option<u32>) {
     let parts: Vec<&str> = trimmed.rsplitn(3, ':').collect();
     if parts.len() >= 2 {
         if let Ok(last) = parts[0].parse::<u32>() {
-            let base_one = parts[1..].iter().rev().copied().collect::<Vec<_>>().join(":");
+            let base_one = parts[1..]
+                .iter()
+                .rev()
+                .copied()
+                .collect::<Vec<_>>()
+                .join(":");
             let base_one_path = Path::new(&base_one);
             if base_one_path.is_absolute() || base_one_path.exists() {
                 if parts.len() == 3 {
@@ -1602,7 +1799,8 @@ fn pin_traffic_lights(window: &tauri::WebviewWindow) {
         return;
     };
     unsafe {
-        let ns_window: Retained<NSWindow> = match Retained::retain(ns_window_ptr.cast::<NSWindow>()) {
+        let ns_window: Retained<NSWindow> = match Retained::retain(ns_window_ptr.cast::<NSWindow>())
+        {
             Some(w) => w,
             None => return,
         };
@@ -1658,6 +1856,7 @@ pub fn run() {
             cancel_search,
             rename_session,
             fork_session,
+            codex_archive_session,
             soft_delete_session,
             list_trash,
             restore_session,
@@ -1676,6 +1875,7 @@ pub fn run() {
             agent_chat_list_running,
             agent_chat_send,
             agent_chat_stop,
+            agent_chat_set_title,
             agent_chat_interrupt,
             agent_chat_respond_permission,
             agent_chat_respond_question,
@@ -1686,6 +1886,7 @@ pub fn run() {
             open_url,
             open_path_external,
             read_file_base64,
+            save_temp_image,
             save_clipboard_image,
             path_is_dir,
             git_current_branch,
@@ -1709,6 +1910,7 @@ pub fn run() {
             account_usage,
             tray_quick_stats,
             check_cli_versions,
+            install_cli,
             upgrade_cli,
             upgrade_all_clis,
             diagnose_cli,

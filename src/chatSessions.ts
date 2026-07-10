@@ -14,7 +14,7 @@
 import { reactive, ref } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import * as api from './api'
-import { defaultModel, defaultEffort, effectiveEffort } from './chatComposerOptions'
+import { defaultModel, defaultEffort, defaultPermissionMode, effectiveEffort } from './chatComposerOptions'
 import { buildPermissionDecision, type PermissionChoice } from './chatPermission'
 import {
   buildQuestionCancelDecision,
@@ -246,6 +246,9 @@ function onMsg(s: ChatSession, msg: Msg) {
   // null/undefined → 前端 formatTime(null) 会渲染成「1970-01-01 08:00」。这里补上
   // 「此刻」（消息刚到达的时间），让 live 气泡显示真实时间。
   if (!msg.timestamp) msg.timestamp = new Date().toISOString()
+  // Codex 的 item.completed 不带 model 字段 → 用会话当前选中的模型回填，
+  // 让气泡显示模型标签（与 read 模式一致）、也让 lastModel 有值。
+  if (!msg.model && msg.role === 'assistant' && s.model) msg.model = s.model
   // 记下模型全名（assistant 记录带 model）→ §10.5 上下文窗口换算。
   // `<synthetic>`（本地命令的 synthetic 记录）不是真实模型，跳过 —— 否则 /context、
   // /compact 等会话消息会把底栏模型选择器从真实模型带歪成「未知模型」。
@@ -260,7 +263,7 @@ function onMsg(s: ChatSession, msg: Msg) {
 }
 
 /**
- * token 级流式增量（仅 Claude）。只对 `text` 块做打字机预览（thinking / tool_use 块
+ * token 级流式增量（Claude / Codex）。只对 `text` 块做打字机预览（thinking / tool_use 块
  * 不预览 —— 交给随后的权威 assistant 记录定稿）。只动 `s.live` 这个小对象，不碰 `s.msgs`，
  * 故每 token 不触发整列表重渲染。
  */
@@ -536,6 +539,11 @@ export interface StartChatOptions {
   /** 开起来立刻发的第一句（可选）。 */
   initialPrompt?: string
   initialImages?: ChatImageAttachment[]
+  /** session 对象一建好（已入列、status='spawning'）就同步回调，早于 `agentChatStart` 的
+   *  await —— 调用方据此**立刻**把 chat tab 显示出来，不必等后端进程握手完成。Codex 走
+   *  app-server，握手要几秒，若等 await 完再建 tab，右键新建后要干等一会才出来。session 是
+   *  reactive，spawning→running 会自动反映到已显示的 ChatView。 */
+  onReady?: (session: ChatSession) => void
 }
 
 /** 预载 transcript 末尾那条带 model 的 assistant 记录的模型全名（续聊时回填 lastModel）。 */
@@ -547,6 +555,21 @@ export function lastAssistantModel(msgs: Msg[] | undefined): string | undefined 
     if (m.role === 'assistant' && m.model && m.model !== SYNTHETIC_MODEL) return m.model
   }
   return undefined
+}
+
+function normalizeRestoredMessages(
+  msgs: Msg[] | undefined,
+  fallbackModel?: string,
+): Msg[] {
+  const restoredAt = new Date().toISOString()
+  return (msgs ?? []).map((msg) => {
+    const normalized: Msg = { ...msg, blocks: msg.blocks ? [...msg.blocks] : [] }
+    if (!normalized.timestamp) normalized.timestamp = restoredAt
+    if (!normalized.model && normalized.role === 'assistant' && fallbackModel) {
+      normalized.model = fallbackModel
+    }
+    return normalized
+  })
 }
 
 /**
@@ -577,7 +600,7 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
     live: null,
     pendingPermissions: [],
     pendingQuestions: [],
-    permissionMode: opts.permissionMode ?? 'acceptEdits',
+    permissionMode: opts.permissionMode ?? defaultPermissionMode(opts.agent),
     // 「不存在 default」：每个会话起步即带一个明确模型 + effort（用户可改）。
     model: opts.model ?? defaultModel(opts.agent),
     effort: opts.effort ?? defaultEffort(opts.agent),
@@ -590,6 +613,8 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
   }) as ChatSession
   chatSessions.value.push(session)
   activeChatUiId.value = uiId
+  // tab 立刻可见：在 await 后端握手之前就把 reactive session 交回调用方建 tab。
+  opts.onReady?.(session)
 
   try {
     // Haiku 等不支持 effort 的模型省掉 --effort（effectiveEffort → undefined）。
@@ -604,6 +629,8 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
       eff,
       opts.fork,
       useReclaude.value,
+      opts.preloadMsgs,
+      opts.title,
     )
     session.chatId = info.chatId
     session.processModel = info.processModel
@@ -639,10 +666,63 @@ export async function sendPrompt(
     return
   }
 
-  // 文件/文件夹附件以 `@"path"` 追加到发给 agent 的文本，让它自己按路径读取；
-  // 本地回显里则拆成 file 块（chip），正文仍只显示用户写的话（与离线回看同形）。
-  const refs = files.map((f) => `@"${f.path}"`).join(' ')
-  const sendText = [trimmed, refs].filter(Boolean).join(trimmed && refs ? ' ' : '')
+  const isStdinAgent = session.processModel === 'longLivedStdin'
+  let sendImages: ChatImageAttachment[] = images
+  let sendText: string
+
+  if (isStdinAgent) {
+    // Claude（LongLived / stdin）：文件/文件夹用 @"path"，图片走 base64 参数。
+    const refs = files.map((f) => `@"${f.path}"`).join(' ')
+    sendText = [trimmed, refs].filter(Boolean).join(trimmed && refs ? ' ' : '')
+  } else {
+    // Codex（OneShot / AppServer）：客户端构造 Codex 专用消息格式，不依赖 server 解析 @"path"。
+    //   文件/图片 → # Files mentioned by the user: 结构（server 会自动注入到 context）
+    //   文件夹   → [name](path/) markdown 链接（内联到正文）
+    //   图片     → 额外传 base64 给后端，由 codex_turn_params 放入 input_image
+    const mentionedFiles: { name: string; path: string }[] = []
+    const folderRefs: string[] = []
+
+    for (const f of files) {
+      if (f.isDir) {
+        const name = f.name.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || f.name
+        const trailingSlash = f.path.endsWith('/') ? '' : '/'
+        folderRefs.push(`[${name}](${f.path}${trailingSlash})`)
+      } else {
+        mentionedFiles.push({ name: f.name, path: f.path })
+      }
+    }
+
+    // 图片：有 sourcePath 直接用；粘贴板截图存临时文件取路径。
+    const imagePaths: string[] = []
+    for (const img of images) {
+      if (img.sourcePath) {
+        imagePaths.push(img.sourcePath)
+        mentionedFiles.push({ name: img.name || img.sourcePath.split('/').pop() || 'image', path: img.sourcePath })
+      } else {
+        try {
+          const saved = await api.saveTempImage(img.data, img.mediaType)
+          imagePaths.push(saved)
+          mentionedFiles.push({ name: saved.split('/').pop() || 'image', path: saved })
+        } catch { /* 存盘失败 */ }
+      }
+    }
+
+    if (mentionedFiles.length > 0) {
+      // 构造 # Files mentioned 结构（与 Codex 官方客户端一致）
+      let header = '\n# Files mentioned by the user:\n\n'
+      for (const f of mentionedFiles) {
+        header += `## ${f.name}: ${f.path}\n\n`
+      }
+      header += `## My request for Codex:\n`
+      const userParts = [trimmed, ...folderRefs].filter(Boolean).join(' ')
+      sendText = header + userParts + '\n'
+    } else {
+      sendText = [trimmed, ...folderRefs].filter(Boolean).join(' ')
+    }
+
+    // Codex app-server 自己从 # Files mentioned 的路径读取文件/图片，不需要传 base64。
+    sendImages = []
+  }
 
   // 本地回显（与离线回看同形：image 块 + file 块 + text 块）。
   const blocks: Block[] = []
@@ -677,7 +757,7 @@ export async function sendPrompt(
     await api.agentChatSend(
       chatId,
       sendText,
-      images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+      sendImages.map((i) => ({ mediaType: i.mediaType, data: i.data })),
       session.model,
       sessionEffectiveEffort(session),
       session.permissionMode,
@@ -955,6 +1035,9 @@ export async function reconnectChats(): Promise<ChatSession[]> {
   const result: ChatSession[] = []
   for (const info of running) {
     const uiId = nextUiId++
+    const model = info.model ?? defaultModel(info.agent as Agent)
+    const effort = info.effort ?? defaultEffort(info.agent as Agent)
+    const messages = normalizeRestoredMessages(info.messages, model)
     const session = reactive<ChatSession>({
       uiId,
       chatId: info.chatId,
@@ -962,11 +1045,11 @@ export async function reconnectChats(): Promise<ChatSession[]> {
       projectKey: info.projectKey,
       cwd: info.cwd,
       sessionId: info.sessionId ?? '',
-      title: '',
+      title: info.title ?? '',
       createdAt: new Date().toISOString(),
-      msgs: [],
-      turnState: 'idle',
-      turnStartedAt: 0,
+      msgs: messages,
+      turnState: info.turnState ?? 'idle',
+      turnStartedAt: info.turnStartedAtMs ?? (info.turnState === 'running' ? Date.now() : 0),
       lastTurnMs: 0,
       status: 'running',
       queue: [],
@@ -976,13 +1059,14 @@ export async function reconnectChats(): Promise<ChatSession[]> {
       pendingPermissions: [],
       pendingQuestions: [],
       permissionMode: info.permissionMode,
-      model: info.model ?? defaultModel(info.agent as Agent),
-      effort: info.effort ?? defaultEffort(info.agent as Agent),
+      model,
+      effort,
+      lastModel: lastAssistantModel(messages),
       processModel: info.processModel as ChatProcessModel,
       applied: {
         permissionMode: info.permissionMode,
-        model: info.model ?? defaultModel(info.agent as Agent),
-        effort: info.effort ?? defaultEffort(info.agent as Agent),
+        model,
+        effort,
       },
     }) as ChatSession
     chatSessions.value.push(session)

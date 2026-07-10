@@ -104,7 +104,7 @@ pub struct ProjectFileEntry {
 }
 
 /// 流式增量（`--include-partial-messages` → `stream_event`）归一后的一帧。
-/// 仅 LongLivedStdin（Claude）会产出；前端据此驱动「正在生成」气泡的打字机效果。
+/// Claude stream_event / Codex app-server delta 会产出；前端据此驱动「正在生成」气泡的打字机效果。
 /// `phase`：`start`(块开始) | `delta`(追加) | `stop`(块结束)。
 /// `kind`：块类型 `text` | `thinking` | `tool_use`（start 必有；delta 带上便于前端兜底建块）。
 /// `text`：仅 delta —— 本次追加的文本片段。
@@ -202,7 +202,7 @@ pub struct SessionPage {
     pub sessions: Vec<SessionMeta>,
 }
 
-#[derive(Serialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffLine {
     pub kind: String, // ctx | add | del
@@ -211,7 +211,7 @@ pub struct DiffLine {
     pub text: String,
 }
 
-#[derive(Serialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffHunk {
     pub old_start: u32,
@@ -244,7 +244,7 @@ pub struct GitDiffFile {
     pub status: String,
 }
 
-#[derive(Serialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Block {
     pub kind: String, // text | thinking | tool_use | tool_result | image
@@ -252,6 +252,7 @@ pub struct Block {
     pub tool_name: Option<String>,
     pub tool_input: Option<String>,
     pub tool_id: Option<String>,
+    #[serde(default)]
     pub is_error: bool,
     /// 文件改动类工具结果携带的目标文件路径。
     pub file_path: Option<String>,
@@ -266,13 +267,14 @@ pub struct Block {
     pub image_src: Option<String>,
 }
 
-#[derive(Serialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Msg {
     pub uuid: Option<String>,
     pub role: String,
     pub timestamp: Option<String>,
     pub model: Option<String>,
+    #[serde(default)]
     pub sidechain: bool,
     pub blocks: Vec<Block>,
     /// 系统注入的 `type:"user"` 记录的归类：压缩摘要 / skill 注入 / 任务通知 /

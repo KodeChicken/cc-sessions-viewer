@@ -2,6 +2,7 @@ use crate::types::{CliDiagnosisResult, CliInstallation, CliUpgradeResult, CliVer
 use std::process::Command;
 use std::time::Duration;
 
+#[allow(dead_code)]
 struct CliSpec {
     name: &'static str,
     binary: &'static str,
@@ -14,6 +15,10 @@ struct CliSpec {
     /// Manifest URL template for non-npm CLIs (e.g. agy). The placeholder
     /// `{platform}` will be replaced at runtime with e.g. `darwin_arm64`.
     manifest_url: Option<&'static str>,
+    /// Standalone install command for macOS / Linux (e.g. curl-based installer).
+    install_unix: Option<&'static str>,
+    /// Standalone install command for Windows (PowerShell, e.g. irm … | iex).
+    install_windows: Option<&'static str>,
 }
 
 const CLI_SPECS: &[CliSpec] = &[
@@ -24,6 +29,8 @@ const CLI_SPECS: &[CliSpec] = &[
         brew_upgrade: Some("claude-code@latest"),
         builtin_update: Some("claude update"),
         manifest_url: None,
+        install_unix: Some("curl -fsSL https://claude.ai/install.sh | bash"),
+        install_windows: Some("irm https://claude.ai/install.ps1 | iex"),
     },
     CliSpec {
         name: "codex",
@@ -32,6 +39,8 @@ const CLI_SPECS: &[CliSpec] = &[
         brew_upgrade: Some("--cask codex"),
         builtin_update: Some("codex update"),
         manifest_url: None,
+        install_unix: Some("curl -fsSL https://chatgpt.com/codex/install.sh | sh"),
+        install_windows: Some("irm https://chatgpt.com/codex/install.ps1 | iex"),
     },
     CliSpec {
         name: "agy",
@@ -42,6 +51,8 @@ const CLI_SPECS: &[CliSpec] = &[
         manifest_url: Some(
             "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/{platform}.json",
         ),
+        install_unix: Some("curl -fsSL https://antigravity.google/cli/install.sh | bash"),
+        install_windows: Some("irm https://antigravity.google/cli/install.ps1 | iex"),
     },
     CliSpec {
         name: "opencode",
@@ -50,6 +61,8 @@ const CLI_SPECS: &[CliSpec] = &[
         brew_upgrade: Some("opencode"),
         builtin_update: Some("opencode upgrade"),
         manifest_url: None,
+        install_unix: Some("curl -fsSL https://opencode.ai/install | bash"),
+        install_windows: None,
     },
 ];
 
@@ -254,6 +267,77 @@ pub fn check_all_versions() -> Vec<CliVersionInfo> {
             }))
             .collect()
     })
+}
+
+// ---- install ----
+
+fn resolve_install_cmd(spec: &CliSpec) -> Result<String, String> {
+    // 1. Native installer (curl | bash on Unix, irm | iex on Windows)
+    #[cfg(unix)]
+    if let Some(cmd) = spec.install_unix {
+        return Ok(cmd.to_string());
+    }
+
+    #[cfg(windows)]
+    if let Some(cmd) = spec.install_windows {
+        return Ok(cmd.to_string());
+    }
+
+    // 2. Homebrew (macOS / Linuxbrew)
+    if let Some(brew_args) = spec.brew_upgrade {
+        if run_in_login_shell("brew --version").is_ok() {
+            return Ok(format!(
+                "HOMEBREW_NO_INSTALL_FROM_API=1 brew install {brew_args}"
+            ));
+        }
+    }
+
+    // 3. npm fallback
+    if !spec.npm_package.is_empty() {
+        if run_in_login_shell("npm --version").is_ok() {
+            return Ok(format!("npm install -g {}@latest", spec.npm_package));
+        }
+        return Err("npm_not_found".into());
+    }
+
+    Err("no_install_method".into())
+}
+
+pub fn install_single(cli_name: &str) -> Result<CliUpgradeResult, String> {
+    let spec = find_spec(cli_name)?;
+    let cmd = match resolve_install_cmd(spec) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            return Ok(CliUpgradeResult {
+                cli: spec.name.to_string(),
+                success: false,
+                new_version: None,
+                error: Some(e),
+            });
+        }
+    };
+    match run_in_login_shell(&cmd) {
+        Ok(_) => {
+            let version = get_installed_version(spec);
+            let success = version.is_some();
+            Ok(CliUpgradeResult {
+                cli: spec.name.to_string(),
+                success,
+                new_version: version,
+                error: if success {
+                    None
+                } else {
+                    Some("install_verification_failed".into())
+                },
+            })
+        }
+        Err(e) => Ok(CliUpgradeResult {
+            cli: spec.name.to_string(),
+            success: false,
+            new_version: None,
+            error: Some(e),
+        }),
+    }
 }
 
 // ---- upgrade ----

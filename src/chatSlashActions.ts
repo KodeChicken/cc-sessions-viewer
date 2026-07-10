@@ -15,6 +15,7 @@ export type ChatSlashAction =
   | { kind: 'clear' }
   | { kind: 'fork' }
   | { kind: 'model' }
+  | { kind: 'archive' }
 
 /**
  * 把一条 composer 输入归类成客户端 slash 动作；不是则返回 null（照常发送）。
@@ -25,10 +26,11 @@ export function parseChatSlashAction(input: string): ChatSlashAction | null {
   const body = input.trim()
   const btw = /^\/btw(?:\s+([\s\S]*))?$/i.exec(body)
   if (btw) return { kind: 'btw', prompt: (btw[1] ?? '').trim() || undefined }
-  if (/^\/export$/i.test(body)) return { kind: 'export' }
-  if (/^\/rename$/i.test(body)) return { kind: 'rename' }
+  if (/^\/export(\s|$)/i.test(body)) return { kind: 'export' }
+  if (/^\/rename(\s|$)/i.test(body)) return { kind: 'rename' }
   if (/^\/clear$/i.test(body)) return { kind: 'clear' }
   if (/^\/fork$/i.test(body)) return { kind: 'fork' }
-  if (/^\/model$/i.test(body)) return { kind: 'model' }
+  if (/^\/model(\s|$)/i.test(body)) return { kind: 'model' }
+  if (/^\/archive(\s|$)/i.test(body)) return { kind: 'archive' }
   return null
 }

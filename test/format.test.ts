@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   cleanMetaText,
+  formatElapsedSeconds,
   formatSize,
   formatTime,
   formatTokens,
@@ -566,6 +567,14 @@ describe('formatTime', () => {
 
   it('formats older timestamps as YYYY-MM-DD HH:MM', () => {
     expect(formatTime(new Date(2026, 0, 3, 8, 7).getTime())).toBe('2026-01-03 08:07')
+  })
+})
+
+describe('formatElapsedSeconds', () => {
+  it('formats seconds, minutes, and hours compactly', () => {
+    expect(formatElapsedSeconds(7)).toBe('7s')
+    expect(formatElapsedSeconds(1000)).toBe('16m 40s')
+    expect(formatElapsedSeconds(3725)).toBe('1h 02m')
   })
 })
 
