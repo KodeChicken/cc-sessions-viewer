@@ -60,6 +60,8 @@ export interface PaneActions {
   notifyArchivedBlock: (cmd: string) => void
   exportFromList: (s: SessionMeta, kind: ExportKind) => void
   refreshSessions: () => void
+  /** 顶栏「创建 Worktree」：对当前一级 git 项目开命名弹框，逻辑同侧栏右键。 */
+  createWorktree: () => void
   /** 退出指定分屏格子：关闭并释放该格所有 tab（二次确认后调用）。 */
   exitPane: (paneId: number) => void
   splitH: () => void

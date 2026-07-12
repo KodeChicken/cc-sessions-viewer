@@ -12,7 +12,7 @@ import {
   toggleSessionSelected,
   exitSessionSelectMode,
 } from '../sessionsToolbar'
-import { searchSessions, cancelSearch, nextSearchRequestId, sessionUsage, sessionLastPrompt } from '../api'
+import { searchSessions, cancelSearch, nextSearchRequestId, sessionUsage, sessionLastPrompt, gitHasRepo } from '../api'
 import {
   IconTrash,
   IconPlay,
@@ -34,6 +34,7 @@ import {
   IconClose,
   IconExitPane,
   IconChat,
+  IconGitBranch,
 } from '../components/icons'
 import NewMenu from '../components/NewMenu.vue'
 import { PaneActionsKey } from '../paneActions'
@@ -63,6 +64,7 @@ const emit = defineEmits<{
   (e: 'copy', text: string): void
   (e: 'export', s: SessionMeta, kind: 'md' | 'html' | 'json'): void
   (e: 'refresh'): void
+  (e: 'create-worktree'): void
   (e: 'new-session'): void
   (e: 'new-gui-session'): void
   (e: 'new-shell'): void
@@ -77,6 +79,35 @@ const emit = defineEmits<{
 }>()
 
 const scrollEl = ref<HTMLElement>()
+
+// 顶栏「创建 Worktree」入口：仅一级项目（非 worktree 子项）且是 git 仓库时出现，
+// 逻辑与侧栏右键完全一致。git 探测异步，切项目时重算。
+const isGitRepo = ref(false)
+watch(
+  () => props.project.displayPath,
+  async (path) => {
+    isGitRepo.value = false
+    if (!path || props.project.worktreeName || props.project.parentDirName) return
+    try {
+      isGitRepo.value = await gitHasRepo(path)
+    } catch {
+      isGitRepo.value = false
+    }
+  },
+  { immediate: true },
+)
+// worktree 仅对 Claude/Codex 开放（opencode/agy 按 git 仓库归属会话，worktree 会话会塌回主仓库）。
+const agentSupportsWorktrees = computed(
+  () => props.agent === 'claude' || props.agent === 'codex',
+)
+const canCreateWorktree = computed(
+  () =>
+    agentSupportsWorktrees.value &&
+    props.project.exists &&
+    !props.project.worktreeName &&
+    !props.project.parentDirName &&
+    isGitRepo.value,
+)
 
 // ============================ 后端搜索（title + 用户消息正文） ============================
 // 关键词搜索走后端：能命中 user-message 正文，而本地数组只有元数据。
@@ -670,6 +701,14 @@ defineExpose({ scrollEl })
             <NewMenu :agent="agent" show-split @new-session="pickNewAgent" @new-gui="pickNewGui" @new-shell="pickNewShell" @git-changes="pickGitChanges" @split-h="pickSplitH" @split-v="pickSplitV" />
           </div>
         </div>
+        <button
+          v-if="canCreateWorktree"
+          class="icon-btn"
+          v-tooltip="t('proj.createWorktree')"
+          @click="emit('create-worktree')"
+        >
+          <IconGitBranch />
+        </button>
         <button
           v-if="project.exists"
           class="icon-btn"

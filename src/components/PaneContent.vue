@@ -248,6 +248,7 @@ const liveChatMeta = computed<SessionMeta>(() => {
           @copy="actions.copyText"
           @export="actions.exportFromList"
           @refresh="actions.refreshSessions"
+          @create-worktree="actions.createWorktree"
           @new-session="actions.newSession"
           @new-shell="actions.newShellSession"
           @exit-pane="actions.exitPane(pane.id)"

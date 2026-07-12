@@ -5020,6 +5020,17 @@ body.is-tab-reordering * {
   border-color: var(--text);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+/* worktree 命名弹框：副标题（父项目）+ 校验错误提示 */
+.worktree-modal-sub {
+  margin: -4px 0 10px;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.worktree-modal-err {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--danger, #e5484d);
+}
 
 /* 会话 ID 展示芯片（列表 .session-meta、详情 .s 共用）：
    短 ID + 复制按钮，等宽字体，鼠标悬停时复制按钮变得明显。 */

@@ -45,8 +45,15 @@ export default defineConfig(async ({ command, mode }) => {
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 3. tell Vite to ignore watching `src-tauri`, and any git worktrees created
+      //    under the project. Worktrees hold full checkouts (incl. copies of `src/`),
+      //    so without this a `git worktree add/remove` fires a flood of add/unlink
+      //    events → Vite full-reloads → the window flashes white mid-operation.
+      ignored: [
+        "**/src-tauri/**",
+        "**/.claude/worktrees/**",
+        "**/.claude-worktrees/**",
+      ],
     },
   },
   };

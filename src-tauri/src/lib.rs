@@ -33,6 +33,7 @@ mod types;
 mod usage_api;
 mod util;
 mod watch;
+mod worktrees;
 
 use std::ffi::OsString;
 use std::fs;
@@ -83,7 +84,102 @@ fn list_projects(
             worktree_name: None,
         });
     }
+    inject_worktrees(&agent, &mut out);
     Ok(out)
+}
+
+/// 支持 worktree 展示/创建的 agent：只有按 `cwd` 归属会话的 Claude / Codex。opencode / agy
+/// 按 git 仓库归属会话 —— worktree 里起的会话会被 CLI 塞回主仓库，展示 worktree 反而误导，
+/// 故对它们整体隐藏 worktree（显示 + 创建入口，前端也据同一名单收起）。
+fn agent_supports_worktrees(agent: &str) -> bool {
+    matches!(agent, "claude" | "codex")
+}
+
+/// 把磁盘上 `<项目根>/.claude/worktrees/*` 里的 worktree 注入项目列表 —— agent 无关，
+/// 四种 agent 侧栏都会显示、且都归组在其仓库名下。分几种情况：
+///   * 该 worktree 已有会话 → 已作为普通项目在 `out` 里（display_path 命中）。若尚未带
+///     父子标记（非 Claude agent），就地补上 parent_dir_name / worktree_name 让其归组。
+///   * 尚无会话 → 注入一个 `worktree:<path>` 合成条目（session_count=0），一样能选中/删除。
+///   * 父项目不在当前 agent 列表（该 agent 没在这仓库跑过，或记录的是旧路径）→ 合成一个
+///     `worktree-root:<path>` 父项目条目，让 worktree 照样归组在正确的仓库名下，而非平铺成孤儿。
+fn inject_worktrees(agent: &str, out: &mut Vec<ProjectInfo>) {
+    if !agent_supports_worktrees(agent) {
+        return;
+    }
+    // 候选父根 = 当前 agent 列表里存在、且自身不是 worktree 的项目路径
+    //           ∪ 曾建过 worktree 的父根（持久化，agent 无关 → 四端都能看到）。
+    let mut roots: Vec<String> = out
+        .iter()
+        .filter(|p| p.exists && p.worktree_name.is_none())
+        .map(|p| p.display_path.clone())
+        .collect();
+    roots.extend(worktrees::load_roots());
+    let found = worktrees::scan(&roots);
+    if found.is_empty() {
+        return;
+    }
+    // display_path → dir_name，用于把 worktree 关联到父项目（归一化路径后比较）。
+    let path_to_dir: std::collections::HashMap<String, String> = out
+        .iter()
+        .map(|p| (worktrees::normalize(&p.display_path), p.dir_name.clone()))
+        .collect();
+
+    // 为每个用到的父根确定「可归属的父项目 dir_name」：命中现有项目就复用；否则合成一个
+    // 父项目条目（下面统一 push），让 worktree 有稳定的父节点归组。
+    let mut parent_dir_for: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut synth_parents: Vec<ProjectInfo> = Vec::new();
+    for wt in &found {
+        if parent_dir_for.contains_key(&wt.parent_path) {
+            continue;
+        }
+        if let Some(dir) = path_to_dir.get(&wt.parent_path) {
+            parent_dir_for.insert(wt.parent_path.clone(), dir.clone());
+        } else {
+            let dir = format!("worktree-root:{}", wt.parent_path);
+            synth_parents.push(ProjectInfo {
+                dir_name: dir.clone(),
+                display_path: wt.parent_path.clone(),
+                session_count: 0,
+                last_modified: util::mtime_millis(Path::new(&wt.parent_path)),
+                exists: Path::new(&wt.parent_path).is_dir(),
+                bookmarked: false,
+                parent_dir_name: None,
+                worktree_name: None,
+            });
+            parent_dir_for.insert(wt.parent_path.clone(), dir);
+        }
+    }
+    out.extend(synth_parents);
+
+    for wt in found {
+        let parent_dir = parent_dir_for.get(&wt.parent_path).cloned();
+        // 已有同路径项目（该 worktree 跑过会话）→ 就地补标记，不新建条目。
+        if let Some(existing) = out
+            .iter_mut()
+            .find(|p| worktrees::normalize(&p.display_path) == wt.path)
+        {
+            if existing.worktree_name.is_none() {
+                existing.worktree_name = Some(wt.name.clone());
+            }
+            if existing.parent_dir_name.is_none() {
+                existing.parent_dir_name = parent_dir;
+            }
+            continue;
+        }
+        // 零会话 worktree → 合成条目。last_modified 取目录 mtime，排序时不至于总排最前。
+        let last = util::mtime_millis(Path::new(&wt.path));
+        out.push(ProjectInfo {
+            dir_name: format!("worktree:{}", wt.path),
+            display_path: wt.path.clone(),
+            session_count: 0,
+            last_modified: last,
+            exists: true,
+            bookmarked: false,
+            parent_dir_name: parent_dir,
+            worktree_name: Some(wt.name),
+        });
+    }
 }
 
 #[tauri::command]
@@ -97,6 +193,11 @@ fn list_sessions(
 ) -> Result<SessionPage, String> {
     if let Some(bm_path) = project_key.strip_prefix("bookmark:") {
         return bookmarks::list_sessions_in_dir(bm_path, offset, limit);
+    }
+    // 零会话 worktree 及合成父项目的 key —— 自身无 transcript，返回空页。worktree 跑过会话后
+    // 会以普通项目 key 出现（display_path 命中），不再走这里。
+    if project_key.starts_with("worktree:") || project_key.starts_with("worktree-root:") {
+        return Ok(SessionPage { total: 0, sessions: vec![] });
     }
     agents::source(&agent)?.list_sessions(
         &project_key,
@@ -309,6 +410,41 @@ fn fork_session(
 #[tauri::command]
 fn soft_delete_session(agent: String, path: String, project_label: String) -> Result<(), String> {
     trash::soft_delete(&agent, &path, &project_label)
+}
+
+/// 永久删除一个会话文件（直接 rm，不进回收站、不可恢复）。仅供 worktree「全部删除」调用。
+/// 路径经 agent 的 `validate_session_path` 校验（存在 + 是 JSONL），防止误删任意文件。
+/// 删完后若其所在目录（如 `~/.claude/projects/<worktree 编码目录>` —— worktree 的全局工作
+/// 目录）已空，一并移除；只删空目录，绝不误伤仍有会话的目录。
+#[tauri::command]
+fn hard_delete_session(agent: String, path: String) -> Result<(), String> {
+    let src = agents::source(&agent)?;
+    let fp = PathBuf::from(&path);
+    src.validate_session_path(&fp)?;
+    fs::remove_file(&fp).map_err(|e| format!("Failed to delete session: {e}"))?;
+    if let Some(parent) = fp.parent() {
+        let empty = fs::read_dir(parent)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(false);
+        if empty {
+            let _ = fs::remove_dir(parent);
+        }
+    }
+    Ok(())
+}
+
+/// 在 `project_path` 下新建一个 git worktree（同名新分支），落到
+/// `<project_path>/.claude/worktrees/<name>`。返回新 worktree 的绝对路径。
+#[tauri::command]
+fn create_worktree(project_path: String, name: String) -> Result<String, String> {
+    worktrees::create(&project_path, &name)
+}
+
+/// 全部删除 `path` 处的 worktree（工作树 + 分支，不可撤销）。会话记录由前端在调用前
+/// 软删到回收站。
+#[tauri::command]
+fn remove_worktree(path: String) -> Result<(), String> {
+    worktrees::remove(&path)
 }
 
 #[tauri::command]
@@ -1858,6 +1994,9 @@ pub fn run() {
             fork_session,
             codex_archive_session,
             soft_delete_session,
+            hard_delete_session,
+            create_worktree,
+            remove_worktree,
             list_trash,
             restore_session,
             permanent_delete_trash,

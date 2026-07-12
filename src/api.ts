@@ -53,6 +53,16 @@ export const addBookmark = (agent: Agent, path: string) =>
 export const removeBookmark = (agent: Agent, path: string) =>
   invoke<void>('remove_bookmark', { agent, path })
 
+/** 在 `projectPath` 下新建 git worktree（同名新分支），落到
+ *  `<projectPath>/.claude/worktrees/<name>`。返回新 worktree 的绝对路径。 */
+export const createWorktree = (projectPath: string, name: string) =>
+  invoke<string>('create_worktree', { projectPath, name })
+
+/** 全部删除 `path` 处的 worktree（工作树 + 分支，不可撤销）。
+ *  其会话记录需调用方先软删到回收站。 */
+export const removeWorktree = (path: string) =>
+  invoke<void>('remove_worktree', { path })
+
 export const listSessions = (
   agent: Agent,
   projectKey: string,
@@ -153,6 +163,10 @@ export const softDeleteSession = (
   path: string,
   projectLabel: string,
 ) => invoke<void>('soft_delete_session', { agent, path, projectLabel })
+
+/** 永久删除一个会话文件（不进回收站、不可恢复）。仅供 worktree「全部删除」使用。 */
+export const hardDeleteSession = (agent: Agent, path: string) =>
+  invoke<void>('hard_delete_session', { agent, path })
 
 export const listTrash = () => invoke<TrashItem[]>('list_trash')
 

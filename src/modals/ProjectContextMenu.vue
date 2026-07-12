@@ -7,15 +7,18 @@ import {
   IconRefresh,
   IconTrashOpen,
   IconFolder,
+  IconGitBranch,
 } from '../components/icons'
 
 type ProjState = 'pinned' | 'sunk'
 
-defineProps<{
+const props = defineProps<{
   x: number
   y: number
   project: ProjectInfo
   projState: ProjState | undefined
+  /** 该项目所在目录是否是 git 仓库（开菜单时异步探测，决定是否显示「创建 Worktree」）。 */
+  isGitRepo: boolean
 }>()
 
 const emit = defineEmits<{
@@ -24,7 +27,13 @@ const emit = defineEmits<{
   (e: 'open-folder'): void
   (e: 'delete'): void
   (e: 'remove-bookmark'): void
+  (e: 'create-worktree'): void
+  (e: 'delete-worktree'): void
 }>()
+
+// worktree 条目自带 worktreeName；据此把底部删除项切成「删除 Worktree」，
+// 并隐藏「创建 Worktree」（不支持 worktree 套 worktree）。
+const isWorktree = () => !!props.project.worktreeName
 </script>
 
 <template>
@@ -49,9 +58,25 @@ const emit = defineEmits<{
           <IconRefresh />
           {{ t('proj.refresh') }}
         </button>
+        <button
+          v-if="isGitRepo && !isWorktree()"
+          class="ctx-item"
+          @click="emit('create-worktree')"
+        >
+          <IconGitBranch />
+          {{ t('proj.createWorktree') }}
+        </button>
         <div class="ctx-sep" />
       </template>
-      <button class="ctx-item danger" @click="emit('delete')">
+      <button
+        v-if="isWorktree()"
+        class="ctx-item danger"
+        @click="emit('delete-worktree')"
+      >
+        <IconTrashOpen />
+        {{ t('proj.deleteWorktree') }}
+      </button>
+      <button v-else class="ctx-item danger" @click="emit('delete')">
         <IconTrashOpen />
         {{ t('proj.delete') }}
       </button>

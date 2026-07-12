@@ -68,6 +68,7 @@ import GlobalSearchModal from './modals/GlobalSearchModal.vue'
 const ExportHistoryView = defineAsyncComponent(() => import('./views/ExportHistoryView.vue'))
 const PricingView = defineAsyncComponent(() => import('./views/PricingView.vue'))
 import ProjectContextMenu from './modals/ProjectContextMenu.vue'
+import WorktreeModal from './modals/WorktreeModal.vue'
 import {
   clearPendingLiveNotification,
   enqueueLiveNotification,
@@ -641,6 +642,7 @@ interface CtxMenu {
   x: number
   y: number
   project: ProjectInfo
+  isGitRepo: boolean
 }
 const ctxMenu = ref<CtxMenu | null>(null)
 function openCtxMenu(e: MouseEvent, p: ProjectInfo) {
@@ -650,7 +652,18 @@ function openCtxMenu(e: MouseEvent, p: ProjectInfo) {
   const H = 220
   const x = Math.min(e.clientX, window.innerWidth - W - 8)
   const y = Math.min(e.clientY, window.innerHeight - H - 8)
-  ctxMenu.value = { x, y, project: p }
+  ctxMenu.value = { x, y, project: p, isGitRepo: false }
+  // 「创建 Worktree」仅对 git 仓库、且自身不是 worktree 的项目显示；且仅 Claude/Codex 开放
+  // （opencode/agy 按 git 仓库归属会话，worktree 会话会塌回主仓库，故整体隐藏）。git 探测
+  // 是异步的，先把菜单弹出来，探测回来后再点亮该项（响应式更新，避免右键卡一下）。
+  if (p.exists && !p.worktreeName && (agent.value === 'claude' || agent.value === 'codex')) {
+    const target = p.displayPath
+    api.gitHasRepo(target)
+      .then((has) => {
+        if (ctxMenu.value?.project.displayPath === target) ctxMenu.value.isGitRepo = has
+      })
+      .catch(() => {})
+  }
 }
 function closeCtxMenu() {
   ctxMenu.value = null
@@ -681,6 +694,115 @@ function ctxRemoveBookmark() {
   closeCtxMenu()
   if (!p) return
   removeBookmark(p)
+}
+function ctxCreateWorktree() {
+  const p = ctxMenu.value?.project
+  closeCtxMenu()
+  if (!p) return
+  openWorktreeModal(p)
+}
+function ctxDeleteWorktree() {
+  const p = ctxMenu.value?.project
+  closeCtxMenu()
+  if (!p) return
+  deleteWorktree(p)
+}
+
+// ---------- 创建 / 删除 worktree ----------
+interface WorktreeModalState {
+  show: boolean
+  projectPath: string
+  value: string
+}
+const worktreeModal = ref<WorktreeModalState>({ show: false, projectPath: '', value: '' })
+const creatingWorktree = ref(false)
+
+function openWorktreeModal(p: ProjectInfo) {
+  worktreeModal.value = { show: true, projectPath: p.displayPath, value: '' }
+}
+
+async function confirmCreateWorktree() {
+  const m = worktreeModal.value
+  if (!m.show || creatingWorktree.value) return
+  const name = m.value.trim()
+  if (!name) return
+  creatingWorktree.value = true
+  try {
+    const newPath = await api.createWorktree(m.projectPath, name)
+    m.show = false
+    await loadProjects()
+    // 后端返回的是归一化正斜杠路径；injected 条目的 displayPath 同样归一化，直接命中。
+    const added = projects.value.find((p) => p.displayPath === newPath)
+    if (added) {
+      selectProject(added.dirName)
+      nextTick(() => {
+        const el = document.querySelector<HTMLElement>('.proj-item.active')
+        if (el) {
+          el.classList.add('flash')
+          el.addEventListener('animationend', () => el.classList.remove('flash'), { once: true })
+        }
+      })
+    }
+    notify(t('toast.worktreeCreated', { name }))
+  } catch (e) {
+    notify(t('toast.worktreeCreateFail', { e: String(e) }), true)
+  } finally {
+    creatingWorktree.value = false
+  }
+}
+
+function deleteWorktree(p: ProjectInfo) {
+  ask({
+    title: t('dialog.deleteWorktree.title'),
+    message: t('dialog.deleteWorktree.body', {
+      name: p.worktreeName ?? shortName(p.displayPath),
+      n: p.sessionCount,
+    }),
+    // 一次性全部删除：工作树 + 分支（不可撤销）。会话仍进回收站（app 铁律）。
+    okText: t('dialog.deleteWorktree.ok'),
+    danger: true,
+    onOk: () => performWorktreeDelete(p),
+  })
+}
+
+const deletingWorktree = ref(false)
+async function performWorktreeDelete(p: ProjectInfo) {
+  // 防重入：确认弹框淡出的一瞬间 onOk 可能被连点触发两次，第二次会对已删的 worktree
+  // 再跑一遍 git remove → 报错。一把锁挡掉。
+  if (deletingWorktree.value) return
+  deletingWorktree.value = true
+  const label = p.worktreeName ?? shortName(p.displayPath)
+  try {
+    // 先杀掉该 worktree 的 PTY/tab，再硬删会话（不进回收站），最后移除工作树 + 删除分支。
+    closeTabsByProject(p.dirName)
+    // 该 worktree 名下的会话直接物理删除，不可恢复（合成 key 无会话，循环直接空转）。
+    const all: SessionMeta[] = []
+    let offset = 0
+    while (true) {
+      const page = await api.listSessions(agent.value, p.dirName, offset, 200, sessionListOptions())
+      all.push(...page.sessions)
+      offset += page.sessions.length
+      if (all.length >= page.total || page.sessions.length === 0) break
+    }
+    for (const s of all) {
+      try {
+        await api.hardDeleteSession(agent.value, s.path)
+        removeViewEverywhere(agent.value, s.id || s.path)
+      } catch {}
+    }
+    await api.removeWorktree(p.displayPath)
+    if (activeDir.value === p.dirName) {
+      activeDir.value = null
+      sessions.value = []
+      setActiveViewTab(null)
+    }
+    await loadProjects()
+    notify(t('toast.worktreeDeleted', { name: label }))
+  } catch (e) {
+    notify(t('toast.worktreeDeleteFail', { e: String(e) }), true)
+  } finally {
+    deletingWorktree.value = false
+  }
 }
 
 function deleteProject(p: ProjectInfo) {
@@ -1088,6 +1210,24 @@ async function loadProjects() {
     const bmPath = activeDir.value.slice('bookmark:'.length)
     const real = projects.value.find(
       (p) => !p.dirName.startsWith('bookmark:') && p.displayPath === bmPath,
+    )
+    if (real) {
+      migrateTabsProjectKey(activeDir.value, real.dirName)
+      activeDir.value = real.dirName
+    }
+  }
+  // 同理：空 worktree 用 `worktree:<path>` 合成 key，一旦在里面跑出会话，后端会把它并入
+  // 该 agent 的真实项目（dirName 换成 agent 自己的路径 key，合成条目消失）。此时 activeDir /
+  // TUI tab 仍指向旧的 `worktree:` key → 点 List 落到欢迎页。检测到后重定向到真实项目。
+  // 路径按分隔符归一化再比对：Codex 记的是反斜杠，合成 key 用的是正斜杠。
+  if (
+    activeDir.value?.startsWith('worktree:') &&
+    !projects.value.some((p) => p.dirName === activeDir.value)
+  ) {
+    const norm = (s: string) => s.replace(/\\/g, '/').replace(/\/+$/, '')
+    const target = norm(activeDir.value.slice('worktree:'.length))
+    const real = projects.value.find(
+      (p) => !p.dirName.startsWith('worktree:') && norm(p.displayPath) === target,
     )
     if (real) {
       migrateTabsProjectKey(activeDir.value, real.dirName)
@@ -3538,6 +3678,7 @@ provide<PaneActions>(PaneActionsKey, {
   notifyArchivedBlock,
   exportFromList,
   refreshSessions,
+  createWorktree: () => { if (activeProject.value) openWorktreeModal(activeProject.value) },
   exitPane,
   splitH: () => splitFocusedPane('row'),
   splitV: () => splitFocusedPane('col'),
@@ -3779,11 +3920,23 @@ provide<PaneActions>(PaneActionsKey, {
       :y="ctxMenu.y"
       :project="ctxMenu.project"
       :proj-state="projStateOf(ctxMenu.project)"
+      :is-git-repo="ctxMenu.isGitRepo"
       @toggle-state="ctxToggleState"
       @open-folder="ctxOpenProjectFolder"
       @refresh="ctxRefresh"
       @delete="ctxDeleteProject"
       @remove-bookmark="ctxRemoveBookmark"
+      @create-worktree="ctxCreateWorktree"
+      @delete-worktree="ctxDeleteWorktree"
+    />
+
+    <!-- 创建 worktree 命名弹框 -->
+    <WorktreeModal
+      v-model="worktreeModal.value"
+      :show="worktreeModal.show"
+      :project-path="worktreeModal.projectPath"
+      @confirm="confirmCreateWorktree"
+      @cancel="worktreeModal.show = false"
     />
 
     <!-- btw 侧聊浮框（右上角可拖动；Teleport 到 body，与主视图层无关） -->
