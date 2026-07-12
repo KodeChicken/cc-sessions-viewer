@@ -29,6 +29,7 @@ export interface ModelMenuConfig {
 export interface ModelMenuOptions {
   claudeAliasMode?: boolean
   claudeAliasTargets?: Partial<Record<'opus' | 'sonnet' | 'haiku' | 'fable', string>>
+  codexApiKeyMode?: boolean
 }
 
 /** 该 agent 是否支持 GUI chat。入口 v-if / quick-open 守卫统一用此函数。 */
@@ -94,6 +95,13 @@ function withAliasTargetLabel(base: ModelOption, target?: string): ModelOption {
   return { ...base, label: `${base.label} (${clean})` }
 }
 
+/** 仅官方订阅可用的 Codex 模型 —— API key / 第三方端点模式下从菜单隐藏。 */
+const CODEX_SUBSCRIPTION_ONLY = new Set(['gpt-5.3-codex-spark'])
+
+export function codexIsSubscriptionOnly(model: string): boolean {
+  return CODEX_SUBSCRIPTION_ONLY.has(model)
+}
+
 export function modelMenuFor(agent: Agent, opts: ModelMenuOptions = {}): ModelMenuConfig {
   if (agent === 'claude' && opts.claudeAliasMode) {
     return {
@@ -106,7 +114,12 @@ export function modelMenuFor(agent: Agent, opts: ModelMenuOptions = {}): ModelMe
       ),
     }
   }
-  return CHAT_MODEL_MENU[agent]
+  const base = CHAT_MODEL_MENU[agent]
+  if (agent === 'codex' && opts.codexApiKeyMode) {
+    const hide = (arr: ModelOption[]) => arr.filter((m) => !CODEX_SUBSCRIPTION_ONLY.has(m.value))
+    return { ...base, primary: hide(base.primary), more: hide(base.more) }
+  }
+  return base
 }
 
 function claudeKnownModels(): ModelOption[] {

@@ -102,6 +102,19 @@ fn git_stdout(cwd: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// 从 worktree 路径 `<parent>/.claude/worktrees/<name>` 反推父项目根。
+/// 不依赖 worktree 目录本身存在（用户可能已手动删除），纯路径解析。
+fn parent_repo_root(worktree_path: &str) -> Option<String> {
+    let norm = normalize(worktree_path);
+    let marker = "/.claude/worktrees/";
+    let pos = norm.find(marker)?;
+    let parent = &norm[..pos];
+    if parent.is_empty() || !Path::new(parent).is_dir() {
+        return None;
+    }
+    Some(parent.to_string())
+}
+
 fn is_git_repo(cwd: &str) -> bool {
     silent_command("git")
         .arg("-C")
@@ -230,8 +243,18 @@ pub fn remove(path: &str) -> Result<(), String> {
     if !norm.contains("/.claude/worktrees/") {
         return Err("Refusing to remove a path outside .claude/worktrees".to_string());
     }
+    // 目录已被用户手动删除 → 只做 prune 清理 git 里的悬空注册 + 尝试删分支，不报错。
     if !Path::new(path).exists() {
-        return Err(format!("Worktree not found: {path}"));
+        if let Some(repo) = parent_repo_root(path) {
+            let _ = git_stdout(&repo, &["worktree", "prune"]);
+            let name = Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string());
+            if let Some(b) = name {
+                let _ = git_stdout(&repo, &["branch", "-D", &b]);
+            }
+        }
+        return Ok(());
     }
     // 删分支要在工作树移除前先取到分支名（移除后 path 就没了）。detached HEAD 返回 "HEAD"，
     // 这种情况没有可删的具名分支，跳过。
@@ -252,19 +275,86 @@ pub fn remove(path: &str) -> Result<(), String> {
     // 清理在删完内容后、最后一步 rmdir 时报错，但内容多半已删。因此不把这个错误当致命 ——
     // 兜底：残留目录用 Rust 强删（更可靠），再 `worktree prune` 清掉悬空注册。否则会出现
     // 「其实删掉了却弹错、侧栏还留着要手动刷新」。
+    // 目录移除可能因文件占用失败（Windows：子进程把 cwd 锁在 worktree 里 → os error 32）。关键：
+    // 即使目录没删净，也要继续清「悬空注册 + 分支」，否则会残留一堆 worktree 分支（用户反馈）。
+    // 故目录失败只记下、不 early-return；prune / branch -D 照常跑。
+    let mut dir_err: Option<String> = None;
     if git_stdout(&repo_root, &["worktree", "remove", "--force", path]).is_err() {
         if Path::new(path).exists() {
-            fs::remove_dir_all(path)
-                .map_err(|e| format!("Failed to remove worktree dir: {e}"))?;
+            if let Err(e) = remove_dir_all_with_retry(path) {
+                dir_err = Some(e);
+            }
         }
         let _ = git_stdout(&repo_root, &["worktree", "prune"]);
     }
-    // 工作树注册已清 → 分支不再被占用，可安全 `-D` 强删（含未合并提交）。分支删不掉只报错，
-    // 工作树已经没了、重试无意义。
+    // 分支删除独立于目录移除结果 —— best-effort，删不掉也不阻断整体（否则锁着的目录会连累分支永远删不掉）。
     if let Some(b) = branch {
-        git_stdout(&repo_root, &["branch", "-D", &b])
-            .map_err(|e| format!("git branch -D failed: {e}"))?;
+        let _ = git_stdout(&repo_root, &["branch", "-D", &b]);
     }
+    // 内容已删、只剩一个被锁着的空壳目录 → 不当失败：下次扫描它无 `.git` 不会显示，纯磁盘残留而已。
+    // 只有目录里确实还有内容没删掉，才把错误报给前端（那才是真·删除失败）。
+    if let Some(e) = dir_err {
+        if fs::read_dir(path).map(|mut rd| rd.next().is_some()).unwrap_or(false) {
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// Windows 上刚被 kill 的子进程（内嵌 TUI 的 PTY、GUI chat 的 codex/claude 子进程）释放其
+/// cwd（= worktree 目录）句柄有延迟，紧接着 rmdir 会撞 `os error 32`（另一程序正在使用此文件）。
+/// 前端已在调用前停掉这些进程，这里再重试几拍兜住句柄释放的时间差。非 Windows 一般一次即成。
+fn remove_dir_all_with_retry(path: &str) -> Result<(), String> {
+    let mut last = String::new();
+    for attempt in 0..6 {
+        if !Path::new(path).exists() {
+            return Ok(());
+        }
+        match fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = e.to_string(),
+        }
+        if attempt < 5 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+    if Path::new(path).exists() {
+        Err(format!("Failed to remove worktree dir: {last}"))
+    } else {
+        Ok(())
+    }
+}
+
+/// 清理各 agent 在 `worktree_path` 对应的项目元数据目录。
+/// worktree 是跨 agent 共享的物理目录，删除时只删了 git 工作树 + 会话文件，但每个 agent
+/// 可能还留有自己的项目目录（如 `~/.claude/projects/<encoded>/`）包含 CLI 配置等非会话文件。
+/// 此函数扫描并强制移除这些残留目录，确保跨 agent 彻底清理。
+pub fn cleanup_project_dirs(worktree_path: &str) -> Result<(), String> {
+    let norm = normalize(worktree_path);
+    let stripped = norm.trim_start_matches('/');
+    // Claude CLI 把项目路径编码为目录名（`/` 和 `.` 都替换成 `-`，再加前缀 `-`）。
+    // 两种编码都试：只替换 `/`、同时替换 `/` 和 `.`（后者才是 CLI 的实际行为，会产生
+    // `--claude-worktrees-` 双划线特征）。
+    let enc_slash = format!("-{}", stripped.replace('/', "-"));
+    let enc_both = format!("-{}", stripped.replace(['/', '.'], "-"));
+
+    let projects = home().join(".claude").join("projects");
+    if projects.is_dir() {
+        if let Ok(entries) = fs::read_dir(&projects) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name != enc_slash && name != enc_both {
+                    continue;
+                }
+                let dir = e.path();
+                if dir.is_dir() {
+                    let _ = fs::remove_dir_all(&dir);
+                }
+            }
+        }
+    }
+    // Codex 会话按日期存放（~/.codex/sessions/YYYY/MM/DD/），无 per-project 目录，
+    // 会话文件已由前端 hardDeleteWorktreeSessionsFor 删除，此处无需额外清理。
     Ok(())
 }
 

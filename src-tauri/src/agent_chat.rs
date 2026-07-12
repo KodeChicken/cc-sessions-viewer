@@ -323,24 +323,19 @@ fn command_exists_in_login_shell(cwd: &str, program: &str) -> Result<bool, Strin
 }
 
 #[cfg(windows)]
-fn command_exists_in_login_shell(cwd: &str, program: &str) -> Result<bool, String> {
-    let ps = format!(
-        "{}; Set-Location -LiteralPath {}; if (Get-Command {} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}",
-        crate::agent_command::powershell_refresh_path(),
-        crate::agent_command::powershell_quote(cwd),
-        crate::agent_command::powershell_quote(program),
-    );
-    let encoded = crate::agent_command::powershell_encoded_command(&ps);
-    let status = std::process::Command::new(crate::agent_command::windows_powershell_exe())
-        .arg("-NoLogo")
-        .arg("-NoProfile")
-        .arg("-EncodedCommand")
-        .arg(encoded)
+fn command_exists_in_login_shell(_cwd: &str, program: &str) -> Result<bool, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    // 用 where.exe 纯文件搜索：不启动 PowerShell、不触发 NVM shim 的非终端检测弹窗。
+    let status = std::process::Command::new("where.exe")
+        .arg(program)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .status()
-        .map_err(|e| format!("Failed to check {program} in PowerShell PATH: {e}"))?;
+        .map_err(|e| format!("Failed to check {program} via where.exe: {e}"))?;
     Ok(status.success())
 }
 

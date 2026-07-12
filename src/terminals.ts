@@ -605,19 +605,9 @@ function repairCodexUserMessageBufferColors(tab: TerminalTab): boolean {
   return changed
 }
 
-const codexUserMessageRepairFrames = new WeakMap<Terminal, number>()
-
-function scheduleCodexUserMessageBufferRepair(tab: TerminalTab) {
+function syncRepairCodexUserMessageColors(tab: TerminalTab) {
   if (tab.agent !== 'codex' || tab.isShell) return
-  if (codexUserMessageRepairFrames.has(tab.term)) return
-  const frame = requestAnimationFrame(() => {
-    codexUserMessageRepairFrames.delete(tab.term)
-    if (repairCodexUserMessageBufferColors(tab)) {
-      tab.term.clearTextureAtlas()
-      tab.term.refresh(0, Math.max(0, tab.term.rows - 1))
-    }
-  })
-  codexUserMessageRepairFrames.set(tab.term, frame)
+  repairCodexUserMessageBufferColors(tab)
 }
 
 function applyTerminalTheme(tab: TerminalTab) {
@@ -1165,7 +1155,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
 
     const mod = _isMac ? ev.metaKey : ev.ctrlKey
     const otherMod = _isMac ? ev.ctrlKey : ev.metaKey
-    if (mod && !otherMod && !ev.shiftKey && (key === 'w' || key === 't' || key === 'r')) {
+    if (mod && !otherMod && !ev.shiftKey && (key === 'w' || key === 't' || key === 'r' || key === 'f')) {
       return false
     }
 
@@ -1226,7 +1216,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
       const normalizer = terminalColorScheme() === 'light' ? normalizeLightSgr : normalizeDarkSgr
       const normalized = normalizeAnsiBackground(bytes, tab.pendingAnsiBytes, normalizer)
       tab.pendingAnsiBytes = normalized.pending
-      term.write(normalized.bytes, () => scheduleCodexUserMessageBufferRepair(tab))
+      term.write(normalized.bytes, () => syncRepairCodexUserMessageColors(tab))
     } else {
       tab.pendingAnsiBytes = null
       term.write(bytes)
@@ -1335,7 +1325,7 @@ export async function openShellTab(opts: {
 
     const mod = _isMac ? ev.metaKey : ev.ctrlKey
     const otherMod = _isMac ? ev.ctrlKey : ev.metaKey
-    if (mod && !otherMod && !ev.shiftKey && (key === 'w' || key === 't' || key === 'r')) {
+    if (mod && !otherMod && !ev.shiftKey && (key === 'w' || key === 't' || key === 'r' || key === 'f')) {
       return false
     }
 

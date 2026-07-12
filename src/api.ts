@@ -5,6 +5,7 @@ import type {
   AgentStats,
   ChatImageInput,
   ClaudeRuntimeInfo,
+  CodexRuntimeInfo,
   ChatStartInfo,
   RunningChatInfo,
   ReclaudeInfo,
@@ -62,6 +63,9 @@ export const createWorktree = (projectPath: string, name: string) =>
  *  其会话记录需调用方先软删到回收站。 */
 export const removeWorktree = (path: string) =>
   invoke<void>('remove_worktree', { path })
+
+export const cleanupWorktreeProjectDirs = (worktreePath: string) =>
+  invoke<void>('cleanup_worktree_project_dirs', { worktreePath })
 
 export const listSessions = (
   agent: Agent,
@@ -223,6 +227,7 @@ export const terminalTurnSignal = (
 
 export const installClaudeTurnHooks = () => invoke<string>('install_claude_turn_hooks')
 export const claudeRuntimeInfo = () => invoke<ClaudeRuntimeInfo>('claude_runtime_info')
+export const codexRuntimeInfo = () => invoke<CodexRuntimeInfo>('codex_runtime_info')
 
 export const watchSessionTurn = (agent: Agent, path: string, catchUp = false) =>
   invoke<void>('watch_session_turn', { agent, path, catchUp })

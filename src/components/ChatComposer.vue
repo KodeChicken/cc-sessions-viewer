@@ -65,8 +65,11 @@ const claudeRuntimeApiKeySource = ref<string | undefined>(undefined)
 // settings.json 的全局 effortLevel。transcript 不记录 effort、CLI 不带 --effort 即用它，
 // 故续聊未改档前 effort 选择器展示它（真实生效默认），而不是滑杆假定的 levels[0]。
 const claudeRuntimeEffortLevel = ref<string | undefined>(undefined)
-// runtime info（含是否走 alias）是否已就位。非 claude 没有这步，直接视为已就位。
-const runtimeLoaded = ref(props.session.agent !== 'claude')
+// Codex 是否通过第三方 API key / 自定义端点使用（config.toml 有 model_provider）。
+// 若是，隐藏仅官方订阅可用的模型（如 GPT-5.3-Codex-Spark）。
+const codexUsingApiKey = ref(false)
+// runtime info（含是否走 alias）是否已就位。非 claude/codex 没有这步，直接视为已就位。
+const runtimeLoaded = ref(props.session.agent !== 'claude' && props.session.agent !== 'codex')
 
 // ⌘U / Ctrl+U 全局唤起文件选择器 —— 挂在 window 上（而非 textarea），未聚焦输入框时也响应。
 const isMac = /Mac/i.test(navigator.platform)
@@ -126,6 +129,19 @@ onMounted(() => {
         claudeAliasTargets.value = {}
         claudeRuntimeApiKeySource.value = undefined
         claudeRuntimeEffortLevel.value = undefined
+      })
+      .finally(() => {
+        runtimeLoaded.value = true
+      })
+  }
+  if (props.session.agent === 'codex') {
+    void api
+      .codexRuntimeInfo()
+      .then((info) => {
+        codexUsingApiKey.value = info.usesApiKey
+      })
+      .catch(() => {
+        codexUsingApiKey.value = false
       })
       .finally(() => {
         runtimeLoaded.value = true
@@ -240,6 +256,7 @@ const claudeAliasMode = computed(
 const modelMenuOptions = computed<ModelMenuOptions>(() => ({
   claudeAliasMode: claudeAliasMode.value,
   claudeAliasTargets: claudeAliasTargets.value,
+  codexApiKeyMode: codexUsingApiKey.value,
 }))
 const showModelPicker = computed(() => hasModelChoice(agent.value, modelMenuOptions.value))
 // 生效中的模型：用户没显式选过时（新会话 session.model=undefined）回落到运行时实际模型

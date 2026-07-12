@@ -41,8 +41,8 @@ use std::path::{Path, PathBuf};
 
 use crate::agent_command::AgentCommand;
 use crate::types::{
-    AgentStats, ClaudeRuntimeInfo, Msg, ProjectInfo, SearchHit, SessionPage, TrashItem, TrayStats,
-    UsageSummary,
+    AgentStats, ClaudeRuntimeInfo, CodexRuntimeInfo, Msg, ProjectInfo, SearchHit, SessionPage,
+    TrashItem, TrayStats, UsageSummary,
 };
 #[allow(unused_imports)]
 use tauri::{Emitter, Manager};
@@ -275,6 +275,27 @@ fn claude_runtime_info() -> Result<ClaudeRuntimeInfo, String> {
     claude_config::runtime_info()
 }
 
+/// Codex 运行时信息：检测是否通过第三方 API key / 自定义端点使用（config.toml 里
+/// `model_provider` 为 "custom" 或存在 `[model_providers.*]` 配置）。前端据此隐藏
+/// 仅官方订阅可用的模型（如 GPT-5.3-Codex-Spark）。
+#[tauri::command]
+fn codex_runtime_info() -> CodexRuntimeInfo {
+    let config_path = util::home().join(".codex").join("config.toml");
+    let uses_api_key = fs::read_to_string(&config_path)
+        .ok()
+        .map(|content| {
+            content.lines().any(|l| {
+                let l = l.trim();
+                l.starts_with("model_provider")
+                    && l.contains('=')
+                    && !l.starts_with('#')
+                    && !l.starts_with('[')
+            })
+        })
+        .unwrap_or(false);
+    CodexRuntimeInfo { uses_api_key }
+}
+
 #[tauri::command]
 fn watch_session_turn(
     app: tauri::AppHandle,
@@ -445,6 +466,13 @@ fn create_worktree(project_path: String, name: String) -> Result<String, String>
 #[tauri::command]
 fn remove_worktree(path: String) -> Result<(), String> {
     worktrees::remove(&path)
+}
+
+/// 强制删除各 agent 在 `worktree_path` 下残留的项目目录。worktree 是跨 agent 共享的，
+/// 删除时需要连带清理所有 agent 的元数据目录，否则会残留孤儿。
+#[tauri::command]
+fn cleanup_worktree_project_dirs(worktree_path: String) -> Result<(), String> {
+    worktrees::cleanup_project_dirs(&worktree_path)
 }
 
 #[tauri::command]
@@ -1980,6 +2008,7 @@ pub fn run() {
             terminal_turn_signal,
             install_claude_turn_hooks,
             claude_runtime_info,
+            codex_runtime_info,
             watch_session_turn,
             unwatch_session_turn,
             session_usage,
@@ -1997,6 +2026,7 @@ pub fn run() {
             hard_delete_session,
             create_worktree,
             remove_worktree,
+            cleanup_worktree_project_dirs,
             list_trash,
             restore_session,
             permanent_delete_trash,

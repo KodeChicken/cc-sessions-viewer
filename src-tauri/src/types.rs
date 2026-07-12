@@ -75,6 +75,15 @@ pub struct ClaudeAliasTargets {
     pub fable: Option<String>,
 }
 
+/// Codex 运行时信息（对标 `ClaudeRuntimeInfo`）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexRuntimeInfo {
+    /// `true` = 用户通过第三方 API key / 自定义端点使用 Codex（config.toml 里
+    /// `model_provider` 不是官方默认值）。前端据此隐藏仅官方订阅可用的模型。
+    pub uses_api_key: bool,
+}
+
 /// `reclaude_info` 返回：本地 reclaude 守护进程的运行状态，供前端判断能否启用代理。
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]

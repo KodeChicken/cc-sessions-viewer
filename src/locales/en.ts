@@ -375,6 +375,7 @@ export default {
   'chat.tb.scope.agent': 'Agent (incl. edits)',
   'chat.tb.scope.tools': 'Tools (excl. edits)',
 
+  'tui.tb.search.placeholder': 'Search terminal',
   'chat.tb.search.placeholder': 'Search messages',
   'chat.tb.search.prev': 'Previous match',
   'chat.tb.search.next': 'Next match',

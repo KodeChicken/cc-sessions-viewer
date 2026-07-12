@@ -23,6 +23,7 @@ import {
 } from './chatQuestion'
 import { useReclaude } from './settings'
 import { bumpUsage } from './usage'
+import { markProjectsDirty } from './projectsRefresh'
 import type {
   Agent,
   Block,
@@ -283,7 +284,12 @@ function onDelta(s: ChatSession, d: ChatDelta) {
 }
 
 function onInit(s: ChatSession, p: ChatInitPayload) {
-  if (p.sessionId && !s.sessionId) s.sessionId = p.sessionId
+  if (p.sessionId && !s.sessionId) {
+    s.sessionId = p.sessionId
+    // 首次拿到 sessionId = 后端刚为这轮对话建了新 transcript → 该项目/worktree 的会话计数
+    // 变了，请侧栏去抖重载（尤其空 worktree 计数从 0 → 1，合成条目并入真实项目）。
+    markProjectsDirty()
+  }
   // 只认权威 init 给的字符串 apiKeySource（'none' / 'ANTHROPIC_API_KEY' / …）。Claude 的
   // 同 `system` 类型还会发 hook_started / thinking_tokens 等事件，它们没有 apiKeySource
   // （→ null）；若用 `!== undefined` 判断会被这些 null 覆盖回去，导致订阅模式被误判成 API
@@ -502,6 +508,20 @@ export function findChatByUiId(uiId: number): ChatSession | null {
 
 export function activeChat(): ChatSession | null {
   return activeChatUiId.value === null ? null : findChatByUiId(activeChatUiId.value)
+}
+
+/**
+ * 合成 key（worktree:/bookmark:）被并入真实项目时，把仍挂在旧 key 上的 live chat 的 projectKey
+ * 迁到新 key。两个作用：
+ *  1. 后续 restart / interrupt / clear / fork / sideChat 传给后端的是真实 key，而非已失效的合成 key；
+ *  2. projectKey 是响应式字段，ChatView watch 它的变化 → 迁移后强制重测虚拟列表几何，修复
+ *     「worktree 首轮渲染空白、要再发一次才出来」（迁移中途 reflow 使虚拟器缓存的滚动几何过期）。
+ */
+export function migrateChatSessionsProjectKey(oldKey: string, newKey: string): void {
+  if (oldKey === newKey) return
+  for (const c of chatSessions.value) {
+    if (c.projectKey === oldKey) c.projectKey = newKey
+  }
 }
 
 /** 已为某 sessionPath（续聊源）开过的 live chat —— 入口 2/3 复用，避免重复开。 */

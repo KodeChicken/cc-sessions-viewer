@@ -376,6 +376,7 @@ export default {
   'chat.tb.scope.agent': 'Agent 回复（含改动）',
   'chat.tb.scope.tools': '工具调用（不含改动）',
 
+  'tui.tb.search.placeholder': '搜索终端',
   'chat.tb.search.placeholder': '搜索消息',
   'chat.tb.search.prev': '上一个匹配',
   'chat.tb.search.next': '下一个匹配',

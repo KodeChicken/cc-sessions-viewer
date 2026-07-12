@@ -22,6 +22,7 @@ import {
   quickOpenTarget,
 } from './settings'
 import { focusSearchBox, navigate as chatNavigate, resetChatToolbar } from './chatToolbar'
+import { focusTuiSearchBox } from './tuiToolbar'
 import { emitMenuSync, installMenuRouter, type MenuHandlers } from './menu'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { resetTrashToolbar, exitSelectMode, selectedTrash } from './trashToolbar'
@@ -53,6 +54,7 @@ import SettingsModal from './components/SettingsModal.vue'
 import { IconSearch } from './components/icons'
 import WindowsTitlebar, { type WindowMenuGroup } from './components/WindowsTitlebar.vue'
 import ChatTopbar from './components/topbar/ChatTopbar.vue'
+import TuiTopbar from './components/topbar/TuiTopbar.vue'
 import TrashTopbar from './components/topbar/TrashTopbar.vue'
 import SessionsTopbar from './components/topbar/SessionsTopbar.vue'
 import TrashView from './views/TrashView.vue'
@@ -112,7 +114,7 @@ import {
   setViewTitle,
   removeViewEverywhere,
 } from './viewHistory'
-import { startChat, closeChat, reconnectChats, lastAssistantModel, type ChatSession } from './chatSessions'
+import { startChat, closeChat, reconnectChats, lastAssistantModel, migrateChatSessionsProjectKey, chatSessions, type ChatSession } from './chatSessions'
 import { sideChat, openSideChat, closeAllSideChats } from './sideChat'
 import {
   type ViewTab,
@@ -129,6 +131,7 @@ import {
   loadSavedViewTabs,
   clearSavedViewTabs,
   markViewTabsRestored,
+  migrateViewTabsProjectKey,
   type SavedViewTab,
 } from './viewTabs'
 import {
@@ -143,8 +146,10 @@ import {
   splitPane,
   closePane,
   persistLayouts,
+  migratePaneProjectKey,
   type SplitDir,
 } from './panes'
+import { projectsDirty, markProjectsDirty } from './projectsRefresh'
 import { paneViewsOf } from './paneRegistry'
 import { PaneActionsKey, type PaneActions } from './paneActions'
 import { chatSupported, defaultPermissionMode } from './chatComposerOptions'
@@ -155,11 +160,18 @@ const agent = ref<Agent>(visibleAgents.value[0] ?? 'claude')
 const projects = ref<ProjectInfo[]>([])
 const activeDir = ref<string | null>(null)
 
+// 内嵌 TUI 后台同步时上一次看到的会话总数（-1 = 尚无基线 / 刚切项目）。TUI 里跑出新会话
+// 会让总数增长 → 据此触发侧栏计数重载（见 syncTuiTitlesNow）。与「上次同步值」比而不与侧栏
+// 徽标比：list_projects / list_sessions 过滤口径可能不同，跟徽标比会常驻抖动。
+let lastTuiSyncedTotal = -1
+
 // 分屏当前视图 = 侧栏选中的 (agent, project)。panes 模块据此解出当前布局 / 聚焦 pane，
 // 而 activeUiId / activeViewTabId 又是聚焦 pane 的投影，所以这一步是它们正确工作的前提。
 watch([agent, activeDir], ([a, dir]) => {
   panesAgent.value = a
   panesProject.value = dir
+  // 切项目 / 切 agent → 作废 TUI 会话总数基线，避免用上一个项目的总数误判「新增会话」。
+  lastTuiSyncedTotal = -1
 }, { immediate: true })
 const showTrash = ref(false)
 const showStats = ref(false)
@@ -591,7 +603,7 @@ const topbarContextMeta = computed(() => {
   if (showStats.value || showTrash.value || showExportHistory.value || showPricing.value) {
     return activeAgentLabel.value
   }
-  if (openSession.value) return t('chat.tui.viewTab')
+  if (openSession.value || activeUiId.value !== null) return t('chat.tui.viewTab')
   if (activeProject.value) return t('chat.tui.listTab')
   return ''
 })
@@ -751,18 +763,100 @@ async function confirmCreateWorktree() {
   }
 }
 
-function deleteWorktree(p: ProjectInfo) {
+// worktree 是 Claude / Codex 共享的物理目录 —— 两个 agent 都可能在里面跑过会话，各自按自己的
+// 布局存 transcript。删 worktree、统计会话数都要覆盖这两个 agent。
+const WORKTREE_AGENTS: Agent[] = ['claude', 'codex']
+
+const normPath = (s: string) => s.replace(/\\/g, '/').replace(/\/+$/, '')
+
+/** 删除彻底：codex 把内部 + 归档会话都算上，别在 worktree 移除后留下孤儿 transcript。 */
+function worktreeScanOptions(a: Agent): { includeCodexInternal: boolean; includeCodexArchived: boolean } | undefined {
+  return a === 'codex' ? { includeCodexInternal: true, includeCodexArchived: true } : undefined
+}
+
+/** 在某 agent 的项目列表里找到这个 worktree 路径对应的真实项目（跳过合成占位 key）。 */
+function findWorktreeProjectIn(projs: ProjectInfo[], worktreePath: string): ProjectInfo | undefined {
+  const target = normPath(worktreePath)
+  return projs.find(
+    (x) =>
+      !x.dirName.startsWith('worktree:') &&
+      !x.dirName.startsWith('bookmark:') &&
+      normPath(x.displayPath) === target,
+  )
+}
+
+/** 两个 agent 在该 worktree 路径下的会话总数之和（供删除确认框如实告知）。 */
+async function countWorktreeSessions(worktreePath: string): Promise<number> {
+  let total = 0
+  for (const a of WORKTREE_AGENTS) {
+    try {
+      const projs = await api.listProjects(a, worktreeScanOptions(a))
+      const proj = findWorktreeProjectIn(projs, worktreePath)
+      if (proj) total += proj.sessionCount
+    } catch {}
+  }
+  return total
+}
+
+async function deleteWorktree(p: ProjectInfo) {
+  // 共享 worktree → 统计两 agent 的会话总数再弹框，让「将永久删除 N 个会话」如实反映实际删除量。
+  const n = await countWorktreeSessions(p.displayPath)
   ask({
     title: t('dialog.deleteWorktree.title'),
     message: t('dialog.deleteWorktree.body', {
       name: p.worktreeName ?? shortName(p.displayPath),
-      n: p.sessionCount,
+      n,
     }),
     // 一次性全部删除：工作树 + 分支（不可撤销）。会话仍进回收站（app 铁律）。
     okText: t('dialog.deleteWorktree.ok'),
     danger: true,
     onOk: () => performWorktreeDelete(p),
   })
+}
+
+/** 停掉 cwd 落在这个 worktree 目录下的所有 live GUI chat 子进程（含连带的 chat view tab）。
+ *  worktree 删除前必须先做：Windows 上 chat 的 codex/claude 子进程把 worktree 目录占着，
+ *  不停它 `git worktree remove` / rmdir 都会 os error 32（文件被占用）。closeChat 会 await
+ *  子进程真正停止，故此处 await 完再删目录才安全。 */
+async function stopWorktreeChats(worktreePath: string) {
+  const target = normPath(worktreePath)
+  // filter 出独立数组 —— closeChat 会 splice chatSessions.value，边删边迭代原数组会漏。
+  const victims = chatSessions.value.filter((c) => normPath(c.cwd) === target)
+  for (const c of victims) {
+    const tab = viewTabs.value.find((t) => t.type === 'chat' && t.chatSession?.uiId === c.uiId)
+    if (tab) removeViewTab(tab.uiId)
+    try {
+      await closeChat(c.uiId)
+    } catch {}
+  }
+}
+
+/** 物理删除某 agent 在这个 worktree 路径下的全部会话（不进回收站，不可恢复）+ 杀掉其 tab。
+ *  合成占位 key 无会话则直接空转返回。 */
+async function hardDeleteWorktreeSessionsFor(a: Agent, worktreePath: string) {
+  const opts = worktreeScanOptions(a)
+  let proj: ProjectInfo | undefined
+  try {
+    proj = findWorktreeProjectIn(await api.listProjects(a, opts), worktreePath)
+  } catch {
+    return
+  }
+  if (!proj) return
+  closeTabsByProject(proj.dirName)
+  const all: SessionMeta[] = []
+  let offset = 0
+  while (true) {
+    const page = await api.listSessions(a, proj.dirName, offset, 200, opts)
+    all.push(...page.sessions)
+    offset += page.sessions.length
+    if (all.length >= page.total || page.sessions.length === 0) break
+  }
+  for (const s of all) {
+    try {
+      await api.hardDeleteSession(a, s.path)
+      removeViewEverywhere(a, s.id || s.path)
+    } catch {}
+  }
 }
 
 const deletingWorktree = ref(false)
@@ -773,23 +867,19 @@ async function performWorktreeDelete(p: ProjectInfo) {
   deletingWorktree.value = true
   const label = p.worktreeName ?? shortName(p.displayPath)
   try {
-    // 先杀掉该 worktree 的 PTY/tab，再硬删会话（不进回收站），最后移除工作树 + 删除分支。
+    // 先停掉占着 worktree 目录的进程，否则 Windows 删目录会 os error 32（文件被占用）：
+    //   1) live GUI chat 的 codex/claude 子进程（cwd = worktree）—— await 到真正停止；
+    //   2) 内嵌 TUI / shell 的 PTY（closeTabsByProject 里 ptyKill，异步，句柄释放由后端重试兜底）。
+    await stopWorktreeChats(p.displayPath)
     closeTabsByProject(p.dirName)
-    // 该 worktree 名下的会话直接物理删除，不可恢复（合成 key 无会话，循环直接空转）。
-    const all: SessionMeta[] = []
-    let offset = 0
-    while (true) {
-      const page = await api.listSessions(agent.value, p.dirName, offset, 200, sessionListOptions())
-      all.push(...page.sessions)
-      offset += page.sessions.length
-      if (all.length >= page.total || page.sessions.length === 0) break
+    // worktree 是 Claude / Codex 共享目录 → 两个 agent 在该路径下的会话都物理删除，不可恢复，
+    // 否则移除工作树后会残留另一 agent 的孤儿 transcript。最后再移除工作树 + 删除分支。
+    for (const a of WORKTREE_AGENTS) {
+      await hardDeleteWorktreeSessionsFor(a, p.displayPath)
     }
-    for (const s of all) {
-      try {
-        await api.hardDeleteSession(agent.value, s.path)
-        removeViewEverywhere(agent.value, s.id || s.path)
-      } catch {}
-    }
+    // 清理各 agent 的项目元数据目录（如 Claude 的 ~/.claude/projects/<encoded>/），
+    // 这些目录可能含有 CLI 配置等非会话文件，hard_delete_session 不会删它们。
+    await api.cleanupWorktreeProjectDirs(p.displayPath)
     await api.removeWorktree(p.displayPath)
     if (activeDir.value === p.dirName) {
       activeDir.value = null
@@ -1200,41 +1290,106 @@ async function loadProjects() {
     notify(t('toast.loadProjectsFail', { e: String(e) }), true)
     projects.value = []
   }
-  // 书签被后端合并进真实项目时（display_path 一致 → 书签条目被跳过），
-  // activeDir 仍指向旧的 "bookmark:..." key，导致 refreshSessions 查错目录。
-  // 这里检测到书签消失后自动重定向到真实项目的 dirName。
-  if (
-    activeDir.value?.startsWith('bookmark:') &&
-    !projects.value.some((p) => p.dirName === activeDir.value)
-  ) {
-    const bmPath = activeDir.value.slice('bookmark:'.length)
-    const real = projects.value.find(
-      (p) => !p.dirName.startsWith('bookmark:') && p.displayPath === bmPath,
-    )
-    if (real) {
-      migrateTabsProjectKey(activeDir.value, real.dirName)
-      activeDir.value = real.dirName
-    }
+  reconcileSyntheticKeys()
+}
+
+/** 合成 key（`bookmark:<path>` / `worktree:<path>`）前缀判定。 */
+function isSyntheticKey(key: string): boolean {
+  return key.startsWith('bookmark:') || key.startsWith('worktree:')
+}
+
+/**
+ * 合成条目 → 真实项目的 key 迁移。
+ *
+ * 书签 / 空 worktree 在侧栏用合成 key 占位；一旦其路径下真的跑出会话，后端 list_projects
+ * 会按 display_path 把它并入该 agent 的真实项目（dirName 变成 agent 自己的路径 key），合成
+ * 条目随之消失。此时仍挂在旧 key 上的分屏布局 / pane / TUI tab / view tab 全部要迁到新
+ * dirName，否则：activeDir 查错目录落欢迎页；点 List / 切回来时 currentLayout 新建空布局，
+ * 刚开的会话 & List tab「凭空消失」（见用户反馈的两个 bug）。
+ *
+ * 不止当前 activeDir —— 后台开着的 worktree tab（用户已切到别的项目）也要迁，否则切回去落空
+ * pane。故扫描所有仍在用的合成 key，逐个找真实项目并整体迁移。路径按分隔符归一化再比对：
+ * Codex 记反斜杠，合成 key 用正斜杠。
+ */
+function reconcileSyntheticKeys() {
+  const norm = (s: string) => s.replace(/\\/g, '/').replace(/\/+$/, '')
+  const liveKeys = new Set(projects.value.map((p) => p.dirName))
+  const stale = new Set<string>()
+  const consider = (key: string | null | undefined) => {
+    if (key && isSyntheticKey(key) && !liveKeys.has(key)) stale.add(key)
   }
-  // 同理：空 worktree 用 `worktree:<path>` 合成 key，一旦在里面跑出会话，后端会把它并入
-  // 该 agent 的真实项目（dirName 换成 agent 自己的路径 key，合成条目消失）。此时 activeDir /
-  // TUI tab 仍指向旧的 `worktree:` key → 点 List 落到欢迎页。检测到后重定向到真实项目。
-  // 路径按分隔符归一化再比对：Codex 记的是反斜杠，合成 key 用的是正斜杠。
-  if (
-    activeDir.value?.startsWith('worktree:') &&
-    !projects.value.some((p) => p.dirName === activeDir.value)
-  ) {
-    const norm = (s: string) => s.replace(/\\/g, '/').replace(/\/+$/, '')
-    const target = norm(activeDir.value.slice('worktree:'.length))
+  consider(activeDir.value)
+  for (const tab of viewTabs.value) consider(tab.projectKey)
+  for (const tab of tuiTabs.value) consider(tab.projectKey)
+
+  for (const oldKey of stale) {
+    const path = oldKey.slice(oldKey.indexOf(':') + 1)
     const real = projects.value.find(
-      (p) => !p.dirName.startsWith('worktree:') && norm(p.displayPath) === target,
+      (p) => !isSyntheticKey(p.dirName) && norm(p.displayPath) === norm(path),
     )
-    if (real) {
-      migrateTabsProjectKey(activeDir.value, real.dirName)
-      activeDir.value = real.dirName
-    }
+    if (!real) continue // 真实项目还没出现（会话尚未落盘）→ 保持合成占位，下次刷新再迁。
+    migrateProjectKey(oldKey, real.dirName)
+    if (activeDir.value === oldKey) activeDir.value = real.dirName
   }
 }
+
+/** 把某项目所有 key 化的状态（分屏布局 / pane / TUI tab / view tab / 记忆的导航映射）从
+ *  oldKey 整体迁到 newKey。合成 key 并入真实项目时调用（见 reconcileSyntheticKeys）。 */
+function migrateProjectKey(oldKey: string, newKey: string) {
+  if (oldKey === newKey) return
+  migratePaneProjectKey(agent.value, oldKey, newKey)
+  migrateViewTabsProjectKey(oldKey, newKey)
+  migrateTabsProjectKey(oldKey, newKey)
+  // live chat 的 projectKey 也迁：修正后续 restart/clear 传的 key，并作为 ChatView 重测虚拟列表
+  // 的信号（修复 worktree 首轮渲染空白）。
+  migrateChatSessionsProjectKey(oldKey, newKey)
+  // 记忆的导航映射按 viewKey 存 —— 一起搬，切走再切回来才能原样恢复活跃 tab。
+  const oldVK = viewKey(agent.value, oldKey)
+  const newVK = viewKey(agent.value, newKey)
+  const av = activeViewByProject.get(oldVK)
+  if (av) { activeViewByProject.delete(oldVK); activeViewByProject.set(newVK, av) }
+  const at = activeTuiByProject.get(oldVK)
+  if (at) { activeTuiByProject.delete(oldVK); activeTuiByProject.set(newVK, at) }
+}
+
+// 新会话落盘 → 侧栏会话计数过期，重载项目列表（见 projectsRefresh.ts）。
+//
+// 难点：会话文件何时落盘因 agent 而异。Claude GUI/CLI 起会话时 transcript 立刻在盘上；Codex
+// app-server 要到首轮真正产出才 flush rollout —— 首个 send（此刻已发 markProjectsDirty）之后
+// 好几秒。单发一次去抖重载会赶在 Codex 落盘前跑、读到旧值且再不重试 → 计数卡住不更新（用户
+// 反馈：Codex 要点一下 List 才更）。故改成「一次信号 → 退避重试若干拍」：每拍重载一次，直到项目
+// 指纹（项目数 + 各项目会话数之和）相对基线变化即收工，否则打满退避序列兜底。多个信号合并进同
+// 一序列。loadProjects 内部还会把并入真实项目的合成 worktree/书签 key 迁移掉。
+const PROJECTS_RELOAD_BACKOFF_MS = [700, 1800, 4000, 8000]
+let projectsReloadTimer = 0
+let projectsReloadStep = 0
+let projectsBaselineSig = ''
+
+function projectsCountSignature(): string {
+  let sum = 0
+  for (const p of projects.value) sum += p.sessionCount
+  return `${projects.value.length}:${sum}`
+}
+
+function scheduleProjectsReload() {
+  if (projectsReloadTimer) return
+  const delay = PROJECTS_RELOAD_BACKOFF_MS[Math.min(projectsReloadStep, PROJECTS_RELOAD_BACKOFF_MS.length - 1)]
+  projectsReloadTimer = window.setTimeout(async () => {
+    projectsReloadTimer = 0
+    projectsReloadStep++
+    await loadProjects()
+    // 计数已变化（新会话被计入 / 空 worktree 合成条目并入真实项目）→ 收工，别再空转重载。
+    if (projectsCountSignature() !== projectsBaselineSig) return
+    if (projectsReloadStep < PROJECTS_RELOAD_BACKOFF_MS.length) scheduleProjectsReload()
+  }, delay)
+}
+
+watch(projectsDirty, () => {
+  // 新一轮信号 → 记基线、从头退避（覆盖刚出现 / 即将落盘的会话）。
+  projectsBaselineSig = projectsCountSignature()
+  projectsReloadStep = 0
+  scheduleProjectsReload()
+})
 
 async function addBookmarkByPath(path: string) {
   // 先刷新项目列表，避免用 stale 的列表做重复判断
@@ -1501,6 +1656,10 @@ async function syncTuiTitlesNow() {
     sessions.value = page.sessions
     sessionTotal.value = page.total
     syncTuiTabsFromCurrentSessions()
+    // 内嵌 TUI 运行期间会话数增长（跑出新会话）→ 请侧栏重载计数（authoritative list_projects，
+    // 口径与徽标一致、不抖动）。仅在总数相对上次同步变化时触发，避免每 4s 空转重载。
+    if (lastTuiSyncedTotal >= 0 && page.total !== lastTuiSyncedTotal) markProjectsDirty()
+    lastTuiSyncedTotal = page.total
   } catch {
     // 后台标题同步不能打扰正在运行的 TUI；用户手动刷新时会看到错误 toast。
   } finally {
@@ -2938,7 +3097,7 @@ function runEditCommand(command: 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 's
 
 const menuHandlers: MenuHandlers = {
   'open-global-search': () => openGlobalSearch(),
-  'find-in-session': () => focusSearchBox(),
+  'find-in-session': () => activeUiId.value !== null ? focusTuiSearchBox() : focusSearchBox(),
   'find-next': () => chatNavigate(1),
   'find-prev': () => chatNavigate(-1),
   'toggle-sidebar': toggleSidebar,
@@ -3419,6 +3578,7 @@ onMounted(() => {
         return
       }
       if (!mod || otherMod || e.altKey) return
+      if (e.repeat) return
 
       const key = e.key.toLowerCase()
       if (key === 'w' && !e.shiftKey) {
@@ -3436,7 +3596,8 @@ onMounted(() => {
       } else if (key === 'f' && e.shiftKey) {
         e.preventDefault(); openGlobalSearch()
       } else if (key === 'f' && !e.shiftKey) {
-        e.preventDefault(); focusSearchBox()
+        e.preventDefault()
+        activeUiId.value !== null ? focusTuiSearchBox() : focusSearchBox()
       } else if (key === 'g' && !e.shiftKey) {
         e.preventDefault(); chatNavigate(1)
       } else if (key === 'g' && e.shiftKey) {
@@ -3742,6 +3903,7 @@ provide<PaneActions>(PaneActionsKey, {
              showStats 优先级要高于 openSession，否则进入会话统计模式时
              还会渲染 ChatTopbar 的「会话统计」按钮，造成视觉重复。 -->
         <div v-if="showStats || (liveChat && activeViewTab?.type === 'chat')" />
+        <TuiTopbar v-else-if="activeUiId !== null" />
         <ChatTopbar v-else-if="openSession && activeViewTab" />
         <TrashTopbar
           v-else-if="showTrash"

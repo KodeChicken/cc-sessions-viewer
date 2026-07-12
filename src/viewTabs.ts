@@ -151,6 +151,15 @@ export function closeViewTabsByProject(projectKey: string) {
   for (const t of toRemove) removeViewTab(t.uiId)
 }
 
+/** 合成 key 被并入真实项目时，把挂在旧 key 上的 view tab（会话/聊天/git）迁到新 key，
+ *  否则 visibleViewTabs(新 key) 查不到它们 → tab 条从标签栏消失。 */
+export function migrateViewTabsProjectKey(oldKey: string, newKey: string) {
+  if (oldKey === newKey) return
+  for (const tab of viewTabs.value) {
+    if (tab.projectKey === oldKey) tab.projectKey = newKey
+  }
+}
+
 const SAVED_VIEW_TABS_KEY = 'savedViewTabs:v1'
 
 export interface SavedViewTab {

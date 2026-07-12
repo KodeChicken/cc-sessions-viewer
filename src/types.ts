@@ -346,6 +346,11 @@ export interface ClaudeRuntimeInfo {
   effortLevel?: string
 }
 
+export interface CodexRuntimeInfo {
+  /** true = 用户通过第三方 API key / 自定义端点使用 Codex（config.toml 有 model_provider）。 */
+  usesApiKey: boolean
+}
+
 /** agent-chat://* 事件 payload（与 Rust 端同形）。 */
 export interface ChatEventPayload { chatId: number; msg: Msg }
 export interface ChatInitPayload { chatId: number; sessionId?: string; apiKeySource?: string }

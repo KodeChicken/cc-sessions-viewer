@@ -14,6 +14,7 @@ const { claudeRuntimeInfoMock, listProjectFilesMock, openSideChatMock } = vi.hoi
 vi.mock('../../src/api', () => ({
   agentChatSlashCommands: vi.fn().mockResolvedValue([]),
   claudeRuntimeInfo: claudeRuntimeInfoMock,
+  codexRuntimeInfo: vi.fn().mockResolvedValue({ usesApiKey: false }),
   listProjectFiles: listProjectFilesMock,
 }))
 

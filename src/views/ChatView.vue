@@ -1309,6 +1309,21 @@ watch(
   { flush: 'post' },
 )
 
+// 会话所属项目 key 迁移（worktree 首个会话落盘 → 合成 key 并入真实项目）时，外层布局会 reflow。
+// 虚拟列表缓存的滚动几何随之失效，而它只在真实滚动时重算范围 → getVirtualItems() 变空 → 整列
+// 消息渲染空白（用户反馈：codex worktree 首轮空白，要再发一次才出来）。这里在 key 变化后强制
+// 重测虚拟器并（在底部时）重新钉底，逼它立刻重算可见行。
+watch(
+  () => props.liveSession?.projectKey,
+  (key, prev) => {
+    if (!key || key === prev) return
+    nextTick(() => {
+      rowVirtualizer.value.measure()
+      if (isNearBottom()) pinToBottomFor(300)
+    })
+  },
+)
+
 // 主题切换：mermaid 不能运行时换色，要把已渲染节点 reset 再 redraw。
 watch(theme, () => {
   nextTick(() => {
