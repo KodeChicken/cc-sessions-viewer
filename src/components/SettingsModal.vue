@@ -113,9 +113,16 @@ const shortcutGroups = [
       { key: k([mod, 'W']), label: 'settings.shortcut.closeTab' },
       { key: k([mod, 'R']), label: 'settings.shortcut.renameTab' },
       { key: k([mod, 'E']), label: 'settings.shortcut.exportSession' },
+    ],
+  },
+  {
+    title: 'settings.shortcut.groupChat',
+    items: [
       { key: k([mod, 'U']), label: 'settings.shortcut.attachFiles' },
       { key: k([mod, 'J']), label: 'settings.shortcut.btwSideChat' },
       { key: 'Ctrl+S', label: 'settings.shortcut.stashInput' },
+      { key: 'Ctrl+D', label: 'settings.shortcut.deleteLine' },
+      { key: 'Shift+Enter', label: 'settings.shortcut.newline' },
     ],
   },
   {

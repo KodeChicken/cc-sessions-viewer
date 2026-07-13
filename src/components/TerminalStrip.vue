@@ -35,6 +35,7 @@ import { t } from '../i18n'
 import { PaneActionsKey } from '../paneActions'
 import { chatSupported } from '../chatComposerOptions'
 import NewMenu from './NewMenu.vue'
+import { fontScale } from '../settings'
 
 const pa = inject(PaneActionsKey)!
 
@@ -525,7 +526,8 @@ async function openNativeViewTabContextMenu(vt: ViewTab, ev: MouseEvent): Promis
         },
       ],
     })
-    await menu.popup(new LogicalPosition(ev.clientX, ev.clientY))
+    const z = fontScale.value / 14
+    await menu.popup(new LogicalPosition(ev.clientX * z, ev.clientY * z))
     return true
   } catch {
     return false
@@ -814,7 +816,8 @@ async function openNativeSavedContextMenu(saved: SavedTab, ev: MouseEvent): Prom
         },
       ],
     })
-    await menu.popup(new LogicalPosition(ev.clientX, ev.clientY))
+    const z = fontScale.value / 14
+    await menu.popup(new LogicalPosition(ev.clientX * z, ev.clientY * z))
     return true
   } catch (err) {
     console.warn('Failed to open native saved tab context menu, falling back to HTML menu', err)
@@ -895,7 +898,8 @@ async function openNativeTabContextMenu(tab: TerminalTab, ev: MouseEvent): Promi
         },
       ],
     })
-    await menu.popup(new LogicalPosition(ev.clientX, ev.clientY))
+    const z = fontScale.value / 14
+    await menu.popup(new LogicalPosition(ev.clientX * z, ev.clientY * z))
     return true
   } catch (err) {
     console.warn('Failed to open native tab context menu, falling back to HTML menu', err)
@@ -939,7 +943,8 @@ async function openNativeStripContextMenu(ev: MouseEvent): Promise<boolean> {
         },
       ],
     })
-    await menu.popup(new LogicalPosition(ev.clientX, ev.clientY))
+    const z = fontScale.value / 14
+    await menu.popup(new LogicalPosition(ev.clientX * z, ev.clientY * z))
     return true
   } catch (err) {
     console.warn('Failed to open native strip context menu, falling back to HTML menu', err)

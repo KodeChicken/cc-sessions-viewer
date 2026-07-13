@@ -3121,6 +3121,13 @@ details[open] > .block-summary > .chev {
   overflow: auto;
   color: var(--text);
 }
+.block-body.thinking-md {
+  font-size: 13px;
+  line-height: 1.55;
+  max-height: 420px;
+  overflow: auto;
+  color: var(--text);
+}
 .inline-tool-code .block-body .code-block {
   margin: 0;
   white-space: pre;

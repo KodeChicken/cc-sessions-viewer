@@ -1026,9 +1026,18 @@ fn read_with_title_index(
             ("event_msg", "agent_message") => {
                 if let Some(m) = p.get("message").and_then(|x| x.as_str()) {
                     if !m.trim().is_empty() {
-                        let mut msg = simple_msg("assistant", ts, text_block("text", m));
-                        msg.model = model_hint.clone();
-                        msgs.push(msg);
+                        let blocks = split_thinking_blocks(m);
+                        if !blocks.is_empty() {
+                            msgs.push(Msg {
+                                uuid: None,
+                                role: "assistant".to_string(),
+                                timestamp: ts,
+                                model: model_hint.clone(),
+                                sidechain: false,
+                                blocks,
+                                meta_kind: None,
+                            });
+                        }
                     }
                 }
             }
@@ -1259,6 +1268,36 @@ fn parse_exec_usage(u: &Value) -> UsageSummary {
     }
 }
 
+/// 把 `<thinking>...</thinking>` 标签拆成 `thinking` 块，其余部分保留为 `text` 块。
+fn split_thinking_blocks(input: &str) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    let mut rest = input;
+    while let Some(start) = rest.find("<thinking>") {
+        let before = &rest[..start];
+        if !before.trim().is_empty() {
+            blocks.push(text_block("text", before.trim()));
+        }
+        rest = &rest[start + "<thinking>".len()..];
+        if let Some(end) = rest.find("</thinking>") {
+            let thinking = &rest[..end];
+            if !thinking.trim().is_empty() {
+                blocks.push(text_block("thinking", thinking.trim()));
+            }
+            rest = &rest[end + "</thinking>".len()..];
+        } else {
+            if !rest.trim().is_empty() {
+                blocks.push(text_block("thinking", rest.trim()));
+            }
+            rest = "";
+            break;
+        }
+    }
+    if !rest.trim().is_empty() {
+        blocks.push(text_block("text", rest.trim()));
+    }
+    blocks
+}
+
 /// 一个 `item.completed` 的 item → 一条 Msg。`agent_message` 是助手文本，
 /// `command_execution` 渲染成 shell 工具块（命令 + 输出），`reasoning` 与浏览模式一致
 /// 不单独渲染；其它类型（file_change / mcp_tool_call / web_search …）走通用兜底，
@@ -1270,7 +1309,19 @@ fn chat_item_to_msg(item: &Value) -> Option<Msg> {
             if text.trim().is_empty() {
                 return None;
             }
-            Some(simple_msg("assistant", None, text_block("text", text)))
+            let blocks = split_thinking_blocks(text);
+            if blocks.is_empty() {
+                return None;
+            }
+            Some(Msg {
+                uuid: None,
+                role: "assistant".to_string(),
+                timestamp: None,
+                model: None,
+                sidechain: false,
+                blocks,
+                meta_kind: None,
+            })
         }
         "reasoning" => None,
         "error" => {

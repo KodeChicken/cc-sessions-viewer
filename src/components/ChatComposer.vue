@@ -984,6 +984,25 @@ function onKeydown(e: KeyboardEvent) {
       return
     }
   }
+  // Ctrl+D：删除光标所在行。
+  if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && (e.key === 'd' || e.key === 'D')) {
+    e.preventDefault()
+    const el = taEl.value
+    if (!el) return
+    const val = el.value
+    const pos = el.selectionStart
+    let lineStart = val.lastIndexOf('\n', pos - 1) + 1
+    let lineEnd = val.indexOf('\n', pos)
+    if (lineEnd === -1) lineEnd = val.length
+    else lineEnd += 1
+    if (lineStart === lineEnd && lineStart > 0) lineStart--
+    text.value = val.slice(0, lineStart) + val.slice(lineEnd)
+    nextTick(() => {
+      el.selectionStart = el.selectionEnd = Math.min(lineStart, text.value.length)
+      autosize()
+    })
+    return
+  }
   // Ctrl+S stash（非 Cmd+S）：暂存当前输入框内容，下一轮结束后恢复。
   if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && (e.key === 's' || e.key === 'S')) {
     e.preventDefault()

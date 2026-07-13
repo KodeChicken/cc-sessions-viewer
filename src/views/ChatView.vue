@@ -1809,7 +1809,7 @@ function onDocClick(e: MouseEvent) {
                   <span class="chev"><IconChevronRight /></span>
                   <span class="label">{{ toolLabel(b) }}</span>
                 </summary>
-                <div class="block-body"><pre>{{ b.text }}</pre></div>
+                <div class="block-body thinking-md" v-html="renderText(b.text ?? '')" />
               </details>
 
               <div

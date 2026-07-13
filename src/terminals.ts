@@ -1232,9 +1232,16 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     term.write(`\r\n\x1b[2m[process exited: ${e.payload.code}]\x1b[0m\r\n`)
   })
 
+  // Shift 状态追踪：onData 不带修饰键信息，靠 keydown/keyup 标志判断 Shift+Enter→\n。
+  let shiftHeld = false
+  term.textarea?.addEventListener('keydown', (e) => { shiftHeld = e.shiftKey }, true)
+  term.textarea?.addEventListener('keyup', () => { shiftHeld = false }, true)
+
   // xterm → 后端（注：spawning / exited 时屏蔽，避免空 ptyId 或写已死管道）
   tab.onDataDisp = term.onData((data) => {
     if (tab.ptyId === null || tab.processState !== 'alive') return
+    // Shift+Enter: xterm 发 \r，替换为 \n（与原生终端行为一致）。
+    if (data === '\r' && shiftHeld) data = '\n'
     if (isTerminalCancelInput(data)) {
       clearLocalWorkingTurn(tab, activeUiId.value === tab.uiId)
     } else {
@@ -1328,9 +1335,12 @@ export async function openShellTab(opts: {
     if (mod && !otherMod && !ev.shiftKey && (key === 'w' || key === 't' || key === 'r' || key === 'f')) {
       return false
     }
-
     return true
   })
+
+  let shiftHeld = false
+  term.textarea?.addEventListener('keydown', (e) => { shiftHeld = e.shiftKey }, true)
+  term.textarea?.addEventListener('keyup', () => { shiftHeld = false }, true)
 
   await nextTick()
   await new Promise((r) => requestAnimationFrame(() => r(null)))
@@ -1372,6 +1382,7 @@ export async function openShellTab(opts: {
 
   tab.onDataDisp = term.onData((data) => {
     if (tab.ptyId === null || tab.processState !== 'alive') return
+    if (data === '\r' && shiftHeld) data = '\n'
     const bytes = new TextEncoder().encode(data)
     api.ptyWrite(tab.ptyId, bytesToBase64(bytes)).catch(() => {})
   })

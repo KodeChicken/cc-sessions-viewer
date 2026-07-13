@@ -1,4 +1,5 @@
 import { ref, computed, watch, watchEffect } from 'vue'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { Agent, StatsRange, StatsScope } from './types'
 
 export type Lang = 'en' | 'zh' | 'zh-TW' | 'ja'
@@ -167,7 +168,17 @@ export function setFontScale(s: FontScale) {
 function doApplyZoom(size: number) {
   const zoom = size / FONT_SCALE_DEFAULT
   document.documentElement.style.setProperty('--app-zoom', String(zoom))
-  document.body.style.zoom = String(zoom)
+  // WKWebView 下 CSS `body.style.zoom < 1` 导致选区坐标偏移（文字选中"飘"、
+  // 右键菜单消失）。改用 Tauri 原生 webview setZoom（= 浏览器级缩放），
+  // 坐标系统由引擎管理，选区 / 右键菜单 / 鼠标事件全部正确。
+  document.body.style.zoom = ''
+  try {
+    getCurrentWebview().setZoom(zoom).catch(() => {
+      document.body.style.zoom = String(zoom)
+    })
+  } catch {
+    document.body.style.zoom = String(zoom)
+  }
 }
 
 export function applyFontScale() {

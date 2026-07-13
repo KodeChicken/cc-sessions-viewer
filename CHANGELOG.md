@@ -6,6 +6,22 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.3.1]
+
+### Features
+
+- **Ctrl+D delete line in chat composer** — pressing Ctrl+D in the GUI chat input deletes the entire line at the cursor position, matching common editor behavior.
+- **Shift+Enter newline in TUI terminal** — Shift+Enter now inserts a newline (`\n`) instead of submitting (`\r`) in both TUI and shell terminal tabs, matching native terminal behavior.
+- **Keyboard shortcuts reorganized** — Settings → Shortcuts now splits chat-specific shortcuts (Ctrl+S stash, Ctrl+D delete line, Shift+Enter newline, ⌘U attach files, ⌘J side chat) into a dedicated "Chat (GUI)" group, separate from session-level shortcuts.
+
+### Bug Fixes
+
+- **Text selection floating at small font sizes** — font sizes below 14px caused selected text to visually "float" away from the cursor due to CSS `body.style.zoom` coordinate mismatch in WKWebView. Replaced with Tauri's native `webview.setZoom()` which keeps selection, right-click menus, and mouse events aligned at all zoom levels.
+- **Right-click context menu position offset** — native Tauri menu popups in the terminal strip appeared offset from the click position when font size was not 14px. `LogicalPosition` coordinates are now multiplied by the zoom factor to compensate.
+- **Split/close pane key repeat blocked** — holding down ⌘D / ⌘⇧D / ⌘⇧W no longer rapid-fires split or close pane actions; only the initial keypress is honored.
+
+---
+
 ## [v0.3.0]
 
 ### Features
