@@ -376,6 +376,8 @@ export default {
   'chat.tb.scope.tools': 'Tools (excl. edits)',
 
   'tui.tb.search.placeholder': 'Search terminal',
+  'tui.codexProviderMissing': 'This session was created with Codex model provider "{provider}", which is no longer defined in ~/.codex/config.toml — so resume can\'t start. Add that provider back (or point it at an existing one) to resume. Other sessions aren\'t affected, and this transcript stays fully viewable here.',
+  'tui.codexConfigError': 'Codex couldn\'t load its configuration, so this session can\'t resume. Check ~/.codex/config.toml. This transcript stays fully viewable here.',
   'chat.tb.search.placeholder': 'Search messages',
   'chat.tb.search.prev': 'Previous match',
   'chat.tb.search.next': 'Next match',

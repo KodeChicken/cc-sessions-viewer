@@ -376,6 +376,8 @@ export default {
   'chat.tb.scope.tools': '工具呼叫（不含異動）',
 
   'tui.tb.search.placeholder': '搜尋終端',
+  'tui.codexProviderMissing': '此工作階段建立時使用的 Codex 模型提供方「{provider}」已不在 ~/.codex/config.toml 中，所以 resume 無法啟動。將該 provider 加回設定（或指向一個現有的 provider）即可恢復。其它工作階段不受影響，該工作階段記錄在這裡仍可正常檢視。',
+  'tui.codexConfigError': 'Codex 載入設定失敗，此工作階段無法 resume。請檢查 ~/.codex/config.toml。該工作階段記錄在這裡仍可正常檢視。',
   'chat.tb.search.placeholder': '搜尋訊息',
   'chat.tb.search.prev': '上一個結果',
   'chat.tb.search.next': '下一個結果',

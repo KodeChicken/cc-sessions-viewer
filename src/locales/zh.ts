@@ -377,6 +377,8 @@ export default {
   'chat.tb.scope.tools': '工具调用（不含改动）',
 
   'tui.tb.search.placeholder': '搜索终端',
+  'tui.codexProviderMissing': '此会话创建时使用的 Codex 模型提供方「{provider}」已不在 ~/.codex/config.toml 中，所以 resume 无法启动。把该 provider 加回配置（或指向一个现有的 provider）即可恢复。其它会话不受影响，该会话记录在这里仍可正常查看。',
+  'tui.codexConfigError': 'Codex 加载配置失败，此会话无法 resume。请检查 ~/.codex/config.toml。该会话记录在这里仍可正常查看。',
   'chat.tb.search.placeholder': '搜索消息',
   'chat.tb.search.prev': '上一个匹配',
   'chat.tb.search.next': '下一个匹配',

@@ -28,6 +28,7 @@ import '@xterm/xterm/css/xterm.css'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { Agent, SessionMeta } from './types'
 import { theme, launchArgs, useReclaude } from './settings'
+import { t } from './i18n'
 import { panes, focusPane, ensureLayout, activeUiId } from './panes'
 import * as api from './api'
 import {
@@ -971,6 +972,26 @@ function isTerminalCancelInput(data: string) {
   return data === '\x1b' || data === '\x03'
 }
 
+/**
+ * codex resume 在 TUI 引导阶段常因「配置加载失败 / model provider 缺失」直接退出，
+ * codex 打进 xterm 的原始报错（如 `Model provider \`aixj_vip\` not found`）用户往往看不懂
+ * ——尤其是那些在旧 CLI / VSCode 扩展里用过、后来 provider 改名/删除的历史会话。
+ * 这里从最近的 PTY 输出里识别这类错误，返回一句可操作的本地化提示；否则 null（不打扰
+ * 其它退出场景）。只在 codex tab、非 0 退出码时调用。
+ */
+export function codexResumeConfigHint(recentOutput: string): string | null {
+  // 先剥掉 ANSI 转义，避免颜色码把 provider 名或关键字截断。
+  const plain = recentOutput.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+  const providerMatch = plain.match(/Model provider\s*['"`]?([^'"`\n]+?)['"`]?\s*not found/i)
+  if (providerMatch) {
+    return t('tui.codexProviderMissing', { provider: providerMatch[1].trim() })
+  }
+  if (/failed to load configuration/i.test(plain)) {
+    return t('tui.codexConfigError')
+  }
+  return null
+}
+
 function tabsBySession(agent: Agent, sessionPath: string) {
   if (!sessionPath) return []
   return tabs.value.filter(
@@ -1207,12 +1228,18 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   setProcessState(tab, 'alive')
   ensureSessionTurnWatch(tab, true)
 
+  // codex resume 失败时给友好提示用：滚动保留最近一段 PTY 文本（仅 codex tab 需要）。
+  // stream:true 让多字节字符跨块拼接不乱码；只留尾部 6KB，够覆盖启动阶段的报错。
+  let recentCodexOutput = ''
+  const hintDecoder = new TextDecoder('utf-8')
+
   // 后端 → xterm（按 id 过滤多 tab）
   tab.unlistenData = await listen<{ id: number; base64: string }>('pty://data', (e) => {
     if (e.payload.id !== ptyId) return
     tab.lastOutputAt = Date.now()
     const bytes = base64ToBytes(e.payload.base64)
     if (tab.agent === 'codex') {
+      recentCodexOutput = (recentCodexOutput + hintDecoder.decode(bytes, { stream: true })).slice(-6000)
       const normalizer = terminalColorScheme() === 'light' ? normalizeLightSgr : normalizeDarkSgr
       const normalized = normalizeAnsiBackground(bytes, tab.pendingAnsiBytes, normalizer)
       tab.pendingAnsiBytes = normalized.pending
@@ -1230,6 +1257,11 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     }
     tab.exitCode = e.payload.code
     term.write(`\r\n\x1b[2m[process exited: ${e.payload.code}]\x1b[0m\r\n`)
+    // 非 0 退出且是 codex：识别「配置/provider 加载失败」→ 补一行友好提示。
+    if (e.payload.code !== 0 && tab.agent === 'codex') {
+      const hint = codexResumeConfigHint(recentCodexOutput)
+      if (hint) term.write(`\r\n\x1b[33m${hint.replace(/\n/g, '\r\n')}\x1b[0m\r\n`)
+    }
   })
 
   // Shift 状态追踪：onData 不带修饰键信息，靠 keydown/keyup 标志判断 Shift+Enter→\n。

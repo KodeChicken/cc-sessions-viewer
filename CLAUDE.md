@@ -147,6 +147,25 @@ project dir, and run a per-agent CLI (`claude --resume <id>` /
 strict allowlist (`[A-Za-z0-9-]+`) because the id is interpolated into a shell
 command.
 
+### Windows PowerShell command execution — INVARIANTS
+
+**PowerShell is NOT a POSIX shell.** Treating it like `sh` has silently broken
+"node CLIs not recognized on Windows" 3+ times (empty results / false "not
+installed" / `?` versions, no crash). When building a command string for
+`powershell.exe`/`pwsh.exe` (`cli_env.rs`, `agent_command.rs`, `pty.rs`):
+
+1. **`where.exe`, never bare `where`** — `where` is an alias for `Where-Object`.
+2. **Quoted path → call operator: `& 'C:\x.exe' --version`** — a bare `'…' --version`
+   is a parse error. (A bare command name on PATH doesn't need `&`.)
+3. **Escape `'` by doubling (`''`), not POSIX `'\''`** — see `powershell_quote`.
+4. **Prefix every CLI command with `powershell_refresh_path()`** — GUI-inherited PATH
+   can miss nvm/npm dirs; it rebuilds `$env:Path` from the registry (`$processPath`
+   first — don't reorder).
+5. **`-ExecutionPolicy Bypass`** — npm/nvm shims are `.ps1`, blocked by default.
+
+Keep `#[cfg(windows)]` shell strings separate from their `#[cfg(unix)]` twins (see
+`get_version_at_path`); never share one string across both.
+
 ### macOS titlebar / traffic lights
 
 The CSS topbar is 40px and shares background with the sidebar; the unified

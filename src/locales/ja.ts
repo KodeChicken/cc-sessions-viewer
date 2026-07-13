@@ -376,6 +376,8 @@ export default {
   'chat.tb.scope.tools': 'ツール（編集除く）',
 
   'tui.tb.search.placeholder': 'ターミナルを検索',
+  'tui.codexProviderMissing': 'このセッションは Codex のモデルプロバイダー「{provider}」で作成されましたが、~/.codex/config.toml に定義がないため再開できません。そのプロバイダーを設定に戻す（または既存のものに割り当てる）と再開できます。他のセッションには影響せず、この記録はここで引き続き閲覧できます。',
+  'tui.codexConfigError': 'Codex が設定を読み込めなかったため、このセッションを再開できません。~/.codex/config.toml を確認してください。この記録はここで引き続き閲覧できます。',
   'chat.tb.search.placeholder': 'メッセージを検索',
   'chat.tb.search.prev': '前の一致へ',
   'chat.tb.search.next': '次の一致へ',

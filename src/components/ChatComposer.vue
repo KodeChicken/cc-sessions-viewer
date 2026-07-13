@@ -984,8 +984,8 @@ function onKeydown(e: KeyboardEvent) {
       return
     }
   }
-  // Ctrl+D：删除光标所在行。
-  if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && (e.key === 'd' || e.key === 'D')) {
+  // Ctrl+Del：删除光标所在行。（原为 Ctrl+D，与 Windows 分屏快捷键冲突）
+  if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.key === 'Delete') {
     e.preventDefault()
     const el = taEl.value
     if (!el) return

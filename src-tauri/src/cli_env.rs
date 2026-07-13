@@ -492,7 +492,10 @@ fn find_all_paths(binary: &str) -> Vec<String> {
 
 #[cfg(windows)]
 fn find_all_paths(binary: &str) -> Vec<String> {
-    run_in_login_shell(&format!("where {binary} 2>$null"))
+    // NOTE: use `where.exe`, not `where` — inside PowerShell `where` is an alias
+    // for `Where-Object`, so a bare `where claude` matches nothing and the whole
+    // diagnosis silently returns zero installations.
+    run_in_login_shell(&format!("where.exe {binary} 2>$null"))
         .unwrap_or_default()
         .lines()
         .map(|l| l.trim().to_string())
@@ -500,8 +503,73 @@ fn find_all_paths(binary: &str) -> Vec<String> {
         .collect()
 }
 
+/// Collapse the several launcher shims npm/native installers drop for one
+/// install (`codex`, `codex.cmd`, `codex.ps1`, …, all in the same directory)
+/// down to a single representative path, preferring the most directly-runnable
+/// extension so the `--version` probe actually works. On Unix this is a no-op
+/// pass-through; symlink de-duplication happens later via canonicalization.
+#[cfg(windows)]
+fn dedup_installs(paths: &[String]) -> Vec<String> {
+    use std::collections::HashMap;
+    let rank = |p: &str| -> u8 {
+        let lower = p.to_lowercase();
+        if lower.ends_with(".exe") {
+            0
+        } else if lower.ends_with(".cmd") {
+            1
+        } else if lower.ends_with(".bat") {
+            2
+        } else if lower.ends_with(".ps1") {
+            3
+        } else {
+            4
+        }
+    };
+    let mut best: HashMap<String, String> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for p in paths {
+        let path = std::path::Path::new(p);
+        let dir = path
+            .parent()
+            .map(|d| d.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let key = format!("{dir}|{stem}");
+        match best.get(&key) {
+            Some(existing) if rank(existing) <= rank(p) => {}
+            Some(_) => {
+                best.insert(key, p.clone());
+            }
+            None => {
+                order.push(key.clone());
+                best.insert(key, p.clone());
+            }
+        }
+    }
+    order.into_iter().filter_map(|k| best.get(&k).cloned()).collect()
+}
+
+#[cfg(unix)]
+fn dedup_installs(paths: &[String]) -> Vec<String> {
+    paths.to_vec()
+}
+
+#[cfg(unix)]
 fn get_version_at_path(path: &str) -> Option<String> {
     let out = run_in_login_shell(&format!("'{}' --version", path.replace('\'', "'\\''"))).ok()?;
+    extract_version(&out)
+}
+
+#[cfg(windows)]
+fn get_version_at_path(path: &str) -> Option<String> {
+    // A quoted path in PowerShell must be invoked with the call operator `&`;
+    // a bare `'C:\...\x.exe' --version` is a parse error. Inside a single-quoted
+    // string, a literal quote is escaped by doubling it.
+    let out =
+        run_in_login_shell(&format!("& '{}' --version", path.replace('\'', "''"))).ok()?;
     extract_version(&out)
 }
 
@@ -532,6 +600,34 @@ fn detect_package_manager(resolved: &str) -> String {
     }
 }
 
+/// Windows package-manager detection that does NOT depend on where node lives.
+///
+/// nvm-for-windows, Volta, a plain npm install, or a custom install dir all put
+/// the launcher shim in a different place, so matching directory names is
+/// unreliable (an earlier version hard-coded `\nvm\`, which only matched one
+/// machine's layout). Instead we read the shim: npm generates `.cmd`/`.ps1`
+/// launchers that invoke node against a script under `node_modules`, so the
+/// presence of a `node_modules` reference inside the shim is a robust,
+/// path-independent signal of an npm-global install. Real standalone binaries
+/// (claude.exe, agy.exe) aren't shims and don't match → "system".
+#[cfg(windows)]
+fn detect_package_manager_win(raw_path: &str, resolved: Option<&str>) -> String {
+    // Keep the shared string markers first (e.g. an explicit `\node_modules\`
+    // in the path already answers it).
+    let by_path = detect_package_manager(resolved.unwrap_or(raw_path));
+    if by_path != "system" {
+        return by_path;
+    }
+    for candidate in [resolved, Some(raw_path)].into_iter().flatten() {
+        if let Ok(content) = std::fs::read_to_string(candidate) {
+            if content.to_lowercase().contains("node_modules") {
+                return "npm".into();
+            }
+        }
+    }
+    "system".into()
+}
+
 fn is_temp_path(path: &str) -> bool {
     (path.contains("/var/folders/") && path.contains("/T/"))
         || path.starts_with("/tmp/")
@@ -543,12 +639,14 @@ pub fn diagnose(cli_name: &str) -> Result<CliDiagnosisResult, String> {
     let raw_paths = find_all_paths(spec.binary);
 
     // 1. Deduplicate raw paths (which -a returns duplicates when PATH has
-    //    the same directory listed multiple times)
+    //    the same directory listed multiple times), then collapse the multiple
+    //    launcher shims Windows installers create for one install.
     let mut seen_raw = std::collections::HashSet::new();
     let unique_paths: Vec<_> = raw_paths
         .into_iter()
         .filter(|p| seen_raw.insert(p.clone()))
         .collect();
+    let unique_paths = dedup_installs(&unique_paths);
 
     // 2. Build installations, deduplicating by resolved (canonical) path so
     //    symlinks that point to the same binary count as one installation
@@ -564,6 +662,9 @@ pub fn diagnose(cli_name: &str) -> Result<CliDiagnosisResult, String> {
             continue;
         }
         let version = get_version_at_path(path);
+        #[cfg(windows)]
+        let pm = detect_package_manager_win(path, resolved.as_deref());
+        #[cfg(unix)]
         let pm = resolved
             .as_deref()
             .map(detect_package_manager)
@@ -635,6 +736,36 @@ mod tests {
             "npm"
         );
         assert_eq!(detect_package_manager("/usr/bin/claude"), "system");
+        // A node_modules segment marks an npm install on any OS / any dir.
+        assert_eq!(
+            detect_package_manager("X:\\anything\\node_modules\\pkg\\bin\\tool.cmd"),
+            "npm"
+        );
+        // Windows package-manager detection no longer guesses from the install
+        // directory (that only ever matched one machine's layout) — it reads the
+        // shim in detect_package_manager_win, covered by manual/live testing
+        // since it needs real files on disk.
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_dedup_installs_collapses_shims() {
+        // The values below are synthetic placeholders, not any real install dir.
+        // npm drops `foo` + `foo.cmd` in the SAME dir for one install; they must
+        // collapse to a single entry, preferring the runnable `.cmd`.
+        let dir = "X:\\bin";
+        let paths = vec![
+            format!("{dir}\\foo"),
+            format!("{dir}\\foo.cmd"),
+        ];
+        assert_eq!(dedup_installs(&paths), vec![format!("{dir}\\foo.cmd")]);
+
+        // The SAME binary name in two DIFFERENT dirs is two real installs.
+        let paths = vec![
+            "X:\\bin-a\\foo.cmd".to_string(),
+            "Y:\\bin-b\\foo.cmd".to_string(),
+        ];
+        assert_eq!(dedup_installs(&paths).len(), 2);
     }
 
     #[test]

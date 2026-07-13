@@ -205,7 +205,10 @@ onMounted(() => {
             class="ce-inst"
           >
             <code class="ce-inst-path">{{ inst.path }}</code>
-            <span class="ce-inst-ver">{{ inst.version || '?' }}</span>
+            <!-- The per-install version only matters when comparing multiple
+                 conflicting installs; with a single install it just duplicates
+                 the version already shown in the card header. -->
+            <span v-if="diagnosisResults[info.cli]!.hasConflict" class="ce-inst-ver">{{ inst.version || '?' }}</span>
             <span v-if="inst.isDefault" class="ce-tag ce-tag-default">{{ t('settings.cli.default') }}</span>
             <span class="ce-tag">{{ pmLabels[inst.packageManager] || inst.packageManager }}</span>
           </div>
