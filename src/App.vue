@@ -2730,7 +2730,7 @@ async function resumeChatFromSession(s: SessionMeta) {
   const cwd = s.cwd || activeProject.value?.displayPath || ''
   const projectKey = activeProject.value?.dirName ?? activeDir.value ?? ''
   activeUiId.value = null
-  const chatSession = await startChat({
+  await startChat({
     agent: chatAgent.value,
     projectKey,
     cwd,
@@ -2741,22 +2741,24 @@ async function resumeChatFromSession(s: SessionMeta) {
     model: lastAssistantModel(preload),
     preloadMsgs: preload,
     initialUsage,
-  })
-  if (existingRead) {
-    existingRead.type = 'chat'
-    existingRead.chatSession = chatSession
-    existingRead.sourceSession = s
-    setActiveViewTab(existingRead.uiId)
-  } else {
-    createViewTab({
-      type: 'chat',
-      agent: chatAgent.value,
-      projectKey,
-      title: s.title,
-      chatSession: chatSession,
+    onReady(chatSession) {
+      if (existingRead) {
+        existingRead.type = 'chat'
+        existingRead.chatSession = chatSession
+        existingRead.sourceSession = s
+        setActiveViewTab(existingRead.uiId)
+      } else {
+        createViewTab({
+          type: 'chat',
+          agent: chatAgent.value,
+          projectKey,
+          title: s.title,
+          chatSession: chatSession,
       sourceSession: s,
     })
   }
+    },
+  })
 }
 
 /** 列表行「chat」图标：把该会话作为 live GUI chat 打开。 */

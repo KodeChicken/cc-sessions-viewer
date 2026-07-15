@@ -6,7 +6,8 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { t } from '../i18n'
 import { formatElapsedSeconds, renderText } from '../format'
 import { now, sendPrompt, interruptChat, type ChatSession } from '../chatSessions'
-import { closeSideChat } from '../sideChat'
+import { closeSideChat, isBtwMinimized, setBtwMinimized } from '../sideChat'
+import { focusedPane } from '../panes'
 import type { Block, Msg } from '../types'
 import { IconChevronRight, IconClose, IconMinimize, IconSend, IconStop, IconZap } from './icons'
 
@@ -15,7 +16,10 @@ const props = defineProps<{ session: ChatSession; hidden?: boolean }>()
 const panelEl = ref<HTMLElement | null>(null)
 
 function containerRect(): DOMRect {
-  const pane = document.querySelector('.pane-focused .main-body')
+  const fp = focusedPane.value
+  const pane = fp
+    ? document.querySelector(`[data-pane-id="${fp.id}"] .main-body`)
+    : document.querySelector('.pane-focused .main-body')
   return pane?.getBoundingClientRect() ?? new DOMRect(0, 0, window.innerWidth, window.innerHeight)
 }
 
@@ -23,16 +27,12 @@ function containerRect(): DOMRect {
 const W_KEY = 'sideChatWidth'
 const MIN_W = 320
 const MAX_W = 2000
-function clampWidth(w: number): number {
-  const max = Math.min(MAX_W, containerRect().width - 32)
-  return Math.min(Math.max(MIN_W, w), max)
-}
 function readWidth(): number {
   try {
     const raw = localStorage.getItem(W_KEY)
     if (raw) {
       const w = JSON.parse(raw)
-      if (typeof w === 'number') return clampWidth(w)
+      if (typeof w === 'number') return Math.max(MIN_W, w)
     }
   } catch {
     /* ignore */
@@ -61,12 +61,12 @@ function readPos(): { right: number; top: number } {
     const raw = localStorage.getItem(POS_KEY)
     if (raw) {
       const p = JSON.parse(raw)
-      if (typeof p.right === 'number' && typeof p.top === 'number') return clampPos(p.right, p.top)
+      if (typeof p.right === 'number' && typeof p.top === 'number') return { right: p.right, top: p.top }
     }
   } catch {
     /* ignore */
   }
-  return clampPos(20, 64) // 默认：贴右上角
+  return { right: 20, top: 64 }
 }
 const pos = ref(readPos())
 
@@ -183,6 +183,15 @@ function onResizeEnd() {
   }
 }
 
+const fabStyle = computed(() => {
+  void focusedPane.value
+  const cr = containerRect()
+  return {
+    right: (window.innerWidth - cr.right + 20) + 'px',
+    bottom: (window.innerHeight - cr.bottom + 20) + 'px',
+  }
+})
+
 // ---------- 运行态 ----------
 const running = computed(() => props.session.turnState === 'running')
 const elapsedSec = computed(() =>
@@ -196,10 +205,11 @@ const contextLabel = computed(() =>
 )
 
 // ---------- 最小化：折叠成纯标题条（消息/输入隐藏，运行态仍在头部转圈） ----------
-const minimized = ref(false)
+const minimized = ref(isBtwMinimized(props.session.uiId))
 function toggleMin(e: Event) {
   e.stopPropagation() // 别触发标题栏拖动
   minimized.value = !minimized.value
+  setBtwMinimized(props.session.uiId, minimized.value)
   if (!minimized.value) scrollToBottom()
 }
 
@@ -379,6 +389,7 @@ defineExpose({ focusInput: () => taEl.value?.focus() })
       v-if="minimized && !hidden"
       class="sc-fab"
       :class="{ running }"
+      :style="fabStyle"
       v-tooltip="t('chat.btw.restore')"
       @click="toggleMin"
     >
@@ -496,8 +507,6 @@ defineExpose({ focusInput: () => taEl.value?.focus() })
 /* ---------- 最小化：右下角悬浮球 ---------- */
 .sc-fab {
   position: fixed;
-  right: 20px;
-  bottom: 20px;
   z-index: 1200;
   display: inline-flex;
   align-items: center;

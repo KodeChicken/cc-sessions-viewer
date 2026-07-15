@@ -579,14 +579,26 @@ function repairCodexUserMessageBufferColors(tab: TerminalTab): boolean {
 
     let end = y
     while (end + 1 < lines.length && lines.get(end + 1)?.isWrapped) end++
-    // Shift+Enter multiline: continuation lines are NOT wrapped but start with
-    // spaces (aligned after `› `). Keep consuming indented non-blank lines and
-    // any wrapped tails they may have.
-    while (end + 1 < lines.length) {
-      const cont = lines.get(end + 1)
-      const contText = cont?.translateToString?.(true) ?? ''
-      if (contText.trim() === '' || !contText.startsWith('  ') || contText.trimStart().startsWith('›')) break
-      end++
+    // Alt+Enter / Shift+Enter 多行：续行不是 wrapped，而是缩进（对齐在 `› ` 之后的两个空格）
+    // 的内容行，中间还可能夹着用户敲的**空行**。逐段吞：跳过中间连续空行后，若后面还有
+    // composer 续行，就把这些空行一并并入并继续；直到空行后接的是非 composer 内容（footer，
+    // 通常顶格）才停。否则遇到第一个内部空行就 break 会把灰底截断 —— 空行及其之后全露白
+    // （用户反馈的"空行背景断层"）。
+    for (;;) {
+      let probe = end + 1
+      while (probe < lines.length && (lines.get(probe)?.translateToString?.(true) ?? '').trim() === '') probe++
+      if (probe >= lines.length) break
+      const probeText = lines.get(probe)?.translateToString?.(true) ?? ''
+      // footer（`模型 · 路径`，带 ` · ` 中点分隔）是 composer 下方的**边界**：它同样缩进，
+      // 光靠"缩进"分不清，必须显式识别并在此停住，否则会把 footer 也吞进灰底（用户反馈的
+      // "太粗暴：footer 也被涵盖"）。
+      const isFooter = probeText.includes(' · ')
+      const isComposerCont =
+        !isFooter &&
+        (!!lines.get(probe)?.isWrapped ||
+          (probeText.startsWith('  ') && !probeText.trimStart().startsWith('›')))
+      if (!isComposerCont) break
+      end = probe
       while (end + 1 < lines.length && lines.get(end + 1)?.isWrapped) end++
     }
     const contentEnd = end
@@ -1183,6 +1195,20 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     if (handleWindowsCodexPaste(term, ev, opts.agent)) return false
     if (ev.type !== 'keydown' || ev.altKey) return true
     const key = ev.key.toLowerCase()
+
+    // Shift+Enter → 换行，在此直接拦截（不依赖 onData 的 shiftHeld 间接追踪 —— Windows
+    // WebView2 上那条 onData 路径不可靠）。字节层分平台，因为 codex 的换行键解析不一样：
+    //   · Mac/Linux：codex 认 \n(LF / Ctrl+J) 为换行，原始 PTY 直通即可。
+    //   · Windows：codex 走 console-API 读按键事件、不解析 VT 转义，实测**只有 Alt+Enter
+    //     (ESC+CR = \x1b\r) 被认作换行**（\n/Ctrl+J/kitty[13;2u] 都无效，见 codex#4401）。
+    //     故把 Shift+Enter 映射成 Alt+Enter 的字节序列。
+    if (key === 'enter' && ev.shiftKey && !ev.ctrlKey && !ev.metaKey) {
+      if (tab.ptyId !== null && tab.processState === 'alive') {
+        const seq = _isWindows ? '\x1b\r' : '\n'
+        api.ptyWrite(tab.ptyId, bytesToBase64(new TextEncoder().encode(seq))).catch(() => {})
+      }
+      return false
+    }
 
     const mod = _isMac ? ev.metaKey : ev.ctrlKey
     const otherMod = _isMac ? ev.ctrlKey : ev.metaKey

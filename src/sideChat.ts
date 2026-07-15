@@ -32,6 +32,11 @@ export function sideChatForPane(paneId: number): ChatSession | null {
   return perPane.value.get(paneId) ?? null
 }
 
+/** 每个 btw 的最小化状态（组件重建后恢复用）。key = ChatSession.uiId。 */
+const minimizedState = new Map<number, boolean>()
+export function isBtwMinimized(uiId: number): boolean { return minimizedState.get(uiId) ?? false }
+export function setBtwMinimized(uiId: number, v: boolean) { minimizedState.set(uiId, v) }
+
 /** 所有活跃 btw 侧聊的 session ID 集合（列表过滤用，不在会话列表里显示）。 */
 export function activeBtwSessionIds(): Set<string> {
   const ids = new Set<string>()
