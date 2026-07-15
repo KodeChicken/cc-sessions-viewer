@@ -14,7 +14,7 @@
 import { reactive, ref } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import * as api from './api'
-import { defaultModel, defaultEffort, defaultPermissionMode, effectiveEffort } from './chatComposerOptions'
+import { defaultModel, defaultEffort, defaultPermissionMode, effectiveEffort, sanitizeModel } from './chatComposerOptions'
 import { buildPermissionDecision, type PermissionChoice } from './chatPermission'
 import {
   buildQuestionCancelDecision,
@@ -253,7 +253,10 @@ function onMsg(s: ChatSession, msg: Msg) {
   // 记下模型全名（assistant 记录带 model）→ §10.5 上下文窗口换算。
   // `<synthetic>`（本地命令的 synthetic 记录）不是真实模型，跳过 —— 否则 /context、
   // /compact 等会话消息会把底栏模型选择器从真实模型带歪成「未知模型」。
-  if (msg.model && msg.model !== SYNTHETIC_MODEL) s.lastModel = msg.model
+  // 底栏模型选择器读 lastModel 兜底 → 这里也要 sanitize：旧 transcript 的 assistant 记录可能
+  // 是已下架的模型（如 gpt-5.3-codex），回放时若原样写进 lastModel 会把选择器带到幽灵模型上。
+  // 注意只 sanitize lastModel，不动 msg.model —— 气泡徽标要保留"这条历史消息真实用的模型"。
+  if (msg.model && msg.model !== SYNTHETIC_MODEL) s.lastModel = sanitizeModel(s.agent, msg.model)
   // 权威记录到达 → 当前块定稿，清掉流式预览（避免预览与真气泡并存）。
   s.live = null
   s.retry = null // 有权威输出 = 网络恢复，撤掉「重试中」。
@@ -620,12 +623,14 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
     pendingQuestions: [],
     permissionMode: opts.permissionMode ?? defaultPermissionMode(opts.agent),
     // 「不存在 default」：每个会话起步即带一个明确模型 + effort（用户可改）。
-    model: opts.model ?? defaultModel(opts.agent),
+    // sanitizeModel：旧会话记忆的模型可能已不在菜单里（如 gpt-5.3-codex），回退到该 agent
+    // 的兜底，避免会话停在一个选不中、也发不出去的幽灵模型上。
+    model: sanitizeModel(opts.agent, opts.model) ?? defaultModel(opts.agent),
     effort: opts.effort ?? defaultEffort(opts.agent),
     // 续聊：从预载 transcript 末尾的 assistant 记录回填 lastModel，让模型在「进会话即显」
     // （而非等首轮回复后才由 onMsg 填上）。effort 不在 transcript 里 → 无法同样回填，
     // 由 composer 用运行时 settings.effortLevel 兜底显示真实生效默认。
-    lastModel: lastAssistantModel(opts.preloadMsgs),
+    lastModel: sanitizeModel(opts.agent, lastAssistantModel(opts.preloadMsgs)),
     // 续聊种子：原会话末尾上下文规模，首个 result 到达前给进度角标兜底。
     usage: opts.initialUsage,
   }) as ChatSession
@@ -1053,7 +1058,7 @@ export async function reconnectChats(): Promise<ChatSession[]> {
   const result: ChatSession[] = []
   for (const info of running) {
     const uiId = nextUiId++
-    const model = info.model ?? defaultModel(info.agent as Agent)
+    const model = sanitizeModel(info.agent as Agent, info.model ?? undefined) ?? defaultModel(info.agent as Agent)
     const effort = info.effort ?? defaultEffort(info.agent as Agent)
     const messages = normalizeRestoredMessages(info.messages, model)
     const session = reactive<ChatSession>({
@@ -1079,7 +1084,7 @@ export async function reconnectChats(): Promise<ChatSession[]> {
       permissionMode: info.permissionMode,
       model,
       effort,
-      lastModel: lastAssistantModel(messages),
+      lastModel: sanitizeModel(info.agent as Agent, lastAssistantModel(messages)),
       processModel: info.processModel as ChatProcessModel,
       applied: {
         permissionMode: info.permissionMode,

@@ -25,6 +25,7 @@ import {
   permissionModeDisabled,
   fallbackPermissionMode,
   chatSupported,
+  sanitizeModel,
 } from '../src/chatComposerOptions'
 
 describe('chatComposerOptions', () => {
@@ -263,5 +264,51 @@ describe('chatComposerOptions', () => {
     for (const m of CODEX_PERMISSION_MODES) {
       expect(m.value).toMatch(/^[A-Za-z0-9._-]+$/)
     }
+  })
+
+  describe('sanitizeModel — 旧数据的幽灵模型回退', () => {
+    it('codex 记忆的已下架模型 gpt-5.3-codex → 回退 gpt-5.5', () => {
+      expect(sanitizeModel('codex', 'gpt-5.3-codex')).toBe('gpt-5.5')
+    })
+
+    it('codex 任意不在菜单的模型 → 回退 gpt-5.5(= defaultModel)', () => {
+      expect(sanitizeModel('codex', 'gpt-4o')).toBe(defaultModel('codex'))
+      expect(sanitizeModel('codex', 'totally-unknown')).toBe('gpt-5.5')
+    })
+
+    it('codex 在菜单内的模型原样保留(primary 与 more 都算)', () => {
+      expect(sanitizeModel('codex', 'gpt-5.6-sol')).toBe('gpt-5.6-sol')
+      expect(sanitizeModel('codex', 'gpt-5.5')).toBe('gpt-5.5')
+      expect(sanitizeModel('codex', 'gpt-5.4-mini')).toBe('gpt-5.4-mini')
+      expect(sanitizeModel('codex', 'gpt-5.3-codex-spark')).toBe('gpt-5.3-codex-spark')
+    })
+
+    it('claude 不在菜单的模型 → 回退 opus-4-8', () => {
+      expect(sanitizeModel('claude', 'claude-opus-4-5')).toBe('claude-opus-4-8')
+      expect(sanitizeModel('claude', 'gpt-5.3-codex')).toBe('claude-opus-4-8')
+    })
+
+    it('claude 在菜单内(含 alias 档)的模型原样保留', () => {
+      expect(sanitizeModel('claude', 'claude-opus-4-8')).toBe('claude-opus-4-8')
+      expect(sanitizeModel('claude', 'claude-sonnet-5')).toBe('claude-sonnet-5')
+      expect(sanitizeModel('claude', 'opus')).toBe('opus')
+    })
+
+    it('空/undefined 原样返回(交给上层 ?? defaultModel 处理)', () => {
+      expect(sanitizeModel('codex', undefined)).toBeUndefined()
+      expect(sanitizeModel('claude', undefined)).toBeUndefined()
+      expect(sanitizeModel('codex', '')).toBe('')
+    })
+
+    it('composer 的 effectiveModel 复现:codex 记忆幽灵模型时不会停在幽灵上', () => {
+      // startChat: session.model = sanitizeModel(agent, opts.model) ?? defaultModel(agent)
+      const sessionModel = sanitizeModel('codex', 'gpt-5.3-codex') ?? defaultModel('codex')
+      // ChatComposer: effectiveModel = session.model ?? session.lastModel
+      const effectiveModel = sessionModel ?? undefined
+      expect(effectiveModel).toBe('gpt-5.5')
+      // 确认结果确实在当前菜单里(能被选择器高亮、能发出去)
+      const codexValues = [...CHAT_MODEL_MENU.codex.primary, ...CHAT_MODEL_MENU.codex.more].map((m) => m.value)
+      expect(codexValues).toContain(effectiveModel)
+    })
   })
 })

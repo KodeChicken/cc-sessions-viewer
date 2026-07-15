@@ -327,15 +327,31 @@ fn command_exists_in_login_shell(_cwd: &str, program: &str) -> Result<bool, Stri
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-    // 用 where.exe 纯文件搜索：不启动 PowerShell、不触发 NVM shim 的非终端检测弹窗。
-    let status = std::process::Command::new("where.exe")
-        .arg(program)
+    // 曾用裸 `where.exe <program>` 纯文件搜索。但 MSI（WiX advertised-shortcut）启动的进程
+    // **穿不过目录符号链接**：nvm 的 codex 装在 NVM_SYMLINK（如 D:\nvm\nodejs，指向真实版本目录
+    // 的 symlink）下，where.exe 走继承的、看不穿 symlink 的 PATH，于是 codex 明明装了也判"找不到"
+    // → ensure_codex_cli_available 报错 → GUI chat 直接 ended（dev 从正常终端上下文起、能穿透
+    // 所以正常，只有打包版复现）。改用与实际 spawn 同一套 powershell_refresh_path()（展开注册表
+    // PATH + 把符号链接目录解析成真实目录），再 Get-Command 查。Get-Command 只解析命令位置、
+    // 不执行 codex，不触发 nvm shim 的非终端检测；-ExecutionPolicy Bypass + CREATE_NO_WINDOW
+    // 与 spawn 侧保持一致、无窗口闪。
+    let check = format!(
+        "{}; if (Get-Command {} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}",
+        crate::agent_command::powershell_refresh_path(),
+        crate::agent_command::powershell_quote(program),
+    );
+    let status = std::process::Command::new(crate::agent_command::windows_powershell_exe())
+        .arg("-NoLogo")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(&check)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .status()
-        .map_err(|e| format!("Failed to check {program} via where.exe: {e}"))?;
+        .map_err(|e| format!("Failed to check {program} via powershell: {e}"))?;
     Ok(status.success())
 }
 

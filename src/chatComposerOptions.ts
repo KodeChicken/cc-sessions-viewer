@@ -273,6 +273,25 @@ export function defaultModel(agent: Agent): string | undefined {
   return modelMenuFor(agent).primary[0]?.value
 }
 
+/** 该 agent 当前菜单里所有可选模型 value 的集合（含 unavailable / more；claude 另含 alias 档）。 */
+function knownModelValues(agent: Agent): Set<string> {
+  if (agent === 'claude') return new Set(claudeKnownModels().map((m) => m.value))
+  const menu = CHAT_MODEL_MENU[agent]
+  return new Set([...menu.unavailable, ...menu.primary, ...menu.more].map((m) => m.value))
+}
+
+/**
+ * 会话记忆的模型可能来自旧数据、已不在当前菜单里（如 `gpt-5.3-codex`）。这时别把会话停在
+ * 一个不存在的模型上 —— 回退到该 agent 的兜底：codex → gpt-5.5（= defaultModel），
+ * claude → opus-4-8。model 为空则原样返回，交给上层的 `?? defaultModel(agent)` 处理。
+ */
+export function sanitizeModel(agent: Agent, model: string | undefined): string | undefined {
+  if (!model) return model
+  if (knownModelValues(agent).has(model)) return model
+  if (agent === 'claude') return 'claude-opus-4-8'
+  return defaultModel(agent)
+}
+
 /** 该 agent 的初始 effort（取中高档：claude→high、codex→medium）。同样不留「default」。 */
 export function defaultEffort(agent: Agent): string | undefined {
   if (agent === 'claude') return undefined
