@@ -171,10 +171,14 @@ const historyHint = computed(() =>
     ? ''
     : t('chat.composer.history', { n: histPos.value + 1, total: promptHistory.value.length }),
 )
-// 切到别的会话时退出历史浏览（草稿快照属于上一个会话，不能带过去），并自动聚焦新会话输入框。
+// 切到别的会话时清空输入框 + 退出历史浏览（草稿快照属于上一个会话，不能带过去），并自动聚焦新会话输入框。
 watch(() => props.session.uiId, () => {
+  text.value = ''
+  images.value = []
+  files.value = []
   exitHistory()
   stash.value = null
+  nextTick(autosize)
   focusInput()
 })
 // Ctrl+S stash：暂存输入框内容，下一条消息开始发送的瞬间恢复。

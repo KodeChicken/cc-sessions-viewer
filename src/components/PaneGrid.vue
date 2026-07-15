@@ -24,6 +24,7 @@ const props = defineProps<{
   loadingList: boolean
   loadingMore: boolean
   openTrashItem: TrashItem | null
+  hasGit: boolean
 }>()
 
 // 透传给叶子 / 更深 PaneGrid 的数据包（除 node 外的所有 prop）。
@@ -36,6 +37,7 @@ const leafProps = computed(() => ({
   loadingList: props.loadingList,
   loadingMore: props.loadingMore,
   openTrashItem: props.openTrashItem,
+  hasGit: props.hasGit,
 }))
 
 // 子树稳定 key：用该子树最左/最上的叶子 paneId（唯一，且只有该叶子被移走才变）。

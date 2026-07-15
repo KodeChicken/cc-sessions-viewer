@@ -80,17 +80,22 @@ const emit = defineEmits<{
 
 const scrollEl = ref<HTMLElement>()
 
-// 顶栏「创建 Worktree」入口：仅一级项目（非 worktree 子项）且是 git 仓库时出现，
-// 逻辑与侧栏右键完全一致。git 探测异步，切项目时重算。
+// git 探测：hasGit 控制「Git Changes」菜单项，对所有项目（含 worktree）生效；
+// isGitRepo 仅限一级项目，控制「创建 Worktree」入口。
+const hasGit = ref(false)
 const isGitRepo = ref(false)
 watch(
   () => props.project.displayPath,
   async (path) => {
+    hasGit.value = false
     isGitRepo.value = false
-    if (!path || props.project.worktreeName || props.project.parentDirName) return
+    if (!path) return
     try {
-      isGitRepo.value = await gitHasRepo(path)
+      const ok = await gitHasRepo(path)
+      hasGit.value = ok
+      if (!props.project.worktreeName && !props.project.parentDirName) isGitRepo.value = ok
     } catch {
+      hasGit.value = false
       isGitRepo.value = false
     }
   },
@@ -591,6 +596,7 @@ defineExpose({ scrollEl })
     >
       <NewMenu
         :agent="agent"
+        :has-git="hasGit"
         show-refresh
         show-split
         @new-session="pickNewAgent"
@@ -698,7 +704,7 @@ defineExpose({ scrollEl })
             <IconPlus />
           </button>
           <div v-if="newMenuOpen" class="new-menu" role="menu">
-            <NewMenu :agent="agent" show-split @new-session="pickNewAgent" @new-gui="pickNewGui" @new-shell="pickNewShell" @git-changes="pickGitChanges" @split-h="pickSplitH" @split-v="pickSplitV" />
+            <NewMenu :agent="agent" :has-git="hasGit" show-split @new-session="pickNewAgent" @new-gui="pickNewGui" @new-shell="pickNewShell" @git-changes="pickGitChanges" @split-h="pickSplitH" @split-v="pickSplitV" />
           </div>
         </div>
         <button

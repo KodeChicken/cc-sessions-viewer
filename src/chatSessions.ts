@@ -284,10 +284,8 @@ function onDelta(s: ChatSession, d: ChatDelta) {
 }
 
 function onInit(s: ChatSession, p: ChatInitPayload) {
-  if (p.sessionId && !s.sessionId) {
+  if (p.sessionId && s.sessionId !== p.sessionId) {
     s.sessionId = p.sessionId
-    // 首次拿到 sessionId = 后端刚为这轮对话建了新 transcript → 该项目/worktree 的会话计数
-    // 变了，请侧栏去抖重载（尤其空 worktree 计数从 0 → 1，合成条目并入真实项目）。
     markProjectsDirty()
   }
   // 只认权威 init 给的字符串 apiKeySource（'none' / 'ANTHROPIC_API_KEY' / …）。Claude 的

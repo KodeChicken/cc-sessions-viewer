@@ -2,7 +2,7 @@
 // 「btw」侧聊浮框 —— 对标 Claude Code 客户端的 `/btw`：贴右边缘的独立浮框，
 // 在主任务进行中顺手问一句、不打断主对话。会话本体由 sideChat.ts 持有（一个普通
 // ChatSession，fork 自主聊以继承上下文）；本组件只负责浮框的呈现 + 拖动 + 紧凑输入。
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { t } from '../i18n'
 import { formatElapsedSeconds, renderText } from '../format'
 import { now, sendPrompt, interruptChat, type ChatSession } from '../chatSessions'
@@ -10,14 +10,21 @@ import { closeSideChat } from '../sideChat'
 import type { Block, Msg } from '../types'
 import { IconChevronRight, IconClose, IconMinimize, IconSend, IconStop, IconZap } from './icons'
 
-const props = defineProps<{ session: ChatSession }>()
+const props = defineProps<{ session: ChatSession; hidden?: boolean }>()
 
-// ---------- 浮框宽度（右下角拖拽改宽；上限只受视口约束，能一直跟着鼠标走） ----------
+const panelEl = ref<HTMLElement | null>(null)
+
+function containerRect(): DOMRect {
+  const pane = document.querySelector('.pane-focused .main-body')
+  return pane?.getBoundingClientRect() ?? new DOMRect(0, 0, window.innerWidth, window.innerHeight)
+}
+
+// ---------- 浮框宽度（右下角拖拽改宽；上限受容器约束） ----------
 const W_KEY = 'sideChatWidth'
 const MIN_W = 320
-const MAX_W = 2000 // 实际上限由「右缘 ≤ 视口 − 8px」决定，这里只兜底
+const MAX_W = 2000
 function clampWidth(w: number): number {
-  const max = Math.min(MAX_W, window.innerWidth - 32)
+  const max = Math.min(MAX_W, containerRect().width - 32)
   return Math.min(Math.max(MIN_W, w), max)
 }
 function readWidth(): number {
@@ -34,12 +41,20 @@ function readWidth(): number {
 }
 const width = ref(readWidth())
 
-// ---------- 浮框位置（锚右边缘：存「距右」+「距顶」，天然贴右、随窗口缩放不跑偏） ----------
+// ---------- 浮框位置（锚右边缘：存「距右」+「距顶」，限制在容器内） ----------
 const POS_KEY = 'sideChatDock'
 function clampPos(right: number, top: number): { right: number; top: number } {
-  const maxRight = Math.max(8, window.innerWidth - width.value - 8)
-  const maxTop = Math.max(8, window.innerHeight - 120)
-  return { right: Math.min(Math.max(8, right), maxRight), top: Math.min(Math.max(8, top), maxTop) }
+  const cr = containerRect()
+  const vw = window.innerWidth
+  const minRight = vw - cr.right + 8
+  const maxRight = vw - cr.left - width.value - 8
+  const minTop = cr.top + 8
+  const panelH = panelEl.value?.offsetHeight ?? 300
+  const maxTop = cr.bottom - panelH - 8
+  return {
+    right: Math.min(Math.max(minRight, right), Math.max(minRight, maxRight)),
+    top: Math.min(Math.max(minTop, top), Math.max(minTop, maxTop)),
+  }
 }
 function readPos(): { right: number; top: number } {
   try {
@@ -67,7 +82,7 @@ function persistPos() {
 const H_KEY = 'sideChatHeight'
 const MIN_H = 240
 function clampHeight(h: number): number {
-  const max = Math.max(MIN_H, window.innerHeight - pos.value.top - 8)
+  const max = Math.max(MIN_H, containerRect().bottom - pos.value.top - 8)
   return Math.min(Math.max(MIN_H, h), max)
 }
 function readHeight(): number | null {
@@ -124,7 +139,6 @@ function onDragEnd() {
 // 右下角拖拽（纯增量，左上角锚定不动）：宽 += dx、高 += dy，pos.right 抵消宽度增量。
 // 全程只用光标位移，绝不碰 window.innerWidth —— 否则会和真实布局坐标差一个滚动条宽度，
 // 表现为「一按下就缩一下、之后恒定偏移」。
-const panelEl = ref<HTMLElement | null>(null)
 let startX = 0
 let startY = 0
 let startW = 0
@@ -152,8 +166,7 @@ function onResizeMove(e: PointerEvent) {
   // 宽：左缘固定，右缘最多到「视口右 − 8」（即 pos.right ≥ 8）。
   const maxW = Math.min(MAX_W, startW + startRight - 8)
   const newW = Math.min(Math.max(MIN_W, startW + dx), maxW)
-  // 高：上缘固定，下缘不出视口底部 8px。
-  const maxH = Math.max(MIN_H, document.documentElement.clientHeight - 8 - startTop)
+  const maxH = Math.max(MIN_H, containerRect().bottom - 8 - startTop)
   const newH = Math.min(Math.max(MIN_H, startH + dy), maxH)
   width.value = newW
   height.value = newH
@@ -269,12 +282,14 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+onMounted(() => nextTick(() => taEl.value?.focus()))
+
 defineExpose({ focusInput: () => taEl.value?.focus() })
 </script>
 
 <template>
   <Teleport to="body">
-    <div v-show="!minimized" ref="panelEl" class="side-chat" :style="panelStyle">
+    <div v-show="!minimized && !hidden" ref="panelEl" class="side-chat" :style="panelStyle">
       <!-- 右下角：拖拽同时改宽 + 改高 -->
       <div class="sc-resize" @pointerdown="onResizeStart" />
 
@@ -361,7 +376,7 @@ defineExpose({ focusInput: () => taEl.value?.focus() })
 
     <!-- 最小化：缩到右下角的悬浮球；运行中显示转圈 + 计时，点一下还原 -->
     <button
-      v-if="minimized"
+      v-if="minimized && !hidden"
       class="sc-fab"
       :class="{ running }"
       v-tooltip="t('chat.btw.restore')"

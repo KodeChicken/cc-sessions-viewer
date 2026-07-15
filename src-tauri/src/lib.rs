@@ -454,6 +454,34 @@ fn hard_delete_session(agent: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// btw 侧聊关闭后清理 `--fork-session` 产生的会话文件。只认 Claude agent，
+/// 路径固定为 `~/.claude/projects/<project_key>/<session_id>.jsonl`。session_id
+/// 做严格白名单校验，防路径穿越。
+#[tauri::command]
+fn purge_btw_session(project_key: String, session_id: String) -> Result<(), String> {
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("Invalid session ID".to_string());
+    }
+    let fp = crate::util::home()
+        .join(".claude")
+        .join("projects")
+        .join(&project_key)
+        .join(format!("{session_id}.jsonl"));
+    if fp.is_file() {
+        fs::remove_file(&fp).map_err(|e| format!("Failed to purge btw session: {e}"))?;
+    }
+    // 同伴子目录 <sessionId>/subagents/ 也一并清除
+    let companion = fp.with_extension("");
+    if companion.is_dir() {
+        let _ = fs::remove_dir_all(&companion);
+    }
+    Ok(())
+}
+
 /// 在 `project_path` 下新建一个 git worktree（同名新分支），落到
 /// `<project_path>/.claude/worktrees/<name>`。返回新 worktree 的绝对路径。
 #[tauri::command]
@@ -2021,6 +2049,7 @@ pub fn run() {
             cancel_search,
             rename_session,
             fork_session,
+            purge_btw_session,
             codex_archive_session,
             soft_delete_session,
             hard_delete_session,

@@ -954,20 +954,25 @@ const innerEl = ref<HTMLElement>()
 // 用一个 reactive Set 保存哪些 details 被用户手动打开过（key = "msgIdx-blockIdx"），
 // 模板用 :open + @toggle 双向同步。一键折叠/展开时 clear / fill 整个 Set。
 const openDetails = reactive(new Set<string>())
+const explicitDetails = reactive(new Set<string>())
 
 function detailKey(mi: number, bi: number, suffix?: string): string {
   return suffix ? `${mi}-${bi}-${suffix}` : `${mi}-${bi}`
 }
-function isDetailOpen(mi: number, bi: number, suffix?: string): boolean {
-  return openDetails.has(detailKey(mi, bi, suffix))
+function isDetailOpen(mi: number, bi: number, suffix?: string): boolean | undefined {
+  const key = detailKey(mi, bi, suffix)
+  return openDetails.has(key) ? true : explicitDetails.has(key) ? false : undefined
 }
 function onDetailToggle(mi: number, bi: number, ev: Event) {
   const el = ev.target as HTMLDetailsElement
-  if (el.open) openDetails.add(detailKey(mi, bi))
-  else openDetails.delete(detailKey(mi, bi))
+  const key = detailKey(mi, bi)
+  explicitDetails.add(key)
+  if (el.open) openDetails.add(key)
+  else openDetails.delete(key)
 }
 function onResultToggle(mi: number, bi: number, open: boolean) {
   const key = detailKey(mi, bi, 'r')
+  explicitDetails.add(key)
   if (open) openDetails.add(key)
   else openDetails.delete(key)
 }
@@ -990,6 +995,7 @@ function sweepDetails(open: boolean) {
     }
   } else {
     openDetails.clear()
+    explicitDetails.clear()
   }
 }
 watch(toolsCollapsed, (v) => sweepDetails(!v))

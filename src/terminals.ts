@@ -579,11 +579,21 @@ function repairCodexUserMessageBufferColors(tab: TerminalTab): boolean {
 
     let end = y
     while (end + 1 < lines.length && lines.get(end + 1)?.isWrapped) end++
-    const wrappedEnd = end
-    const nextLine = lines.get(wrappedEnd + 1)
+    // Shift+Enter multiline: continuation lines are NOT wrapped but start with
+    // spaces (aligned after `› `). Keep consuming indented non-blank lines and
+    // any wrapped tails they may have.
+    while (end + 1 < lines.length) {
+      const cont = lines.get(end + 1)
+      const contText = cont?.translateToString?.(true) ?? ''
+      if (contText.trim() === '' || !contText.startsWith('  ') || contText.trimStart().startsWith('›')) break
+      end++
+      while (end + 1 < lines.length && lines.get(end + 1)?.isWrapped) end++
+    }
+    const contentEnd = end
+    const nextLine = lines.get(contentEnd + 1)
     const nextText = nextLine?.translateToString?.(true) ?? ''
     if (nextLine && nextText.trim() === '') {
-      end = wrappedEnd + 1
+      end = contentEnd + 1
     }
 
     for (let target = start; target <= end; target++) targetRows.add(target)

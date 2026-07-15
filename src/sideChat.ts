@@ -4,9 +4,9 @@
 // 的上下文，但答完即走、不进主历史。本 app 是「外部进程」模型（每个 chat 是独立的
 // stream-json 子进程），无法像 TUI 那样共享内存里的对话，于是用 `--fork-session`
 // 从主聊**派生**一份独立会话来还原「继承上下文却不污染」这一灵魂：
-//   · 主聊有 sessionId（已落盘）→ fork：侧聊继承其全部上下文，写到一个新 session id；
+//   · 主聊有 sessionId（已落盘）→ --resume + --fork-session：继承上下文，写到新文件；
 //   · 没有（如全新主聊还没出首个 result）→ 退化为同目录下的一个全新 Claude 会话。
-// 关掉浮框 = 停子进程并丢弃（fork 出来的 transcript 与主聊无关，不回写）。
+// 关掉浮框 = 停子进程 + purge fork 文件（不留痕迹）。
 //
 // 进程模型复用 chatSessions：侧聊本身就是一个普通 ChatSession，被 `startChat` 推进
 // `chatSessions.value`（于是模块时钟、事件路由、closeChat 全都直接复用），只是另由这里
@@ -14,6 +14,7 @@
 
 import { computed, shallowRef } from 'vue'
 import { startChat, closeChat, sendPrompt, type ChatSession } from './chatSessions'
+import * as api from './api'
 import { focusedPane } from './panes'
 
 /** 每个分屏格子的 btw 侧聊会话；null = 该格子未开侧聊。 */
@@ -25,6 +26,20 @@ export const sideChat = computed<ChatSession | null>(() => {
   if (!fp) return null
   return perPane.value.get(fp.id) ?? null
 })
+
+/** 按 pane id 取侧聊（给 PaneContent 内部渲染用）。 */
+export function sideChatForPane(paneId: number): ChatSession | null {
+  return perPane.value.get(paneId) ?? null
+}
+
+/** 所有活跃 btw 侧聊的 session ID 集合（列表过滤用，不在会话列表里显示）。 */
+export function activeBtwSessionIds(): Set<string> {
+  const ids = new Set<string>()
+  for (const s of perPane.value.values()) {
+    if (s.sessionId) ids.add(s.sessionId)
+  }
+  return ids
+}
 
 export interface OpenSideChatOptions {
   /** 侧聊所属项目 key（= ProjectInfo.dirName），仅用于归类/标题。 */
@@ -55,17 +70,12 @@ export async function openSideChat(opts: OpenSideChatOptions): Promise<ChatSessi
     return existing
   }
 
-  const fork = !!opts.forkSessionId
   const session = await startChat({
-    // btw 是 Claude Code 的概念（`--fork-session` 也只有 Claude 有）→ 侧聊恒为 claude。
     agent: 'claude',
     projectKey: opts.projectKey,
     cwd: opts.cwd,
-    sessionId: fork ? opts.forkSessionId : undefined,
-    fork,
     title: opts.title ?? 'btw',
-    // 旁支问答：plan 模式（只读、不动文件）—— 主聊正在改代码时，侧聊绝不会去碰同一批文件。
-    permissionMode: 'plan',
+    permissionMode: 'bypassPermissions',
     model: opts.model,
     effort: opts.effort,
     initialPrompt: opts.prompt,
@@ -78,7 +88,7 @@ export async function openSideChat(opts: OpenSideChatOptions): Promise<ChatSessi
   return session
 }
 
-/** 关闭当前聚焦格子的 btw 侧聊：停子进程并丢弃（fork 出来的会话与主聊无关，不回写主历史）。 */
+/** 关闭当前聚焦格子的 btw 侧聊：停子进程 + 清理 CLI 产生的会话文件。 */
 export function closeSideChat(): void {
   const fp = focusedPane.value
   if (!fp) return
@@ -91,6 +101,9 @@ export function closeSideChat(): void {
   perPane.value = next
 
   void closeChat(s.uiId)
+  if (s.sessionId && s.projectKey) {
+    api.purgeBtwSession(s.projectKey, s.sessionId).catch(() => {})
+  }
 }
 
 /**
@@ -102,5 +115,8 @@ export function closeAllSideChats(): void {
   perPane.value = new Map()
   for (const s of all.values()) {
     void closeChat(s.uiId)
+    if (s.sessionId && s.projectKey) {
+      api.purgeBtwSession(s.projectKey, s.sessionId).catch(() => {})
+    }
   }
 }

@@ -26,6 +26,7 @@ vi.mock('../../src/api', () => ({
   cancelSearch: cancelMock,
   nextSearchRequestId: () => ++_id,
   sessionUsage: usageMock,
+  gitHasRepo: vi.fn().mockResolvedValue(true),
 }))
 
 import SessionsView from '../../src/views/SessionsView.vue'
@@ -36,6 +37,9 @@ import {
   sessionSelectMode,
 } from '../../src/sessionsToolbar'
 import type { ProjectInfo, SearchHit, SessionMeta } from '../../src/types'
+import { PaneActionsKey, type PaneActions } from '../../src/paneActions'
+
+const stubPaneActions = {} as PaneActions
 
 // 每个 case 后卸载它挂载的 wrapper。否则旧实例的 watch 仍订阅 sessionSearch，
 // 一旦设值，所有历史实例都会一起调 searchSessions，把 mockResolvedValueOnce
@@ -97,7 +101,10 @@ const factory = (sessions: SessionMeta[] = [session()]) =>
       loading: false,
       loadingMore: false,
     } as Props,
-    global: { directives: { tooltip: vTooltip } },
+    global: {
+      directives: { tooltip: vTooltip },
+      provide: { [PaneActionsKey as symbol]: stubPaneActions },
+    },
   })
 
 describe('SessionsView', () => {
@@ -209,6 +216,7 @@ describe('SessionsView', () => {
 
     it('emits "new-session" (TUI) when the first menu item is clicked', async () => {
       const wrapper = factory()
+      await flushPromises()
       // Click the "+" button to open the dropdown
       await findByLabel(wrapper, 'New session').trigger('click')
       // Menu items: TUI / GUI / Terminal / Git Changes / Split H / Split V
@@ -220,6 +228,7 @@ describe('SessionsView', () => {
 
     it('emits "new-gui-session" when the GUI menu item is clicked', async () => {
       const wrapper = factory()
+      await flushPromises()
       await findByLabel(wrapper, 'New session').trigger('click')
       const items = wrapper.findAll('.new-menu-item')
       await items[1].trigger('click')
@@ -228,6 +237,7 @@ describe('SessionsView', () => {
 
     it('emits "new-shell" when the terminal menu item is clicked', async () => {
       const wrapper = factory()
+      await flushPromises()
       await findByLabel(wrapper, 'New session').trigger('click')
       const items = wrapper.findAll('.new-menu-item')
       await items[2].trigger('click')
@@ -244,7 +254,10 @@ describe('SessionsView', () => {
           loading: false,
           loadingMore: false,
         } as Props,
-        global: { directives: { tooltip: vTooltip } },
+        global: {
+          directives: { tooltip: vTooltip },
+          provide: { [PaneActionsKey as symbol]: stubPaneActions },
+        },
       })
       // 目录已不存在 → 新建会话 / 刷新都没意义；单格（showExitPane 未传）也无「退出分屏」。
       // 没有会话 (sessions=[]) → 「批量选择」入口也不渲染 → 顶栏动作区为空。

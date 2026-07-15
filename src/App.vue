@@ -115,7 +115,7 @@ import {
   removeViewEverywhere,
 } from './viewHistory'
 import { startChat, closeChat, reconnectChats, lastAssistantModel, migrateChatSessionsProjectKey, chatSessions, type ChatSession } from './chatSessions'
-import { sideChat, openSideChat, closeAllSideChats } from './sideChat'
+import { sideChat, openSideChat, closeSideChat, closeAllSideChats, activeBtwSessionIds } from './sideChat'
 import {
   type ViewTab,
   viewTabs,
@@ -316,6 +316,10 @@ async function refreshAll() {
   }
 }
 const sessions = shallowRef<SessionMeta[]>([])
+const visibleSessions = computed(() => {
+  const btwIds = activeBtwSessionIds()
+  return btwIds.size ? sessions.value.filter(s => !btwIds.has(s.id)) : sessions.value
+})
 const sessionTotal = ref(0)
 const loadingMore = ref(false)
 const trash = shallowRef<TrashItem[]>([])
@@ -611,6 +615,13 @@ const topbarContextMeta = computed(() => {
 const chatAgent = computed<Agent>(
   () => activeViewTab.value?.trashAgent ?? activeViewTab.value?.importedAgent ?? activeViewTab.value?.agent ?? agent.value,
 )
+
+// ---------- 当前项目是否有 git 仓库 ----------
+const projectHasGit = ref(false)
+watch(activeProject, async (proj) => {
+  if (!proj) { projectHasGit.value = false; return }
+  projectHasGit.value = await api.gitHasRepo(proj.displayPath).catch(() => false)
+}, { immediate: true })
 
 // ---------- 项目置顶 / 沉底偏好（持久化到 localStorage）----------
 type ProjState = 'pinned' | 'sunk'
@@ -1759,6 +1770,7 @@ async function openChat(s: SessionMeta) {
     session: s,
     loadingMsgs: true,
   })
+  await nextTick()
   try {
     tab.msgs = await api.readSession(agent.value, s.path)
     try {
@@ -2366,8 +2378,7 @@ async function onTuiViewClose(tabUiId: number) {
   if (tab.type === 'chat') closeLiveChat(id)
   else removeViewTab(id)
   if (activeUiId.value === null && !activeViewTab.value && activeDir.value && !showTrash.value && !showStats.value) {
-    await loadProjects()
-    await refreshSessions()
+    void Promise.all([loadProjects(), refreshSessions()])
   }
 }
 
@@ -2421,8 +2432,7 @@ async function onCloseOthersAll(keepUiId: number, keepKind: 'tui' | 'view') {
   // 关闭所有 saved tabs
   const visSaved = savedTabs.value.filter(s => s.agent === agent.value && s.projectKey === pk)
   for (const s of visSaved) removeSavedTab(s.sessionPath ? s.sessionPath : s)
-  await loadProjects()
-  await refreshSessions()
+  void Promise.all([loadProjects(), refreshSessions()])
 }
 
 async function onCloseAll() {
@@ -2437,8 +2447,7 @@ async function onCloseAll() {
   // 关闭所有 saved tabs
   const visSaved = savedTabs.value.filter(s => s.agent === agent.value && s.projectKey === (activeDir.value ?? ''))
   for (const s of visSaved) removeSavedTab(s.sessionPath ? s.sessionPath : s)
-  await loadProjects()
-  await refreshSessions()
+  void Promise.all([loadProjects(), refreshSessions()])
 }
 
 // 关闭当前活跃的 view/chat tab
@@ -2450,11 +2459,10 @@ async function closeActiveViewTab() {
 // PTY tab 被手动关闭（× 按钮）后，若 TUI 层已空（无更多 tab），刷新数据，
 // 确保 CLI 新建的会话出现在列表里。注意：不再清空 openSession —— View tab 由它自己的
 // × 手动关闭，关掉终端 tab 不该让聊天详情消失（落回 View 即可）。
-async function onTuiTabClosed() {
+function onTuiTabClosed() {
   if (activeUiId.value !== null) return
   if (!activeDir.value || showTrash.value || showStats.value) return
-  await loadProjects()
-  await refreshSessions()
+  void Promise.all([loadProjects(), refreshSessions()])
 }
 
 function closeActiveTab() {
@@ -2862,21 +2870,14 @@ async function archiveLiveChat() {
  *  以继承其上下文；否则在当前活动项目目录里开一个全新 Claude 侧聊。两者都缺时静默无操作。 */
 function toggleBtwSideChat() {
   const lc = liveChat.value
-  if (lc && lc.agent === 'claude' && lc.cwd) {
-    void openSideChat({
-      projectKey: lc.projectKey,
-      cwd: lc.cwd,
-      forkSessionId: lc.sessionId || undefined,
-      model: lc.model,
-      effort: lc.effort,
-    })
-    return
-  }
-  const cwd = activeProject.value?.displayPath
-  if (!cwd) return
+  if (!lc || lc.agent !== 'claude' || !lc.cwd) return
+  if (sideChat.value) { closeSideChat(); return }
   void openSideChat({
-    projectKey: activeProject.value?.dirName ?? activeDir.value ?? '',
-    cwd,
+    projectKey: lc.projectKey,
+    cwd: lc.cwd,
+    forkSessionId: lc.sessionId || undefined,
+    model: lc.model,
+    effort: lc.effort,
   })
 }
 
@@ -2910,9 +2911,22 @@ async function exportLiveChat(kind: ExportKind) {
 
 /** live chat 里删除：有来源会话就软删它（确认后 afterDelete 清 openSession →
  *  上面的导航 watch 触发 closeLiveChat 自动停掉子进程）；全新会话无文件，直接关。 */
-function deleteFromLiveChat() {
-  if (liveChatSourceSession.value) deleteSession(liveChatSourceSession.value)
-  else closeLiveChat()
+async function deleteFromLiveChat() {
+  if (liveChatSourceSession.value) {
+    deleteSession(liveChatSourceSession.value)
+    return
+  }
+  const c = liveChat.value
+  if (!c?.sessionId) { closeLiveChat(); return }
+  await refreshSessions()
+  const found = sessions.value.find(s => s.id === c.sessionId)
+  if (found) {
+    const tab = activeViewTab.value
+    if (tab?.type === 'chat') tab.sourceSession = found
+    deleteSession(found)
+    return
+  }
+  closeLiveChat()
 }
 
 
@@ -3614,7 +3628,9 @@ onMounted(() => {
       } else if (key === 'b' && !e.shiftKey) {
         e.preventDefault(); toggleSidebar()
       } else if (key === 'j' && !e.shiftKey) {
-        e.preventDefault(); toggleBtwSideChat()
+        if (liveChat.value?.agent === 'claude') {
+          e.preventDefault(); toggleBtwSideChat()
+        }
       } else if (key === 's' && e.shiftKey) {
         e.preventDefault(); openStats()
       } else if (key === ',' && !e.shiftKey) {
@@ -3911,7 +3927,7 @@ provide<PaneActions>(PaneActionsKey, {
         />
         <SessionsTopbar
           v-else-if="activeProject"
-          :sessions="sessions"
+          :sessions="visibleSessions"
         />
         <div v-else class="chat-topbar">
           <button
@@ -3995,11 +4011,12 @@ provide<PaneActions>(PaneActionsKey, {
           :active-project="activeProject"
           :agent="agent"
           :projects="projects"
-          :sessions="sessions"
+          :sessions="visibleSessions"
           :session-total="sessionTotal"
           :loading-list="loadingList"
           :loading-more="loadingMore"
           :open-trash-item="openTrashItem"
+          :has-git="projectHasGit"
         />
       </div>
     </main>
@@ -4102,7 +4119,7 @@ provide<PaneActions>(PaneActionsKey, {
     />
 
     <!-- btw 侧聊浮框（右上角可拖动；Teleport 到 body，与主视图层无关） -->
-    <ChatSidePanel v-if="sideChat" :session="sideChat" />
+    <ChatSidePanel v-if="sideChat" :session="sideChat" :hidden="!liveChat || activeUiId !== null" />
 
     <!-- toast -->
     <Transition name="fade">

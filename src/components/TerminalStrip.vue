@@ -45,6 +45,7 @@ const props = defineProps<{
   agent: Agent
   projectKey: string | null
   inProjectBrowse: boolean
+  hasGit: boolean
   viewTabs: ViewTab[]
   activeViewTabId: number | null
 }>()
@@ -243,6 +244,7 @@ function onSavedClose(saved: SavedTab, ev: Event) {
 const listActive = computed(
   () => props.pane.activeUiId === null && props.activeViewTabId === null,
 )
+const listCtx = ref<{ x: number; y: number } | null>(null)
 const tabCtx = ref<{ x: number; y: number; tab: TerminalTab } | null>(null)
 const savedCtx = ref<{ x: number; y: number; saved: SavedTab } | null>(null)
 const stripCtx = ref<{ x: number; y: number } | null>(null)
@@ -461,6 +463,60 @@ function onTabClick(uiId: number, ev?: Event) {
 function onListClick() {
   emit('listClick')
 }
+
+async function onListContextMenu(ev: MouseEvent) {
+  ev.preventDefault()
+  ev.stopPropagation()
+  closeTabCtx()
+  if (await openNativeListContextMenu(ev)) return
+  openFallbackListContextMenu(ev)
+}
+
+async function openNativeListContextMenu(ev: MouseEvent): Promise<boolean> {
+  if (!nativeMenuSupported) return false
+  try {
+    const [{ Menu }, { LogicalPosition }] = await Promise.all([
+      import('@tauri-apps/api/menu'),
+      import('@tauri-apps/api/dpi'),
+    ])
+    const menu = await Menu.new({
+      items: [
+        {
+          id: 'list-close-others',
+          text: t('chat.tui.tabCloseOthersAll'),
+          action: () => closeAllFromList(),
+        },
+        {
+          id: 'list-close-all',
+          text: t('chat.tui.tabCloseAll'),
+          action: () => emit('closeAll'),
+        },
+      ],
+    })
+    const z = fontScale.value / 14
+    await menu.popup(new LogicalPosition(ev.clientX * z, ev.clientY * z))
+    return true
+  } catch {
+    return false
+  }
+}
+
+function openFallbackListContextMenu(ev: MouseEvent) {
+  const menuW = 220
+  const menuH = 80
+  listCtx.value = {
+    x: Math.max(8, Math.min(ev.clientX, window.innerWidth - menuW - 8)),
+    y: Math.max(8, Math.min(ev.clientY, window.innerHeight - menuH - 8)),
+  }
+}
+
+function closeAllFromList() {
+  for (const item of visibleTabs.value) closeTab(item.uiId)
+  for (const s of [...visibleSaved.value]) removeSavedTab(s.sessionPath ? s.sessionPath : s)
+  for (const vt of props.viewTabs) emit('viewClose', vt.uiId)
+  emit('tabClosed')
+}
+
 function onViewTabClick(uiId: number, ev?: Event) {
   if (suppressNextTabClick) {
     ev?.preventDefault()
@@ -935,12 +991,16 @@ async function openNativeStripContextMenu(ev: MouseEvent): Promise<boolean> {
           text: t('list.action.newTerminal'),
           action: () => emit('newShell'),
         },
-        { item: 'Separator' },
-        {
-          id: 'strip-git-changes',
-          text: t('list.action.gitChanges'),
-          action: () => emit('gitChanges'),
-        },
+        ...(props.hasGit
+          ? [
+              { item: 'Separator' as const },
+              {
+                id: 'strip-git-changes',
+                text: t('list.action.gitChanges'),
+                action: () => emit('gitChanges'),
+              },
+            ]
+          : []),
       ],
     })
     const z = fontScale.value / 14
@@ -972,6 +1032,7 @@ function openFallbackStripContextMenu(ev: MouseEvent) {
 }
 
 function closeTabCtx() {
+  listCtx.value = null
   tabCtx.value = null
   stripCtx.value = null
   savedCtx.value = null
@@ -1085,7 +1146,7 @@ function closeProjectNativeCtxTabs(tab: TerminalTab) {
 
 
 function onDocMouseDown(e: MouseEvent) {
-  if (!tabCtx.value && !stripCtx.value && !savedCtx.value && !viewTabCtx.value) return
+  if (!listCtx.value && !tabCtx.value && !stripCtx.value && !savedCtx.value && !viewTabCtx.value) return
   const target = e.target as HTMLElement | null
   if (target?.closest('.term-tab-ctx-menu, .term-strip-ctx-menu')) return
   closeTabCtx()
@@ -1138,6 +1199,7 @@ onUnmounted(() => {
         role="button"
         tabindex="0"
         @click="onListClick"
+        @contextmenu="onListContextMenu"
         @keydown.enter.prevent="onListClick"
         @keydown.space.prevent="onListClick"
       >
@@ -1311,7 +1373,7 @@ onUnmounted(() => {
         <IconPlus />
       </div>
       <div v-if="newMenuOpen" class="new-menu" role="menu">
-        <NewMenu :agent="agent" show-split @new-session="pickNewAgent" @new-gui="pickNewGui" @new-shell="pickNewShell" @git-changes="pickGitChanges" @split-h="pickSplitH" @split-v="pickSplitV" />
+        <NewMenu :agent="agent" :has-git="hasGit" show-split @new-session="pickNewAgent" @new-gui="pickNewGui" @new-shell="pickNewShell" @git-changes="pickGitChanges" @split-h="pickSplitH" @split-v="pickSplitV" />
       </div>
     </div>
 
@@ -1340,7 +1402,22 @@ onUnmounted(() => {
       @click.stop
       @contextmenu.prevent.stop
     >
-      <NewMenu :agent="agent" show-refresh show-split @new-session="newSessionFromStripCtx" @new-gui="newGuiFromStripCtx" @new-shell="newShellFromStripCtx" @git-changes="gitChangesFromStripCtx" @refresh="refreshFromStripCtx" @split-h="splitHFromStripCtx" @split-v="splitVFromStripCtx" />
+      <NewMenu :agent="agent" :has-git="hasGit" show-refresh show-split @new-session="newSessionFromStripCtx" @new-gui="newGuiFromStripCtx" @new-shell="newShellFromStripCtx" @git-changes="gitChangesFromStripCtx" @refresh="refreshFromStripCtx" @split-h="splitHFromStripCtx" @split-v="splitVFromStripCtx" />
+    </div>
+
+    <div
+      v-if="listCtx"
+      class="ctx-menu term-tab-ctx-menu"
+      :style="{ left: listCtx.x + 'px', top: listCtx.y + 'px' }"
+      @click.stop
+      @contextmenu.prevent.stop
+    >
+      <button type="button" class="ctx-item" @click="closeTabCtx(); closeAllFromList()">
+        <span>{{ t('chat.tui.tabCloseOthersAll') }}</span>
+      </button>
+      <button type="button" class="ctx-item danger" @click="closeTabCtx(); emit('closeAll')">
+        <span>{{ t('chat.tui.tabCloseAll') }}</span>
+      </button>
     </div>
 
     <div

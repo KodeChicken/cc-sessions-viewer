@@ -185,14 +185,22 @@ fn build_interactive_shell(cwd: &str, color_scheme: PtyColorScheme) -> CommandBu
 
 #[cfg(windows)]
 fn build_interactive_shell(cwd: &str, color_scheme: PtyColorScheme) -> CommandBuilder {
-    // 与 v0.1.12 一致：裸 powershell，直接继承 GUI 进程已展开的环境块 PATH —— 实测
-    // node / npm 都能找到。不再注入 / 刷新 PATH，避免覆盖掉本来就好用的继承 PATH。
     // 装了 PS7 就用 pwsh，否则回退自带的 5.1。
     let mut cmd = CommandBuilder::new(crate::agent_command::windows_powershell_exe());
     cmd.arg("-NoLogo");
     // 交互式里用户随手跑 claude/codex 也会碰到 .ps1 垫片，同样放行执行策略（仅本进程）。
     cmd.arg("-ExecutionPolicy");
     cmd.arg("Bypass");
+    // 曾经这里裸起 powershell、纯靠继承 GUI 进程的环境块 PATH。EXE/NSIS 装的场景 explorer
+    // 传下来的 PATH 完整，实测好使；但 MSI (WiX) 的 advertised-shortcut 走 Windows Installer
+    // 上下文启动，继承到的环境块残缺，nvm 装的 node/npm 段丢失 → 新建终端里 `npm` 报"不是命令"。
+    // 所以和 resume / 版本检测走同一套：先跑 powershell_refresh_path() 从注册表补齐并展开
+    // %NVM_SYMLINK% 等占位符，再靠 -NoExit 落回交互提示符。$processPath 打头，继承到的完整
+    // PATH 仍优先，刷新只增不减，不会覆盖本来就好用的继承 PATH。
+    cmd.arg("-NoExit");
+    cmd.arg("-Command");
+    // shell_init = 静默写一份 PATH 诊断快照到 %TEMP%\sv-pathdiag.txt + 刷新 PATH。
+    cmd.arg(crate::agent_command::powershell_shell_init());
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("COLORFGBG", color_scheme.colorfgbg());

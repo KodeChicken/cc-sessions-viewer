@@ -40,6 +40,7 @@ const props = defineProps<{
   loadingMore: boolean
   /** 聚焦格子若打开的是回收站会话则非空（决定只读/恢复）。 */
   openTrashItem: TrashItem | null
+  hasGit: boolean
 }>()
 
 const actions = inject(PaneActionsKey) as PaneActions
@@ -142,6 +143,7 @@ const liveChatMeta = computed<SessionMeta>(() => {
       :agent="pane.agent"
       :project-key="pane.projectKey"
       :in-project-browse="inProjectBrowse"
+      :has-git="hasGit"
       :view-tabs="paneViewTabs"
       :active-view-tab-id="pane.activeViewTabId"
       @list-click="actions.onTuiListClick"

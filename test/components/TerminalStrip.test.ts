@@ -13,6 +13,7 @@ import {
   tabs,
   type TerminalTab,
 } from '../../src/terminals'
+import { PaneActionsKey, type PaneActions } from '../../src/paneActions'
 
 vi.mock('../../src/api', () => ({
   watchSessionTurn: vi.fn().mockResolvedValue(undefined),
@@ -61,6 +62,31 @@ function tab(over: Partial<TerminalTab> = {}): TerminalTab {
   }
 }
 
+const stubPaneActions: PaneActions = {
+  onTuiListClick: () => {},
+  onTuiViewTabClick: () => {},
+  onTuiViewClose: () => {},
+  onViewRename: () => {},
+  onViewCloseOthers: () => {},
+  onViewCloseProject: () => {},
+  onCloseOthersAll: () => {},
+  onCloseAll: () => {},
+  onTuiTabClosed: () => {},
+  openRenameFromTuiTab: () => {},
+  openRenameFromSavedTab: () => {},
+  saveTabState: () => {},
+  newSession: () => {},
+  newDefaultAction: () => {},
+  newGuiSession: () => {},
+  newShellSession: () => {},
+  openGitChanges: () => {},
+  refreshSessions: () => {},
+  hydrateSavedTab: () => {},
+  splitH: () => {},
+  splitV: () => {},
+  exitPane: () => {},
+} as unknown as PaneActions
+
 function factory() {
   return mount(TerminalStrip, {
     props: {
@@ -74,10 +100,14 @@ function factory() {
       agent: 'codex',
       projectKey: 'proj',
       inProjectBrowse: true,
+      hasGit: false,
       viewTabs: [],
       activeViewTabId: null,
     },
-    global: { directives: { tooltip: vTooltip } },
+    global: {
+      directives: { tooltip: vTooltip },
+      provide: { [PaneActionsKey as symbol]: stubPaneActions },
+    },
   })
 }
 

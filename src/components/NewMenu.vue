@@ -14,6 +14,7 @@ import { chatSupported } from '../chatComposerOptions'
 
 defineProps<{
   agent: Agent
+  hasGit?: boolean
   showRefresh?: boolean
   showSplit?: boolean
 }>()
@@ -42,7 +43,7 @@ defineEmits<{
     <IconTerminal class="new-menu-ic" />
     <span>{{ t('list.action.newTerminal') }}</span>
   </button>
-  <button type="button" class="new-menu-item" role="menuitem" @click="$emit('gitChanges')">
+  <button v-if="hasGit" type="button" class="new-menu-item" role="menuitem" @click="$emit('gitChanges')">
     <IconGitBranch class="new-menu-ic" />
     <span>{{ t('list.action.gitChanges') }}</span>
   </button>

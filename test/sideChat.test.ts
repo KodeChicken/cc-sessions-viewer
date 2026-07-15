@@ -18,6 +18,10 @@ vi.mock('../src/chatSessions', () => ({
   sendPrompt: sendPromptMock,
 }))
 
+vi.mock('../src/api', () => ({
+  purgeBtwSession: vi.fn().mockResolvedValue(undefined),
+}))
+
 import { sideChat, openSideChat, closeSideChat } from '../src/sideChat'
 
 describe('btw side chat store', () => {
@@ -29,32 +33,26 @@ describe('btw side chat store', () => {
     focusedPane.value = null
   })
 
-  it('forks the main session when a sessionId is given (inherits context, plan mode)', async () => {
+  it('starts a side chat with bypassPermissions', async () => {
     focusedPane.value = { id: 1 }
     startChatMock.mockResolvedValueOnce({ uiId: 1 })
-    await openSideChat({ projectKey: 'proj', cwd: '/tmp', forkSessionId: 'sess-1' })
+    await openSideChat({ projectKey: 'proj', cwd: '/tmp' })
 
     expect(startChatMock).toHaveBeenCalledTimes(1)
     expect(startChatMock.mock.calls[0][0]).toMatchObject({
       agent: 'claude',
       cwd: '/tmp',
-      sessionId: 'sess-1',
-      fork: true,
-      permissionMode: 'plan',
+      permissionMode: 'bypassPermissions',
     })
     expect(sideChat.value).not.toBeNull()
   })
 
-  it('starts a fresh side chat when there is no main session to fork', async () => {
+  it('starts a fresh side chat without sessionId when no fork requested', async () => {
     focusedPane.value = { id: 2 }
     startChatMock.mockResolvedValueOnce({ uiId: 2 })
     await openSideChat({ projectKey: 'proj', cwd: '/tmp' })
 
-    expect(startChatMock.mock.calls[0][0]).toMatchObject({
-      agent: 'claude',
-      fork: false,
-      sessionId: undefined,
-    })
+    expect(startChatMock.mock.calls[0][0]).not.toHaveProperty('sessionId')
   })
 
   it('sends the /btw prompt as the first message', async () => {

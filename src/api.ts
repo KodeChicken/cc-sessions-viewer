@@ -172,6 +172,10 @@ export const softDeleteSession = (
 export const hardDeleteSession = (agent: Agent, path: string) =>
   invoke<void>('hard_delete_session', { agent, path })
 
+/** btw 侧聊关闭后清理 --fork-session 产生的会话文件。 */
+export const purgeBtwSession = (projectKey: string, sessionId: string) =>
+  invoke<void>('purge_btw_session', { projectKey, sessionId })
+
 export const listTrash = () => invoke<TrashItem[]>('list_trash')
 
 export const restoreSession = (trashFile: string) =>
