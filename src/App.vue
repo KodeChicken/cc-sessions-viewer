@@ -95,6 +95,7 @@ import {
   markTabTurnCompleted,
   markTabTurnBlocked,
   markTabTurnFailed,
+  markTabViewed,
   migrateTabsProjectKey,
   tabs as tuiTabs,
   persistTabState,
@@ -3307,6 +3308,8 @@ function onClearTabs() {
 const windowFocused = ref(document.hasFocus())
 async function onFocus() {
   windowFocused.value = true
+  const activeTuiTab = currentActiveTab()
+  if (activeTuiTab) markTabViewed(activeTuiTab.uiId)
   clearPendingLiveNotification()
   const activeTab = viewTabs.value.find(t => t.uiId === activeViewTabId.value)
   if (activeTab && activeTab.type === 'session' && activeTab.session?.path) {

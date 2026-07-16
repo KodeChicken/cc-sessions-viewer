@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, shallowMount } from '@vue/test-utils'
 import TerminalStrip from '../../src/components/TerminalStrip.vue'
+import PaneContent from '../../src/components/PaneContent.vue'
 import { vTooltip } from '../../src/tooltip'
 import { setLang } from '../../src/settings'
 import {
@@ -241,6 +242,38 @@ describe('TerminalStrip', () => {
     const item = wrapper.findAll('.term-tab').slice(-1)[0]
     expect(item.classes()).toContain('state-done')
     expect(item.find('.term-tab-status-done').exists()).toBe(true)
+  })
+
+  it('clears done when the active TUI pane is focused', async () => {
+    const t = tab({ turnState: 'review', turnStateSource: 'session-jsonl' })
+    tabs.value = [t]
+    const wrapper = shallowMount(PaneContent, {
+      props: {
+        pane: {
+          id: PANE_ID,
+          agent: 'codex',
+          projectKey: 'proj',
+          activeUiId: t.uiId,
+          activeViewTabId: null,
+        },
+        activeProject: undefined,
+        agent: 'codex',
+        projects: [],
+        sessions: [],
+        sessionTotal: 0,
+        loadingList: false,
+        loadingMore: false,
+        openTrashItem: null,
+        hasGit: false,
+      },
+      global: {
+        provide: { [PaneActionsKey as symbol]: stubPaneActions },
+      },
+    })
+
+    await wrapper.find('.pane').trigger('pointerdown')
+
+    expect(t.turnState).toBe('idle')
   })
 
   it('does not downgrade a session-jsonl-completed turn when session append arrives later', () => {
