@@ -50,6 +50,7 @@ import { globalSearchOpen, openGlobalSearch } from './globalSearch'
 import { runBackgroundCheck } from './updateCheck'
 import type { SearchHit } from './types'
 import ChatSidePanel from './components/ChatSidePanel.vue'
+import CodexSidePanel from './components/CodexSidePanel.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import { IconSearch } from './components/icons'
 import WindowsTitlebar, { type WindowMenuGroup } from './components/WindowsTitlebar.vue'
@@ -116,6 +117,13 @@ import {
 } from './viewHistory'
 import { startChat, closeChat, reconnectChats, lastAssistantModel, migrateChatSessionsProjectKey, chatSessions, type ChatSession } from './chatSessions'
 import { sideChat, openSideChat, closeSideChat, closeAllSideChats, activeBtwSessionIds } from './sideChat'
+import {
+  activeCodexSideSessionIds,
+  closeAllCodexSideChats,
+  closeCodexSideChat,
+  codexSideChat,
+  openCodexSideChat,
+} from './codexSideChat'
 import {
   type ViewTab,
   viewTabs,
@@ -317,8 +325,8 @@ async function refreshAll() {
 }
 const sessions = shallowRef<SessionMeta[]>([])
 const visibleSessions = computed(() => {
-  const btwIds = activeBtwSessionIds()
-  return btwIds.size ? sessions.value.filter(s => !btwIds.has(s.id)) : sessions.value
+  const hiddenIds = new Set([...activeBtwSessionIds(), ...activeCodexSideSessionIds()])
+  return hiddenIds.size ? sessions.value.filter(s => !hiddenIds.has(s.id)) : sessions.value
 })
 const sessionTotal = ref(0)
 const loadingMore = ref(false)
@@ -1497,7 +1505,8 @@ function switchAgent(a: Agent) {
   // 任何主区视图切换 → 把 TUI 层收起，让用户看到刚切到的视图。TUI tab 不关，
   // 用户在 TerminalStrip 里随时能切回。
   setActiveTui(null)
-  if (sideChat.value) closeAllSideChats()
+  closeAllSideChats()
+  closeAllCodexSideChats()
   // showStats 不重置 —— 统计是 agent-scoped，切 agent 后 StatsView 自己 refetch。
   // 乐观恢复目标 agent 上次停留的项目（含其活跃 tab）：立刻 selectProject 定位过去，
   // 不等 loadProjects 回来 —— codex 的项目扫描慢，先闪一下欢迎页很明显。selectProject
@@ -1527,7 +1536,8 @@ async function selectProject(dir: string, opts: { activateTerminal?: boolean } =
     rememberActiveNav()
   }
   setActiveTui(null)
-  if (sideChat.value) closeAllSideChats()
+  closeAllSideChats()
+  closeAllCodexSideChats()
   // 再次点击当前已选中的项目：
   //   - 有 view tab → 取消 view tab 激活，回到列表
   //   - 无 view tab → 收起项目
@@ -2883,6 +2893,21 @@ function toggleBtwSideChat() {
   })
 }
 
+/** Codex `/side` 浮层（按钮 / ⌘J / 主聊中输入 `/side …`）。 */
+function toggleCodexSideChat() {
+  const lc = liveChat.value
+  if (!lc || lc.agent !== 'codex' || !lc.cwd) return
+  if (codexSideChat.value) { closeCodexSideChat(); return }
+  void openCodexSideChat({
+    projectKey: lc.projectKey,
+    cwd: lc.cwd,
+    forkThreadId: lc.sessionId || undefined,
+    model: lc.model,
+    effort: lc.effort,
+    permissionMode: lc.permissionMode,
+  })
+}
+
 
 
 
@@ -3632,6 +3657,8 @@ onMounted(() => {
       } else if (key === 'j' && !e.shiftKey) {
         if (liveChat.value?.agent === 'claude') {
           e.preventDefault(); toggleBtwSideChat()
+        } else if (liveChat.value?.agent === 'codex') {
+          e.preventDefault(); toggleCodexSideChat()
         }
       } else if (key === 's' && e.shiftKey) {
         e.preventDefault(); openStats()
@@ -3920,7 +3947,7 @@ provide<PaneActions>(PaneActionsKey, {
         <!-- StatsView 自带顶部控制条，这里就让出空间（保持拖动区域）。
              showStats 优先级要高于 openSession，否则进入会话统计模式时
              还会渲染 ChatTopbar 的「会话统计」按钮，造成视觉重复。 -->
-        <div v-if="showStats || (liveChat && activeViewTab?.type === 'chat')" />
+        <div v-if="showStats || (activeUiId === null && (activeViewTab?.type === 'git' || (liveChat && activeViewTab?.type === 'chat')))" />
         <TuiTopbar v-else-if="activeUiId !== null" />
         <ChatTopbar v-else-if="openSession && activeViewTab" />
         <TrashTopbar
@@ -4121,7 +4148,17 @@ provide<PaneActions>(PaneActionsKey, {
     />
 
     <!-- btw 侧聊浮框（右上角可拖动；Teleport 到 body，与主视图层无关） -->
-    <ChatSidePanel v-if="sideChat" :session="sideChat" :hidden="!liveChat || activeUiId !== null" />
+    <ChatSidePanel
+      v-if="sideChat && liveChat?.agent === 'claude'"
+      :session="sideChat"
+      :hidden="!liveChat || activeUiId !== null"
+    />
+    <!-- Codex `/side`：单独组件与 state，使用 ephemeral app-server fork。 -->
+    <CodexSidePanel
+      v-if="codexSideChat && liveChat?.agent === 'codex'"
+      :session="codexSideChat"
+      :hidden="!liveChat || activeUiId !== null"
+    />
 
     <!-- toast -->
     <Transition name="fade">
