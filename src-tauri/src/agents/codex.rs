@@ -628,13 +628,14 @@ fn extract_exec_apply_patch(input: &str) -> Option<String> {
         return None;
     }
 
+    let input_bytes = input.as_bytes();
     for declaration in ["const", "let", "var"] {
         let marker = format!("{declaration} {variable}");
         let mut offset = 0;
         while let Some(found) = input[offset..].find(&marker) {
             let start = offset + found;
-            let before = input[..start].as_bytes().last().copied();
-            let after = input[start + marker.len()..].as_bytes().first().copied();
+            let before = input_bytes[..start].last().copied();
+            let after = input_bytes[start + marker.len()..].first().copied();
             offset = start + marker.len();
             if before.is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
                 || after.is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
@@ -2913,7 +2914,7 @@ mod tests {
         let exec_input = r#"const patch = "*** Begin Patch\n*** Add File: /repo/src/new.ts\n+export const value = 1;\n*** Update File: /repo/src/current.ts\n@@\n-old\n+new\n*** Delete File: /repo/src/old.ts\n*** End Patch";
 const result = await tools.apply_patch(patch);
 text(typeof result === 'string' ? result : JSON.stringify(result));"#;
-        let lines = vec![
+        let lines = [
             json!({
                 "timestamp": "2026-07-20T06:48:37.000Z",
                 "type": "response_item",
@@ -2990,7 +2991,7 @@ text(typeof result === 'string' ? result : JSON.stringify(result));"#;
     fn read_session_marks_failed_exec_apply_patch_as_error() {
         let exec_input = r#"const patch = "*** Begin Patch\n*** Update File: /repo/src/example.ts\n@@\n-old\n+new\n*** End Patch";
 const result = await tools.apply_patch(patch);"#;
-        let lines = vec![
+        let lines = [
             json!({
                 "type": "response_item",
                 "payload": {
