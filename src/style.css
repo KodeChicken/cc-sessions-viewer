@@ -3211,7 +3211,7 @@ details[open] > .block-summary > .chev {
 }
 .codex-patch-line {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: 54px 18px minmax(0, 1fr);
   align-items: start;
   min-width: 0;
   white-space: pre-wrap;
@@ -3231,6 +3231,13 @@ details[open] > .block-summary > .chev {
 }
 .codex-patch-line.del {
   background: color-mix(in srgb, var(--diff-removed) 12%, transparent);
+}
+.codex-patch-no {
+  padding-right: 12px;
+  text-align: right;
+  color: var(--text-mute);
+  opacity: 0.7;
+  user-select: none;
 }
 .codex-patch-sign {
   text-align: center;
