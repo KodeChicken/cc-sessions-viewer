@@ -38,6 +38,49 @@ describe('filterSessions', () => {
     expect(filterSessions(items).map((s) => s.path)).toEqual(['b', 'c', 'a'])
   })
 
+  it('sorts by creation time, newest first', () => {
+    const created = [
+      session({ path: 'a', created: '2026-01-02T00:00:00Z', modified: 300 }),
+      session({ path: 'b', created: '2026-01-03T00:00:00Z', modified: 100 }),
+      session({ path: 'c', created: '2026-01-01T00:00:00Z', modified: 200 }),
+    ]
+    sessionSort.value = 'createdRecent'
+    expect(filterSessions(created).map((s) => s.path)).toEqual(['b', 'a', 'c'])
+  })
+
+  it('sorts by creation time, oldest first', () => {
+    const created = [
+      session({ path: 'a', created: '2026-01-02T00:00:00Z', modified: 300 }),
+      session({ path: 'b', created: '2026-01-03T00:00:00Z', modified: 100 }),
+      session({ path: 'c', created: '2026-01-01T00:00:00Z', modified: 200 }),
+    ]
+    sessionSort.value = 'createdOldest'
+    expect(filterSessions(created).map((s) => s.path)).toEqual(['c', 'a', 'b'])
+  })
+
+  it('falls back to modified for missing or invalid creation times', () => {
+    const created = [
+      session({ path: 'valid', created: '1970-01-01T00:00:00.020Z', modified: 5 }),
+      session({ path: 'missing', modified: 30 }),
+      session({ path: 'invalid', created: 'not-a-date', modified: 10 }),
+    ]
+    sessionSort.value = 'createdRecent'
+    expect(filterSessions(created).map((s) => s.path)).toEqual([
+      'missing',
+      'valid',
+      'invalid',
+    ])
+  })
+
+  it('breaks creation-time ties by newest modified', () => {
+    const tied = [
+      session({ path: 'old-update', created: '2026-01-01T00:00:00Z', modified: 10 }),
+      session({ path: 'new-update', created: '2026-01-01T00:00:00Z', modified: 20 }),
+    ]
+    sessionSort.value = 'createdRecent'
+    expect(filterSessions(tied).map((s) => s.path)).toEqual(['new-update', 'old-update'])
+  })
+
   it('sorts by size, largest first', () => {
     sessionSort.value = 'size'
     expect(filterSessions(items).map((s) => s.path)).toEqual(['b', 'c', 'a'])
@@ -89,6 +132,11 @@ describe('sessionsFilterActive', () => {
 
   it('is true for any non-default sort', () => {
     sessionSort.value = 'size'
+    expect(sessionsFilterActive.value).toBe(true)
+  })
+
+  it('is true for creation-time sorting', () => {
+    sessionSort.value = 'createdRecent'
     expect(sessionsFilterActive.value).toBe(true)
   })
 })
