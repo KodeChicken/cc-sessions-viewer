@@ -36,8 +36,8 @@ import {
   IconExitPane,
   IconChat,
   IconGitBranch,
-  IconSort,
 } from '../components/icons'
+import CreationSortIcon from '../components/CreationSortIcon.vue'
 import NewMenu from '../components/NewMenu.vue'
 import { PaneActionsKey } from '../paneActions'
 import { chatSupported } from '../chatComposerOptions'
@@ -330,12 +330,14 @@ watch(
 // "topbar + list-head 两排 icon-only 按钮重叠" 的扫描负担）。
 // selectedCount / allSelected / toggleSelectAll 和原 SessionsTopbar 完全一致 ——
 // 状态都在 sessionsToolbar 模块里，topbar 和 view 任意一边写另一边都看得见。
-const creationSortActive = computed(
-  () => sessionSort.value === 'createdRecent' || sessionSort.value === 'createdOldest',
-)
-const creationSortTooltip = computed(() => {
-  if (sessionSort.value === 'createdRecent') return t('list.tb.sortCreatedRecentTip')
-  if (sessionSort.value === 'createdOldest') return t('list.tb.sortCreatedOldestTip')
+const creationSortDirection = computed<'asc' | 'desc' | null>(() => {
+  if (sessionSort.value === 'createdOldest') return 'asc'
+  if (sessionSort.value === 'createdRecent') return 'desc'
+  return null
+})
+const creationSortLabel = computed(() => {
+  if (sessionSort.value === 'createdOldest') return t('list.tb.sortCreatedOldest')
+  if (sessionSort.value === 'createdRecent') return t('list.tb.sortCreatedRecent')
   return t('list.tb.sortCreated')
 })
 function toggleCreationSort() {
@@ -700,12 +702,11 @@ defineExpose({ scrollEl })
       <template v-else>
         <button
           v-if="sessions.length > 1"
-          class="icon-btn"
-          :class="{ active: creationSortActive }"
-          v-tooltip="creationSortTooltip"
+          class="icon-btn creation-sort-button"
+          :aria-label="creationSortLabel"
           @click="toggleCreationSort"
         >
-          <IconSort />
+          <CreationSortIcon :direction="creationSortDirection" />
         </button>
         <!-- 进入批量模式 —— 原本住在 SessionsTopbar 的 .ct-actions 里，
              跟下方 new/refresh/delete 隔一行 topbar 视觉冲突，挪到这里集中显示。 -->

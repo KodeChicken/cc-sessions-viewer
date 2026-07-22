@@ -303,22 +303,27 @@ describe('SessionsView', () => {
       expect(findByLabel(two, 'Sort by creation time')).toBeDefined()
     })
 
-    it('toggles creation-time order and marks the shortcut active', async () => {
+    it('colors only the active creation-time direction without an active button background', async () => {
       const wrapper = factory([session(), session({ path: '/work/proj/b.jsonl' })])
       const button = findByLabel(wrapper, 'Sort by creation time')
 
+      expect(button.classes()).not.toContain('active')
+      expect(button.find('.creation-sort-icon__arrow--up').classes()).not.toContain('is-active')
+      expect(button.find('.creation-sort-icon__arrow--down').classes()).not.toContain('is-active')
+
       await button.trigger('click')
       expect(sessionSort.value).toBe('createdRecent')
-      expect(button.classes()).toContain('active')
-      expect(button.attributes('aria-label')).toBe(
-        'Creation time: newest first; click for oldest first',
-      )
+      expect(button.classes()).not.toContain('active')
+      expect(button.attributes('aria-label')).toBe('Created: newest first')
+      expect(button.find('.creation-sort-icon__arrow--down').classes()).toContain('is-active')
+      expect(button.find('.creation-sort-icon__arrow--up').classes()).not.toContain('is-active')
 
       await button.trigger('click')
       expect(sessionSort.value).toBe('createdOldest')
-      expect(button.attributes('aria-label')).toBe(
-        'Creation time: oldest first; click for newest first',
-      )
+      expect(button.classes()).not.toContain('active')
+      expect(button.attributes('aria-label')).toBe('Created: oldest first')
+      expect(button.find('.creation-sort-icon__arrow--up').classes()).toContain('is-active')
+      expect(button.find('.creation-sort-icon__arrow--down').classes()).not.toContain('is-active')
     })
 
     it('hides the creation sort shortcut in select mode', () => {

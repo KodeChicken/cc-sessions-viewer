@@ -117,8 +117,6 @@ export default {
   'list.tb.sortCreatedRecent': 'Created: newest first',
   'list.tb.sortCreatedOldest': 'Created: oldest first',
   'list.tb.sortCreated': 'Sort by creation time (newest first)',
-  'list.tb.sortCreatedRecentTip': 'Creation time: newest first; click for oldest first',
-  'list.tb.sortCreatedOldestTip': 'Creation time: oldest first; click for newest first',
   'list.tb.sortSize': 'Largest first',
   'list.tb.sortMessages': 'Most messages',
   'list.tb.select': 'Select multiple',

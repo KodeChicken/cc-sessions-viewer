@@ -117,8 +117,6 @@ export default {
   'list.tb.sortCreatedRecent': '作成日時：新しい順',
   'list.tb.sortCreatedOldest': '作成日時：古い順',
   'list.tb.sortCreated': '作成日時で並べ替え（新しい順）',
-  'list.tb.sortCreatedRecentTip': '作成日時：新しい順。クリックで古い順に切り替え',
-  'list.tb.sortCreatedOldestTip': '作成日時：古い順。クリックで新しい順に切り替え',
   'list.tb.sortSize': 'サイズの大きい順',
   'list.tb.sortMessages': 'メッセージ数順',
   'list.tb.select': '複数選択',
