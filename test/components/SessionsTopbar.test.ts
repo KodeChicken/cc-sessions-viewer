@@ -55,14 +55,14 @@ describe('SessionsTopbar', () => {
     expect(sessionSearch.value).toBe('')
   })
 
-  it('lists the four sort options and applies a pick', async () => {
+  it('lists every sort option and applies creation-time sorting', async () => {
     const wrapper = factory()
     await wrapper.find('.ct-scope-btn').trigger('click')
     const items = wrapper.findAll('.ct-scope-item')
-    expect(items).toHaveLength(4)
+    expect(items).toHaveLength(6)
 
-    await items[2].trigger('click') // 'Largest first'
-    expect(sessionSort.value).toBe('size')
+    await items[2].trigger('click')
+    expect(sessionSort.value).toBe('createdRecent')
   })
 
   it('focuses the search box on the ⌘F / Ctrl+F shortcut', () => {

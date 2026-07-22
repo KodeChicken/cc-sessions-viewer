@@ -40,6 +40,8 @@ function clearSearch() {
 const SORTS: { value: SessionSort; key: string }[] = [
   { value: 'recent', key: 'list.tb.sortRecent' },
   { value: 'oldest', key: 'list.tb.sortOldest' },
+  { value: 'createdRecent', key: 'list.tb.sortCreatedRecent' },
+  { value: 'createdOldest', key: 'list.tb.sortCreatedOldest' },
   { value: 'size', key: 'list.tb.sortSize' },
   { value: 'messages', key: 'list.tb.sortMessages' },
 ]
