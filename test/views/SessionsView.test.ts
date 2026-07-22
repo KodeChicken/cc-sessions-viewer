@@ -35,6 +35,7 @@ import {
   selectedSessions,
   sessionSearch,
   sessionSelectMode,
+  sessionSort,
 } from '../../src/sessionsToolbar'
 import type { ProjectInfo, SearchHit, SessionMeta } from '../../src/types'
 import { PaneActionsKey, type PaneActions } from '../../src/paneActions'
@@ -292,6 +293,38 @@ describe('SessionsView', () => {
       expect(
         w2.find('.list-head-actions .icon-btn[aria-label^="Select multiple"]').exists(),
       ).toBe(true)
+    })
+
+    it('shows the creation sort shortcut only when there are 2+ sessions', () => {
+      const one = factory([session()])
+      expect(findByLabel(one, 'Sort by creation time')).toBeUndefined()
+
+      const two = factory([session(), session({ path: '/work/proj/b.jsonl' })])
+      expect(findByLabel(two, 'Sort by creation time')).toBeDefined()
+    })
+
+    it('toggles creation-time order and marks the shortcut active', async () => {
+      const wrapper = factory([session(), session({ path: '/work/proj/b.jsonl' })])
+      const button = findByLabel(wrapper, 'Sort by creation time')
+
+      await button.trigger('click')
+      expect(sessionSort.value).toBe('createdRecent')
+      expect(button.classes()).toContain('active')
+      expect(button.attributes('aria-label')).toBe(
+        'Creation time: newest first; click for oldest first',
+      )
+
+      await button.trigger('click')
+      expect(sessionSort.value).toBe('createdOldest')
+      expect(button.attributes('aria-label')).toBe(
+        'Creation time: oldest first; click for newest first',
+      )
+    })
+
+    it('hides the creation sort shortcut in select mode', () => {
+      sessionSelectMode.value = true
+      const wrapper = factory([session(), session({ path: '/work/proj/b.jsonl' })])
+      expect(findByLabel(wrapper, 'Sort by creation time')).toBeUndefined()
     })
 
     it('flips into select mode from the entry button', async () => {

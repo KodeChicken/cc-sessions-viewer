@@ -6,6 +6,7 @@ import { t } from '../i18n'
 import {
   filterSessions,
   sessionSearch,
+  sessionSort,
   sessionsFilterActive,
   sessionSelectMode,
   selectedSessions,
@@ -35,6 +36,7 @@ import {
   IconExitPane,
   IconChat,
   IconGitBranch,
+  IconSort,
 } from '../components/icons'
 import NewMenu from '../components/NewMenu.vue'
 import { PaneActionsKey } from '../paneActions'
@@ -328,6 +330,18 @@ watch(
 // "topbar + list-head 两排 icon-only 按钮重叠" 的扫描负担）。
 // selectedCount / allSelected / toggleSelectAll 和原 SessionsTopbar 完全一致 ——
 // 状态都在 sessionsToolbar 模块里，topbar 和 view 任意一边写另一边都看得见。
+const creationSortActive = computed(
+  () => sessionSort.value === 'createdRecent' || sessionSort.value === 'createdOldest',
+)
+const creationSortTooltip = computed(() => {
+  if (sessionSort.value === 'createdRecent') return t('list.tb.sortCreatedRecentTip')
+  if (sessionSort.value === 'createdOldest') return t('list.tb.sortCreatedOldestTip')
+  return t('list.tb.sortCreated')
+})
+function toggleCreationSort() {
+  sessionSort.value =
+    sessionSort.value === 'createdRecent' ? 'createdOldest' : 'createdRecent'
+}
 const headSelectedCount = computed(
   () => props.sessions.filter((s) => selectedSessions.value.has(s.path)).length,
 )
@@ -684,6 +698,15 @@ defineExpose({ scrollEl })
         </button>
       </template>
       <template v-else>
+        <button
+          v-if="sessions.length > 1"
+          class="icon-btn"
+          :class="{ active: creationSortActive }"
+          v-tooltip="creationSortTooltip"
+          @click="toggleCreationSort"
+        >
+          <IconSort />
+        </button>
         <!-- 进入批量模式 —— 原本住在 SessionsTopbar 的 .ct-actions 里，
              跟下方 new/refresh/delete 隔一行 topbar 视觉冲突，挪到这里集中显示。 -->
         <button
