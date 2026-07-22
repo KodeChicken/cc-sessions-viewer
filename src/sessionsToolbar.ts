@@ -12,7 +12,7 @@
 import { computed, ref } from 'vue'
 import type { SessionMeta } from './types'
 
-/** 排序方式：时间最新 / 时间最早 / 体积 / 消息数。 */
+/** 排序方式：更新时间最新 / 最早、创建时间最新 / 最早、体积、消息数。 */
 export type SessionSort =
   | 'recent'
   | 'oldest'
