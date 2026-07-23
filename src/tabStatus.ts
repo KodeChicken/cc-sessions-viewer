@@ -52,70 +52,148 @@ export function shouldTerminalInputStartTurn(agent: Agent, line: string): boolea
   return line.trim().length > 0
 }
 
-function stripTerminalControlSequences(data: string): string {
-  let out = ''
-  for (let i = 0; i < data.length; i++) {
-    const ch = data[i]
-    if (ch !== '\x1b' && ch !== '\x9b') {
-      out += ch
+export interface TerminalInputState {
+  text: string
+  cursor: number
+  reliable: boolean
+}
+
+export function createTerminalInputState(text = ''): TerminalInputState {
+  return {
+    text,
+    cursor: Array.from(text).length,
+    reliable: true,
+  }
+}
+
+const LEFT = new Set(['\x1b[D', '\x1bOD'])
+const RIGHT = new Set(['\x1b[C', '\x1bOC'])
+const HOME = new Set(['\x1b[H', '\x1bOH'])
+const END = new Set(['\x1b[F', '\x1bOF'])
+const DELETE = '\x1b[3~'
+const PASTE_MARKERS = new Set(['\x1b[200~', '\x1b[201~'])
+const FOCUS_MARKERS = new Set(['\x1b[I', '\x1b[O'])
+const HISTORY = new Set(['\x1b[A', '\x1b[B', '\x1bOA', '\x1bOB'])
+
+function terminalControlSequenceEnd(data: string, start: number): number {
+  const first = data[start]
+  if (first === '\x9b') {
+    let end = start + 1
+    while (end < data.length && !/[\x40-\x7e]/.test(data[end])) end += 1
+    return Math.min(end + 1, data.length)
+  }
+
+  const next = data[start + 1]
+  if (next === '[') {
+    let end = start + 2
+    while (end < data.length && !/[\x40-\x7e]/.test(data[end])) end += 1
+    return Math.min(end + 1, data.length)
+  }
+  if (next === 'O') return Math.min(start + 3, data.length)
+  if (next === ']') {
+    let end = start + 2
+    while (end < data.length) {
+      if (data[end] === '\x07') return end + 1
+      if (data[end] === '\x1b' && data[end + 1] === '\\') return end + 2
+      end += 1
+    }
+    return data.length
+  }
+  if (next && /[PX^_]/.test(next)) {
+    let end = start + 2
+    while (end < data.length) {
+      if (data[end] === '\x1b' && data[end + 1] === '\\') return end + 2
+      end += 1
+    }
+    return data.length
+  }
+  return Math.min(start + (next ? 2 : 1), data.length)
+}
+
+export function applyTerminalInputState(
+  current: TerminalInputState,
+  data: string,
+): { nextState: TerminalInputState; submittedLines: string[] } {
+  const chars = Array.from(current.text)
+  let cursor = Math.min(current.cursor, chars.length)
+  let reliable = current.reliable
+  const submittedLines: string[] = []
+
+  const insert = (value: string) => {
+    const added = Array.from(value)
+    chars.splice(cursor, 0, ...added)
+    cursor += added.length
+  }
+  const backspace = () => {
+    if (cursor <= 0) return
+    chars.splice(cursor - 1, 1)
+    cursor -= 1
+  }
+  const deleteForward = () => {
+    if (cursor < chars.length) chars.splice(cursor, 1)
+  }
+  const reset = () => {
+    chars.splice(0)
+    cursor = 0
+    reliable = true
+  }
+
+  for (let index = 0; index < data.length; ) {
+    const currentChar = data[index]
+    if (currentChar === '\x1b' || currentChar === '\x9b') {
+      const end = terminalControlSequenceEnd(data, index)
+      const sequence = data.slice(index, end)
+      if (LEFT.has(sequence)) cursor = Math.max(0, cursor - 1)
+      else if (RIGHT.has(sequence)) cursor = Math.min(chars.length, cursor + 1)
+      else if (HOME.has(sequence)) cursor = 0
+      else if (END.has(sequence)) cursor = chars.length
+      else if (sequence === DELETE) deleteForward()
+      else if (HISTORY.has(sequence)) reliable = false
+      else if (!PASTE_MARKERS.has(sequence) && !FOCUS_MARKERS.has(sequence)) {
+        reliable = false
+      }
+      index = end
       continue
     }
 
-    if (ch === '\x9b') {
-      i += 1
-      while (i < data.length && !/[\x40-\x7e]/.test(data[i])) i += 1
-      continue
-    }
+    const codePoint = data.codePointAt(index)
+    if (codePoint === undefined) break
+    const value = String.fromCodePoint(codePoint)
+    index += value.length
 
-    const next = data[i + 1]
-    if (next === '[') {
-      i += 2
-      while (i < data.length && !/[\x40-\x7e]/.test(data[i])) i += 1
-    } else if (next === ']') {
-      i += 2
-      while (i < data.length) {
-        if (data[i] === '\x07') break
-        if (data[i] === '\x1b' && data[i + 1] === '\\') {
-          i += 1
-          break
-        }
-        i += 1
-      }
-    } else if (next && /[PX^_]/.test(next)) {
-      i += 2
-      while (i < data.length) {
-        if (data[i] === '\x1b' && data[i + 1] === '\\') {
-          i += 1
-          break
-        }
-        i += 1
-      }
-    } else if (next) {
-      i += 1
+    if (value === '\r' || value === '\n') {
+      submittedLines.push(chars.join(''))
+      reset()
+    } else if (value === '\b' || value === '\x7f') {
+      backspace()
+    } else if (value === '\x15') {
+      reset()
+    } else if (value === '\x01') {
+      cursor = 0
+    } else if (value === '\x05') {
+      cursor = chars.length
+    } else if (value >= ' ') {
+      insert(value)
+    } else {
+      reliable = false
     }
   }
-  return out
+
+  return {
+    nextState: { text: chars.join(''), cursor, reliable },
+    submittedLines,
+  }
 }
 
 export function applyTerminalInputLineState(
   current: string,
   data: string,
 ): { nextLine: string; submittedLines: string[] } {
-  let line = current
-  const submittedLines: string[] = []
-  for (const ch of stripTerminalControlSequences(data)) {
-    if (ch === '\r' || ch === '\n') {
-      submittedLines.push(line)
-      line = ''
-    } else if (ch === '\b' || ch === '\x7f') {
-      line = line.slice(0, -1)
-    } else if (ch === '\x15') {
-      line = ''
-    } else if (ch >= ' ') {
-      line += ch
-    }
+  const result = applyTerminalInputState(createTerminalInputState(current), data)
+  return {
+    nextLine: result.nextState.text,
+    submittedLines: result.submittedLines,
   }
-  return { nextLine: line, submittedLines }
 }
 
 export function statusKind(tab: StatusTab): TabStatusKind {
