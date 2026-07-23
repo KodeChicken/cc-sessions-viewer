@@ -177,6 +177,7 @@ function selectionDeleteTarget(term: Terminal): TerminalSelectionDeleteTarget {
     hasSelection: () => term.hasSelection(),
     getSelection: () => term.getSelection(),
     getSelectionPosition: () => term.getSelectionPosition(),
+    // xterm exposes the selection model's raw zero-based buffer row here.
     getActiveCursorRow: () =>
       term.buffer.active.baseY + term.buffer.active.cursorY,
     clearSelection: () => term.clearSelection(),

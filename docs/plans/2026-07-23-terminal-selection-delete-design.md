@@ -147,4 +147,3 @@ Verification:
 - full Vitest suite;
 - production frontend build;
 - manual Tauri check using the user's numeric selection scenario.
-
