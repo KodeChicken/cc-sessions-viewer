@@ -4047,6 +4047,27 @@ body.is-tab-reordering * {
 .terminal-codex-tui .xterm .xterm-rows .xterm-fg-257 {
   color: var(--terminal-inverse-fg) !important;
 }
+/* Windows IME 的候选框锚定 xterm 隐藏 textarea；拼音预编辑文本则在 composition-view。
+ * Working 时把两者固定到静态输入光标，避免 Codex 状态刷新带着输入法上下跳动。 */
+.terminal-stable-cursor .xterm-helper-textarea,
+.terminal-stable-cursor .composition-view {
+  left: var(--terminal-stable-cursor-left) !important;
+  top: var(--terminal-stable-cursor-top) !important;
+}
+.terminal-stable-cursor .xterm-screen::after {
+  content: '';
+  position: absolute;
+  left: var(--terminal-stable-cursor-left);
+  top: var(--terminal-stable-cursor-top);
+  width: var(--terminal-stable-cursor-width);
+  height: var(--terminal-stable-cursor-height);
+  z-index: 10;
+  pointer-events: none;
+  background: var(--terminal-stable-cursor-color);
+}
+.terminal-stable-cursor.terminal-ime-composing .xterm-screen::after {
+  display: none;
+}
 @keyframes live-pulse {
   0%   { box-shadow: 0 0 0 0   color-mix(in srgb, currentColor 70%, transparent); }
   70%  { box-shadow: 0 0 0 6px color-mix(in srgb, currentColor  0%, transparent); }

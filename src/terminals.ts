@@ -104,6 +104,19 @@ export function shouldCopyWindowsTerminalSelection(
   )
 }
 
+export function shouldBlinkTerminalCursor(agent: Agent, platform = navigator.platform): boolean {
+  return !(/Win/i.test(platform) && agent === 'codex')
+}
+
+export function shouldUseStableTerminalCursor(
+  agent: Agent,
+  turnState: TerminalTurnState,
+  isShell = false,
+  platform = navigator.platform,
+): boolean {
+  return /Win/i.test(platform) && agent === 'codex' && !isShell && turnState === 'working'
+}
+
 async function copyTerminalSelectionText(text: string) {
   try {
     await navigator.clipboard?.writeText?.(text)
@@ -169,6 +182,8 @@ export interface TerminalTab {
   lastSyncedCols: number
   lastSyncedRows: number
   currentInputLine: string
+  stableCursorX?: number
+  stableCursorRowFromBottom?: number
   /** 进程生命周期：只描述 PTY/CLI 进程本身，不代表本轮回答是否完成。 */
   processState: TerminalProcessState
   /** 本轮问答状态：完成/阻塞/错误只能由 agent/session 的明确信号推进。 */
@@ -633,10 +648,91 @@ function syncRepairCodexUserMessageColors(tab: TerminalTab) {
   repairCodexUserMessageBufferColors(tab)
 }
 
+function captureStableTerminalCursor(tab: TerminalTab, followInput = false) {
+  const buffer = tab.term.buffer.active
+  let cursorX = buffer.cursorX
+  let cursorY = buffer.cursorY
+
+  // Codex 提交后会清空 composer。优先固定到屏幕最下方的 `› ` 输入提示，避免把
+  // 静态光标留在刚提交文本的末尾；找不到时才使用 xterm 当前光标坐标。
+  for (let row = Math.max(0, tab.term.rows - 1); row >= 0; row--) {
+    const text = buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? ''
+    const trimmed = text.trimStart()
+    if (!trimmed.startsWith('›')) continue
+    const promptEnd = text.length - trimmed.length + 2
+    // Working 状态刷新会把真实光标临时挪到状态行。只有它最终回到 composer 行时
+    // 才跟随横向位置；否则保留上次输入位置，避免静态光标也跟着状态刷新跳动。
+    cursorX =
+      followInput && buffer.cursorY === row && buffer.cursorX >= promptEnd
+        ? buffer.cursorX
+        : (followInput ? tab.stableCursorX : undefined) ?? promptEnd
+    cursorY = row
+    break
+  }
+
+  tab.stableCursorX = Math.max(0, Math.min(tab.term.cols - 1, cursorX))
+  tab.stableCursorRowFromBottom = Math.max(0, tab.term.rows - 1 - cursorY)
+}
+
+function syncStableTerminalCursorGeometry(tab: TerminalTab) {
+  if (tab.stableCursorX === undefined || tab.stableCursorRowFromBottom === undefined) return
+  const screen = tab.term.element?.querySelector<HTMLElement>('.xterm-screen')
+  if (!screen || tab.term.cols <= 0 || tab.term.rows <= 0) return
+
+  const cellWidth = screen.clientWidth / tab.term.cols
+  const cellHeight = screen.clientHeight / tab.term.rows
+  if (cellWidth <= 0 || cellHeight <= 0) return
+
+  const row = Math.max(0, tab.term.rows - 1 - tab.stableCursorRowFromBottom)
+  tab.container.style.setProperty('--terminal-stable-cursor-left', `${tab.stableCursorX * cellWidth}px`)
+  tab.container.style.setProperty('--terminal-stable-cursor-top', `${row * cellHeight}px`)
+  tab.container.style.setProperty('--terminal-stable-cursor-width', `${cellWidth}px`)
+  tab.container.style.setProperty('--terminal-stable-cursor-height', `${cellHeight}px`)
+}
+
+function suppressRenderedTerminalCursor(tab: TerminalTab) {
+  // xterm 6 的 cursor 颜色规则带动态 terminal id，CSS specificity 高于应用样式。
+  // 渲染完成后同步移除 cursor 专用 class，保留该 cell 自身的文字/颜色 class。
+  for (const cursor of tab.container.querySelectorAll<HTMLElement>('.xterm-cursor')) {
+    cursor.classList.remove(
+      'xterm-cursor',
+      'xterm-cursor-blink',
+      'xterm-cursor-block',
+      'xterm-cursor-bar',
+      'xterm-cursor-underline',
+      'xterm-cursor-outline',
+    )
+  }
+}
+
+function syncStableTerminalCursor(tab: TerminalTab) {
+  const active = shouldUseStableTerminalCursor(tab.agent, tab.turnState, !!tab.isShell)
+  const wasActive = tab.container.classList.contains('terminal-stable-cursor')
+
+  if (active) {
+    if (tab.stableCursorX === undefined || tab.stableCursorRowFromBottom === undefined) {
+      captureStableTerminalCursor(tab)
+    }
+    tab.container.classList.add('terminal-stable-cursor')
+    suppressRenderedTerminalCursor(tab)
+    if (!wasActive) applyTerminalTheme(tab)
+    syncStableTerminalCursorGeometry(tab)
+    return
+  }
+
+  tab.container.classList.remove('terminal-stable-cursor')
+  tab.stableCursorX = undefined
+  tab.stableCursorRowFromBottom = undefined
+  if (wasActive) applyTerminalTheme(tab)
+}
+
 function applyTerminalTheme(tab: TerminalTab) {
   const dark = isDarkActive()
   const newTheme = xtermTheme(dark)
   if (tab.agent === 'codex' && !tab.isShell) tab.container.classList.add('terminal-codex-tui')
+  if (shouldUseStableTerminalCursor(tab.agent, tab.turnState, !!tab.isShell)) {
+    tab.container.style.setProperty('--terminal-stable-cursor-color', newTheme.cursor)
+  }
   tab.term.options.theme = newTheme
   const repaired = repairCodexUserMessageBufferColors(tab)
   if (repaired) tab.term.clearTextureAtlas()
@@ -650,6 +746,13 @@ export function refreshAllTerminalThemes() {
 }
 
 watch(theme, refreshAllTerminalThemes)
+watch(
+  () => tabs.value.map((tab) => `${tab.uiId}:${tab.turnState}`).join('|'),
+  () => {
+    for (const tab of tabs.value) syncStableTerminalCursor(tab)
+  },
+  { flush: 'sync' },
+)
 window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener('change', () => {
   if (theme.value === 'system') refreshAllTerminalThemes()
 })
@@ -1225,7 +1328,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
       fontSize: 13,
       fontFamily:
         '"SF Mono", "Menlo", "Consolas", "Liberation Mono", "Courier New", monospace',
-      cursorBlink: true,
+      cursorBlink: shouldBlinkTerminalCursor(opts.agent),
       convertEol: false,
       allowProposedApi: true,
       scrollback: 5000,
@@ -1283,6 +1386,22 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   tabs.value.push(tab)
   activateTabInPane(tab)
   if (tab.agent === 'codex' && !tab.isShell) tab.container.classList.add('terminal-codex-tui')
+  term.onWriteParsed(() => {
+    if (!shouldUseStableTerminalCursor(tab.agent, tab.turnState, !!tab.isShell)) return
+    captureStableTerminalCursor(tab, true)
+    syncStableTerminalCursorGeometry(tab)
+  })
+  term.onRender(() => {
+    if (shouldUseStableTerminalCursor(tab.agent, tab.turnState, !!tab.isShell)) {
+      suppressRenderedTerminalCursor(tab)
+    }
+  })
+  term.textarea?.addEventListener('compositionstart', () => {
+    tab.container.classList.add('terminal-ime-composing')
+  })
+  term.textarea?.addEventListener('compositionend', () => {
+    tab.container.classList.remove('terminal-ime-composing')
+  })
   term.attachCustomKeyEventHandler((ev) => {
     if (handleWindowsTerminalSelectionCopy(term, ev)) return false
     if (handleWindowsCodexPaste(term, ev, opts.agent)) return false
@@ -1412,6 +1531,9 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
         tab.turnState !== 'blocked' &&
         input.submittedLines.some((line) => shouldTerminalInputStartTurn(tab.agent, line))
       ) {
+        if (shouldUseStableTerminalCursor(tab.agent, 'working', !!tab.isShell)) {
+          captureStableTerminalCursor(tab)
+        }
         setTurnState(tab, 'working', 'pty-input')
       }
       tab.currentInputLine = input.nextLine
@@ -1648,6 +1770,7 @@ export function refit(uiId?: number) {
   } catch {
     return
   }
+  syncStableTerminalCursorGeometry(target)
   const cols = target.term.cols
   const rows = target.term.rows
   if (
