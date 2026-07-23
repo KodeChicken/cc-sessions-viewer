@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest'
-import { codexSgrNormalizer, shouldCopyWindowsTerminalSelection } from '../src/terminals'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  codexSgrNormalizer,
+  handleWindowsTerminalSelectionDelete,
+  shouldCopyWindowsTerminalSelection,
+} from '../src/terminals'
 
 // Windows：实测 codex 认不出背景、按深色主题出色 → 浅色主题下镜像前景。
 const normalizeLightSgr = codexSgrNormalizer('light', true)
@@ -46,6 +50,94 @@ describe('terminal keyboard handling', () => {
   it('does not intercept modified or unrelated keys', () => {
     expect(shouldCopyWindowsTerminalSelection(key({ shiftKey: true }), true, 'Win32')).toBe(false)
     expect(shouldCopyWindowsTerminalSelection(key({ key: 'v' }), true, 'Win32')).toBe(false)
+  })
+})
+
+function deleteKey(over: Partial<KeyboardEvent> = {}) {
+  return {
+    type: 'keydown',
+    key: 'Delete',
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    metaKey: false,
+    preventDefault: vi.fn(),
+    stopImmediatePropagation: vi.fn(),
+    ...over,
+  } as unknown as KeyboardEvent
+}
+
+function selectionTarget(selectedText = '34', row = 5) {
+  return {
+    hasSelection: () => true,
+    getSelection: () => selectedText,
+    getSelectionPosition: () => ({
+      start: { x: 2, y: row },
+      end: { x: 4, y: row },
+    }),
+    getActiveCursorRow: () => 5,
+    clearSelection: vi.fn(),
+    input: vi.fn(),
+  }
+}
+
+describe('terminal selection Delete integration', () => {
+  it('clears a valid selection and feeds the edit through xterm input', () => {
+    const target = selectionTarget()
+    const event = deleteKey()
+
+    expect(
+      handleWindowsTerminalSelectionDelete(
+        target,
+        { text: '123456', cursor: 6, reliable: true },
+        event,
+        true,
+        'Win32',
+      ),
+    ).toBe(true)
+    expect(target.clearSelection).toHaveBeenCalledOnce()
+    expect(target.input).toHaveBeenCalledWith(
+      '\x1b[D'.repeat(4) + '\x1b[3~'.repeat(2),
+      true,
+    )
+    expect(event.preventDefault).toHaveBeenCalledOnce()
+  })
+
+  it('consumes an unsafe selection without clearing or editing it', () => {
+    const target = selectionTarget('34', 3)
+    expect(
+      handleWindowsTerminalSelectionDelete(
+        target,
+        { text: '123456', cursor: 6, reliable: true },
+        deleteKey(),
+        true,
+        'Win32',
+      ),
+    ).toBe(true)
+    expect(target.clearSelection).not.toHaveBeenCalled()
+    expect(target.input).not.toHaveBeenCalled()
+  })
+
+  it('leaves ordinary Delete and dead PTYs to the existing path', () => {
+    const target = selectionTarget()
+    expect(
+      handleWindowsTerminalSelectionDelete(
+        { ...target, hasSelection: () => false },
+        { text: '123456', cursor: 6, reliable: true },
+        deleteKey(),
+        true,
+        'Win32',
+      ),
+    ).toBe(false)
+    expect(
+      handleWindowsTerminalSelectionDelete(
+        target,
+        { text: '123456', cursor: 6, reliable: true },
+        deleteKey(),
+        false,
+        'Win32',
+      ),
+    ).toBe(false)
   })
 })
 

@@ -230,9 +230,11 @@ export function applyTerminalInputState(
     const value = String.fromCodePoint(codePoint)
     index += value.length
 
-    if (value === '\r' || value === '\n') {
+    if (value === '\r') {
       submittedLines.push(chars.join(''))
       reset()
+    } else if (value === '\n') {
+      reliable = false
     } else if (value === '\b' || value === '\x7f') {
       backspace()
     } else if (value === '\x15') {
@@ -772,6 +774,13 @@ if (
 
 Do not add this call to `openShellTab`; shell terminal selection remains
 copy-only.
+
+In the existing Shift+Enter branch, mark the tracked input as multiline before
+writing the platform-specific bytes directly to the PTY:
+
+```ts
+tab.inputState = applyTerminalInputState(tab.inputState, '\n').nextState
+```
 
 - [ ] **Step 6: Run focused tests and verify GREEN**
 

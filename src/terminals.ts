@@ -34,17 +34,24 @@ import * as api from './api'
 import {
   applyPendingTurnState,
   applyTurnSignal,
-  applyTerminalInputLineState,
+  applyTerminalInputState,
   clearLocalWorkingTurn,
+  createTerminalInputState,
   markSessionActivity,
   rememberPendingTurnState,
   setProcessState,
   setTurnState,
   shouldTerminalInputStartTurn,
+  type TerminalInputState,
   type TerminalProcessState,
   type TerminalTurnSignalSource,
   type TerminalTurnState,
 } from './tabStatus'
+import {
+  buildTerminalSelectionDeleteSequence,
+  shouldHandleTerminalSelectionDelete,
+  type TerminalSelectionRange,
+} from './terminalSelectionDelete'
 
 export type {
   TerminalProcessState,
@@ -123,6 +130,60 @@ function handleWindowsTerminalSelectionCopy(term: Terminal, ev: KeyboardEvent): 
   return true
 }
 
+export interface TerminalSelectionDeleteTarget {
+  hasSelection(): boolean
+  getSelection(): string
+  getSelectionPosition(): TerminalSelectionRange | undefined
+  getActiveCursorRow(): number
+  clearSelection(): void
+  input(data: string, wasUserInput?: boolean): void
+}
+
+export function handleWindowsTerminalSelectionDelete(
+  target: TerminalSelectionDeleteTarget,
+  inputState: TerminalInputState,
+  event: KeyboardEvent,
+  canEdit: boolean,
+  platform = navigator.platform,
+): boolean {
+  if (
+    !canEdit ||
+    !shouldHandleTerminalSelectionDelete(
+      event,
+      target.hasSelection(),
+      platform,
+    )
+  ) {
+    return false
+  }
+
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  const sequence = buildTerminalSelectionDeleteSequence(
+    inputState,
+    target.getSelection(),
+    target.getSelectionPosition(),
+    target.getActiveCursorRow(),
+  )
+  if (sequence) {
+    target.clearSelection()
+    target.input(sequence, true)
+  }
+  return true
+}
+
+function selectionDeleteTarget(term: Terminal): TerminalSelectionDeleteTarget {
+  return {
+    hasSelection: () => term.hasSelection(),
+    getSelection: () => term.getSelection(),
+    getSelectionPosition: () => term.getSelectionPosition(),
+    getActiveCursorRow: () =>
+      term.buffer.active.baseY + term.buffer.active.cursorY,
+    clearSelection: () => term.clearSelection(),
+    input: (data, wasUserInput) => term.input(data, wasUserInput),
+  }
+}
+
 function handleWindowsCodexPaste(term: Terminal, ev: KeyboardEvent, agent: Agent): boolean {
   if (
     !_isWindows ||
@@ -168,7 +229,7 @@ export interface TerminalTab {
   onDataDisp: { dispose: () => void } | null
   lastSyncedCols: number
   lastSyncedRows: number
-  currentInputLine: string
+  inputState: TerminalInputState
   /** 进程生命周期：只描述 PTY/CLI 进程本身，不代表本轮回答是否完成。 */
   processState: TerminalProcessState
   /** 本轮问答状态：完成/阻塞/错误只能由 agent/session 的明确信号推进。 */
@@ -1268,7 +1329,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     onDataDisp: null,
     lastSyncedCols: 0,
     lastSyncedRows: 0,
-    currentInputLine: '',
+    inputState: createTerminalInputState(),
     processState: 'spawning',
     turnState: 'unknown',
     turnStateSource: null,
@@ -1285,6 +1346,16 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   if (tab.agent === 'codex' && !tab.isShell) tab.container.classList.add('terminal-codex-tui')
   term.attachCustomKeyEventHandler((ev) => {
     if (handleWindowsTerminalSelectionCopy(term, ev)) return false
+    if (
+      handleWindowsTerminalSelectionDelete(
+        selectionDeleteTarget(term),
+        tab.inputState,
+        ev,
+        tab.ptyId !== null && tab.processState === 'alive',
+      )
+    ) {
+      return false
+    }
     if (handleWindowsCodexPaste(term, ev, opts.agent)) return false
     if (ev.type !== 'keydown' || ev.altKey) return true
     const key = ev.key.toLowerCase()
@@ -1297,6 +1368,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     //     故把 Shift+Enter 映射成 Alt+Enter 的字节序列。
     if (key === 'enter' && ev.shiftKey && !ev.ctrlKey && !ev.metaKey) {
       if (tab.ptyId !== null && tab.processState === 'alive') {
+        tab.inputState = applyTerminalInputState(tab.inputState, '\n').nextState
         const seq = _isWindows ? '\x1b\r' : '\n'
         api.ptyWrite(tab.ptyId, bytesToBase64(new TextEncoder().encode(seq))).catch(() => {})
       }
@@ -1406,15 +1478,16 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     if (data === '\r' && shiftHeld) data = '\n'
     if (isTerminalCancelInput(data)) {
       clearLocalWorkingTurn(tab, activeUiId.value === tab.uiId)
+      tab.inputState = createTerminalInputState()
     } else {
-      const input = applyTerminalInputLineState(tab.currentInputLine, data)
+      const input = applyTerminalInputState(tab.inputState, data)
       if (
         tab.turnState !== 'blocked' &&
         input.submittedLines.some((line) => shouldTerminalInputStartTurn(tab.agent, line))
       ) {
         setTurnState(tab, 'working', 'pty-input')
       }
-      tab.currentInputLine = input.nextLine
+      tab.inputState = input.nextState
     }
     const bytes = new TextEncoder().encode(data)
     api.ptyWrite(tab.ptyId, bytesToBase64(bytes)).catch(() => {})
@@ -1473,7 +1546,7 @@ export async function openShellTab(opts: {
     onDataDisp: null,
     lastSyncedCols: 0,
     lastSyncedRows: 0,
-    currentInputLine: '',
+    inputState: createTerminalInputState(),
     processState: 'spawning',
     turnState: 'unknown',
     turnStateSource: null,

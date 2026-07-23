@@ -161,9 +161,11 @@ export function applyTerminalInputState(
     const value = String.fromCodePoint(codePoint)
     index += value.length
 
-    if (value === '\r' || value === '\n') {
+    if (value === '\r') {
       submittedLines.push(chars.join(''))
       reset()
+    } else if (value === '\n') {
+      reliable = false
     } else if (value === '\b' || value === '\x7f') {
       backspace()
     } else if (value === '\x15') {

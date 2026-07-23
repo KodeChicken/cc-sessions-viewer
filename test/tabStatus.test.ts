@@ -123,4 +123,19 @@ describe('cursor-aware terminal input state', () => {
       reliable: true,
     })
   })
+
+  it('marks a Shift+Enter line break unreliable until the prompt is submitted', () => {
+    const multiline = applyTerminalInputState(
+      createTerminalInputState('draft'),
+      '\n',
+    )
+    expect(multiline).toEqual({
+      nextState: { text: 'draft', cursor: 5, reliable: false },
+      submittedLines: [],
+    })
+    expect(applyTerminalInputState(multiline.nextState, 'more\r')).toEqual({
+      nextState: { text: '', cursor: 0, reliable: true },
+      submittedLines: ['draftmore'],
+    })
+  })
 })
