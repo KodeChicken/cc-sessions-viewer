@@ -486,8 +486,9 @@ onUnmounted(() => {
 .task-panel {
   position: absolute;
   z-index: 5;
-  top: 12px;
-  left: 9px;
+  bottom: 14px;
+  right: 116px;
+  box-sizing: border-box;
   width: 218px;
   max-height: 205px;
   padding: 11px;
@@ -612,8 +613,8 @@ onUnmounted(() => {
 .status-notices {
   position: absolute;
   z-index: 8;
-  right: 146px;
-  bottom: 14px;
+  right: 116px;
+  bottom: 32px;
   width: 220px;
   display: grid;
   gap: 6px;
