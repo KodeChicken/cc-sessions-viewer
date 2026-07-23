@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { mount, shallowMount } from '@vue/test-utils'
 import TerminalStrip from '../../src/components/TerminalStrip.vue'
 import PaneContent from '../../src/components/PaneContent.vue'
@@ -15,11 +15,6 @@ import {
   type TerminalTab,
 } from '../../src/terminals'
 import { PaneActionsKey, type PaneActions } from '../../src/paneActions'
-
-vi.mock('../../src/api', () => ({
-  watchSessionTurn: vi.fn().mockResolvedValue(undefined),
-  unwatchSessionTurn: vi.fn().mockResolvedValue(undefined),
-}))
 
 beforeEach(() => {
   setLang('en')
@@ -57,7 +52,6 @@ function tab(over: Partial<TerminalTab> = {}): TerminalTab {
     turnStateUpdatedAt: 1_000,
     lastOutputAt: 0,
     lastSessionActivityAt: 0,
-    turnWatchPath: null,
     status: 'running',
     ...over,
   }
@@ -235,7 +229,7 @@ describe('TerminalStrip', () => {
     markTabSessionActivity('codex', '/repo/session.jsonl')
     expect(t.turnState).toBe('working')
 
-    markTabTurnCompleted('codex', '/repo/session.jsonl')
+    markTabTurnCompleted('codex', '/repo/session.jsonl', 'hook')
     expect(t.turnState).toBe('review')
 
     const wrapper = factory()
@@ -245,7 +239,7 @@ describe('TerminalStrip', () => {
   })
 
   it('clears done when the active TUI pane is focused', async () => {
-    const t = tab({ turnState: 'review', turnStateSource: 'session-jsonl' })
+    const t = tab({ turnState: 'review', turnStateSource: 'hook' })
     tabs.value = [t]
     const wrapper = shallowMount(PaneContent, {
       props: {
@@ -276,7 +270,7 @@ describe('TerminalStrip', () => {
     expect(t.turnState).toBe('idle')
   })
 
-  it('does not downgrade a session-jsonl-completed turn when session append arrives later', () => {
+  it('does not downgrade a hook-completed turn when session append arrives later', () => {
     const t = tab({
       sessionPath: '/repo/session.jsonl',
       sessionId: 'session-1',
@@ -284,12 +278,12 @@ describe('TerminalStrip', () => {
     })
     tabs.value = [t]
 
-    markTabTurnCompleted('codex', '/repo/session.jsonl')
+    markTabTurnCompleted('codex', '/repo/session.jsonl', 'hook')
     expect(t.turnState).toBe('review')
 
     markTabSessionActivity('codex', '/repo/session.jsonl')
     expect(t.turnState).toBe('review')
-    expect(t.turnStateSource).toBe('session-jsonl')
+    expect(t.turnStateSource).toBe('hook')
   })
 
   it('does not infer working state from session append alone', () => {
@@ -303,9 +297,9 @@ describe('TerminalStrip', () => {
     markTabSessionActivity('codex', '/repo/session.jsonl')
     expect(t.turnState).toBe('unknown')
 
-    markTabTurnStarted('codex', '/repo/session.jsonl')
+    markTabTurnStarted('codex', '/repo/session.jsonl', 'hook')
     expect(t.turnState).toBe('working')
-    expect(t.turnStateSource).toBe('session-jsonl')
+    expect(t.turnStateSource).toBe('hook')
   })
 
   it('keeps process exit separate from turn completion', () => {
@@ -318,7 +312,7 @@ describe('TerminalStrip', () => {
     })
     tabs.value = [t]
 
-    markTabTurnStarted('codex', '/repo/session.jsonl')
+    markTabTurnStarted('codex', '/repo/session.jsonl', 'hook')
     expect(t.turnState).toBe('unknown')
 
     const wrapper = factory()
@@ -349,7 +343,7 @@ describe('TerminalStrip', () => {
     const t = tab({ createdAt: 10_000 })
     tabs.value = [t]
 
-    markTabTurnCompleted('codex', '/repo/session.jsonl')
+    markTabTurnCompleted('codex', '/repo/session.jsonl', 'hook')
     expect(t.turnState).toBe('unknown')
 
     reconcileNewTabs('proj', [
@@ -363,6 +357,7 @@ describe('TerminalStrip', () => {
 
     expect(t.sessionPath).toBe('/repo/session.jsonl')
     expect(t.turnState).toBe('review')
+    expect(t.turnStateSource).toBe('hook')
   })
 
   it('syncs existing tab titles from refreshed sessions', () => {

@@ -51,6 +51,8 @@ import {
   IconKeyboard,
   IconDownload,
   IconTerminal,
+  IconWebhook,
+  IconStar,
   agentIcons,
   terminalIcons,
 } from './icons'
@@ -69,13 +71,33 @@ import {
   updateAvailable,
   updaterUpdate,
 } from '../updateCheck'
+import {
+  refreshTurnHookStatus,
+  turnHookStatus,
+  turnHookStatusError,
+  turnHookStatusLoading,
+} from '../turnHookStatus'
+import {
+  DESKTOP_PET_CHARACTERS,
+  desktopPetCharacter,
+  desktopPetEnabled,
+  notifyDesktopPetCharacter,
+  setDesktopPetEnabled,
+  updateDesktopPetWindow,
+  type DesktopPetCharacter,
+} from '../desktopPet'
+import momoPetUrl from '../assets/desktop-pets/momo.svg'
+import lumiPetUrl from '../assets/desktop-pets/lumi.svg'
+import kumoPetUrl from '../assets/desktop-pets/kumo.svg'
 
-type SettingsTab = 'general' | 'advanced' | 'cli' | 'shortcuts' | 'updates'
+type SettingsTab = 'general' | 'advanced' | 'hooks' | 'pet' | 'cli' | 'shortcuts' | 'updates'
 
 // 左侧导航：图标 + 文案，激活项高亮（参考 Claude 客户端设置面板）。
 const navItems = [
   { id: 'general', icon: IconSettings, key: 'settings.tab.general' },
   { id: 'advanced', icon: IconSliders, key: 'settings.tab.advanced' },
+  { id: 'hooks', icon: IconWebhook, key: 'settings.tab.hooks' },
+  { id: 'pet', icon: IconStar, key: 'settings.tab.desktopPet' },
   { id: 'cli', icon: IconTerminal, key: 'settings.tab.cli' },
   { id: 'shortcuts', icon: IconKeyboard, key: 'settings.tab.shortcuts' },
   { id: 'updates', icon: IconDownload, key: 'settings.tab.updates' },
@@ -156,8 +178,88 @@ const cacheLabel = computed(() =>
 const version = ref('—')
 const updateMsg = ref('')
 const checking = ref(false)
-const installingClaudeHooks = ref(false)
-const claudeHooksMsg = ref('')
+const installingTurnHooks = ref(false)
+const turnHooksMsg = ref('')
+const hookOpenError = ref('')
+const turnHooksEnabled = computed(() => turnHookStatus.value?.enabled ?? false)
+const turnHookAgents = computed(() => {
+  const definitions = [
+    {
+      id: 'claude' as const,
+      label: 'Claude Code',
+      events: ['UserPromptSubmit', 'Stop', 'StopFailure', 'Notification', 'PermissionRequest'],
+    },
+    {
+      id: 'codex' as const,
+      label: 'Codex',
+      events: ['UserPromptSubmit', 'Stop', 'PermissionRequest'],
+    },
+    {
+      id: 'agy' as const,
+      label: 'AGY · Antigravity CLI',
+      events: ['PreInvocation', 'Stop'],
+    },
+  ]
+  return definitions.map((definition) => {
+    const status = turnHookStatus.value?.[definition.id]
+    return {
+      ...definition,
+      icon: agentIcons[definition.id],
+      installed: status?.installed ?? false,
+      configPath: status?.configPath ?? '',
+      trackingEvents: status?.events
+        ?? definition.events.map((name) => ({ name, installed: false })),
+      hooks: status?.hooks ?? [],
+    }
+  })
+})
+const configuredHookFiles = computed(() =>
+  turnHookAgents.value.filter((agent) => agent.configPath && agent.hooks.length > 0),
+)
+const desktopPetBusy = ref(false)
+const desktopPetError = ref('')
+const desktopPetImages: Record<DesktopPetCharacter, string> = {
+  momo: momoPetUrl,
+  lumi: lumiPetUrl,
+  kumo: kumoPetUrl,
+}
+const desktopPetCharacters = DESKTOP_PET_CHARACTERS.map((id) => ({
+  id,
+  image: desktopPetImages[id],
+}))
+
+async function toggleDesktopPet() {
+  const enabled = !desktopPetEnabled.value
+  if (enabled && !turnHooksEnabled.value) return
+  desktopPetBusy.value = true
+  desktopPetError.value = ''
+  try {
+    await updateDesktopPetWindow(enabled)
+    setDesktopPetEnabled(enabled)
+  } catch (error) {
+    desktopPetError.value = t('settings.desktopPet.actionFail', { e: String(error) })
+  } finally {
+    desktopPetBusy.value = false
+  }
+}
+
+async function chooseDesktopPet(character: DesktopPetCharacter) {
+  desktopPetError.value = ''
+  try {
+    await notifyDesktopPetCharacter(character)
+  } catch (error) {
+    desktopPetError.value = t('settings.desktopPet.actionFail', { e: String(error) })
+  }
+}
+
+async function openHookConfig(path: string) {
+  hookOpenError.value = ''
+  try {
+    await api.openPathExternal(path)
+  } catch (error) {
+    hookOpenError.value = t('settings.hooks.openFail', { e: String(error) })
+  }
+}
 
 const reclaudeInstalled = ref(false)
 const reclaudeRunning = ref(false)
@@ -314,17 +416,20 @@ async function installUpdate() {
   }
 }
 
-async function installClaudeHooks() {
-  if (installingClaudeHooks.value) return
-  installingClaudeHooks.value = true
-  claudeHooksMsg.value = t('settings.turnStatus.installing')
+async function installTurnHooks() {
+  if (installingTurnHooks.value || turnHookStatusLoading.value || turnHooksEnabled.value) return
+  installingTurnHooks.value = true
+  turnHooksMsg.value = t('settings.turnStatus.installing')
   try {
-    const path = await api.installClaudeTurnHooks()
-    claudeHooksMsg.value = t('settings.turnStatus.installed', { path })
+    await api.installTurnHooks()
+    await refreshTurnHookStatus()
+    turnHooksMsg.value = turnHookStatusError.value
+      ? t('settings.turnStatus.installFail', { e: turnHookStatusError.value })
+      : t('settings.turnStatus.installed')
   } catch (e) {
-    claudeHooksMsg.value = t('settings.turnStatus.installFail', { e: String(e) })
+    turnHooksMsg.value = t('settings.turnStatus.installFail', { e: String(e) })
   } finally {
-    installingClaudeHooks.value = false
+    installingTurnHooks.value = false
   }
 }
 </script>
@@ -618,24 +723,6 @@ async function installClaudeHooks() {
             </div>
           </div>
 
-          <!-- 状态跟踪 -->
-          <div class="set-group">
-            <div class="set-group-head">
-              <div class="set-group-title">{{ t('settings.section.turnStatus') }}</div>
-              <p class="set-group-desc">{{ t('settings.turnStatus.desc') }}</p>
-            </div>
-            <div class="set-update-actions">
-              <button
-                class="btn"
-                :disabled="installingClaudeHooks"
-                @click="installClaudeHooks"
-              >
-                {{ installingClaudeHooks ? t('settings.turnStatus.installing') : t('settings.turnStatus.installClaude') }}
-              </button>
-            </div>
-            <p v-if="claudeHooksMsg" class="set-group-desc set-toggle-hint">{{ claudeHooksMsg }}</p>
-          </div>
-
           <!-- Codex -->
           <div class="set-group">
             <div class="set-group-head">
@@ -677,6 +764,177 @@ async function installClaudeHooks() {
             </label>
           </div>
 
+        </template>
+
+        <template v-else-if="activeTab === 'hooks'">
+          <div class="set-hooks-head">
+            <h2 class="set-hooks-title">{{ t('settings.hooks.title') }}</h2>
+            <p class="set-hooks-desc">{{ t('settings.hooks.desc') }}</p>
+          </div>
+
+          <section class="set-hook-tracking-card">
+            <div class="set-hook-tracking-head">
+              <span class="set-hook-tracking-icon"><IconWebhook /></span>
+              <div class="set-hook-tracking-info">
+                <div class="set-hook-tracking-title">{{ t('settings.turnStatus.categoryTitle') }}</div>
+                <p class="set-hook-tracking-desc">{{ t('settings.turnStatus.desc') }}</p>
+              </div>
+              <span class="set-hooks-overall" :class="{ enabled: turnHooksEnabled }">
+                <span class="set-hooks-overall-dot" />
+                {{ turnHookStatusLoading
+                  ? t('settings.turnStatus.checking')
+                  : turnHooksEnabled
+                    ? t('settings.turnStatus.enabled')
+                    : t('settings.turnStatus.notEnabled') }}
+              </span>
+            </div>
+
+            <div class="set-hook-tracking-agents">
+              <div
+                v-for="hookAgent in turnHookAgents"
+                :key="hookAgent.id"
+                class="set-hook-tracking-agent"
+                :class="{ enabled: hookAgent.installed }"
+              >
+                <component :is="hookAgent.icon" />
+                <span>{{ hookAgent.label }}</span>
+                <span class="set-hook-tracking-count">
+                  {{ hookAgent.trackingEvents.filter(event => event.installed).length }}/{{ hookAgent.trackingEvents.length }}
+                </span>
+              </div>
+            </div>
+
+            <div class="set-hooks-action">
+              <div class="set-hooks-action-text">
+                <div class="set-hooks-action-title">
+                  {{ turnHooksEnabled
+                    ? t('settings.turnStatus.readyTitle')
+                    : t('settings.turnStatus.actionTitle') }}
+                </div>
+                <p class="set-hooks-action-desc" :class="{ error: turnHookStatusError }">
+                  {{ turnHookStatusError
+                    ? t('settings.turnStatus.detectFail', { e: turnHookStatusError })
+                    : turnHooksEnabled
+                      ? t('settings.turnStatus.readyDesc')
+                      : t('settings.turnStatus.actionDesc') }}
+                </p>
+                <p v-if="turnHooksMsg" class="set-hooks-action-desc" :class="{ error: turnHookStatusError }">
+                  {{ turnHooksMsg }}
+                </p>
+              </div>
+              <button
+                class="btn primary set-hooks-enable"
+                :class="{ enabled: turnHooksEnabled }"
+                :disabled="installingTurnHooks || turnHookStatusLoading || turnHooksEnabled"
+                @click="installTurnHooks"
+              >
+                <IconCheck v-if="turnHooksEnabled" />
+                {{ installingTurnHooks
+                  ? t('settings.turnStatus.installing')
+                  : turnHookStatusLoading
+                    ? t('settings.turnStatus.checking')
+                    : turnHooksEnabled
+                      ? t('settings.turnStatus.enabled')
+                      : t('settings.turnStatus.install') }}
+              </button>
+            </div>
+          </section>
+
+          <div class="set-hook-list-head">
+            <div class="set-hook-list-heading">
+              <div>
+                <div class="set-hook-list-title">{{ t('settings.hooks.configuredTitle') }}</div>
+                <p class="set-hook-list-desc">{{ t('settings.hooks.configuredDesc') }}</p>
+              </div>
+              <span class="set-hook-file-count">
+                {{ t('settings.hooks.filesCount', { n: configuredHookFiles.length }) }}
+              </span>
+            </div>
+            <p v-if="hookOpenError" class="set-hook-list-error">{{ hookOpenError }}</p>
+          </div>
+
+          <div class="set-hook-files">
+            <button
+              v-for="hookAgent in configuredHookFiles"
+              :key="hookAgent.id"
+              type="button"
+              class="set-hook-file"
+              :title="hookAgent.configPath"
+              @click="openHookConfig(hookAgent.configPath)"
+            >
+              <span class="set-hook-agent-icon"><component :is="hookAgent.icon" /></span>
+              <div class="set-hook-agent-info">
+                <div class="set-hook-agent-name">{{ hookAgent.label }}</div>
+                <div class="set-hook-config-path">
+                  {{ hookAgent.configPath }}
+                </div>
+              </div>
+              <span class="set-hook-file-hooks">{{ t('settings.hooks.count', { n: hookAgent.hooks.length }) }}</span>
+              <span class="set-hook-file-open">
+                {{ t('settings.hooks.open') }}
+                <IconExternalLink />
+              </span>
+            </button>
+            <div v-if="!configuredHookFiles.length" class="set-hook-files-empty">
+              {{ turnHookStatusLoading ? t('settings.turnStatus.checking') : t('settings.hooks.empty') }}
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="activeTab === 'pet'">
+          <div class="set-hooks-head">
+            <h2 class="set-hooks-title">{{ t('settings.desktopPet.title') }}</h2>
+            <p class="set-hooks-desc">{{ t('settings.desktopPet.desc') }}</p>
+          </div>
+
+          <section class="set-desktop-pet-card standalone" :class="{ enabled: desktopPetEnabled }">
+            <div class="set-desktop-pet-head">
+              <span class="set-desktop-pet-preview">
+                <img
+                  :src="desktopPetImages[desktopPetCharacter]"
+                  :alt="t(`desktopPet.character.${desktopPetCharacter}`)"
+                />
+              </span>
+              <div class="set-desktop-pet-info">
+                <div class="set-desktop-pet-title">{{ t('settings.desktopPet.switchTitle') }}</div>
+                <p class="set-desktop-pet-desc">{{ t('settings.desktopPet.switchDesc') }}</p>
+              </div>
+              <button
+                type="button"
+                class="set-desktop-pet-toggle"
+                :class="{ on: desktopPetEnabled }"
+                :disabled="desktopPetBusy || (!turnHooksEnabled && !desktopPetEnabled)"
+                :aria-label="t('settings.desktopPet.enable')"
+                :aria-pressed="desktopPetEnabled"
+                @click="toggleDesktopPet"
+              >
+                <span />
+              </button>
+            </div>
+
+            <p v-if="!turnHooksEnabled" class="set-desktop-pet-requirement">
+              {{ t('settings.desktopPet.requiresHooks') }}
+            </p>
+
+            <div class="set-desktop-pet-choice-label">{{ t('settings.desktopPet.appearance') }}</div>
+            <div class="set-desktop-pet-characters">
+              <button
+                v-for="character in desktopPetCharacters"
+                :key="character.id"
+                type="button"
+                class="set-desktop-pet-character"
+                :class="{ active: desktopPetCharacter === character.id }"
+                :aria-label="t(`desktopPet.character.${character.id}`)"
+                :aria-pressed="desktopPetCharacter === character.id"
+                @click="chooseDesktopPet(character.id)"
+              >
+                <img :src="character.image" alt="" />
+                <span>{{ t(`desktopPet.character.${character.id}`) }}</span>
+                <IconCheck v-if="desktopPetCharacter === character.id" />
+              </button>
+            </div>
+            <p v-if="desktopPetError" class="set-desktop-pet-error">{{ desktopPetError }}</p>
+          </section>
         </template>
 
         <template v-else-if="activeTab === 'cli'">

@@ -38,6 +38,7 @@ import {
   clearLocalWorkingTurn,
   markSessionActivity,
   rememberPendingTurnState,
+  sessionPathsEqual,
   setProcessState,
   setTurnState,
   shouldTerminalInputStartTurn,
@@ -193,7 +194,6 @@ export interface TerminalTab {
   lastOutputAt: number
   pendingAnsiBytes: Uint8Array | null
   lastSessionActivityAt: number
-  turnWatchPath: string | null
   /** 兼容旧调用点；语义等同于 processState 的旧命名。 */
   status: 'spawning' | 'running' | 'exited' | 'error'
   errorMessage?: string
@@ -1095,7 +1095,6 @@ function applySessionToTab(tab: TerminalTab, session: SessionForTabSync) {
   } else if (session.title?.trim()) {
     tab.title = session.title
   }
-  ensureSessionTurnWatch(tab, true)
   applyPendingTurnState(tab, activeUiId.value === tab.uiId)
 }
 
@@ -1213,7 +1212,10 @@ export function codexResumeConfigHint(recentOutput: string): string | null {
 function tabsBySession(agent: Agent, sessionPath: string) {
   if (!sessionPath) return []
   return tabs.value.filter(
-    (tab) => tab.agent === agent && tab.sessionPath === sessionPath && isTabProcessAlive(tab),
+    (tab) =>
+      tab.agent === agent &&
+      sessionPathsEqual(tab.sessionPath, sessionPath) &&
+      isTabProcessAlive(tab),
   )
 }
 
@@ -1225,61 +1227,59 @@ export function markTabSessionActivity(agent: Agent, sessionPath: string) {
   }
 }
 
-export function markTabTurnStarted(agent: Agent, sessionPath: string) {
+export function markTabTurnStarted(
+  agent: Agent,
+  sessionPath: string,
+  source: TerminalTurnSignalSource,
+) {
   const targets = tabsBySession(agent, sessionPath)
-  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'started', 'session-jsonl')
+  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'started', source)
   for (const tab of targets) {
-    applyTurnSignal(tab, 'started', 'session-jsonl', activeUiId.value === tab.uiId)
+    applyTurnSignal(tab, 'started', source, activeUiId.value === tab.uiId)
   }
 }
 
-export function markTabTurnCompleted(agent: Agent, sessionPath: string) {
+export function markTabTurnCompleted(
+  agent: Agent,
+  sessionPath: string,
+  source: TerminalTurnSignalSource,
+) {
   const targets = tabsBySession(agent, sessionPath)
-  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'completed', 'session-jsonl')
+  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'completed', source)
   for (const tab of targets) {
-    applyTurnSignal(tab, 'completed', 'session-jsonl', activeUiId.value === tab.uiId)
+    applyTurnSignal(tab, 'completed', source, activeUiId.value === tab.uiId)
   }
 }
 
-export function markTabTurnBlocked(agent: Agent, sessionPath: string) {
+export function markTabTurnBlocked(
+  agent: Agent,
+  sessionPath: string,
+  source: TerminalTurnSignalSource,
+) {
   const targets = tabsBySession(agent, sessionPath)
-  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'blocked', 'session-jsonl')
+  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'blocked', source)
   for (const tab of targets) {
-    applyTurnSignal(tab, 'blocked', 'session-jsonl', activeUiId.value === tab.uiId)
+    applyTurnSignal(tab, 'blocked', source, activeUiId.value === tab.uiId)
   }
 }
 
-export function markTabTurnFailed(agent: Agent, sessionPath: string) {
+export function markTabTurnFailed(
+  agent: Agent,
+  sessionPath: string,
+  source: TerminalTurnSignalSource,
+) {
   const targets = tabsBySession(agent, sessionPath)
-  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'failed', 'session-jsonl')
+  if (!targets.length) rememberPendingTurnState(agent, sessionPath, 'failed', source)
   for (const tab of targets) {
-    applyTurnSignal(tab, 'failed', 'session-jsonl', activeUiId.value === tab.uiId)
+    applyTurnSignal(tab, 'failed', source, activeUiId.value === tab.uiId)
   }
 }
 
 export function markTabViewed(uiId: number) {
   const tab = findTab(uiId)
   if (tab?.turnState === 'review') {
-    setTurnState(tab, 'idle', 'session-jsonl')
+    setTurnState(tab, 'idle', tab.turnStateSource ?? 'hook')
   }
-}
-
-function shouldWatchSessionTurns(tab: TerminalTab) {
-  return (tab.agent === 'claude' || tab.agent === 'codex' || tab.agent === 'agy') && !!tab.sessionPath
-}
-
-function ensureSessionTurnWatch(tab: TerminalTab, catchUp: boolean) {
-  if (!shouldWatchSessionTurns(tab)) return
-  if (tab.turnWatchPath === tab.sessionPath) return
-  if (tab.turnWatchPath) {
-    api.unwatchSessionTurn(tab.turnWatchPath).catch(() => {})
-  }
-  tab.turnWatchPath = tab.sessionPath
-  api.watchSessionTurn(tab.agent, tab.sessionPath, catchUp).catch(() => {
-    if (tab.turnWatchPath === tab.sessionPath) {
-      tab.turnWatchPath = null
-    }
-  })
 }
 
 export function activeTab(): TerminalTab | null {
@@ -1379,7 +1379,6 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
     lastOutputAt: 0,
     lastSessionActivityAt: 0,
     pendingAnsiBytes: null,
-    turnWatchPath: null,
     status: 'spawning',
   }) as TerminalTab
   if (opts.userRenamed) tab.userRenamed = true
@@ -1474,8 +1473,6 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
   }
   tab.ptyId = ptyId
   setProcessState(tab, 'alive')
-  ensureSessionTurnWatch(tab, true)
-
   // codex resume 失败时给友好提示用：滚动保留最近一段 PTY 文本（仅 codex tab 需要）。
   // stream:true 让多字节字符跨块拼接不乱码；只留尾部 6KB，够覆盖启动阶段的报错。
   let recentCodexOutput = ''
@@ -1527,10 +1524,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
       clearLocalWorkingTurn(tab, activeUiId.value === tab.uiId)
     } else {
       const input = applyTerminalInputLineState(tab.currentInputLine, data)
-      if (
-        tab.turnState !== 'blocked' &&
-        input.submittedLines.some((line) => shouldTerminalInputStartTurn(tab.agent, line))
-      ) {
+      if (input.submittedLines.some((line) => shouldTerminalInputStartTurn(tab.agent, line))) {
         if (shouldUseStableTerminalCursor(tab.agent, 'working', !!tab.isShell)) {
           captureStableTerminalCursor(tab)
         }
@@ -1603,7 +1597,6 @@ export async function openShellTab(opts: {
     lastOutputAt: 0,
     lastSessionActivityAt: 0,
     pendingAnsiBytes: null,
-    turnWatchPath: null,
     status: 'spawning',
     isShell: true,
   }) as TerminalTab
@@ -1740,10 +1733,6 @@ export function closeTab(uiId: number) {
   tab.onDataDisp?.dispose()
   tab.unlistenData?.()
   tab.unlistenExit?.()
-  if (tab.turnWatchPath) {
-    api.unwatchSessionTurn(tab.turnWatchPath).catch(() => {})
-    tab.turnWatchPath = null
-  }
   if (tab.ptyId !== null) {
     api.ptyKill(tab.ptyId).catch(() => {})
   }

@@ -1,11 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import {
+  applyTurnSignal,
   applyTerminalInputLineState,
   isSlashCommandInput,
+  normalizeSessionPath,
+  sessionPathsEqual,
   shouldTerminalInputStartTurn,
 } from '../src/tabStatus'
 
 describe('terminal input status inference', () => {
+  it('matches Windows verbatim hook paths to normal tab paths', () => {
+    const normal = 'C:\\Users\\me\\.codex\\sessions\\rollout.jsonl'
+    const verbatim = '\\\\?\\C:\\Users\\me\\.codex\\sessions\\rollout.jsonl'
+
+    expect(normalizeSessionPath(verbatim)).toBe(normal)
+    expect(sessionPathsEqual(verbatim, normal)).toBe(true)
+    expect(normalizeSessionPath('\\\\?\\UNC\\server\\share\\rollout.jsonl')).toBe(
+      '\\\\server\\share\\rollout.jsonl',
+    )
+  })
+
   it('does not mark known slash commands as a user turn', () => {
     for (const input of [
       '/copy',
@@ -75,5 +89,38 @@ describe('terminal input status inference', () => {
       nextLine: '',
       submittedLines: [''],
     })
+  })
+
+  it('lets a new hook turn resume a blocked tab', () => {
+    const tab = {
+      processState: 'alive' as const,
+      status: 'running' as const,
+      turnState: 'blocked' as const,
+      turnStateSource: 'hook' as const,
+      turnStateUpdatedAt: 0,
+      agent: 'codex' as const,
+      sessionPath: '/tmp/session.jsonl',
+    }
+
+    applyTurnSignal(tab, 'started', 'hook', true)
+
+    expect(tab.turnState).toBe('working')
+    expect(tab.turnStateSource).toBe('hook')
+  })
+
+  it('lets a new hook turn recover from a failed prior turn', () => {
+    const tab = {
+      processState: 'alive' as const,
+      status: 'running' as const,
+      turnState: 'error' as 'error' | 'working',
+      turnStateSource: 'hook' as const,
+      turnStateUpdatedAt: 0,
+      agent: 'claude' as const,
+      sessionPath: '/tmp/session.jsonl',
+    }
+
+    applyTurnSignal(tab, 'started', 'hook', true)
+
+    expect(tab.turnState).toBe('working')
   })
 })

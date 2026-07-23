@@ -48,6 +48,8 @@ import { recordRecent } from './recents'
 import { recordExport, type ExportRecord } from './exportHistory'
 import { globalSearchOpen, openGlobalSearch } from './globalSearch'
 import { runBackgroundCheck } from './updateCheck'
+import { refreshTurnHookStatus, turnHookStatus } from './turnHookStatus'
+import { syncDesktopPetWithHooks } from './desktopPet'
 import type { SearchHit } from './types'
 import ChatSidePanel from './components/ChatSidePanel.vue'
 import CodexSidePanel from './components/CodexSidePanel.vue'
@@ -111,6 +113,7 @@ import {
   type SavedNav,
   type SavedActiveTui,
 } from './terminals'
+import { sessionPathsEqual } from './tabStatus'
 import {
   recordView,
   setViewTitle,
@@ -187,7 +190,7 @@ const showStats = ref(false)
 const showExportHistory = ref(false)
 const showPricing = ref(false)
 const showSettings = ref(false)
-const settingsTab = ref<'general' | 'advanced' | 'shortcuts' | 'updates'>('general')
+const settingsTab = ref<'general' | 'advanced' | 'hooks' | 'pet' | 'shortcuts' | 'updates'>('general')
 const sidebarOpen = ref(true)
 const refreshing = ref(false)
 const isWindows = /Win/i.test(navigator.platform)
@@ -3327,7 +3330,6 @@ async function onFocus() {
       }
     } catch {}
   }
-  api.checkSessionTurns().catch(() => {})
 }
 function onBlur() {
   windowFocused.value = false
@@ -3692,6 +3694,17 @@ onMounted(() => {
 watch(theme, (v) => emitMenuSync('theme', v))
 watch(lang, (v) => emitMenuSync('lang', v))
 
+watch(
+  () => turnHookStatus.value?.enabled,
+  (hooksEnabled) => {
+    if (hooksEnabled === false) {
+      void syncDesktopPetWithHooks(false).catch((error) => {
+        console.warn('[desktop-pet] failed to disable after hook status changed:', error)
+      })
+    }
+  },
+)
+
 // (agent, activeDir) 切换后，如果当前 active 的 TUI tab 不在新范围里 → 自动让位回 view。
 // 现存的导航函数（switchAgent / selectProject 等）已经显式 setActiveTui(null)，但有些
 // 路径（直接改 activeDir / 关闭项目）走不到那里，这条 watch 兜底。tabs 本身不动 ——
@@ -3727,6 +3740,13 @@ type TerminalTurnEvent = {
   agent: Agent
   path: string
   state: 'started' | 'completed' | 'blocked' | 'failed'
+  source: 'hook'
+}
+
+type DesktopPetSessionTarget = {
+  agent: Agent
+  path: string
+  title: string
 }
 
 async function installLiveTailListeners() {
@@ -3773,14 +3793,120 @@ async function installLiveTailListeners() {
 
 async function installTerminalTurnListeners() {
   const turnUnlisten = await listen<TerminalTurnEvent>('terminal-turn://state', (e) => {
-    const { agent: eventAgent, path, state } = e.payload
+    const { agent: eventAgent, path, state, source } = e.payload
     if (!path) return
-    if (state === 'started') markTabTurnStarted(eventAgent, path)
-    else if (state === 'completed') markTabTurnCompleted(eventAgent, path)
-    else if (state === 'blocked') markTabTurnBlocked(eventAgent, path)
-    else if (state === 'failed') markTabTurnFailed(eventAgent, path)
+    if (state === 'started') markTabTurnStarted(eventAgent, path, source)
+    else if (state === 'completed') markTabTurnCompleted(eventAgent, path, source)
+    else if (state === 'blocked') markTabTurnBlocked(eventAgent, path, source)
+    else if (state === 'failed') markTabTurnFailed(eventAgent, path, source)
   })
-  liveUnlisteners.push(turnUnlisten)
+  const desktopPetUnlisten = await listen<DesktopPetSessionTarget>(
+    'desktop-pet://open-session',
+    (event) => { void openDesktopPetSession(event.payload) },
+  )
+  liveUnlisteners.push(turnUnlisten, desktopPetUnlisten)
+}
+
+async function openDesktopPetSession(target: DesktopPetSessionTarget) {
+  if (!['claude', 'codex', 'agy'].includes(target.agent) || !target.path) return
+  setActiveTui(null)
+  closeAllSideChats()
+  closeAllCodexSideChats()
+  openTrashItem.value = null
+  showTrash.value = false
+  showStats.value = false
+  showExportHistory.value = false
+  showPricing.value = false
+  sessionStatsTarget.value = null
+
+  const existingTui = tuiTabs.value.find(
+    (tab) =>
+      !tab.isShell &&
+      tab.agent === target.agent &&
+      sessionPathsEqual(tab.sessionPath, target.path),
+  )
+  const existingSavedTui = savedTabs.value.find(
+    (tab) =>
+      !tab.isShell &&
+      tab.agent === target.agent &&
+      sessionPathsEqual(tab.sessionPath, target.path),
+  )
+  const existing = findViewTab(
+    (tab) =>
+      tab.type === 'session' &&
+      tab.agent === target.agent &&
+      normPath(tab.session?.path ?? '') === normPath(target.path),
+  )
+
+  if (agent.value !== target.agent) {
+    rememberActiveNav()
+    lastDirByAgent.set(agent.value, activeDir.value)
+    agent.value = target.agent
+    projects.value = []
+    void loadProjects()
+  }
+  activeDir.value = existingTui?.projectKey || existingSavedTui?.projectKey || existing?.projectKey || null
+  sessions.value = []
+  sessionTotal.value = 0
+
+  if (existingTui) {
+    setActiveTui(existingTui.uiId)
+    return
+  }
+
+  if (existingSavedTui && await hydrateSavedTabOnce(existingSavedTui)) return
+
+  if (existing) {
+    existing.loadingMsgs = true
+    setActiveViewTab(existing.uiId)
+    try {
+      existing.msgs = await api.readSession(target.agent, target.path)
+      await api.watchSession(target.agent, target.path).catch(() => {})
+    } catch (error) {
+      notify(t('toast.readFail', { e: String(error) }), true)
+    } finally {
+      existing.loadingMsgs = false
+    }
+    return
+  }
+
+  const title = target.title || shortName(target.path).replace(/\.(jsonl|json)$/i, '')
+  const session: SessionMeta = {
+    id: title,
+    fileName: shortName(target.path),
+    path: target.path,
+    title,
+    modified: Date.now(),
+    size: 0,
+    messageCount: 0,
+    codexAppListScanned: 0,
+    codexAppFirstPageSize: 0,
+    codexAppFirstPagePosition: 0,
+    codexInternal: false,
+    codexArchived: false,
+  }
+  const tab = createViewTab({
+    type: 'session',
+    agent: target.agent,
+    projectKey: '',
+    title,
+    session,
+    loadingMsgs: true,
+  })
+  try {
+    tab.msgs = await api.readSession(target.agent, target.path)
+    await api.watchSession(target.agent, target.path).catch(() => {})
+  } catch (error) {
+    notify(t('toast.readFail', { e: String(error) }), true)
+    removeViewTab(tab.uiId)
+  } finally {
+    tab.loadingMsgs = false
+  }
+}
+
+async function restoreDesktopPet() {
+  await refreshTurnHookStatus()
+  await syncDesktopPetWithHooks(turnHookStatus.value?.enabled ?? false)
 }
 
 onMounted(() => {
@@ -3788,6 +3914,9 @@ onMounted(() => {
   installBeforeQuitSave()
   installLiveTailListeners()
   installTerminalTurnListeners()
+  void restoreDesktopPet().catch((error) => {
+    console.warn('[desktop-pet] failed to restore window:', error)
+  })
 })
 
 onUnmounted(() => {

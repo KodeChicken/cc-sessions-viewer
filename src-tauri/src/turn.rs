@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,85 @@ pub struct TerminalTurnPayload {
     pub agent: String,
     pub path: String,
     pub state: String,
+    #[serde(default = "default_turn_signal_source")]
+    pub source: String,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopTask {
+    pub agent: String,
+    pub path: String,
+    pub state: String,
+    pub title: String,
+    pub updated_at: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnHookInstallResult {
+    pub claude_settings_path: String,
+    pub codex_hooks_path: String,
+    pub agy_hooks_path: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnHookEventStatus {
+    pub name: String,
+    pub installed: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnHookEntry {
+    pub event: String,
+    pub category: Option<String>,
+    pub matcher: Option<String>,
+    pub hook_type: String,
+    pub detail: String,
+    pub managed: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnHookAgentStatus {
+    pub installed: bool,
+    pub config_path: String,
+    pub events: Vec<TurnHookEventStatus>,
+    pub hooks: Vec<TurnHookEntry>,
+}
+
+#[derive(Serialize)]
+pub struct TurnHookStatus {
+    pub enabled: bool,
+    pub claude: TurnHookAgentStatus,
+    pub codex: TurnHookAgentStatus,
+    pub agy: TurnHookAgentStatus,
+}
+
+const CLAUDE_TURN_HOOKS: [(&str, &str, Option<&str>); 5] = [
+    ("UserPromptSubmit", "started", None),
+    ("Stop", "completed", None),
+    ("StopFailure", "failed", None),
+    (
+        "Notification",
+        "blocked",
+        Some("permission_prompt|elicitation_dialog|agent_needs_input"),
+    ),
+    ("PermissionRequest", "blocked", None),
+];
+
+const CODEX_TURN_HOOKS: [(&str, &str); 3] = [
+    ("UserPromptSubmit", "started"),
+    ("Stop", "completed"),
+    ("PermissionRequest", "blocked"),
+];
+
+const AGY_TURN_HOOKS: [(&str, &str); 2] = [("PreInvocation", "started"), ("Stop", "completed")];
+
+fn default_turn_signal_source() -> String {
+    "hook".to_string()
 }
 
 struct SignalState {
@@ -23,22 +102,82 @@ struct SignalState {
     offset: u64,
 }
 
-struct SessionTurnWatch {
-    _watcher: RecommendedWatcher,
-    agent: String,
-    path: PathBuf,
-    offset: u64,
-}
-
 static SIGNAL_STATE: OnceLock<Mutex<Option<SignalState>>> = OnceLock::new();
-static SESSION_TURN_WATCHES: OnceLock<Mutex<HashMap<String, SessionTurnWatch>>> = OnceLock::new();
+static DESKTOP_TASKS: OnceLock<Mutex<HashMap<String, DesktopTask>>> = OnceLock::new();
 
 fn signal_state() -> &'static Mutex<Option<SignalState>> {
     SIGNAL_STATE.get_or_init(|| Mutex::new(None))
 }
 
-fn session_turn_watches() -> &'static Mutex<HashMap<String, SessionTurnWatch>> {
-    SESSION_TURN_WATCHES.get_or_init(|| Mutex::new(HashMap::new()))
+fn desktop_tasks() -> &'static Mutex<HashMap<String, DesktopTask>> {
+    DESKTOP_TASKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn normalized_session_path(path: &str) -> String {
+    let path = path.trim();
+    #[cfg(target_os = "windows")]
+    {
+        path.replace('/', "\\").to_lowercase()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        path.to_string()
+    }
+}
+
+fn desktop_task_key(agent: &str, path: &str) -> String {
+    format!("{agent}\0{}", normalized_session_path(path))
+}
+
+fn task_title(agent: &str, path: &str) -> String {
+    let fallback = Path::new(path.trim())
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(path.trim())
+        .to_string();
+    crate::agents::source(agent)
+        .ok()
+        .map(|source| source.trash_title(Path::new(path.trim())))
+        .map(|title| title.trim().to_string())
+        .filter(|title| !title.is_empty() && title != "(untitled session)")
+        .unwrap_or(fallback)
+}
+
+fn current_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn upsert_desktop_task(
+    tasks: &mut HashMap<String, DesktopTask>,
+    payload: &TerminalTurnPayload,
+    updated_at: u64,
+) {
+    let path = payload.path.trim().to_string();
+    tasks.insert(
+        desktop_task_key(&payload.agent, &path),
+        DesktopTask {
+            agent: payload.agent.clone(),
+            title: task_title(&payload.agent, &path),
+            path,
+            state: payload.state.clone(),
+            updated_at,
+        },
+    );
+}
+
+pub fn desktop_task_snapshot() -> Result<Vec<DesktopTask>, String> {
+    let mut snapshot = desktop_tasks()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    snapshot.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    Ok(snapshot)
 }
 
 fn data_dir() -> Result<PathBuf, String> {
@@ -53,10 +192,12 @@ pub fn signal_file_path() -> Result<PathBuf, String> {
 }
 
 fn hook_script_path() -> Result<PathBuf, String> {
-    Ok(data_dir()?.join("claude-turn-signal-hook.cjs"))
+    Ok(data_dir()?.join("turn-signal-hook.cjs"))
 }
 
-const SESSION_TURN_POLL_MS: u64 = 1500;
+fn legacy_hook_script_path() -> Result<PathBuf, String> {
+    Ok(data_dir()?.join("claude-turn-signal-hook.cjs"))
+}
 
 pub fn emit_turn_signal(app: &AppHandle, payload: TerminalTurnPayload) -> Result<(), String> {
     if payload.agent != "claude" && payload.agent != "codex" && payload.agent != "agy" {
@@ -71,6 +212,12 @@ pub fn emit_turn_signal(app: &AppHandle, payload: TerminalTurnPayload) -> Result
     ) {
         return Err("Unknown session state".to_string());
     }
+    if payload.source != "hook" {
+        return Err("Unknown session state source".to_string());
+    }
+    let mut tasks = desktop_tasks().lock().map_err(|error| error.to_string())?;
+    upsert_desktop_task(&mut tasks, &payload, current_timestamp_ms());
+    drop(tasks);
     app.emit("terminal-turn://state", payload)
         .map_err(|e| e.to_string())
 }
@@ -89,16 +236,15 @@ pub fn start_signal_watcher(app: AppHandle) -> Result<(), String> {
     let offset = fs::metadata(&signal_path).map(|m| m.len()).unwrap_or(0);
     let app_for_cb = app.clone();
     let path_for_cb = signal_path.clone();
-    let mut watcher: RecommendedWatcher = notify::recommended_watcher(
-        move |res: notify::Result<Event>| {
+    let mut watcher: RecommendedWatcher =
+        notify::recommended_watcher(move |res: notify::Result<Event>| {
             let Ok(ev) = res else { return };
             if !matches!(ev.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                 return;
             }
             process_signal_file(&app_for_cb, &path_for_cb);
-        },
-    )
-    .map_err(|e| format!("Failed to initialize turn signal watcher: {e}"))?;
+        })
+        .map_err(|e| format!("Failed to initialize turn signal watcher: {e}"))?;
 
     watcher
         .watch(&signal_path, RecursiveMode::NonRecursive)
@@ -113,171 +259,6 @@ pub fn start_signal_watcher(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-pub fn watch_session_turn(
-    app: AppHandle,
-    agent: String,
-    path: String,
-    catch_up: bool,
-) -> Result<(), String> {
-    if agent != "claude" && agent != "codex" && agent != "agy" {
-        return Ok(());
-    }
-    let p = PathBuf::from(&path);
-    if !p.exists() {
-        return Err(format!("File does not exist: {path}"));
-    }
-    let offset = if catch_up {
-        0
-    } else {
-        let target_fp = if agent == "agy" {
-            preferred_transcript(&p)
-        } else {
-            p.clone()
-        };
-        fs::metadata(&target_fp).map(|m| m.len()).unwrap_or(0)
-    };
-    let watch_root = p
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| format!("Cannot determine parent directory: {path}"))?;
-    let app_for_cb = app.clone();
-    let agent_for_cb = agent.clone();
-    let agent_for_catchup = agent.clone();
-    let path_for_cb = path.clone();
-    let path_buf_for_cb = p.clone();
-    let mut watcher: RecommendedWatcher = notify::recommended_watcher(
-        move |res: notify::Result<Event>| {
-            let Ok(ev) = res else { return };
-            if !matches!(ev.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                return;
-            }
-            process_session_turn_file(&app_for_cb, &agent_for_cb, &path_for_cb, &path_buf_for_cb);
-        },
-    )
-    .map_err(|e| format!("Failed to initialize turn session watcher: {e}"))?;
-
-    watcher
-        .watch(&watch_root, RecursiveMode::NonRecursive)
-        .map_err(|e| format!("Failed to watch session state: {e}"))?;
-
-    let mut watches = session_turn_watches().lock().map_err(|e| e.to_string())?;
-    watches.insert(
-        path.clone(),
-        SessionTurnWatch {
-            _watcher: watcher,
-            agent,
-            path: p.clone(),
-            offset,
-        },
-    );
-    drop(watches);
-    if catch_up {
-        process_session_turn_file(&app, &agent_for_catchup, &path, &p);
-    }
-    start_session_turn_poll(app, agent_for_catchup, path, p);
-    Ok(())
-}
-
-pub fn unwatch_session_turn(path: String) -> Result<(), String> {
-    let mut watches = session_turn_watches().lock().map_err(|e| e.to_string())?;
-    watches.remove(&path);
-    Ok(())
-}
-
-pub fn check_session_turns(app: AppHandle) -> Result<(), String> {
-    let watches_info = {
-        let guard = session_turn_watches().lock().map_err(|e| e.to_string())?;
-        guard.values().map(|w| (w.agent.clone(), w.path.to_string_lossy().to_string())).collect::<Vec<_>>()
-    };
-    for (agent, path) in watches_info {
-        process_session_turn_file(&app, &agent, &path, Path::new(&path));
-    }
-    Ok(())
-}
-
-fn start_session_turn_poll(app: AppHandle, agent: String, path: String, fp: PathBuf) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(SESSION_TURN_POLL_MS));
-        let should_continue = {
-            let guard = match session_turn_watches().lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            matches!(
-                guard.get(&path),
-                Some(state) if state.agent == agent && state.path == fp
-            )
-        };
-        if !should_continue {
-            return;
-        }
-        process_session_turn_file(&app, &agent, &path, &fp);
-    });
-}
-
-fn process_session_turn_file(app: &AppHandle, agent: &str, path: &str, fp: &Path) {
-    let target_fp = if agent == "agy" {
-        preferred_transcript(fp)
-    } else {
-        fp.to_path_buf()
-    };
-    let mut file = match File::open(&target_fp) {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-    let file_len = match file.metadata() {
-        Ok(m) => m.len(),
-        Err(_) => return,
-    };
-    let offset = {
-        let mut guard = match session_turn_watches().lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        let Some(state) = guard.get_mut(path) else {
-            return;
-        };
-        if state.agent != agent || state.path != fp {
-            return;
-        }
-        if file_len < state.offset {
-            state.offset = 0;
-        }
-        state.offset
-    };
-
-    if file.seek(SeekFrom::Start(offset)).is_err() {
-        return;
-    }
-    let mut buf = String::new();
-    if file.read_to_string(&mut buf).is_err() {
-        return;
-    }
-    let consumed = complete_jsonl_prefix_len(&buf);
-    if consumed == 0 {
-        return;
-    }
-    if let Ok(mut guard) = session_turn_watches().lock() {
-        if let Some(state) = guard.get_mut(path) {
-            state.offset = offset.saturating_add(consumed as u64);
-        }
-    }
-
-    for line in buf[..consumed].lines() {
-        let Some(state) = infer_turn_state(agent, line) else {
-            continue;
-        };
-        let _ = emit_turn_signal(
-            app,
-            TerminalTurnPayload {
-                agent: agent.to_string(),
-                path: path.to_string(),
-                state: state.to_string(),
-            },
-        );
-    }
-}
-
 fn complete_jsonl_prefix_len(buf: &str) -> usize {
     let newline_prefix_len = buf.rfind('\n').map(|idx| idx + 1).unwrap_or(0);
     let tail = &buf[newline_prefix_len..];
@@ -289,89 +270,6 @@ fn complete_jsonl_prefix_len(buf: &str) -> usize {
     } else {
         newline_prefix_len
     }
-}
-
-fn infer_turn_state(agent: &str, line: &str) -> Option<&'static str> {
-    let value: Value = serde_json::from_str(line.trim()).ok()?;
-    match agent {
-        "claude" => infer_claude_turn_state(&value),
-        "codex" => infer_codex_turn_state(&value),
-        "agy" => crate::agents::agy::classify_turn_state(&value),
-        _ => None,
-    }
-}
-
-fn infer_claude_turn_state(value: &Value) -> Option<&'static str> {
-    match value.get("type").and_then(Value::as_str)? {
-        "user" => {
-            if value.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
-                None
-            } else if claude_user_message_has_content(value) {
-                Some("started")
-            } else {
-                None
-            }
-        }
-        "attachment" => {
-            if claude_queued_command_has_content(value)
-            {
-                Some("started")
-            } else {
-                None
-            }
-        }
-        "assistant" => {
-            if value.get("message").is_some() {
-                Some("completed")
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-fn claude_user_message_has_content(value: &Value) -> bool {
-    let Some(content) = value.get("message").and_then(|message| message.get("content")) else {
-        return false;
-    };
-    match content {
-        Value::String(text) => !text.trim().is_empty(),
-        Value::Array(items) => items.iter().any(|item| match item.get("type").and_then(Value::as_str) {
-            Some("text") => item
-                .get("text")
-                .and_then(Value::as_str)
-                .is_some_and(|text| !text.trim().is_empty()),
-            Some("image") => true,
-            _ => false,
-        }),
-        _ => false,
-    }
-}
-
-fn claude_queued_command_has_content(value: &Value) -> bool {
-    let Some(attachment) = value.get("attachment") else {
-        return false;
-    };
-    if attachment.get("type").and_then(Value::as_str) != Some("queued_command") {
-        return false;
-    }
-    match attachment.get("prompt") {
-        Some(Value::String(text)) => !text.trim().is_empty(),
-        Some(Value::Array(items)) => items.iter().any(|item| match item.get("type").and_then(Value::as_str) {
-            Some("text") => item
-                .get("text")
-                .and_then(Value::as_str)
-                .is_some_and(|text| !text.trim().is_empty()),
-            Some("image") => true,
-            _ => false,
-        }),
-        _ => false,
-    }
-}
-
-fn infer_codex_turn_state(value: &Value) -> Option<&'static str> {
-    crate::agents::codex::classify_turn_state(value)
 }
 
 fn process_signal_file(app: &AppHandle, path: &Path) {
@@ -425,7 +323,7 @@ fn process_signal_file(app: &AppHandle, path: &Path) {
     }
 }
 
-pub fn install_claude_hooks() -> Result<String, String> {
+pub fn install_turn_hooks() -> Result<TurnHookInstallResult, String> {
     let signal_path = signal_file_path()?;
     if let Some(parent) = signal_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create state directory: {e}"))?;
@@ -438,48 +336,304 @@ pub fn install_claude_hooks() -> Result<String, String> {
 
     let script_path = hook_script_path()?;
     write_hook_script(&script_path)?;
+    let legacy_script_path = legacy_hook_script_path()?;
 
-    let home = dirs::home_dir().ok_or_else(|| "Cannot locate home directory".to_string())?;
-    let claude_dir = home.join(".claude");
-    fs::create_dir_all(&claude_dir).map_err(|e| format!("Failed to create Claude config directory: {e}"))?;
-    let settings_path = claude_dir.join("settings.json");
+    let (settings_path, codex_hooks_path, agy_hooks_path) = turn_hook_config_paths()?;
+    let claude_dir = settings_path
+        .parent()
+        .ok_or_else(|| "Cannot locate Claude config directory".to_string())?;
+    fs::create_dir_all(&claude_dir)
+        .map_err(|e| format!("Failed to create Claude config directory: {e}"))?;
 
-    let mut settings = read_json_object(&settings_path)?;
-    merge_claude_hook(&mut settings, "UserPromptSubmit", "started", &script_path, &signal_path);
-    merge_claude_hook(&mut settings, "Stop", "completed", &script_path, &signal_path);
-    merge_claude_hook(&mut settings, "StopFailure", "failed", &script_path, &signal_path);
-    merge_claude_hook(&mut settings, "Notification", "blocked", &script_path, &signal_path);
-    merge_claude_hook(&mut settings, "PermissionRequest", "blocked", &script_path, &signal_path);
+    let mut settings = read_json_object(&settings_path, "Claude settings.json")?;
+    for (event, state, matcher) in CLAUDE_TURN_HOOKS {
+        merge_turn_hook(
+            &mut settings,
+            event,
+            state,
+            "claude",
+            matcher,
+            &script_path,
+            &legacy_script_path,
+            &signal_path,
+        );
+    }
 
     let formatted = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     fs::write(&settings_path, format!("{formatted}\n"))
         .map_err(|e| format!("Failed to write Claude config: {e}"))?;
 
-    Ok(settings_path.to_string_lossy().to_string())
+    let codex_dir = codex_hooks_path
+        .parent()
+        .ok_or_else(|| "Cannot locate Codex config directory".to_string())?;
+    fs::create_dir_all(&codex_dir)
+        .map_err(|e| format!("Failed to create Codex config directory: {e}"))?;
+    let mut codex_hooks = read_json_object(&codex_hooks_path, "Codex hooks.json")?;
+    for (event, state) in CODEX_TURN_HOOKS {
+        merge_turn_hook(
+            &mut codex_hooks,
+            event,
+            state,
+            "codex",
+            None,
+            &script_path,
+            &legacy_script_path,
+            &signal_path,
+        );
+    }
+    let formatted = serde_json::to_string_pretty(&codex_hooks).map_err(|e| e.to_string())?;
+    fs::write(&codex_hooks_path, format!("{formatted}\n"))
+        .map_err(|e| format!("Failed to write Codex hooks: {e}"))?;
+
+    let agy_config_dir = agy_hooks_path
+        .parent()
+        .ok_or_else(|| "Cannot locate Antigravity config directory".to_string())?;
+    fs::create_dir_all(&agy_config_dir)
+        .map_err(|e| format!("Failed to create Antigravity config directory: {e}"))?;
+    let mut agy_hooks = read_json_object(&agy_hooks_path, "Antigravity hooks.json")?;
+    merge_agy_turn_hooks(&mut agy_hooks, &script_path, &signal_path);
+    let formatted = serde_json::to_string_pretty(&agy_hooks).map_err(|e| e.to_string())?;
+    fs::write(&agy_hooks_path, format!("{formatted}\n"))
+        .map_err(|e| format!("Failed to write Antigravity hooks: {e}"))?;
+
+    Ok(TurnHookInstallResult {
+        claude_settings_path: settings_path.to_string_lossy().to_string(),
+        codex_hooks_path: codex_hooks_path.to_string_lossy().to_string(),
+        agy_hooks_path: agy_hooks_path.to_string_lossy().to_string(),
+    })
 }
 
-fn read_json_object(path: &Path) -> Result<Value, String> {
+pub fn turn_hook_status() -> Result<TurnHookStatus, String> {
+    let (claude_path, codex_path, agy_path) = turn_hook_config_paths()?;
+    let script_path = hook_script_path()?;
+    let legacy_script_path = legacy_hook_script_path()?;
+    let signal_path = signal_file_path()?;
+    let script_installed = fs::read_to_string(&script_path).is_ok_and(|raw| raw == HOOK_SCRIPT);
+
+    let claude_config = read_json_object(&claude_path, "Claude settings.json")?;
+    let claude_events = CLAUDE_TURN_HOOKS
+        .iter()
+        .map(|(event, state, matcher)| TurnHookEventStatus {
+            name: (*event).to_string(),
+            installed: script_installed
+                && has_turn_hook(
+                    &claude_config,
+                    event,
+                    state,
+                    "claude",
+                    *matcher,
+                    &script_path,
+                    &signal_path,
+                ),
+        })
+        .collect::<Vec<_>>();
+    let claude_hooks = collect_grouped_hooks(&claude_config, &script_path, &legacy_script_path);
+    let claude = hook_agent_status(claude_path, claude_events, claude_hooks);
+
+    let codex_config = read_json_object(&codex_path, "Codex hooks.json")?;
+    let codex_events = CODEX_TURN_HOOKS
+        .iter()
+        .map(|(event, state)| TurnHookEventStatus {
+            name: (*event).to_string(),
+            installed: script_installed
+                && has_turn_hook(
+                    &codex_config,
+                    event,
+                    state,
+                    "codex",
+                    None,
+                    &script_path,
+                    &signal_path,
+                ),
+        })
+        .collect::<Vec<_>>();
+    let codex_hooks = collect_grouped_hooks(&codex_config, &script_path, &legacy_script_path);
+    let codex = hook_agent_status(codex_path, codex_events, codex_hooks);
+
+    let agy_config = read_json_object(&agy_path, "Antigravity hooks.json")?;
+    let agy_events = AGY_TURN_HOOKS
+        .iter()
+        .map(|(event, state)| TurnHookEventStatus {
+            name: (*event).to_string(),
+            installed: script_installed
+                && has_agy_turn_hook(&agy_config, event, state, &script_path, &signal_path),
+        })
+        .collect::<Vec<_>>();
+    let agy_hooks = collect_agy_hooks(&agy_config, &script_path, &legacy_script_path);
+    let agy = hook_agent_status(agy_path, agy_events, agy_hooks);
+
+    Ok(TurnHookStatus {
+        enabled: claude.installed && codex.installed && agy.installed,
+        claude,
+        codex,
+        agy,
+    })
+}
+
+fn turn_hook_config_paths() -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    let home = dirs::home_dir().ok_or_else(|| "Cannot locate home directory".to_string())?;
+    let codex_dir = std::env::var_os("CODEX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    Ok((
+        home.join(".claude").join("settings.json"),
+        codex_dir.join("hooks.json"),
+        home.join(".gemini").join("config").join("hooks.json"),
+    ))
+}
+
+fn hook_agent_status(
+    path: PathBuf,
+    events: Vec<TurnHookEventStatus>,
+    hooks: Vec<TurnHookEntry>,
+) -> TurnHookAgentStatus {
+    TurnHookAgentStatus {
+        installed: events.iter().all(|event| event.installed),
+        config_path: path.to_string_lossy().to_string(),
+        events,
+        hooks,
+    }
+}
+
+fn collect_grouped_hooks(
+    config: &Value,
+    script_path: &Path,
+    legacy_script_path: &Path,
+) -> Vec<TurnHookEntry> {
+    let mut entries = Vec::new();
+    let Some(events) = config.get("hooks").and_then(Value::as_object) else {
+        return entries;
+    };
+    for (event, groups) in events {
+        let Some(groups) = groups.as_array() else {
+            continue;
+        };
+        for group in groups {
+            let matcher = value_text(group.get("matcher"));
+            let Some(items) = group.get("hooks").and_then(Value::as_array) else {
+                continue;
+            };
+            for item in items {
+                entries.push(hook_entry(
+                    event,
+                    None,
+                    matcher.clone(),
+                    item,
+                    script_path,
+                    legacy_script_path,
+                ));
+            }
+        }
+    }
+    sort_hook_entries(&mut entries);
+    entries
+}
+
+fn collect_agy_hooks(
+    config: &Value,
+    script_path: &Path,
+    legacy_script_path: &Path,
+) -> Vec<TurnHookEntry> {
+    let mut entries = Vec::new();
+    let Some(categories) = config.as_object() else {
+        return entries;
+    };
+    for (category, hooks) in categories {
+        let Some(events) = hooks.as_object() else {
+            continue;
+        };
+        for (event, items) in events {
+            let Some(items) = items.as_array() else {
+                continue;
+            };
+            for item in items {
+                entries.push(hook_entry(
+                    event,
+                    Some(category.clone()),
+                    value_text(item.get("matcher")),
+                    item,
+                    script_path,
+                    legacy_script_path,
+                ));
+            }
+        }
+    }
+    sort_hook_entries(&mut entries);
+    entries
+}
+
+fn hook_entry(
+    event: &str,
+    category: Option<String>,
+    matcher: Option<String>,
+    item: &Value,
+    script_path: &Path,
+    legacy_script_path: &Path,
+) -> TurnHookEntry {
+    let hook_type = item
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("hook")
+        .to_string();
+    let detail = ["command", "prompt", "url"]
+        .iter()
+        .find_map(|key| value_text(item.get(*key)))
+        .unwrap_or_else(|| serde_json::to_string(item).unwrap_or_default());
+    TurnHookEntry {
+        event: event.to_string(),
+        category,
+        matcher,
+        hook_type,
+        detail,
+        managed: is_our_hook(item, script_path, legacy_script_path),
+    }
+}
+
+fn value_text(value: Option<&Value>) -> Option<String> {
+    value.and_then(|value| match value {
+        Value::Null => None,
+        Value::String(text) => Some(text.clone()),
+        other => serde_json::to_string(other).ok(),
+    })
+}
+
+fn sort_hook_entries(entries: &mut [TurnHookEntry]) {
+    entries.sort_by(|a, b| {
+        a.event
+            .cmp(&b.event)
+            .then_with(|| a.category.cmp(&b.category))
+            .then_with(|| a.matcher.cmp(&b.matcher))
+            .then_with(|| a.detail.cmp(&b.detail))
+    });
+}
+
+fn read_json_object(path: &Path, label: &str) -> Result<Value, String> {
     if !path.exists() {
         return Ok(json!({}));
     }
-    let raw = fs::read_to_string(path).map_err(|e| format!("Failed to read Claude config: {e}"))?;
+    let raw = fs::read_to_string(path).map_err(|e| format!("Failed to read {label}: {e}"))?;
     if raw.trim().is_empty() {
         return Ok(json!({}));
     }
     let parsed: Value =
-        serde_json::from_str(&raw).map_err(|e| format!("Claude settings.json is not valid JSON: {e}"))?;
+        serde_json::from_str(&raw).map_err(|e| format!("{label} is not valid JSON: {e}"))?;
     if parsed.is_object() {
         Ok(parsed)
     } else {
-        Err("Claude settings.json top level must be an object".to_string())
+        Err(format!("{label} top level must be an object"))
     }
 }
 
-fn merge_claude_hook(
+#[allow(clippy::too_many_arguments)]
+fn merge_turn_hook(
     settings: &mut Value,
     event: &str,
     state: &str,
+    agent: &str,
+    matcher: Option<&str>,
     script_path: &Path,
+    legacy_script_path: &Path,
     signal_path: &Path,
 ) {
     if !settings.get("hooks").is_some_and(Value::is_object) {
@@ -492,13 +646,15 @@ fn merge_claude_hook(
     if !entry.is_array() {
         *entry = json!([]);
     }
-    let Some(groups) = entry.as_array_mut() else { return };
+    let Some(groups) = entry.as_array_mut() else {
+        return;
+    };
 
     for group in groups.iter_mut() {
         let Some(items) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
             continue;
         };
-        items.retain(|item| !is_our_hook(item, script_path));
+        items.retain(|item| !is_our_hook(item, script_path, legacy_script_path));
     }
     groups.retain(|group| {
         group
@@ -507,24 +663,88 @@ fn merge_claude_hook(
             .is_some_and(|items| !items.is_empty())
     });
 
-    groups.push(json!({
-        "hooks": [{
-            "type": "command",
-            "command": format!(
-                "node {} {} {}",
-                shell_path_arg(script_path),
-                shell_string_arg(state),
-                shell_path_arg(signal_path)
-            ),
-            "timeout": 5
-        }]
-    }));
+    let mut group = json!({
+        "hooks": [turn_hook_command(agent, state, script_path, signal_path)]
+    });
+    if let Some(matcher) = matcher {
+        group["matcher"] = json!(matcher);
+    }
+    groups.push(group);
 }
 
-fn is_our_hook(item: &Value, script_path: &Path) -> bool {
+const AGY_HOOK_NAME: &str = "cc-sessions-viewer-turn-status";
+
+fn merge_agy_turn_hooks(config: &mut Value, script_path: &Path, signal_path: &Path) {
+    let mut hooks = json!({});
+    for (event, state) in AGY_TURN_HOOKS {
+        hooks[event] = json!([turn_hook_command("agy", state, script_path, signal_path)]);
+    }
+    config[AGY_HOOK_NAME] = hooks;
+}
+
+fn has_turn_hook(
+    config: &Value,
+    event: &str,
+    state: &str,
+    agent: &str,
+    matcher: Option<&str>,
+    script_path: &Path,
+    signal_path: &Path,
+) -> bool {
+    let expected = turn_hook_command(agent, state, script_path, signal_path);
+    config["hooks"][event].as_array().is_some_and(|groups| {
+        groups.iter().any(|group| {
+            let matcher_matches = match matcher {
+                Some(expected) => group["matcher"].as_str() == Some(expected),
+                None => group.get("matcher").is_none(),
+            };
+            matcher_matches
+                && group["hooks"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| item == &expected))
+        })
+    })
+}
+
+fn has_agy_turn_hook(
+    config: &Value,
+    event: &str,
+    state: &str,
+    script_path: &Path,
+    signal_path: &Path,
+) -> bool {
+    let expected = turn_hook_command("agy", state, script_path, signal_path);
+    config[AGY_HOOK_NAME][event]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item == &expected))
+}
+
+fn turn_hook_command(agent: &str, state: &str, script_path: &Path, signal_path: &Path) -> Value {
+    json!({
+        "type": "command",
+        "command": format!(
+            "node {} {} {} {}",
+            shell_path_arg(script_path),
+            shell_string_arg(agent),
+            shell_string_arg(state),
+            shell_path_arg(signal_path)
+        ),
+        "timeout": 5
+    })
+}
+
+fn is_our_hook(item: &Value, script_path: &Path, legacy_script_path: &Path) -> bool {
     item.get("command")
         .and_then(Value::as_str)
-        .is_some_and(|command| command.contains(script_path.to_string_lossy().as_ref()))
+        .is_some_and(|command| {
+            command_references_path(command, script_path)
+                || command_references_path(command, legacy_script_path)
+        })
+}
+
+fn command_references_path(command: &str, path: &Path) -> bool {
+    let raw = path.to_string_lossy();
+    command.contains(raw.as_ref()) || command.contains(&raw.replace('\\', "\\\\"))
 }
 
 fn shell_path_arg(value: impl AsRef<Path>) -> String {
@@ -538,7 +758,8 @@ fn shell_string_arg(raw: &str) -> String {
 
 fn write_hook_script(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create hook script directory: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create hook script directory: {e}"))?;
     }
     fs::write(path, HOOK_SCRIPT).map_err(|e| format!("Failed to write hook script: {e}"))?;
     #[cfg(unix)]
@@ -548,173 +769,307 @@ fn write_hook_script(path: &Path) -> Result<(), String> {
             .map_err(|e| format!("Failed to read hook script permissions: {e}"))?
             .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(path, perms).map_err(|e| format!("Failed to set hook script permissions: {e}"))?;
+        fs::set_permissions(path, perms)
+            .map_err(|e| format!("Failed to set hook script permissions: {e}"))?;
     }
     Ok(())
 }
 
-const HOOK_SCRIPT: &str = r#"#!/usr/bin/env node
-const fs = require('fs');
-const path = require('path');
-
-function hasPromptContent(value) {
-  if (typeof value === 'string') return value.trim().length > 0;
-  if (Array.isArray(value)) return value.some((item) => {
-    if (typeof item === 'string') return item.trim().length > 0;
-    if (!item || typeof item !== 'object') return false;
-    if (item.type === 'text') return hasPromptContent(item.text || item.content || '');
-    if (item.type === 'image') return true;
-    return hasPromptContent(item.text || item.content || item.prompt || '');
-  });
-  if (value && typeof value === 'object') {
-    if (value.type === 'image') return true;
-    return hasPromptContent(value.text || value.content || value.prompt || '');
-  }
-  return false;
-}
-
-function shouldSkipStarted(data) {
-  const candidates = [data.prompt, data.message, data.user_prompt, data.userPrompt];
-  return candidates.some((value) => value !== undefined) && !candidates.some(hasPromptContent);
-}
-
-const state = process.argv[2];
-const signalPath = process.argv[3];
-let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => { input += chunk; });
-process.stdin.on('end', () => {
-  try {
-    if (!signalPath || !state) process.exit(0);
-    const data = input.trim() ? JSON.parse(input) : {};
-    const transcriptPath = data.transcript_path || data.transcriptPath || '';
-    if (!transcriptPath) process.exit(0);
-    if (state === 'started' && shouldSkipStarted(data)) process.exit(0);
-    const payload = {
-      agent: 'claude',
-      path: transcriptPath,
-      state,
-    };
-    fs.mkdirSync(path.dirname(signalPath), { recursive: true });
-    fs.appendFileSync(signalPath, JSON.stringify(payload) + '\n', 'utf8');
-  } catch (_) {
-    // Observability hook: never block Claude Code.
-  }
-});
-"#;
-
-fn preferred_transcript(p: &Path) -> PathBuf {
-    let full = p.with_file_name("transcript_full.jsonl");
-    if full.exists() {
-        full
-    } else {
-        p.to_path_buf()
-    }
-}
+const HOOK_SCRIPT: &str = include_str!("turn_signal_hook.cjs");
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    use crate::agents::codex::classify_turn_state as codex_classify;
+    fn payload(agent: &str, path: &str, state: &str) -> TerminalTurnPayload {
+        TerminalTurnPayload {
+            agent: agent.to_string(),
+            path: path.to_string(),
+            state: state.to_string(),
+            source: "hook".to_string(),
+        }
+    }
 
     #[test]
-    fn claude_infers_turn_lifecycle_only_from_real_user_input() {
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"user","message":{"content":"hi"}})),
-            Some("started")
+    fn desktop_tasks_keep_only_the_latest_state_per_session() {
+        let mut tasks = HashMap::new();
+        upsert_desktop_task(
+            &mut tasks,
+            &payload("codex", "/tmp/session-1.jsonl", "completed"),
+            10,
+        );
+        upsert_desktop_task(
+            &mut tasks,
+            &payload("codex", "/tmp/session-1.jsonl", "started"),
+            20,
+        );
+
+        assert_eq!(tasks.len(), 1);
+        let task = tasks.values().next().unwrap();
+        assert_eq!(task.state, "started");
+        assert_eq!(task.updated_at, 20);
+        assert_eq!(task.title, "session-1");
+    }
+
+    #[test]
+    fn desktop_tasks_separate_agents_with_the_same_session_path() {
+        let mut tasks = HashMap::new();
+        upsert_desktop_task(
+            &mut tasks,
+            &payload("claude", "/tmp/shared.jsonl", "blocked"),
+            10,
+        );
+        upsert_desktop_task(
+            &mut tasks,
+            &payload("codex", "/tmp/shared.jsonl", "failed"),
+            20,
+        );
+
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks.values().any(|task| task.state == "blocked"));
+        assert!(tasks.values().any(|task| task.state == "failed"));
+    }
+
+    #[test]
+    fn desktop_tasks_use_the_session_prompt_as_the_codex_title() {
+        let path = std::env::temp_dir().join(format!(
+            "cc-sessions-viewer-pet-title-{}-{}.jsonl",
+            std::process::id(),
+            current_timestamp_ms()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"杨坤唱的答案 歌词是啥"}}
+"#,
+        )
+        .unwrap();
+        let mut tasks = HashMap::new();
+        upsert_desktop_task(
+            &mut tasks,
+            &payload("codex", path.to_string_lossy().as_ref(), "completed"),
+            10,
+        );
+
+        assert_eq!(tasks.values().next().unwrap().title, "杨坤唱的答案 歌词是啥");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn hook_merge_replaces_legacy_hook_and_preserves_other_handlers() {
+        let script = Path::new("/app/turn-signal-hook.cjs");
+        let legacy = Path::new("/app/claude-turn-signal-hook.cjs");
+        let signal = Path::new("/app/turn-signals.jsonl");
+        let mut config = json!({
+            "hooks": {
+                "Stop": [{
+                    "hooks": [
+                        {"type":"command","command":"node /app/claude-turn-signal-hook.cjs completed /tmp/old"},
+                        {"type":"command","command":"echo keep-me"}
+                    ]
+                }]
+            }
+        });
+
+        merge_turn_hook(
+            &mut config,
+            "Stop",
+            "completed",
+            "codex",
+            None,
+            script,
+            legacy,
+            signal,
+        );
+
+        let groups = config["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0]["hooks"][0]["command"], "echo keep-me");
+        let command = groups[1]["hooks"][0]["command"].as_str().unwrap();
+        assert!(command.contains("turn-signal-hook.cjs"));
+        assert!(command.contains("\"codex\" \"completed\""));
+    }
+
+    #[test]
+    fn hook_merge_sets_optional_matcher() {
+        let mut config = json!({});
+        merge_turn_hook(
+            &mut config,
+            "Notification",
+            "blocked",
+            "claude",
+            Some("permission_prompt|elicitation_dialog|agent_needs_input"),
+            Path::new("/app/turn-signal-hook.cjs"),
+            Path::new("/app/claude-turn-signal-hook.cjs"),
+            Path::new("/app/turn-signals.jsonl"),
         );
         assert_eq!(
-            infer_claude_turn_state(&json!({"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","data":"AAAA"}}]}})),
-            Some("started")
-        );
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"user","message":{"content":"   "}})),
-            None
-        );
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}})),
-            None
-        );
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"user","isMeta":true,"message":{"content":"hi"}})),
-            None
-        );
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"attachment","attachment":{"type":"queued_command","prompt":"run tests"}})),
-            Some("started")
-        );
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"attachment","attachment":{"type":"queued_command","prompt":"   "}})),
-            None
-        );
-        assert_eq!(
-            infer_claude_turn_state(&json!({"type":"assistant","message":{"content":"done"}})),
-            Some("completed")
+            config["hooks"]["Notification"][0]["matcher"],
+            "permission_prompt|elicitation_dialog|agent_needs_input"
         );
     }
 
     #[test]
-    fn codex_infers_turn_lifecycle_from_event_messages() {
-        assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"user_message","message":"hi"}})),
-            Some("started")
+    fn hook_status_requires_the_expected_command_and_matcher() {
+        let script = Path::new("/app/turn-signal-hook.cjs");
+        let legacy = Path::new("/app/claude-turn-signal-hook.cjs");
+        let signal = Path::new("/app/turn-signals.jsonl");
+        let matcher = "permission_prompt|elicitation_dialog|agent_needs_input";
+        let mut config = json!({});
+        merge_turn_hook(
+            &mut config,
+            "Notification",
+            "blocked",
+            "claude",
+            Some(matcher),
+            script,
+            legacy,
+            signal,
         );
-        assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"user_message","message":" ","images":["data:image/png;base64,abc"]}})),
-            Some("started")
-        );
-        assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"user_message"}})),
-            None
-        );
-        assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"user_message","message":"   ","images":[],"local_images":[],"text_elements":[]}})),
-            None
-        );
-        assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"task_started"}})),
-            None
-        );
-        assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}})),
-            Some("completed")
-        );
-        assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"task_complete"}})),
-            Some("completed")
-        );
-        assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"final_answer","message":"done"}})),
-            Some("completed")
-        );
-        assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"checking"}})),
-            None
-        );
-        assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"error","message":"boom"}})),
-            Some("failed")
-        );
-        assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"task_failed","message":"boom"}})),
-            Some("failed")
-        );
-        assert_eq!(
-            codex_classify(&json!({"type":"event_msg","payload":{"type":"token_count"}})),
-            None
-        );
+
+        assert!(has_turn_hook(
+            &config,
+            "Notification",
+            "blocked",
+            "claude",
+            Some(matcher),
+            script,
+            signal,
+        ));
+        assert!(!has_turn_hook(
+            &config,
+            "Notification",
+            "completed",
+            "claude",
+            Some(matcher),
+            script,
+            signal,
+        ));
+        assert!(!has_turn_hook(
+            &config,
+            "Notification",
+            "blocked",
+            "claude",
+            Some("permission_prompt"),
+            script,
+            signal,
+        ));
     }
 
     #[test]
-    fn jsonl_consumption_keeps_partial_line_for_next_event() {
+    fn hook_inventory_lists_external_and_managed_handlers() {
+        let script = Path::new("/app/turn-signal-hook.cjs");
+        let legacy = Path::new("/app/claude-turn-signal-hook.cjs");
+        let signal = Path::new("/app/turn-signals.jsonl");
+        let mut config = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "hooks": [{"type":"prompt","prompt":"Check this command"}]
+                }]
+            }
+        });
+        merge_turn_hook(
+            &mut config,
+            "Stop",
+            "completed",
+            "claude",
+            None,
+            script,
+            legacy,
+            signal,
+        );
+
+        let entries = collect_grouped_hooks(&config, script, legacy);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].event, "PreToolUse");
+        assert_eq!(entries[0].matcher.as_deref(), Some("Bash"));
+        assert_eq!(entries[0].hook_type, "prompt");
+        assert_eq!(entries[0].detail, "Check this command");
+        assert!(!entries[0].managed);
+        assert_eq!(entries[1].event, "Stop");
+        assert!(entries[1].managed);
+    }
+
+    #[test]
+    fn managed_hook_detection_accepts_escaped_windows_paths() {
+        let script = Path::new(r"C:\Users\test\turn-signal-hook.cjs");
+        let item = turn_hook_command(
+            "codex",
+            "started",
+            script,
+            Path::new(r"C:\Users\test\turn-signals.jsonl"),
+        );
+        assert!(is_our_hook(
+            &item,
+            script,
+            Path::new(r"C:\Users\test\claude-turn-signal-hook.cjs"),
+        ));
+    }
+
+    #[test]
+    fn agy_hook_merge_uses_antigravity_schema_and_preserves_other_hooks() {
+        let mut config = json!({
+            "other-hook": {
+                "PreInvocation": [{"type":"command","command":"echo keep-me"}]
+            }
+        });
+        merge_agy_turn_hooks(
+            &mut config,
+            Path::new("/app/turn-signal-hook.cjs"),
+            Path::new("/app/turn-signals.jsonl"),
+        );
+
+        assert_eq!(
+            config["other-hook"]["PreInvocation"][0]["command"],
+            "echo keep-me"
+        );
+        let hook = &config[AGY_HOOK_NAME];
+        assert!(hook.get("PreInvocation").is_some_and(Value::is_array));
+        assert!(hook.get("Stop").is_some_and(Value::is_array));
+        assert!(hook.get("hooks").is_none());
+        assert!(hook["PreInvocation"][0]["command"]
+            .as_str()
+            .is_some_and(|command| command.contains("\"agy\" \"started\"")));
+        assert!(hook["Stop"][0]["command"]
+            .as_str()
+            .is_some_and(|command| command.contains("\"agy\" \"completed\"")));
+        assert!(has_agy_turn_hook(
+            &config,
+            "PreInvocation",
+            "started",
+            Path::new("/app/turn-signal-hook.cjs"),
+            Path::new("/app/turn-signals.jsonl"),
+        ));
+        assert!(!has_agy_turn_hook(
+            &config,
+            "PreInvocation",
+            "completed",
+            Path::new("/app/turn-signal-hook.cjs"),
+            Path::new("/app/turn-signals.jsonl"),
+        ));
+        let entries = collect_agy_hooks(
+            &config,
+            Path::new("/app/turn-signal-hook.cjs"),
+            Path::new("/app/claude-turn-signal-hook.cjs"),
+        );
+        assert_eq!(entries.len(), 3);
+        assert!(entries
+            .iter()
+            .any(|entry| entry.category.as_deref() == Some("other-hook") && !entry.managed));
+        assert_eq!(entries.iter().filter(|entry| entry.managed).count(), 2);
+    }
+
+    #[test]
+    fn signal_jsonl_consumption_keeps_partial_line_for_next_event() {
         assert_eq!(complete_jsonl_prefix_len(""), 0);
         assert_eq!(complete_jsonl_prefix_len("{\"a\":1}"), 7);
         assert_eq!(complete_jsonl_prefix_len("{\"a\":"), 0);
         assert_eq!(complete_jsonl_prefix_len("{\"a\":1}\n{\"b\":"), 8);
         assert_eq!(complete_jsonl_prefix_len("{\"a\":1}\n{\"b\":2}"), 15);
-        assert_eq!(complete_jsonl_prefix_len("{\"a\":\"中\"}\n"), "{\"a\":\"中\"}\n".len());
+        assert_eq!(
+            complete_jsonl_prefix_len("{\"a\":\"中\"}\n"),
+            "{\"a\":\"中\"}\n".len()
+        );
     }
 }
-

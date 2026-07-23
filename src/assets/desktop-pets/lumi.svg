@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Lumi star cat">
+  <defs>
+    <linearGradient id="lumi-fur" x1=".14" y1=".08" x2=".86" y2=".94">
+      <stop offset="0" stop-color="#a9e7ff"/>
+      <stop offset=".56" stop-color="#8d9cf5"/>
+      <stop offset="1" stop-color="#9e73df"/>
+    </linearGradient>
+    <linearGradient id="lumi-belly" x1=".2" y1="0" x2=".8" y2="1">
+      <stop offset="0" stop-color="#f7f7ff"/>
+      <stop offset="1" stop-color="#dbe8ff"/>
+    </linearGradient>
+    <linearGradient id="lumi-screen-beam" gradientUnits="userSpaceOnUse" x1="255" y1="385" x2="255" y2="175">
+      <stop offset="0" stop-color="#ffe99a" stop-opacity=".62"/>
+      <stop offset=".48" stop-color="#fff3bd" stop-opacity=".3"/>
+      <stop offset="1" stop-color="#fffdf0" stop-opacity=".02"/>
+    </linearGradient>
+    <linearGradient id="lumi-face-light" gradientUnits="userSpaceOnUse" x1="255" y1="385" x2="255" y2="205">
+      <stop offset="0" stop-color="#fff5c7" stop-opacity=".42"/>
+      <stop offset=".62" stop-color="#fffbe2" stop-opacity=".17"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="lumi-screen-soft" x="-20%" y="-10%" width="140%" height="125%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+    <filter id="lumi-shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="13" stdDeviation="11" flood-color="#302b72" flood-opacity=".22"/>
+    </filter>
+  </defs>
+  <g filter="url(#lumi-shadow)" stroke="#3c3b78" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <g class="pet-tail">
+      <path fill="none" d="M351 359c69-7 85 41 58 70-26 28-67 8-54-22 10-23 43-16 41 6" stroke="url(#lumi-fur)" stroke-width="35"/>
+    </g>
+    <g class="pet-body">
+      <path fill="url(#lumi-fur)" d="M168 279c-29 26-43 70-34 116 12 56 57 78 121 78s109-22 121-78c9-46-5-90-34-116H168Z"/>
+      <ellipse cx="255" cy="387" rx="68" ry="70" fill="url(#lumi-belly)" stroke-width="7"/>
+    </g>
+    <g class="pet-laptop">
+      <path fill="#737ee7" d="M176 374h158l-17 77H193l-17-77Z" stroke-width="7"/>
+      <path class="pet-laptop-screen" fill="#ffe584" d="m255 393 17 19-17 19-17-19 17-19Z" stroke="none"/>
+    </g>
+    <g class="pet-paw pet-paw-left">
+      <path fill="url(#lumi-fur)" d="M177 326c-23 8-37 31-31 53 5 18 23 24 38 12 16-13 24-41 14-57-5-9-13-11-21-8Z"/>
+      <path fill="none" d="M162 369c8 2 15 7 19 14" stroke-width="6"/>
+    </g>
+    <g class="pet-paw pet-paw-right">
+      <path fill="url(#lumi-fur)" d="M333 326c23 8 37 31 31 53-5 18-23 24-38 12-16-13-24-41-14-57 5-9 13-11 21-8Z"/>
+      <path fill="none" d="M348 369c-8 2-15 7-19 14" stroke-width="6"/>
+    </g>
+    <g class="pet-head">
+      <g class="pet-ear pet-ear-left">
+        <path fill="url(#lumi-fur)" d="m142 109-8 125 76-58Z"/>
+        <path fill="#cfc8ff" d="m158 143-4 54 34-26Z" stroke-width="7"/>
+      </g>
+      <g class="pet-ear pet-ear-right">
+        <path fill="url(#lumi-fur)" d="m368 109 8 125-76-58Z"/>
+        <path fill="#cfc8ff" d="m352 143 4 54-34-26Z" stroke-width="7"/>
+      </g>
+      <path fill="url(#lumi-fur)" d="M127 230c0-94 52-151 128-151s128 57 128 151c0 78-47 123-128 123s-128-45-128-123Z"/>
+      <path fill="url(#lumi-belly)" d="M168 277c15-32 44-48 87-27 43-21 72-5 87 27 16 35-22 73-87 76-65-3-103-41-87-76Z" stroke-width="7"/>
+      <g class="pet-eye pet-eye-left">
+        <path fill="#25345f" d="M190 225c0-18 11-31 24-31s24 13 24 31-11 31-24 31-24-13-24-31Z" stroke="none"/>
+        <ellipse cx="207" cy="215" rx="7" ry="10" fill="#fff" stroke="none"/>
+      </g>
+      <g class="pet-eye pet-eye-right">
+        <path fill="#25345f" d="M272 225c0-18 11-31 24-31s24 13 24 31-11 31-24 31-24-13-24-31Z" stroke="none"/>
+        <ellipse cx="289" cy="215" rx="7" ry="10" fill="#fff" stroke="none"/>
+      </g>
+      <path fill="#6969a9" d="M244 276c0-7 5-12 11-12s11 5 11 12-5 12-11 12-11-5-11-12Z" stroke-width="5"/>
+      <path class="pet-mouth-neutral" fill="none" d="M255 288c0 13-12 21-25 16m25-16c0 13 12 21 25 16" stroke-width="6"/>
+      <path class="pet-mouth-happy" fill="#ef83a0" d="M224 294c8 29 54 29 62 0-16 10-46 10-62 0Z" stroke-width="6"/>
+      <path fill="#ffe584" d="m255 126 10 21 23 3-17 16 4 23-20-11-20 11 4-23-17-16 23-3 10-21Z" stroke="#6d5c9d" stroke-width="6"/>
+    </g>
+    <g class="pet-screen-light" stroke="none" filter="url(#lumi-screen-soft)">
+      <path class="pet-screen-beam" fill="url(#lumi-screen-beam)" d="M217 386h76l55-204H162l55 204Z"/>
+      <path class="pet-face-light" fill="url(#lumi-face-light)" d="M226 386h58l42-181H184l42 181Z"/>
+    </g>
+  </g>
+</svg>
