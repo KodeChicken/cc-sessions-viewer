@@ -6,8 +6,8 @@
 //   · view 数据（openSession / liveChat / chatMsgs …）全部由**本 pane 的 active view tab**
 //     派生 —— 不再读全局 activeViewTab 投影，这样多格子各显示各的。
 //   · 行为（删除 / 导出 / resume / 新建 tab …）通过 inject 的 PaneActions 调用 App.vue。
-//   · 根节点 pointerdown（capture）先 focusPane，于是那些读「聚焦 pane」的无参 action 天然
-//     作用在被点的格子上。
+//   · 根节点 pointerdown（capture）先聚焦 pane 并标记当前 TUI tab 已查看，于是那些读「聚焦
+//     pane」的无参 action 天然作用在被点的格子上。
 //
 // 全局全区视图（stats / trash / history / pricing）不在这里 —— 它们在 App.vue 顶层接管整个
 // 主区，不进分屏格子。
@@ -18,6 +18,7 @@ import type { ChatSession } from '../chatSessions'
 import { t } from '../i18n'
 import { viewTabs, type ViewTab } from '../viewTabs'
 import { type Pane, focusPane, isFocused, paneCount } from '../panes'
+import { markTabViewed } from '../terminals'
 import { dragState } from '../tabDrag'
 import { registerPaneViews, unregisterPaneViews } from '../paneRegistry'
 import { PaneActionsKey, type PaneActions } from '../paneActions'
@@ -44,6 +45,11 @@ const props = defineProps<{
 }>()
 
 const actions = inject(PaneActionsKey) as PaneActions
+
+function focusCurrentPane() {
+  focusPane(props.pane.id)
+  if (props.pane.activeUiId !== null) markTabViewed(props.pane.activeUiId)
+}
 
 // 本 pane 的 ChatView / SessionsView 实例登记进注册表，App.vue 按聚焦 paneId 取用
 // （flashMessage / onLiveAppend / 列表 scrollEl）。子实例挂载后 ref 变化会重登记。
@@ -136,7 +142,7 @@ const liveChatMeta = computed<SessionMeta>(() => {
         dragState.active && dragState.overPaneId === pane.id && dragState.sourcePaneId !== pane.id,
     }"
     :data-pane-id="pane.id"
-    @pointerdown.capture="focusPane(pane.id)"
+    @pointerdown.capture="focusCurrentPane"
   >
     <TerminalStrip
       :pane="pane"

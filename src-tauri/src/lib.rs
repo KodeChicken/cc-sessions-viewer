@@ -251,23 +251,118 @@ fn check_watched_session(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn check_session_turns(app: tauri::AppHandle) -> Result<(), String> {
-    turn::check_session_turns(app)
-}
-
-#[tauri::command]
 fn terminal_turn_signal(
     app: tauri::AppHandle,
     agent: String,
     path: String,
     state: String,
 ) -> Result<(), String> {
-    turn::emit_turn_signal(&app, turn::TerminalTurnPayload { agent, path, state })
+    turn::emit_turn_signal(
+        &app,
+        turn::TerminalTurnPayload {
+            agent,
+            path,
+            state,
+            source: "hook".to_string(),
+        },
+    )
 }
 
 #[tauri::command]
-fn install_claude_turn_hooks() -> Result<String, String> {
-    turn::install_claude_hooks()
+fn install_turn_hooks() -> Result<turn::TurnHookInstallResult, String> {
+    turn::install_turn_hooks()
+}
+
+#[tauri::command]
+fn turn_hook_status() -> Result<turn::TurnHookStatus, String> {
+    turn::turn_hook_status()
+}
+
+#[tauri::command]
+fn desktop_pet_tasks() -> Result<Vec<turn::DesktopTask>, String> {
+    turn::desktop_task_snapshot()
+}
+
+#[derive(Clone, serde::Serialize)]
+struct DesktopPetSessionTarget {
+    agent: String,
+    path: String,
+    title: String,
+}
+
+fn position_desktop_pet(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let Some(monitor) = window
+        .primary_monitor()
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+    let window_size = window.outer_size().map_err(|error| error.to_string())?;
+    let margin = 24;
+    let x = monitor_position.x + monitor_size.width as i32 - window_size.width as i32 - margin;
+    let y = monitor_position.y + monitor_size.height as i32 - window_size.height as i32 - margin;
+    window
+        .set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+            x.max(monitor_position.x),
+            y.max(monitor_position.y),
+        )))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_desktop_pet_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if !enabled {
+        if let Some(window) = app.get_webview_window("desktop-pet") {
+            window.close().map_err(|error| error.to_string())?;
+        }
+        return Ok(());
+    }
+
+    if let Some(window) = app.get_webview_window("desktop-pet") {
+        window.show().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "desktop-pet",
+        tauri::WebviewUrl::App("index.html?desktop-pet=1".into()),
+    )
+    .title("Session Pet")
+    .inner_size(380.0, 230.0)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .shadow(false)
+    .build()
+    .map_err(|error| error.to_string())?;
+    position_desktop_pet(&window)
+}
+
+#[tauri::command]
+fn open_desktop_pet_session(
+    app: tauri::AppHandle,
+    agent: String,
+    path: String,
+    title: String,
+) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window is unavailable".to_string())?;
+    main.show().map_err(|error| error.to_string())?;
+    main.unminimize().map_err(|error| error.to_string())?;
+    main.set_focus().map_err(|error| error.to_string())?;
+    main.emit(
+        "desktop-pet://open-session",
+        DesktopPetSessionTarget { agent, path, title },
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -378,21 +473,6 @@ model = "provider-level"
 "#;
         assert_eq!(top_level_toml_string(content, "model"), None);
     }
-}
-
-#[tauri::command]
-fn watch_session_turn(
-    app: tauri::AppHandle,
-    agent: String,
-    path: String,
-    catch_up: bool,
-) -> Result<(), String> {
-    turn::watch_session_turn(app, agent, path, catch_up)
-}
-
-#[tauri::command]
-fn unwatch_session_turn(path: String) -> Result<(), String> {
-    turn::unwatch_session_turn(path)
 }
 
 /// 单个会话的 token 用量汇总（按 path + mtime 缓存）。
@@ -2118,13 +2198,14 @@ pub fn run() {
             watch_session,
             unwatch_session,
             check_watched_session,
-            check_session_turns,
             terminal_turn_signal,
-            install_claude_turn_hooks,
+            install_turn_hooks,
+            turn_hook_status,
+            desktop_pet_tasks,
+            set_desktop_pet_enabled,
+            open_desktop_pet_session,
             claude_runtime_info,
             codex_runtime_info,
-            watch_session_turn,
-            unwatch_session_turn,
             session_usage,
             session_last_prompt,
             session_context_usage,

@@ -221,7 +221,6 @@ export const watchSession = (agent: Agent, path: string) =>
 export const unwatchSession = () => invoke<void>('unwatch_session')
 
 export const checkWatchedSession = () => invoke<void>('check_watched_session')
-export const checkSessionTurns = () => invoke<void>('check_session_turns')
 
 export const terminalTurnSignal = (
   agent: Agent,
@@ -229,15 +228,44 @@ export const terminalTurnSignal = (
   state: 'started' | 'completed' | 'blocked' | 'failed',
 ) => invoke<void>('terminal_turn_signal', { agent, path, state })
 
-export const installClaudeTurnHooks = () => invoke<string>('install_claude_turn_hooks')
+export type TurnHookInstallResult = {
+  claudeSettingsPath: string
+  codexHooksPath: string
+  agyHooksPath: string
+}
+
+export type TurnHookEventStatus = {
+  name: string
+  installed: boolean
+}
+
+export type TurnHookEntry = {
+  event: string
+  category: string | null
+  matcher: string | null
+  hookType: string
+  detail: string
+  managed: boolean
+}
+
+export type TurnHookAgentStatus = {
+  installed: boolean
+  configPath: string
+  events: TurnHookEventStatus[]
+  hooks: TurnHookEntry[]
+}
+
+export type TurnHookStatus = {
+  enabled: boolean
+  claude: TurnHookAgentStatus
+  codex: TurnHookAgentStatus
+  agy: TurnHookAgentStatus
+}
+
+export const installTurnHooks = () => invoke<TurnHookInstallResult>('install_turn_hooks')
+export const turnHookStatus = () => invoke<TurnHookStatus>('turn_hook_status')
 export const claudeRuntimeInfo = () => invoke<ClaudeRuntimeInfo>('claude_runtime_info')
 export const codexRuntimeInfo = () => invoke<CodexRuntimeInfo>('codex_runtime_info')
-
-export const watchSessionTurn = (agent: Agent, path: string, catchUp = false) =>
-  invoke<void>('watch_session_turn', { agent, path, catchUp })
-
-export const unwatchSessionTurn = (path: string) =>
-  invoke<void>('unwatch_session_turn', { path })
 
 export const resumeSession = (
   agent: Agent,

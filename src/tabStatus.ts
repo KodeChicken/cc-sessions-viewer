@@ -3,7 +3,6 @@ import type { Agent } from './types'
 export type TerminalProcessState = 'spawning' | 'alive' | 'exited' | 'error'
 export type TerminalTurnState = 'idle' | 'working' | 'blocked' | 'review' | 'error' | 'unknown'
 export type TerminalTurnSignalSource =
-  | 'session-jsonl'
   | 'session-live-tail'
   | 'pty-input'
   | 'pty-exit'
@@ -34,8 +33,18 @@ const pendingTurnStates = new Map<
   { state: TerminalTurnEventState; source: TerminalTurnSignalSource; updatedAt: number }
 >()
 
+export function normalizeSessionPath(path: string): string {
+  if (path.startsWith('\\\\?\\UNC\\')) return `\\\\${path.slice(8)}`
+  if (path.startsWith('\\\\?\\')) return path.slice(4)
+  return path
+}
+
+export function sessionPathsEqual(left: string, right: string): boolean {
+  return normalizeSessionPath(left) === normalizeSessionPath(right)
+}
+
 function turnStateKey(agent: Agent, sessionPath: string) {
-  return `${agent}\0${sessionPath}`
+  return `${agent}\0${normalizeSessionPath(sessionPath)}`
 }
 
 function completedState(isActive: boolean): TerminalTurnState {
@@ -151,9 +160,7 @@ export function applyTurnSignal(
   isActive: boolean,
 ) {
   if (state === 'started') {
-    if (tab.turnState !== 'blocked' && tab.turnState !== 'error') {
-      setTurnState(tab, 'working', source)
-    }
+    setTurnState(tab, 'working', source)
     return
   }
   if (state === 'completed') {

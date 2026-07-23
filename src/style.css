@@ -4047,6 +4047,27 @@ body.is-tab-reordering * {
 .terminal-codex-tui .xterm .xterm-rows .xterm-fg-257 {
   color: var(--terminal-inverse-fg) !important;
 }
+/* Windows IME 的候选框锚定 xterm 隐藏 textarea；拼音预编辑文本则在 composition-view。
+ * Working 时把两者固定到静态输入光标，避免 Codex 状态刷新带着输入法上下跳动。 */
+.terminal-stable-cursor .xterm-helper-textarea,
+.terminal-stable-cursor .composition-view {
+  left: var(--terminal-stable-cursor-left) !important;
+  top: var(--terminal-stable-cursor-top) !important;
+}
+.terminal-stable-cursor .xterm-screen::after {
+  content: '';
+  position: absolute;
+  left: var(--terminal-stable-cursor-left);
+  top: var(--terminal-stable-cursor-top);
+  width: var(--terminal-stable-cursor-width);
+  height: var(--terminal-stable-cursor-height);
+  z-index: 10;
+  pointer-events: none;
+  background: var(--terminal-stable-cursor-color);
+}
+.terminal-stable-cursor.terminal-ime-composing .xterm-screen::after {
+  display: none;
+}
 @keyframes live-pulse {
   0%   { box-shadow: 0 0 0 0   color-mix(in srgb, currentColor 70%, transparent); }
   70%  { box-shadow: 0 0 0 6px color-mix(in srgb, currentColor  0%, transparent); }
@@ -4380,12 +4401,424 @@ body.is-tab-reordering * {
   width: 13px;
   height: 13px;
 }
-/* 状态跟踪段里的操作按钮行 */
-.set-update-actions {
+/* ---- Hooks tab：状态跟踪分类 + 按 CLI 展示全部 Hook ---- */
+.set-hooks-head {
+  margin-bottom: 18px;
+}
+.set-hooks-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.set-hooks-desc {
+  margin: 5px 0 0;
+  color: var(--text-mute);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.set-hook-tracking-card {
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-2);
+}
+.set-hook-tracking-head {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
   align-items: center;
+  gap: 11px;
+}
+.set-hook-tracking-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--brand, #e8643c) 10%, var(--surface));
+  color: var(--brand, #e8643c);
+}
+.set-hook-tracking-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.set-hook-tracking-info {
+  min-width: 0;
+  flex: 1;
+}
+.set-hook-tracking-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.set-hook-tracking-desc {
+  margin: 3px 0 0;
+  color: var(--text-mute);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.set-hooks-overall {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-mute);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.set-hooks-overall.enabled {
+  border-color: color-mix(in srgb, var(--status-done) 30%, var(--border));
+  background: color-mix(in srgb, var(--status-done) 8%, var(--surface-2));
+  color: var(--status-done);
+}
+.set-hooks-overall-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.set-hook-tracking-agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 13px 0 0 47px;
+}
+.set-hook-tracking-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.set-hook-tracking-agent.enabled {
+  border-color: color-mix(in srgb, var(--status-done) 24%, var(--border));
+}
+.set-hook-tracking-agent svg {
+  width: 13px;
+  height: 13px;
+}
+.set-hook-tracking-count {
+  color: var(--text-mute);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 10px;
+}
+.set-hook-tracking-agent.enabled .set-hook-tracking-count {
+  color: var(--status-done);
+}
+.set-hook-list-head {
+  margin: 22px 0 10px;
+}
+.set-hook-list-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.set-hook-list-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.set-hook-list-desc {
+  margin: 3px 0 0;
+  color: var(--text-mute);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.set-hook-file-count {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text-mute);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.set-hook-list-error {
+  margin: 7px 0 0;
+  color: var(--danger);
+  font-size: 11.5px;
+}
+.set-hook-files {
+  display: grid;
+  flex-shrink: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-2);
+}
+.set-hook-file + .set-hook-file {
+  border-top: 1px solid var(--border);
+}
+.set-hook-file {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 0;
+  gap: 11px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background .14s ease;
+}
+.set-hook-file:hover {
+  background: var(--surface-hover);
+}
+.set-hook-file:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid color-mix(in srgb, var(--brand) 45%, transparent);
+  outline-offset: -2px;
+}
+.set-hook-agent-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  border-radius: 9px;
+  background: var(--surface);
+}
+.set-hook-agent-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.set-hook-agent-info {
+  min-width: 0;
+  flex: 1;
+}
+.set-hook-agent-name {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.set-hook-config-path {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--text-mute);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.set-hook-file-hooks {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text-mute);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.set-hook-file-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  color: var(--text-mute);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.set-hook-file-open svg {
+  width: 13px;
+  height: 13px;
+}
+.set-hook-file:hover .set-hook-file-open {
+  color: var(--text);
+}
+.set-hook-files-empty {
+  padding: 16px;
+  color: var(--text-mute);
+  font-size: 11.5px;
+  text-align: center;
+}
+.set-hooks-action {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+}
+.set-hooks-action-text {
+  min-width: 0;
+  flex: 1;
+}
+.set-hooks-action-title {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.set-hooks-action-desc {
+  margin: 3px 0 0;
+  color: var(--text-mute);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.set-hooks-action-desc.error {
+  color: var(--danger);
+}
+.set-hooks-enable {
+  min-width: 168px;
+  justify-content: center;
+}
+.set-hooks-enable.enabled:disabled {
+  border-color: color-mix(in srgb, var(--status-done) 30%, var(--border));
+  background: color-mix(in srgb, var(--status-done) 12%, var(--surface-2));
+  color: var(--status-done);
+  opacity: 1;
+}
+.set-desktop-pet-card {
+  margin-top: 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-2);
+  transition: border-color .16s ease, background .16s ease;
+}
+.set-desktop-pet-card.standalone { margin-top: 0; }
+.set-desktop-pet-card.enabled {
+  border-color: color-mix(in srgb, #8b78e6 34%, var(--border));
+  background: color-mix(in srgb, #8b78e6 5%, var(--surface-2));
+}
+.set-desktop-pet-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.set-desktop-pet-preview {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, #8b78e6 18%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, #8b78e6 8%, var(--surface));
+}
+.set-desktop-pet-preview img {
+  width: 46px;
+  height: 46px;
+  object-fit: contain;
+}
+.set-desktop-pet-info {
+  min-width: 0;
+  flex: 1;
+}
+.set-desktop-pet-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.set-desktop-pet-desc {
+  margin: 3px 0 0;
+  color: var(--text-mute);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.set-desktop-pet-toggle {
+  position: relative;
+  width: 36px;
+  height: 21px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--border-strong, #aaa);
+  cursor: pointer;
+  transition: background .16s ease, opacity .16s ease;
+}
+.set-desktop-pet-toggle span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .22);
+  transition: transform .16s ease;
+}
+.set-desktop-pet-toggle.on { background: #7965db; }
+.set-desktop-pet-toggle.on span { transform: translateX(15px); }
+.set-desktop-pet-toggle:disabled { cursor: not-allowed; opacity: .42; }
+.set-desktop-pet-toggle:focus-visible { outline: 2px solid color-mix(in srgb, #7965db 55%, transparent); outline-offset: 2px; }
+.set-desktop-pet-requirement {
+  margin: 9px 0 0 53px;
+  color: #b57832;
+  font-size: 11px;
+}
+.set-desktop-pet-choice-label {
+  margin-top: 14px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.set-desktop-pet-characters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 7px;
+}
+.set-desktop-pet-character {
+  position: relative;
+  min-width: 0;
+  height: 55px;
+  padding: 4px 25px 4px 5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color .14s ease, background .14s ease, transform .14s ease;
+}
+.set-desktop-pet-character:hover { transform: translateY(-1px); background: var(--surface-hover); }
+.set-desktop-pet-character.active {
+  border-color: color-mix(in srgb, #7965db 48%, var(--border));
+  background: color-mix(in srgb, #7965db 8%, var(--surface));
+  color: var(--text);
+}
+.set-desktop-pet-character img {
+  width: 44px;
+  height: 47px;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+.set-desktop-pet-character > svg {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 12px;
+  height: 12px;
+  color: #7965db;
+}
+.set-desktop-pet-error {
+  margin: 8px 0 0;
+  color: var(--danger);
+  font-size: 11px;
 }
 
 /* ---- Updates tab：单卡片状态 + 一个主操作，取代一排按钮 ---- */

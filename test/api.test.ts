@@ -155,20 +155,14 @@ describe('api wrappers', () => {
     expect(invoke).toHaveBeenCalledWith('unwatch_session')
   })
 
-  it('watchSessionTurn → watch_session_turn', () => {
-    api.watchSessionTurn('codex', '/p/s.jsonl', true)
-    expect(invoke).toHaveBeenCalledWith('watch_session_turn', {
-      agent: 'codex',
-      path: '/p/s.jsonl',
-      catchUp: true,
-    })
+  it('installTurnHooks → install_turn_hooks', () => {
+    api.installTurnHooks()
+    expect(invoke).toHaveBeenCalledWith('install_turn_hooks')
   })
 
-  it('unwatchSessionTurn → unwatch_session_turn', () => {
-    api.unwatchSessionTurn('/p/s.jsonl')
-    expect(invoke).toHaveBeenCalledWith('unwatch_session_turn', {
-      path: '/p/s.jsonl',
-    })
+  it('turnHookStatus → turn_hook_status', () => {
+    api.turnHookStatus()
+    expect(invoke).toHaveBeenCalledWith('turn_hook_status')
   })
 
   it('appVersion → app_version', () => {

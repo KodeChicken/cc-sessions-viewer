@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { codexSgrNormalizer, shouldCopyWindowsTerminalSelection } from '../src/terminals'
+import {
+  codexSgrNormalizer,
+  shouldBlinkTerminalCursor,
+  shouldCopyWindowsTerminalSelection,
+  shouldUseStableTerminalCursor,
+} from '../src/terminals'
 
 // Windows：实测 codex 认不出背景、按深色主题出色 → 浅色主题下镜像前景。
 const normalizeLightSgr = codexSgrNormalizer('light', true)
@@ -176,5 +181,24 @@ describe('SGR normalization plumbing', () => {
     expect(normalizeLightSgr('0')).toBeNull()
     expect(normalizeLightSgr('1;3;23')).toBeNull() // codex 真的会发 3 / 23（斜体）
     expect(normalizeLightSgr('1;38;2;255;255;255;22')).toBe('1;38;2;0;0;0;22')
+  })
+})
+
+describe('terminal cursor rendering', () => {
+  it('keeps the Windows Codex cursor steady', () => {
+    expect(shouldBlinkTerminalCursor('codex', 'Win32')).toBe(false)
+  })
+
+  it('preserves cursor blinking for other terminals', () => {
+    expect(shouldBlinkTerminalCursor('claude', 'Win32')).toBe(true)
+    expect(shouldBlinkTerminalCursor('codex', 'MacIntel')).toBe(true)
+  })
+
+  it('uses a static cursor only while Windows Codex is working', () => {
+    expect(shouldUseStableTerminalCursor('codex', 'working', false, 'Win32')).toBe(true)
+    expect(shouldUseStableTerminalCursor('codex', 'idle', false, 'Win32')).toBe(false)
+    expect(shouldUseStableTerminalCursor('claude', 'working', false, 'Win32')).toBe(false)
+    expect(shouldUseStableTerminalCursor('codex', 'working', false, 'MacIntel')).toBe(false)
+    expect(shouldUseStableTerminalCursor('codex', 'working', true, 'Win32')).toBe(false)
   })
 })
