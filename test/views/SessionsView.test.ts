@@ -331,7 +331,10 @@ describe('SessionsView', () => {
           loading: false,
           loadingMore: false,
         } as Props,
-        global: { directives: { tooltip: vTooltip } },
+        global: {
+          directives: { tooltip: vTooltip },
+          provide: { [PaneActionsKey as symbol]: stubPaneActions },
+        },
       })
       expect(wrapper.find('.dir-missing-tag').exists()).toBe(true)
     })
@@ -352,7 +355,10 @@ describe('SessionsView', () => {
           loading: false,
           loadingMore: false,
         } as Props,
-        global: { directives: { tooltip: vTooltip } },
+        global: {
+          directives: { tooltip: vTooltip },
+          provide: { [PaneActionsKey as symbol]: stubPaneActions },
+        },
       })
       expect(wrapper.find('.title-rename-ic').exists()).toBe(true)
       // 只剩 在文件管理器中显示 / 导出 / 置顶 / 沉底 / 删除
