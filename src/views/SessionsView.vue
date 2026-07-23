@@ -700,14 +700,6 @@ defineExpose({ scrollEl })
         </button>
       </template>
       <template v-else>
-        <button
-          v-if="sessions.length > 1"
-          class="icon-btn creation-sort-button"
-          :aria-label="creationSortLabel"
-          @click="toggleCreationSort"
-        >
-          <CreationSortIcon :direction="creationSortDirection" />
-        </button>
         <!-- 进入批量模式 —— 原本住在 SessionsTopbar 的 .ct-actions 里，
              跟下方 new/refresh/delete 隔一行 topbar 视觉冲突，挪到这里集中显示。 -->
         <button
@@ -738,6 +730,14 @@ defineExpose({ scrollEl })
           @click="emit('create-worktree')"
         >
           <IconGitBranch />
+        </button>
+        <button
+          v-if="sessions.length > 1"
+          class="icon-btn creation-sort-button"
+          :aria-label="creationSortLabel"
+          @click="toggleCreationSort"
+        >
+          <CreationSortIcon :direction="creationSortDirection" />
         </button>
         <button
           v-if="project.exists"

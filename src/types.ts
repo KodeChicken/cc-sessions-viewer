@@ -349,6 +349,10 @@ export interface ClaudeRuntimeInfo {
 export interface CodexRuntimeInfo {
   /** true = 用户通过第三方 API key / 自定义端点使用 Codex（config.toml 有 model_provider）。 */
   usesApiKey: boolean
+  /** ~/.codex/config.toml 顶层 model；自定义 provider 下用于显示/勾选，不强制下发。 */
+  model?: string
+  /** ~/.codex/config.toml 顶层 model_reasoning_effort；保留给 UI 展示/后续扩展。 */
+  effort?: string
 }
 
 /** agent-chat://* 事件 payload（与 Rust 端同形）。 */

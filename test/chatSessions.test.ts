@@ -122,6 +122,106 @@ describe('chatSessions Claude API-key compatibility', () => {
   })
 })
 
+describe('chatSessions Codex custom provider compatibility', () => {
+  beforeEach(() => {
+    invokeMock.mockReset()
+  })
+
+  it('uses config.toml Codex model and effort for custom providers', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'codex_runtime_info') return Promise.resolve({ usesApiKey: true, model: 'gpt-5.6-sol', effort: 'high' })
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 2, processModel: 'codexAppServer' })
+      return Promise.resolve(undefined)
+    })
+
+    const s = await startChat({
+      agent: 'codex',
+      projectKey: 'proj',
+      cwd: '/tmp',
+      title: 'Codex',
+    })
+
+    expect(s.model).toBe('gpt-5.6-sol')
+    expect(s.effort).toBe('high')
+    expect(s.lastModel).toBe('gpt-5.6-sol')
+    expect(invokeMock).toHaveBeenCalledWith('codex_runtime_info')
+    expect(invokeMock).toHaveBeenCalledWith(
+      'agent_chat_start',
+      expect.objectContaining({
+        agent: 'codex',
+        model: 'gpt-5.6-sol',
+        effort: 'high',
+      }),
+    )
+  })
+
+  it('preserves explicitly provided Codex custom-provider model and effort', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'codex_runtime_info') return Promise.resolve({ usesApiKey: true })
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 3, processModel: 'codexAppServer' })
+      return Promise.resolve(undefined)
+    })
+
+    const s = await startChat({
+      agent: 'codex',
+      projectKey: 'proj',
+      cwd: '/tmp',
+      title: 'Codex',
+      model: 'custom-model',
+      effort: 'high',
+    })
+
+    expect(s.model).toBe('custom-model')
+    expect(s.effort).toBe('high')
+    expect(invokeMock).toHaveBeenCalledWith(
+      'agent_chat_start',
+      expect.objectContaining({
+        agent: 'codex',
+        model: 'custom-model',
+        effort: 'high',
+      }),
+    )
+  })
+
+  it('does not apply global Codex config when resuming an existing chat', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'codex_runtime_info') return Promise.resolve({ usesApiKey: true, model: 'gpt-5.6-sol', effort: 'high' })
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 4, processModel: 'codexAppServer' })
+      return Promise.resolve(undefined)
+    })
+
+    const s = await startChat({
+      agent: 'codex',
+      projectKey: 'proj',
+      cwd: '/tmp',
+      title: 'Existing',
+      sessionId: 'thread-1',
+      preloadMsgs: [
+        {
+          role: 'assistant',
+          sidechain: false,
+          model: 'gpt-5.4',
+          blocks: [{ kind: 'text', text: 'older', isError: false }],
+        },
+      ],
+    })
+
+    expect(s.model).toBe('gpt-5.5')
+    expect(s.effort).toBe('high')
+    expect(s.lastModel).toBe('gpt-5.4')
+    expect(invokeMock).not.toHaveBeenCalledWith('codex_runtime_info')
+    expect(invokeMock).toHaveBeenCalledWith(
+      'agent_chat_start',
+      expect.objectContaining({
+        agent: 'codex',
+        sessionId: 'thread-1',
+        model: 'gpt-5.5',
+        effort: 'high',
+      }),
+    )
+  })
+})
+
 describe('reconnectChats — restored live messages', () => {
   beforeEach(() => {
     invokeMock.mockReset()

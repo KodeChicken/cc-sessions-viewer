@@ -6,6 +6,19 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.3.4]
+
+### Features
+
+- **Session creation-time sorting** — session lists can now be sorted by creation time in either direction, alongside the existing updated-time / size / message-count sort modes. The option is available from the sessions topbar sort menu, and the list toolbar has a dedicated creation-sort shortcut that toggles newest-created ↔ oldest-created. When a creation timestamp is missing, sorting falls back to the session modified time so older transcripts remain sortable.
+- **Codex custom-provider defaults for new GUI chats** — fresh Codex GUI chats now read the top-level `model` and `model_reasoning_effort` from `~/.codex/config.toml` when Codex is configured with a custom model provider. The GUI initializes its model/effort controls from those values and sends the same values to the Codex app-server, so local reverse-proxy setups such as CC Switch no longer start with the app's built-in Codex defaults. Existing chat resume/fork flows keep their previous behavior and are not overwritten by the global config.
+
+### Bug Fixes
+
+- **Codex apply_patch diffs render again** — newer Codex CLI versions can wrap `apply_patch` calls inside the JavaScript `exec` tool, which made applied patches appear as generic command output instead of structured diffs. The transcript parser now recovers the underlying patch, reconnects wrapped patch result events to the original tool call, and marks failed patch applications as errors.
+- **Creation sort direction is clearer** — the creation-time sort shortcut now uses a two-arrow icon that highlights the active direction directly, avoiding ambiguous localized labels and making ascending vs descending state visible at a glance.
+- **Strict Clippy cleanup** — fixed Codex parser issues that failed the stricter Rust lint pass, keeping the Tauri test/build pipeline clean.
+
 ## [v0.3.3]
 
 ### Features

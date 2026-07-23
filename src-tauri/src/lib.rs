@@ -281,19 +281,103 @@ fn claude_runtime_info() -> Result<ClaudeRuntimeInfo, String> {
 #[tauri::command]
 fn codex_runtime_info() -> CodexRuntimeInfo {
     let config_path = util::home().join(".codex").join("config.toml");
-    let uses_api_key = fs::read_to_string(&config_path)
-        .ok()
-        .map(|content| {
-            content.lines().any(|l| {
-                let l = l.trim();
-                l.starts_with("model_provider")
-                    && l.contains('=')
-                    && !l.starts_with('#')
-                    && !l.starts_with('[')
-            })
-        })
-        .unwrap_or(false);
-    CodexRuntimeInfo { uses_api_key }
+    let content = fs::read_to_string(&config_path).unwrap_or_default();
+    let uses_api_key = content.lines().any(|l| {
+        let l = l.trim();
+        l.starts_with("model_provider")
+            && l.contains('=')
+            && !l.starts_with('#')
+            && !l.starts_with('[')
+    });
+    CodexRuntimeInfo {
+        uses_api_key,
+        model: top_level_toml_string(&content, "model"),
+        effort: top_level_toml_string(&content, "model_reasoning_effort"),
+    }
+}
+
+fn top_level_toml_string(content: &str, key: &str) -> Option<String> {
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            break;
+        }
+        let Some((k, value)) = line.split_once('=') else {
+            continue;
+        };
+        if k.trim() != key {
+            continue;
+        }
+        return parse_toml_string_value(value.trim());
+    }
+    None
+}
+
+fn parse_toml_string_value(value: &str) -> Option<String> {
+    let value = value.trim_start();
+    if !value.starts_with('"') {
+        return None;
+    }
+    let mut escaped = false;
+    let mut out = String::new();
+    for ch in value[1..].chars() {
+        if escaped {
+            let decoded = match ch {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '"' => '"',
+                '\\' => '\\',
+                other => other,
+            };
+            out.push(decoded);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Some(out),
+            other => out.push(other),
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod codex_runtime_tests {
+    use super::top_level_toml_string;
+
+    #[test]
+    fn reads_top_level_codex_model() {
+        let content = r#"
+model_provider = "custom"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+
+[model_providers.custom]
+model = "provider-level"
+"#;
+        assert_eq!(
+            top_level_toml_string(content, "model").as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            top_level_toml_string(content, "model_reasoning_effort").as_deref(),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn ignores_section_values() {
+        let content = r#"
+[model_providers.custom]
+model = "provider-level"
+"#;
+        assert_eq!(top_level_toml_string(content, "model"), None);
+    }
 }
 
 #[tauri::command]
