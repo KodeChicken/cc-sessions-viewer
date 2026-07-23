@@ -325,7 +325,7 @@ async fn set_desktop_pet_enabled(app: tauri::AppHandle, enabled: bool) -> Result
         return Ok(());
     }
 
-    let window = tauri::WebviewWindowBuilder::new(
+    let window_builder = tauri::WebviewWindowBuilder::new(
         &app,
         "desktop-pet",
         tauri::WebviewUrl::App("index.html?desktop-pet=1".into()),
@@ -335,13 +335,16 @@ async fn set_desktop_pet_enabled(app: tauri::AppHandle, enabled: bool) -> Result
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .shadow(false)
-    .build()
-    .map_err(|error| error.to_string())?;
+    .decorations(false);
+    #[cfg(not(target_os = "macos"))]
+    let window_builder = window_builder.transparent(true);
+
+    let window = window_builder
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .build()
+        .map_err(|error| error.to_string())?;
     position_desktop_pet(&window)
 }
 

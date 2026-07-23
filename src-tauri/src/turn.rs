@@ -176,7 +176,7 @@ pub fn desktop_task_snapshot() -> Result<Vec<DesktopTask>, String> {
         .values()
         .cloned()
         .collect::<Vec<_>>();
-    snapshot.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    snapshot.sort_by_key(|task| std::cmp::Reverse(task.updated_at));
     Ok(snapshot)
 }
 
@@ -342,7 +342,7 @@ pub fn install_turn_hooks() -> Result<TurnHookInstallResult, String> {
     let claude_dir = settings_path
         .parent()
         .ok_or_else(|| "Cannot locate Claude config directory".to_string())?;
-    fs::create_dir_all(&claude_dir)
+    fs::create_dir_all(claude_dir)
         .map_err(|e| format!("Failed to create Claude config directory: {e}"))?;
 
     let mut settings = read_json_object(&settings_path, "Claude settings.json")?;
@@ -366,7 +366,7 @@ pub fn install_turn_hooks() -> Result<TurnHookInstallResult, String> {
     let codex_dir = codex_hooks_path
         .parent()
         .ok_or_else(|| "Cannot locate Codex config directory".to_string())?;
-    fs::create_dir_all(&codex_dir)
+    fs::create_dir_all(codex_dir)
         .map_err(|e| format!("Failed to create Codex config directory: {e}"))?;
     let mut codex_hooks = read_json_object(&codex_hooks_path, "Codex hooks.json")?;
     for (event, state) in CODEX_TURN_HOOKS {
@@ -388,7 +388,7 @@ pub fn install_turn_hooks() -> Result<TurnHookInstallResult, String> {
     let agy_config_dir = agy_hooks_path
         .parent()
         .ok_or_else(|| "Cannot locate Antigravity config directory".to_string())?;
-    fs::create_dir_all(&agy_config_dir)
+    fs::create_dir_all(agy_config_dir)
         .map_err(|e| format!("Failed to create Antigravity config directory: {e}"))?;
     let mut agy_hooks = read_json_object(&agy_hooks_path, "Antigravity hooks.json")?;
     merge_agy_turn_hooks(&mut agy_hooks, &script_path, &signal_path);
