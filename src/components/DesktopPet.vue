@@ -187,8 +187,8 @@ onUnmounted(() => {
       v-if="panelOpen"
       class="task-panel"
       :aria-label="t('desktopPet.status.title')"
-      @pointerenter="showPanel"
-      @pointerleave="schedulePanelClose"
+      @mouseenter="showPanel"
+      @mouseleave="schedulePanelClose"
       @focusin="showPanel"
       @focusout="schedulePanelClose"
     >

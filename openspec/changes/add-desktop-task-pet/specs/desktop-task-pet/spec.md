@@ -52,6 +52,10 @@ The desktop pet SHALL keep the selected character compact while idle, show persi
 - **WHEN** the user hovers or focuses the pet
 - **THEN** the character gives a visible hover response and the pet displays all four status counts and current tasks with the session's human-readable title, agent, state, and update information
 
+#### Scenario: User moves from the pet to the task panel
+- **WHEN** the mouse leaves the character and enters the visible task panel
+- **THEN** the panel remains open so the user can inspect and select its tasks
+
 #### Scenario: No tasks exist in a status
 - **WHEN** no current task record matches a status
 - **THEN** that status displays a zero count without showing stale tasks from another status

@@ -101,6 +101,23 @@ describe('DesktopPet', () => {
     })
   })
 
+  it('keeps progress open while the mouse crosses from the pet to the task panel', async () => {
+    const wrapper = await factory()
+    vi.useFakeTimers()
+
+    try {
+      await wrapper.get('.character-area').trigger('mouseenter')
+      await wrapper.get('.character-area').trigger('mouseleave')
+      await wrapper.get('.task-panel').trigger('mouseenter')
+      vi.advanceTimersByTime(200)
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.find('.task-panel').exists()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('updates the rendered character from the live event', async () => {
     const wrapper = await factory()
 

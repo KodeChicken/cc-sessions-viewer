@@ -15,6 +15,7 @@
 - [x] 2.8 Add clearly visible running screen lighting and persistent completed, approval, and failure notices with focused tests
 - [x] 2.9 Replace the whole-laptop glow with an upward screen-light cast on each character's face and verify it in the real client
 - [x] 2.10 Refine the face lighting into a soft trapezoidal beam that widens upward from the laptop screen
+- [x] 2.11 Keep the task panel open while the mouse moves from the pet into the panel on Windows without changing macOS positioning
 
 ## 3. Main application integration
 

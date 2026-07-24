@@ -38,7 +38,7 @@ Rust-owned lifecycle avoids requiring broad window-creation permissions in the w
 
 ### Use a separate lightweight Vue root
 
-`src/main.ts` chooses `DesktopPet.vue` when the pet query parameter is present and otherwise loads the existing application. The pet root fetches the current snapshot once and then listens to the existing turn-state event for refreshes. At rest it renders only the character. Hover or keyboard focus reveals one compact progress panel containing the four counts and current task list.
+`src/main.ts` chooses `DesktopPet.vue` when the pet query parameter is present and otherwise loads the existing application. The pet root fetches the current snapshot once and then listens to the existing turn-state event for refreshes. At rest it renders only the character. Hover or keyboard focus reveals one compact progress panel containing the four counts and current task list. The character and panel use the same mouse enter/leave event family so moving between their overlapping hit regions cancels the close timer consistently in both WebView2 and WebKit.
 
 The initial snapshot never triggers a completion animation. Terminal-state notices are derived from the current snapshot, so completed, approval-waiting, and failed notices remain visible across frontend refreshes for the lifetime of the Rust process. Only a new real-time `completed` event starts the short character celebration.
 
