@@ -103,6 +103,27 @@ describe('terminal selection Delete integration', () => {
     expect(event.preventDefault).toHaveBeenCalledOnce()
   })
 
+  it('deletes a valid selection when the user presses Backspace', () => {
+    const target = selectionTarget()
+    const event = deleteKey({ key: 'Backspace' })
+
+    expect(
+      handleWindowsTerminalSelectionDelete(
+        target,
+        { text: '123456', cursor: 6, reliable: true },
+        event,
+        true,
+        'Win32',
+      ),
+    ).toBe(true)
+    expect(target.clearSelection).toHaveBeenCalledOnce()
+    expect(target.input).toHaveBeenCalledWith(
+      '\x1b[D'.repeat(4) + '\x1b[3~'.repeat(2),
+      true,
+    )
+    expect(event.preventDefault).toHaveBeenCalledOnce()
+  })
+
   it('consumes an unsafe selection without clearing or editing it', () => {
     const target = selectionTarget('34', 3)
     expect(

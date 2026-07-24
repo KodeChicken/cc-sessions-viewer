@@ -27,7 +27,7 @@ const key = (over: Partial<KeyboardEvent> = {}) =>
   }) as KeyboardEvent
 
 describe('shouldHandleTerminalSelectionDelete', () => {
-  it('accepts only plain Windows Delete with a selection', () => {
+  it('accepts only plain Windows selection deletion keys with a selection', () => {
     expect(shouldHandleTerminalSelectionDelete(key(), true, 'Win32')).toBe(true)
     expect(shouldHandleTerminalSelectionDelete(key(), false, 'Win32')).toBe(false)
     expect(shouldHandleTerminalSelectionDelete(key(), true, 'MacIntel')).toBe(false)
@@ -35,7 +35,25 @@ describe('shouldHandleTerminalSelectionDelete', () => {
       shouldHandleTerminalSelectionDelete(key({ ctrlKey: true }), true, 'Win32'),
     ).toBe(false)
     expect(
-      shouldHandleTerminalSelectionDelete(key({ key: 'Backspace' }), true, 'Win32'),
+      shouldHandleTerminalSelectionDelete(
+        key({ key: 'Backspace' }),
+        true,
+        'Win32',
+      ),
+    ).toBe(true)
+    expect(
+      shouldHandleTerminalSelectionDelete(
+        key({ key: 'Backspace', ctrlKey: true }),
+        true,
+        'Win32',
+      ),
+    ).toBe(false)
+    expect(
+      shouldHandleTerminalSelectionDelete(
+        key({ key: 'Backspace' }),
+        false,
+        'Win32',
+      ),
     ).toBe(false)
   })
 })

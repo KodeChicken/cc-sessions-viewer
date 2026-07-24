@@ -19,11 +19,14 @@ export function shouldHandleTerminalSelectionDelete(
   hasSelection: boolean,
   platform = navigator.platform,
 ): boolean {
+  const isSelectionDeletionKey =
+    event.key === 'Delete' || event.key === 'Backspace'
+
   return (
     /Win/i.test(platform) &&
     hasSelection &&
     event.type === 'keydown' &&
-    event.key === 'Delete' &&
+    isSelectionDeletionKey &&
     !event.ctrlKey &&
     !event.shiftKey &&
     !event.altKey &&
