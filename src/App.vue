@@ -48,8 +48,14 @@ import { recordRecent } from './recents'
 import { recordExport, type ExportRecord } from './exportHistory'
 import { globalSearchOpen, openGlobalSearch } from './globalSearch'
 import { runBackgroundCheck } from './updateCheck'
-import { refreshTurnHookStatus, turnHookStatus } from './turnHookStatus'
-import { syncDesktopPetWithHooks } from './desktopPet'
+import { refreshTurnHookStatus } from './turnHookStatus'
+import {
+  acknowledgeDesktopPetTask,
+  resolveDesktopPetSession,
+  restoreDesktopPet as restoreDesktopPetWindow,
+  type DesktopPetResolvedSession,
+  type DesktopTask,
+} from './desktopPet'
 import type { SearchHit } from './types'
 import ChatSidePanel from './components/ChatSidePanel.vue'
 import CodexSidePanel from './components/CodexSidePanel.vue'
@@ -3694,17 +3700,6 @@ onMounted(() => {
 watch(theme, (v) => emitMenuSync('theme', v))
 watch(lang, (v) => emitMenuSync('lang', v))
 
-watch(
-  () => turnHookStatus.value?.enabled,
-  (hooksEnabled) => {
-    if (hooksEnabled === false) {
-      void syncDesktopPetWithHooks(false).catch((error) => {
-        console.warn('[desktop-pet] failed to disable after hook status changed:', error)
-      })
-    }
-  },
-)
-
 // (agent, activeDir) 切换后，如果当前 active 的 TUI tab 不在新范围里 → 自动让位回 view。
 // 现存的导航函数（switchAgent / selectProject 等）已经显式 setActiveTui(null)，但有些
 // 路径（直接改 activeDir / 关闭项目）走不到那里，这条 watch 兜底。tabs 本身不动 ——
@@ -3743,11 +3738,7 @@ type TerminalTurnEvent = {
   source: 'hook'
 }
 
-type DesktopPetSessionTarget = {
-  agent: Agent
-  path: string
-  title: string
-}
+type DesktopPetSessionTarget = Pick<DesktopTask, 'agent' | 'path'>
 
 async function installLiveTailListeners() {
   const appendUnlisten = await listen<{ path: string; messages: Msg[] }>(
@@ -3807,8 +3798,20 @@ async function installTerminalTurnListeners() {
   liveUnlisteners.push(turnUnlisten, desktopPetUnlisten)
 }
 
-async function openDesktopPetSession(target: DesktopPetSessionTarget) {
-  if (!['claude', 'codex', 'agy'].includes(target.agent) || !target.path) return
+function prepareDesktopPetAgent(targetAgent: Agent) {
+  if (agent.value === targetAgent) return
+  rememberActiveNav()
+  lastDirByAgent.set(agent.value, activeDir.value)
+  agent.value = targetAgent
+  activeDir.value = null
+  projects.value = []
+  sessions.value = []
+  sessionTotal.value = 0
+  setActiveViewTab(null)
+  void loadProjects()
+}
+
+function closeDesktopPetNavigationOverlays() {
   setActiveTui(null)
   closeAllSideChats()
   closeAllCodexSideChats()
@@ -3818,95 +3821,109 @@ async function openDesktopPetSession(target: DesktopPetSessionTarget) {
   showExportHistory.value = false
   showPricing.value = false
   sessionStatsTarget.value = null
+}
+
+async function openDesktopPetSession(target: DesktopPetSessionTarget) {
+  if (!['claude', 'codex', 'agy'].includes(target.agent) || !target.path) return
 
   const existingTui = tuiTabs.value.find(
     (tab) =>
-      !tab.isShell &&
-      tab.agent === target.agent &&
-      sessionPathsEqual(tab.sessionPath, target.path),
+      !tab.isShell
+      && tab.agent === target.agent
+      && sessionPathsEqual(tab.sessionPath, target.path),
   )
   const existingSavedTui = savedTabs.value.find(
     (tab) =>
-      !tab.isShell &&
-      tab.agent === target.agent &&
-      sessionPathsEqual(tab.sessionPath, target.path),
+      !tab.isShell
+      && tab.agent === target.agent
+      && sessionPathsEqual(tab.sessionPath, target.path),
   )
-  const existing = findViewTab(
+  const existingView = findViewTab(
     (tab) =>
-      tab.type === 'session' &&
-      tab.agent === target.agent &&
-      normPath(tab.session?.path ?? '') === normPath(target.path),
+      tab.type === 'session'
+      && tab.agent === target.agent
+      && sessionPathsEqual(tab.session?.path ?? '', target.path),
   )
 
-  if (agent.value !== target.agent) {
-    rememberActiveNav()
-    lastDirByAgent.set(agent.value, activeDir.value)
-    agent.value = target.agent
-    projects.value = []
-    void loadProjects()
+  let resolved: DesktopPetResolvedSession | null = null
+  let projectKey = existingTui?.projectKey
+    || existingSavedTui?.projectKey
+    || existingView?.projectKey
+    || ''
+  if (!projectKey || (!existingTui && !existingSavedTui && !existingView)) {
+    try {
+      resolved = await resolveDesktopPetSession(target)
+    } catch (error) {
+      notify(t('toast.readFail', { e: String(error) }), true)
+      return
+    }
+    if (!resolved) {
+      notify(t('desktopPet.activity.sessionMissing'), true)
+      return
+    }
+    projectKey = resolved.projectKey
   }
-  activeDir.value = existingTui?.projectKey || existingSavedTui?.projectKey || existing?.projectKey || null
-  sessions.value = []
-  sessionTotal.value = 0
+  if (existingView && resolved) {
+    existingView.projectKey = resolved.projectKey
+    existingView.session = resolved.session
+    existingView.title = resolved.session.title
+  }
 
+  prepareDesktopPetAgent(target.agent)
+  closeDesktopPetNavigationOverlays()
+  if (activeDir.value !== projectKey) await selectProject(projectKey)
+
+  let opened = false
   if (existingTui) {
     setActiveTui(existingTui.uiId)
-    return
-  }
-
-  if (existingSavedTui && await hydrateSavedTabOnce(existingSavedTui)) return
-
-  if (existing) {
-    existing.loadingMsgs = true
-    setActiveViewTab(existing.uiId)
+    opened = true
+  } else if (existingSavedTui) {
+    opened = await hydrateSavedTabOnce(existingSavedTui)
+  } else if (existingView) {
+    existingView.loadingMsgs = true
+    setActiveViewTab(existingView.uiId)
     try {
-      existing.msgs = await api.readSession(target.agent, target.path)
+      existingView.msgs = await api.readSession(target.agent, target.path)
       await api.watchSession(target.agent, target.path).catch(() => {})
+      opened = true
     } catch (error) {
       notify(t('toast.readFail', { e: String(error) }), true)
     } finally {
-      existing.loadingMsgs = false
+      existingView.loadingMsgs = false
     }
-    return
+  } else if (resolved) {
+    const tab = createViewTab({
+      type: 'session',
+      agent: target.agent,
+      projectKey: resolved.projectKey,
+      title: resolved.session.title,
+      session: resolved.session,
+      loadingMsgs: true,
+    })
+    await nextTick()
+    try {
+      tab.msgs = await api.readSession(target.agent, target.path)
+      await api.watchSession(target.agent, target.path).catch(() => {})
+      opened = true
+      recordView({
+        agent: target.agent,
+        dir: resolved.projectKey,
+        session: resolved.session,
+        mode: 'read',
+      })
+    } catch (error) {
+      notify(t('toast.readFail', { e: String(error) }), true)
+      removeViewTab(tab.uiId)
+    } finally {
+      tab.loadingMsgs = false
+    }
   }
 
-  const title = target.title || shortName(target.path).replace(/\.(jsonl|json)$/i, '')
-  const session: SessionMeta = {
-    id: title,
-    fileName: shortName(target.path),
-    path: target.path,
-    title,
-    modified: Date.now(),
-    size: 0,
-    messageCount: 0,
-    codexAppListScanned: 0,
-    codexAppFirstPageSize: 0,
-    codexAppFirstPagePosition: 0,
-    codexInternal: false,
-    codexArchived: false,
+  if (opened) {
+    await acknowledgeDesktopPetTask(target).catch((error) => {
+      console.warn('[desktop-pet] failed to acknowledge activity:', error)
+    })
   }
-  const tab = createViewTab({
-    type: 'session',
-    agent: target.agent,
-    projectKey: '',
-    title,
-    session,
-    loadingMsgs: true,
-  })
-  try {
-    tab.msgs = await api.readSession(target.agent, target.path)
-    await api.watchSession(target.agent, target.path).catch(() => {})
-  } catch (error) {
-    notify(t('toast.readFail', { e: String(error) }), true)
-    removeViewTab(tab.uiId)
-  } finally {
-    tab.loadingMsgs = false
-  }
-}
-
-async function restoreDesktopPet() {
-  await refreshTurnHookStatus()
-  await syncDesktopPetWithHooks(turnHookStatus.value?.enabled ?? false)
 }
 
 onMounted(() => {
@@ -3914,7 +3931,8 @@ onMounted(() => {
   installBeforeQuitSave()
   installLiveTailListeners()
   installTerminalTurnListeners()
-  void restoreDesktopPet().catch((error) => {
+  void refreshTurnHookStatus()
+  void restoreDesktopPetWindow().catch((error) => {
     console.warn('[desktop-pet] failed to restore window:', error)
   })
 })

@@ -10,7 +10,10 @@ const { appVersionMock, checkAppUpdateMock, emitToMock, installTurnHooksMock, op
   tauriInvokeMock: vi.fn(),
   turnHookStatusMock: vi.fn(),
 }))
-vi.mock('@tauri-apps/api/core', () => ({ invoke: tauriInvokeMock }))
+vi.mock('@tauri-apps/api/core', () => ({
+  convertFileSrc: (path: string) => `asset://${path}`,
+  invoke: tauriInvokeMock,
+}))
 vi.mock('@tauri-apps/api/event', () => ({ emitTo: emitToMock }))
 vi.mock('../../src/api', () => ({
   appVersion: appVersionMock,
@@ -32,11 +35,49 @@ import {
   turnHookStatusLoading,
 } from '../../src/turnHookStatus'
 import {
+  desktopPetCatalog,
+  desktopPetCatalogError,
   desktopPetCharacter,
   desktopPetEnabled,
+  desktopPetSize,
   setDesktopPetCharacter,
   setDesktopPetEnabled,
+  setDesktopPetSize,
 } from '../../src/desktopPet'
+
+const petCatalog = {
+  pets: [
+    {
+      key: 'codex:codex',
+      id: 'codex',
+      displayName: 'Codex',
+      description: 'The original Codex companion.',
+      spriteVersionNumber: 2,
+      spritesheetPath: 'C:/pets/codex.webp',
+      source: 'codex',
+    },
+    {
+      key: 'codex:bsod',
+      id: 'bsod',
+      displayName: 'BSOD',
+      description: 'A tiny blue-screen gremlin.',
+      spriteVersionNumber: 2,
+      spritesheetPath: 'C:/pets/bsod.webp',
+      source: 'codex',
+    },
+    {
+      key: 'custom:pixel',
+      id: 'pixel',
+      displayName: 'Pixel',
+      description: 'A custom companion.',
+      spriteVersionNumber: 2,
+      spritesheetPath: 'C:/Users/test/.codex/pets/pixel/spritesheet.webp',
+      source: 'custom',
+    },
+  ],
+  customDirectory: 'C:/Users/test/.codex/pets',
+  codexInstalled: true,
+}
 
 const fullHookStatus = {
   enabled: true,
@@ -100,14 +141,20 @@ beforeEach(() => {
   checkAppUpdateMock.mockReset()
   installTurnHooksMock.mockReset().mockResolvedValue({})
   openPathExternalMock.mockReset().mockResolvedValue(undefined)
-  tauriInvokeMock.mockReset().mockResolvedValue(undefined)
+  tauriInvokeMock.mockReset().mockImplementation((command: string) => {
+    if (command === 'desktop_pet_catalog') return Promise.resolve(petCatalog)
+    return Promise.resolve(undefined)
+  })
   emitToMock.mockReset().mockResolvedValue(undefined)
   turnHookStatusMock.mockReset().mockResolvedValue(fullHookStatus)
   turnHookStatus.value = null
   turnHookStatusLoading.value = false
   turnHookStatusError.value = ''
   setDesktopPetEnabled(false)
-  setDesktopPetCharacter('momo')
+  setDesktopPetCharacter('codex:codex')
+  setDesktopPetSize(112)
+  desktopPetCatalog.value = null
+  desktopPetCatalogError.value = ''
 })
 afterEach(() => {
   setLang('en')
@@ -219,7 +266,7 @@ describe('SettingsModal', () => {
     expect(wrapper.find('.set-hooks-enable').attributes('disabled')).toBeDefined()
   })
 
-  it('disables desktop pet enablement until all tracking hooks are installed', () => {
+  it('keeps desktop pet enablement independent of tracking hooks', async () => {
     turnHookStatus.value = {
       ...fullHookStatus,
       enabled: false,
@@ -227,11 +274,14 @@ describe('SettingsModal', () => {
     }
     const wrapper = factory({ initialTab: 'pet' })
 
-    expect(wrapper.get('.set-desktop-pet-toggle').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('Enable session status tracking in Hooks')
+    expect(wrapper.get('.set-desktop-pet-toggle').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('Enable session status tracking in Hooks')
+    await wrapper.get('.set-desktop-pet-toggle').trigger('click')
+    await flushPromises()
+    expect(tauriInvokeMock).toHaveBeenCalledWith('set_desktop_pet_enabled', { enabled: true })
   })
 
-  it('opens the desktop pet and switches its character when hooks are ready', async () => {
+  it('opens the desktop pet and synchronizes character and size choices', async () => {
     turnHookStatus.value = fullHookStatus
     const wrapper = factory({ initialTab: 'pet' })
 
@@ -242,12 +292,39 @@ describe('SettingsModal', () => {
 
     await wrapper.findAll('.set-desktop-pet-character')[1].trigger('click')
     await flushPromises()
-    expect(desktopPetCharacter.value).toBe('lumi')
+    expect(desktopPetCharacter.value).toBe('codex:bsod')
     expect(emitToMock).toHaveBeenCalledWith(
       'desktop-pet',
-      'desktop-pet://character',
-      { character: 'lumi' },
+      'desktop-pet://preferences',
+      { character: 'codex:bsod', size: 112 },
     )
+
+    await wrapper.get('.set-desktop-pet-size input').setValue('176')
+    await flushPromises()
+    expect(desktopPetSize.value).toBe(176)
+    expect(emitToMock).toHaveBeenLastCalledWith(
+      'desktop-pet',
+      'desktop-pet://preferences',
+      { character: 'codex:bsod', size: 176 },
+    )
+  })
+
+  it('refreshes the sprite catalog and opens the custom pet directory', async () => {
+    turnHookStatus.value = fullHookStatus
+    const wrapper = factory({ initialTab: 'pet' })
+    await flushPromises()
+
+    expect(wrapper.findAll('.set-desktop-pet-character')).toHaveLength(3)
+    expect(wrapper.text()).toContain('Codex Desktop pets')
+    expect(wrapper.text()).toContain('Custom pets')
+
+    await wrapper.find('.set-desktop-pet-choice-head .set-desktop-pet-tool').trigger('click')
+    await flushPromises()
+    expect(tauriInvokeMock).toHaveBeenCalledWith('desktop_pet_catalog')
+
+    await wrapper.find('.set-desktop-pet-group-head.custom .set-desktop-pet-tool').trigger('click')
+    await flushPromises()
+    expect(openPathExternalMock).toHaveBeenCalledWith('C:/Users/test/.codex/pets')
   })
 
   it('reports when an update is available', async () => {

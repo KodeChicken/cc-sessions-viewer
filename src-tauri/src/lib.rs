@@ -18,6 +18,7 @@ pub mod agents;
 mod bookmarks;
 mod claude_config;
 mod cli_env;
+mod desktop_pet_assets;
 mod git;
 #[cfg(target_os = "macos")]
 mod menu;
@@ -287,7 +288,30 @@ fn desktop_pet_tasks() -> Result<Vec<turn::DesktopTask>, String> {
 struct DesktopPetSessionTarget {
     agent: String,
     path: String,
-    title: String,
+}
+
+#[tauri::command]
+fn acknowledge_desktop_pet_task(
+    app: tauri::AppHandle,
+    agent: String,
+    path: String,
+) -> Result<(), String> {
+    if turn::acknowledge_desktop_task_by_path(&agent, &path)? {
+        app.emit(
+            "desktop-pet://activity-acknowledged",
+            DesktopPetSessionTarget { agent, path },
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn resolve_desktop_pet_session(
+    agent: String,
+    path: String,
+) -> Result<Option<turn::DesktopPetResolvedSession>, String> {
+    turn::resolve_desktop_pet_session(&agent, &path)
 }
 
 fn position_desktop_pet(window: &tauri::WebviewWindow) -> Result<(), String> {
@@ -330,8 +354,8 @@ async fn set_desktop_pet_enabled(app: tauri::AppHandle, enabled: bool) -> Result
         "desktop-pet",
         tauri::WebviewUrl::App("index.html?desktop-pet=1".into()),
     )
-    .title("Session Pet")
-    .inner_size(380.0, 230.0)
+    .title("Codex Pet")
+    .inner_size(356.0, 320.0)
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
@@ -340,9 +364,21 @@ async fn set_desktop_pet_enabled(app: tauri::AppHandle, enabled: bool) -> Result
     .always_on_top(true)
     .skip_taskbar(true)
     .shadow(false)
+    .visible(false)
     .build()
     .map_err(|error| error.to_string())?;
-    position_desktop_pet(&window)
+    position_desktop_pet(&window)?;
+    window.show().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn focus_desktop_pet_main(app: tauri::AppHandle) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window is unavailable".to_string())?;
+    main.show().map_err(|error| error.to_string())?;
+    main.unminimize().map_err(|error| error.to_string())?;
+    main.set_focus().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -350,7 +386,6 @@ fn open_desktop_pet_session(
     app: tauri::AppHandle,
     agent: String,
     path: String,
-    title: String,
 ) -> Result<(), String> {
     let main = app
         .get_webview_window("main")
@@ -360,7 +395,7 @@ fn open_desktop_pet_session(
     main.set_focus().map_err(|error| error.to_string())?;
     main.emit(
         "desktop-pet://open-session",
-        DesktopPetSessionTarget { agent, path, title },
+        DesktopPetSessionTarget { agent, path },
     )
     .map_err(|error| error.to_string())
 }
@@ -2202,7 +2237,11 @@ pub fn run() {
             install_turn_hooks,
             turn_hook_status,
             desktop_pet_tasks,
+            acknowledge_desktop_pet_task,
+            resolve_desktop_pet_session,
+            desktop_pet_assets::desktop_pet_catalog,
             set_desktop_pet_enabled,
+            focus_desktop_pet_main,
             open_desktop_pet_session,
             claude_runtime_info,
             codex_runtime_info,

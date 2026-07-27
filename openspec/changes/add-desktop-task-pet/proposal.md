@@ -1,31 +1,27 @@
 ## Why
 
-Users currently need to keep the main Session Viewer window visible to know whether agent tasks are running, waiting for approval, completed, or failed. A lightweight anime-style desktop pet can surface those states at a glance and provide a direct path back to the relevant session without turning status monitoring into another full application window.
+The current desktop-pet implementation grew around Session Viewer task counters, Hook prerequisites, custom notices, and bespoke animations. That is not the requested product. The desktop pet should instead match the locally installed Codex Desktop avatar overlay and its interaction model.
 
 ## What Changes
 
-- Add an optional transparent, frameless, always-on-top desktop pet window that can be dragged and kept visible independently of the main window.
-- Keep the pet compact at rest, show persistent notices for completed, waiting-for-approval, and failed tasks, then reveal counts and full task details when the user hovers or focuses it.
-- Animate the pet when a new completed Hook event arrives; let users click a task or persistent notice to navigate to that Session Viewer session.
-- Add three original anime-style pet appearances and allow switching the active pet from Settings.
-- Add a dedicated desktop-pet section in Settings, separate from Hooks. Its switch is disabled until all Session Viewer session-status Hooks are installed.
-- Preserve the desktop pet preference and selected appearance across application restarts.
-- Keep task state bounded to one latest record per session; a new started event replaces that session's previous completed, failed, or approval-waiting state.
+- Remove the existing task-count cards, bespoke notices, and custom character animations, while reusing the existing tab-status Hook pipeline for Codex-style pet activity states and navigation.
+- Rebuild the pet as a transparent, frameless, always-on-top Codex-style avatar overlay with the same sprite-atlas playback, hover response, 16-direction pointer look, drag-running feedback, release-point positioning, sizing, and wake/tuck behavior.
+- Discover the locally installed Codex pet assets at runtime without bundling them, and support Codex-compatible custom packages in `~/.codex/pets` through `pet.json`.
+- Match the Codex Settings controls for enabling the overlay, selecting and refreshing pets, opening the custom-pet directory, and choosing the avatar size.
+- Keep avatar availability independent of Session Viewer Hooks, while showing Hook-backed activity when status tracking is installed.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `desktop-task-pet`: Desktop pet window lifecycle, latest-per-session task aggregation, status hover lists, session navigation, Hook-gated settings, and switchable pet appearances.
+- `desktop-task-pet`: A Codex-compatible desktop avatar overlay, sprite package catalog, animation state machine, pointer interaction, direct dragging, and Settings controls.
 
 ### Modified Capabilities
 
-None. The repository has no existing OpenSpec capability specifications for this behavior.
+None.
 
 ## Impact
 
-- Tauri window configuration and Rust application state for pet-window lifecycle and Hook-derived task snapshots.
-- Turn Hook event handling and application events used to synchronize the main and pet windows.
-- Main-window session navigation so an external pet-window action can focus a session by agent and session path.
-- Settings persistence, Settings UI, localization, and frontend routing for a dedicated pet-window entry point.
-- New project-owned transparent assets for three pet appearances plus component, state, Rust, and integration tests.
+- Tauri desktop-pet window lifecycle, positioning, and asset catalog commands.
+- The lightweight desktop-pet Vue root, atlas player, preferences, Settings UI, localization, and focused tests.
+- Existing Hook-based tab status remains the single task-state source shared by tabs and the desktop pet.

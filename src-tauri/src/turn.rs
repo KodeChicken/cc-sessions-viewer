@@ -31,6 +31,13 @@ pub struct DesktopTask {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DesktopPetResolvedSession {
+    pub project_key: String,
+    pub session: crate::types::SessionMeta,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TurnHookInstallResult {
     pub claude_settings_path: String,
     pub codex_hooks_path: String,
@@ -169,6 +176,23 @@ fn upsert_desktop_task(
     );
 }
 
+fn acknowledge_desktop_task(
+    tasks: &mut HashMap<String, DesktopTask>,
+    agent: &str,
+    path: &str,
+) -> bool {
+    let key = desktop_task_key(agent, path);
+    if tasks
+        .get(&key)
+        .is_some_and(|task| matches!(task.state.as_str(), "completed" | "failed"))
+    {
+        tasks.remove(&key);
+        true
+    } else {
+        false
+    }
+}
+
 pub fn desktop_task_snapshot() -> Result<Vec<DesktopTask>, String> {
     let mut snapshot = desktop_tasks()
         .lock()
@@ -176,8 +200,41 @@ pub fn desktop_task_snapshot() -> Result<Vec<DesktopTask>, String> {
         .values()
         .cloned()
         .collect::<Vec<_>>();
+    for task in &mut snapshot {
+        task.title = task_title(&task.agent, &task.path);
+    }
     snapshot.sort_by_key(|task| std::cmp::Reverse(task.updated_at));
     Ok(snapshot)
+}
+
+pub fn acknowledge_desktop_task_by_path(agent: &str, path: &str) -> Result<bool, String> {
+    let mut tasks = desktop_tasks().lock().map_err(|error| error.to_string())?;
+    Ok(acknowledge_desktop_task(&mut tasks, agent, path))
+}
+
+pub fn resolve_desktop_pet_session(
+    agent: &str,
+    path: &str,
+) -> Result<Option<DesktopPetResolvedSession>, String> {
+    let source = crate::agents::source(agent)?;
+    let expected = normalized_session_path(path);
+    for project in source.list_projects(true, true)? {
+        let page = match source.list_sessions(&project.dir_name, 0, usize::MAX, true, true) {
+            Ok(page) => page,
+            Err(_) => continue,
+        };
+        if let Some(session) = page
+            .sessions
+            .into_iter()
+            .find(|session| normalized_session_path(&session.path) == expected)
+        {
+            return Ok(Some(DesktopPetResolvedSession {
+                project_key: project.dir_name,
+                session,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 fn data_dir() -> Result<PathBuf, String> {
@@ -809,7 +866,44 @@ mod tests {
         let task = tasks.values().next().unwrap();
         assert_eq!(task.state, "started");
         assert_eq!(task.updated_at, 20);
-        assert_eq!(task.title, "session-1");
+    }
+
+    #[test]
+    fn desktop_task_acknowledgement_only_removes_terminal_activity() {
+        let mut tasks = HashMap::new();
+        upsert_desktop_task(
+            &mut tasks,
+            &payload("claude", "/tmp/approval.jsonl", "blocked"),
+            10,
+        );
+        upsert_desktop_task(
+            &mut tasks,
+            &payload("codex", "/tmp/ready.jsonl", "completed"),
+            20,
+        );
+        upsert_desktop_task(
+            &mut tasks,
+            &payload("agy", "/tmp/failed.json", "failed"),
+            30,
+        );
+
+        assert!(!acknowledge_desktop_task(
+            &mut tasks,
+            "claude",
+            "/tmp/approval.jsonl"
+        ));
+        assert!(acknowledge_desktop_task(
+            &mut tasks,
+            "codex",
+            "/tmp/ready.jsonl"
+        ));
+        assert!(acknowledge_desktop_task(
+            &mut tasks,
+            "agy",
+            "/tmp/failed.json"
+        ));
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks.values().next().unwrap().state, "blocked");
     }
 
     #[test]
@@ -827,8 +921,6 @@ mod tests {
         );
 
         assert_eq!(tasks.len(), 2);
-        assert!(tasks.values().any(|task| task.state == "blocked"));
-        assert!(tasks.values().any(|task| task.state == "failed"));
     }
 
     #[test]
@@ -840,7 +932,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            r#"{"type":"event_msg","payload":{"type":"user_message","message":"杨坤唱的答案 歌词是啥"}}
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"实现宠物任务状态"}}
 "#,
         )
         .unwrap();
@@ -851,7 +943,7 @@ mod tests {
             10,
         );
 
-        assert_eq!(tasks.values().next().unwrap().title, "杨坤唱的答案 歌词是啥");
+        assert_eq!(tasks.values().next().unwrap().title, "实现宠物任务状态");
         std::fs::remove_file(path).unwrap();
     }
 
