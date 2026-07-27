@@ -1,91 +1,71 @@
 ## Context
 
-Session state already enters the application through Claude Code, Codex, and Antigravity Hook adapters. Rust validates those signals and emits `terminal-turn://state`, while the main Vue window consumes the event for tab status. Users currently have to keep that main window visible.
-
-This change crosses the Hook signal pipeline, Tauri window lifecycle, Vue settings, and session navigation. It must preserve the existing Hook-based status behavior and the user's unrelated worktree changes. The desktop pet is optional and is available only when all session-status Hooks are installed.
+The repository contains a Hook-based tab-status pipeline and a rebuilt Codex-style avatar overlay. The locally installed Codex Desktop application provides the requested interaction reference: a transparent avatar overlay rendered from a fixed 8-column sprite atlas, with authored state rows, global pointer look, hover jumping, drag-running feedback, persistent size and position, a custom-pet catalog, and cross-chat activity states. The release behavior intentionally stops at the pointer instead of coasting.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Maintain one current task state per agent session from validated Hook signals.
-- Present those states in a small draggable, transparent, always-on-top pet window.
-- Keep the idle presentation to the character alone, reveal progress details on hover or focus, and navigate directly to a session.
-- Briefly animate the character when a new completed Hook event arrives.
-- Persist the enabled preference and one of three selectable original pet appearances.
-- Keep the feature unavailable when session-status Hooks are incomplete.
+- Match Codex Desktop's avatar overlay behavior and fixed sprite package contract.
+- Remove all prior Session Viewer-specific pet UI and its Hook dependency.
+- Keep Codex-owned artwork runtime-local and use the installed application as the source.
+- Support Codex-compatible custom pets and the same essential Settings operations.
+- Reuse the existing Hook status source to provide Codex-style Running, Needs input, Ready, and Blocked activity without restoring the legacy pet dashboard.
 
 **Non-Goals:**
 
-- Persisting or reporting task history across application restarts.
-- Replacing the main Session Viewer, terminal tabs, or existing Hook installer.
-- Adding another file watcher or restoring JSONL session parsing.
-- Supporting arbitrary user-supplied pet packages or animations.
+- Retaining legacy task counters, large task panels, bespoke notices, or custom SVG/CSS gestures.
+- Changing the existing Hook-based tab status system.
+- Supporting arbitrary sprite layouts or animation editors.
+- Shipping Codex-owned artwork inside this repository or installer.
 
 ## Decisions
 
-### Keep the latest state in a Rust process-level repository
+### Keep the rebuilt pet root and add only Codex activity interaction
 
-After `emit_turn_signal` validates a Hook payload, Rust stores a compact task snapshot in a mutex-protected map keyed by normalized `agent + session path`, then broadcasts the existing event. A new `started` signal overwrites any previous completed, failed, or blocked state for that session. Completed, failed, and blocked states remain visible for the rest of the application run until another signal for that session arrives.
+`DesktopPet.vue` remains the lightweight avatar overlay. It consumes a shared Hook activity snapshot and realtime updates, exposes a compact Codex-style activity tray, and navigates by exact agent plus session path. It does not restore legacy counters, cards, or bespoke notices.
 
-This makes the Rust Hook intake the single source of truth shared by both windows and avoids duplicate aggregation logic. Disk persistence was considered but rejected because it would turn a current-state widget into an unbounded or stale history view.
+### Use one central activity state for tabs and the pet
 
-### Create and destroy a dedicated Tauri window from Rust
+The Rust turn pipeline keeps the latest state for each normalized agent and session path before broadcasting `terminal-turn://state`. Both the main tab UI and the separate pet webview consume this source. The pet requests a snapshot when it mounts so window creation after a Hook event does not lose activity.
 
-The backend exposes a command that creates a single `desktop-pet` window on enable and closes it on disable. The window loads `index.html?desktop-pet=1`, is transparent, frameless, always on top, skipped from the taskbar, non-resizable, and initially placed near the bottom-right of the primary monitor. Repeated enable calls reuse and focus the existing window.
+Hook states map to Codex semantics as `started` to Running, `blocked` to Needs input, `completed` to Ready, and `failed` to Blocked. Aggregate priority is Needs input, Blocked, Ready, then Running. Ready and Blocked remain unread until their session opens successfully; Needs input remains until a later Hook state replaces it.
 
-Rust-owned lifecycle avoids requiring broad window-creation permissions in the webview. A statically configured always-created window was rejected because disabled users would still pay its startup cost and could see a flash.
+### Use the Codex fixed atlas contract
 
-### Use a separate lightweight Vue root
+The atlas has eight columns of 192-by-208 cells. Version 1 packages contain nine rows (1536 by 1872); version 2 packages contain eleven rows (1536 by 2288) and add two rows containing 16 pointer-look frames. PNG and WebP files are accepted. `pet.json` supports optional `id`, `displayName`, and `description`, defaults `spriteVersionNumber` to 1, and defaults `spritesheetPath` to `spritesheet.webp`.
 
-`src/main.ts` chooses `DesktopPet.vue` when the pet query parameter is present and otherwise loads the existing application. The pet root fetches the current snapshot once and then listens to the existing turn-state event for refreshes. At rest it renders only the character. Hover or keyboard focus reveals one compact progress panel containing the four counts and current task list.
+Animation rows and timings match Codex: idle, running-right, running-left, waving, jumping, failed, waiting, running, and review. Idle frames play at six times their authored durations. A non-idle animation plays three cycles and then falls back to slow idle. Reduced-motion mode renders a stable first frame.
 
-The initial snapshot never triggers a completion animation. Terminal-state notices are derived from the current snapshot, so completed, approval-waiting, and failed notices remain visible across frontend refreshes for the lifetime of the Rust process. Only a new real-time `completed` event starts the short character celebration.
+### Match pointer, hover, and drag interaction
 
-Running tasks alternate the character's hands over an enlarged laptop while two low-opacity, blurred SVG trapezoids spread outward from the screen toward the lower face; the laptop shell itself has no neon outline and no circular face overlay. Approval-waiting tasks raise one hand, failed tasks animate the head, ears, and laptop screen, and new completions raise both hands while swapping to a happy mouth. These part animations can coexist for different current states, except the short completion celebration temporarily owns both hands and the expression.
+The avatar uses global cursor coordinates and 16 sectors of 22.5 degrees with a one-pixel center dead zone. Look frames apply only to idle, running, and waving states on version 2 sheets. Pointer enter plays jumping; pointer leave restores the base state.
 
-Compact notices use the latest task in each terminal state and sit beside the character while the full task panel is closed. The full panel temporarily replaces those notices on hover or focus, avoiding overlap inside the fixed pet window without discarding notice state.
+A left-button gesture becomes a drag after four pixels. Horizontal deltas select the running-right or running-left row. Releasing the button places the window at the release point, persists that position, and performs no post-release movement.
 
-Loading the full main application in the pet window was rejected because it would duplicate session loading, settings initialization, and listeners.
+### Keep window availability independent of Hooks
 
-### Persist only user preferences in frontend storage
+The window remains singleton, transparent, frameless, always on top, taskbar-hidden, and non-resizable. Its reference size is 356 by 320, with an avatar display size from 80 to 224 pixels and a default of 112 by 121. Enabled state, selected pet, avatar size, and last window position are restored without consulting Hook installation status. Without Hooks the avatar stays usable but has no external CLI activity to display.
 
-The enabled flag and selected character are stored with versioned local-storage keys alongside existing frontend preferences. On main-window startup, the application first resolves Hook installation status and then asks Rust to show the pet only when both the preference and complete Hook installation are true. If Hooks later become incomplete, the feature is disabled and the stored enabled flag is cleared.
+### Use runtime-local Codex assets and compatible custom packages
 
-No new persistence dependency is required. Character changes are broadcast to an already-open pet window so selection updates immediately.
-
-Desktop-pet controls live in their own Settings navigation section. The Hooks section remains responsible only for Hook installation status and Hook configuration files; the pet section reads that status solely as an enablement prerequisite.
-
-### Navigate through an explicit main-window event
-
-Clicking a task calls a Rust command that shows and focuses the main window and emits `desktop-pet://open-session` only to `main`. The main app handles the event by first activating or restoring an existing terminal tab for the same agent/path, then falling back to an existing Session Viewer tab, and only creating a new Session Viewer tab when neither exists. Task labels use the agent's normal human-readable session-title parser rather than the transcript filename.
-
-After completed-task navigation succeeds, the pet records the exact `agent + path + updatedAt` event as dismissed and filters it from later snapshots. Including the update timestamp allows a later completion from the same session to appear normally.
-
-This preserves the main window as the owner of navigation state. Directly manipulating main-window frontend state from the pet webview was rejected because Vue state is isolated per webview.
-
-### Use three project-owned transparent vector characters
-
-The project ships three original compact SVG character cutouts: a peach fox, a star cat, and a cloud dragon. Each SVG exposes only the existing movable character parts (head, ears, eyes, tail, paws, or wings) for CSS animation. Hover and completion responses animate those parts while the outer character stage stays fixed, avoiding sticker-like whole-image motion. SVG keeps the silhouette crisp at desktop-widget size, avoids background-removal artifacts, and embeds no text.
+The backend discovers valid pet atlases from the installed Codex Desktop application and exposes them in the same catalog as `~/.codex/pets/<folder>/pet.json`. Runtime imports are copied only into application data. Catalog refresh and open-directory actions do not modify custom packages.
 
 ## Risks / Trade-offs
 
-- [Hook events can arrive concurrently] → Serialize map updates behind a mutex and expose cloned snapshots only.
-- [A stale enabled preference can survive Hook removal] → Recheck Hook completeness on startup and after Hook settings refresh; close and disable the pet when incomplete.
-- [Transparent windows differ by platform/compositor] → Keep the window rectangular for interaction, disable shadow/decorations, and validate in the real Windows Tauri client.
-- [Hover panels can extend outside the small window] → Reserve panel space inside the fixed pet window instead of spawning another window.
-- [Completed and failed counts can grow during a long run] → Bound storage to one record per session; a new start replaces the prior terminal state.
-- [Dragging can conflict with progress interaction] → Keep drag initiation on character pointer-down while using ordinary hover events for the character response and progress panel; keep panel/list items interactive.
+- [Installed Codex packaging changes] -> Treat discovery as best-effort and keep custom packages usable independently.
+- [Transparent-window pointer behavior differs by platform] -> Drive movement from global cursor position and Tauri window APIs, then verify the real Windows client without changing macOS-specific behavior.
+- [High-frequency position updates are noisy] -> Update only during active drag and persist the release position.
+- [Reduced motion is enabled] -> Show stable authored frames and disable decorative animation while keeping drag positioning functional.
 
 ## Migration Plan
 
-1. Add the in-memory task repository and commands without changing the existing Hook event contract.
-2. Add the pet webview entry, settings controls, preferences, and assets behind the disabled-by-default preference.
-3. Add main-window event navigation and Hook-gated startup synchronization.
-4. Validate Rust tests, frontend tests/build, and the real Tauri client.
-
-Rollback removes the pet window commands, Vue root, settings controls, and assets. The existing Hook signal event remains unchanged, so rollback does not require data migration.
+1. Remove legacy pet task aggregation, UI, navigation, and Hook gating.
+2. Replace catalog validation and atlas playback with the Codex package and timing contracts.
+3. Add Codex pointer, hover, direct drag, size, and position behavior.
+4. Replace Settings controls and verify focused tests, builds, and the real Tauri client.
+5. Reuse the tab-status Hook pipeline for a shared activity snapshot, Codex priority, compact tray, and exact session navigation.
 
 ## Open Questions
 
-None. The state lifetime, Hook prerequisite, character set, and navigation behavior have been confirmed for this iteration.
+None. The local Codex Desktop installation is the behavioral reference for this change.

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import type { Agent } from '../types'
 import { t } from '../i18n'
 import {
@@ -78,17 +79,24 @@ import {
   turnHookStatusLoading,
 } from '../turnHookStatus'
 import {
-  DESKTOP_PET_CHARACTERS,
+  activeDesktopPet,
+  desktopPetCatalog,
+  desktopPetCatalogError,
+  desktopPetCatalogLoading,
   desktopPetCharacter,
   desktopPetEnabled,
+  desktopPetSize,
+  DESKTOP_PET_MAX_SIZE,
+  DESKTOP_PET_MIN_SIZE,
+  loadDesktopPetCatalog,
   notifyDesktopPetCharacter,
+  notifyDesktopPetSize,
   setDesktopPetEnabled,
   updateDesktopPetWindow,
   type DesktopPetCharacter,
+  type DesktopPetDefinition,
 } from '../desktopPet'
-import momoPetUrl from '../assets/desktop-pets/momo.svg'
-import lumiPetUrl from '../assets/desktop-pets/lumi.svg'
-import kumoPetUrl from '../assets/desktop-pets/kumo.svg'
+import PetAtlasPlayer from './PetAtlasPlayer.vue'
 
 type SettingsTab = 'general' | 'advanced' | 'hooks' | 'pet' | 'cli' | 'shortcuts' | 'updates'
 
@@ -218,19 +226,26 @@ const configuredHookFiles = computed(() =>
 )
 const desktopPetBusy = ref(false)
 const desktopPetError = ref('')
-const desktopPetImages: Record<DesktopPetCharacter, string> = {
-  momo: momoPetUrl,
-  lumi: lumiPetUrl,
-  kumo: kumoPetUrl,
+const codexDesktopPets = computed(() =>
+  desktopPetCatalog.value?.pets.filter((pet) => pet.source === 'codex') ?? [],
+)
+const customDesktopPets = computed(() =>
+  desktopPetCatalog.value?.pets.filter((pet) => pet.source === 'custom') ?? [],
+)
+
+const desktopPetUrl = (pet: DesktopPetDefinition) => convertFileSrc(pet.spritesheetPath)
+
+async function refreshDesktopPets() {
+  desktopPetError.value = ''
+  try {
+    await loadDesktopPetCatalog()
+  } catch (error) {
+    desktopPetError.value = t('settings.desktopPet.actionFail', { e: String(error) })
+  }
 }
-const desktopPetCharacters = DESKTOP_PET_CHARACTERS.map((id) => ({
-  id,
-  image: desktopPetImages[id],
-}))
 
 async function toggleDesktopPet() {
   const enabled = !desktopPetEnabled.value
-  if (enabled && !turnHooksEnabled.value) return
   desktopPetBusy.value = true
   desktopPetError.value = ''
   try {
@@ -243,6 +258,10 @@ async function toggleDesktopPet() {
   }
 }
 
+function onDesktopPetSizeInput(event: Event) {
+  void notifyDesktopPetSize(Number((event.target as HTMLInputElement).value))
+}
+
 async function chooseDesktopPet(character: DesktopPetCharacter) {
   desktopPetError.value = ''
   try {
@@ -251,6 +270,22 @@ async function chooseDesktopPet(character: DesktopPetCharacter) {
     desktopPetError.value = t('settings.desktopPet.actionFail', { e: String(error) })
   }
 }
+
+async function openDesktopPetDirectory() {
+  desktopPetError.value = ''
+  try {
+    const catalog = desktopPetCatalog.value ?? await loadDesktopPetCatalog()
+    await api.openPathExternal(catalog.customDirectory)
+  } catch (error) {
+    desktopPetError.value = t('settings.desktopPet.actionFail', { e: String(error) })
+  }
+}
+
+watch(activeTab, (tab) => {
+  if (tab === 'pet' && !desktopPetCatalog.value && !desktopPetCatalogLoading.value) {
+    void refreshDesktopPets()
+  }
+}, { immediate: true })
 
 async function openHookConfig(path: string) {
   hookOpenError.value = ''
@@ -890,9 +925,13 @@ async function installTurnHooks() {
           <section class="set-desktop-pet-card standalone" :class="{ enabled: desktopPetEnabled }">
             <div class="set-desktop-pet-head">
               <span class="set-desktop-pet-preview">
-                <img
-                  :src="desktopPetImages[desktopPetCharacter]"
-                  :alt="t(`desktopPet.character.${desktopPetCharacter}`)"
+                <PetAtlasPlayer
+                  v-if="activeDesktopPet"
+                  :src="desktopPetUrl(activeDesktopPet)"
+                  state="idle"
+                  :sprite-version-number="activeDesktopPet.spriteVersionNumber"
+                  :label="activeDesktopPet.displayName"
+                  paused
                 />
               </span>
               <div class="set-desktop-pet-info">
@@ -903,7 +942,7 @@ async function installTurnHooks() {
                 type="button"
                 class="set-desktop-pet-toggle"
                 :class="{ on: desktopPetEnabled }"
-                :disabled="desktopPetBusy || (!turnHooksEnabled && !desktopPetEnabled)"
+                :disabled="desktopPetBusy"
                 :aria-label="t('settings.desktopPet.enable')"
                 :aria-pressed="desktopPetEnabled"
                 @click="toggleDesktopPet"
@@ -912,28 +951,115 @@ async function installTurnHooks() {
               </button>
             </div>
 
-            <p v-if="!turnHooksEnabled" class="set-desktop-pet-requirement">
-              {{ t('settings.desktopPet.requiresHooks') }}
-            </p>
+            <div class="set-desktop-pet-size">
+              <div>
+                <strong>{{ t('settings.desktopPet.size') }}</strong>
+                <span>{{ desktopPetSize }} px</span>
+              </div>
+              <input
+                type="range"
+                :min="DESKTOP_PET_MIN_SIZE"
+                :max="DESKTOP_PET_MAX_SIZE"
+                :value="desktopPetSize"
+                :aria-label="t('settings.desktopPet.size')"
+                @input="onDesktopPetSizeInput"
+              />
+            </div>
 
-            <div class="set-desktop-pet-choice-label">{{ t('settings.desktopPet.appearance') }}</div>
-            <div class="set-desktop-pet-characters">
+            <div class="set-desktop-pet-choice-head">
+              <div class="set-desktop-pet-choice-label">{{ t('settings.desktopPet.appearance') }}</div>
               <button
-                v-for="character in desktopPetCharacters"
-                :key="character.id"
                 type="button"
-                class="set-desktop-pet-character"
-                :class="{ active: desktopPetCharacter === character.id }"
-                :aria-label="t(`desktopPet.character.${character.id}`)"
-                :aria-pressed="desktopPetCharacter === character.id"
-                @click="chooseDesktopPet(character.id)"
+                class="set-desktop-pet-tool"
+                :disabled="desktopPetCatalogLoading"
+                @click="refreshDesktopPets"
               >
-                <img :src="character.image" alt="" />
-                <span>{{ t(`desktopPet.character.${character.id}`) }}</span>
-                <IconCheck v-if="desktopPetCharacter === character.id" />
+                <IconRefresh />
+                {{ t('settings.desktopPet.refresh') }}
               </button>
             </div>
-            <p v-if="desktopPetError" class="set-desktop-pet-error">{{ desktopPetError }}</p>
+
+            <div v-if="desktopPetCatalogLoading" class="set-desktop-pet-empty">
+              {{ t('settings.desktopPet.loadingPets') }}
+            </div>
+            <div v-else class="set-desktop-pet-groups">
+              <div class="set-desktop-pet-group-head">
+                <span>{{ t('settings.desktopPet.codexPets') }}</span>
+                <span>{{ codexDesktopPets.length }}</span>
+              </div>
+              <div class="set-desktop-pet-list">
+                <button
+                  v-for="pet in codexDesktopPets"
+                  :key="pet.key"
+                  type="button"
+                  class="set-desktop-pet-character"
+                  :class="{ active: desktopPetCharacter === pet.key }"
+                  :aria-label="pet.displayName"
+                  :aria-pressed="desktopPetCharacter === pet.key"
+                  @click="chooseDesktopPet(pet.key)"
+                >
+                  <PetAtlasPlayer
+                    class="set-desktop-pet-character-art"
+                    :src="desktopPetUrl(pet)"
+                    state="idle"
+                    :sprite-version-number="pet.spriteVersionNumber"
+                    :label="pet.displayName"
+                    paused
+                  />
+                  <span class="set-desktop-pet-character-copy">
+                    <strong>{{ pet.displayName }}</strong>
+                    <small v-if="pet.description">{{ pet.description }}</small>
+                  </span>
+                  <IconCheck v-if="desktopPetCharacter === pet.key" />
+                </button>
+              </div>
+              <p v-if="!codexDesktopPets.length" class="set-desktop-pet-empty">
+                {{ t('settings.desktopPet.codexMissing') }}
+              </p>
+
+              <div class="set-desktop-pet-group-head custom">
+                <span>{{ t('settings.desktopPet.customPets') }}</span>
+                <button type="button" class="set-desktop-pet-tool" @click="openDesktopPetDirectory">
+                  <IconExternalLink />
+                  {{ t('settings.desktopPet.openDirectory') }}
+                </button>
+              </div>
+              <div class="set-desktop-pet-list">
+                <button
+                  v-for="pet in customDesktopPets"
+                  :key="pet.key"
+                  type="button"
+                  class="set-desktop-pet-character"
+                  :class="{ active: desktopPetCharacter === pet.key }"
+                  :aria-label="pet.displayName"
+                  :aria-pressed="desktopPetCharacter === pet.key"
+                  @click="chooseDesktopPet(pet.key)"
+                >
+                  <PetAtlasPlayer
+                    class="set-desktop-pet-character-art"
+                    :src="desktopPetUrl(pet)"
+                    state="idle"
+                    :sprite-version-number="pet.spriteVersionNumber"
+                    :label="pet.displayName"
+                    paused
+                  />
+                  <span class="set-desktop-pet-character-copy">
+                    <strong>{{ pet.displayName }}</strong>
+                    <small v-if="pet.description">{{ pet.description }}</small>
+                  </span>
+                  <IconCheck v-if="desktopPetCharacter === pet.key" />
+                </button>
+              </div>
+              <p v-if="!customDesktopPets.length" class="set-desktop-pet-empty custom">
+                {{ t('settings.desktopPet.customEmpty') }}
+              </p>
+              <code v-if="desktopPetCatalog?.customDirectory" class="set-desktop-pet-path">
+                {{ desktopPetCatalog.customDirectory }}
+              </code>
+            </div>
+            <p v-if="desktopPetError || desktopPetCatalogError" class="set-desktop-pet-error">
+              {{ desktopPetError || desktopPetCatalogError }}
+            </p>
           </section>
         </template>
 

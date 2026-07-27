@@ -1,135 +1,135 @@
 ## ADDED Requirements
 
-### Requirement: Latest Hook state per session
-The system SHALL maintain at most one current task record for each normalized agent and session-path pair using validated session-status Hook events received during the current application run.
+### Requirement: Independent avatar overlay window
+The system SHALL provide one optional transparent, frameless, always-on-top, taskbar-hidden desktop avatar window whose lifecycle does not depend on Session Viewer Hooks.
 
-#### Scenario: A session starts a new task
-- **WHEN** a `started` Hook event is received for a session that previously completed, failed, or waited for approval
-- **THEN** the system replaces that session's previous record with the running state
+#### Scenario: User wakes the avatar
+- **WHEN** the user enables the avatar while no avatar window exists
+- **THEN** one avatar window opens near its last saved position or the bottom-right of the active display
 
-#### Scenario: A session reaches a terminal or blocked state
-- **WHEN** a `completed`, `failed`, or `blocked` Hook event is received
-- **THEN** the system exposes the corresponding completed, failed, or waiting-for-approval state until a later event for that session arrives or the application exits
+#### Scenario: User tucks the avatar
+- **WHEN** the user disables the avatar
+- **THEN** the avatar window closes and no background avatar webview remains
 
-### Requirement: Optional desktop pet window
-The system SHALL provide a single optional transparent, frameless, always-on-top, non-resizable desktop pet window that can be dragged and does not appear as a separate taskbar application.
+#### Scenario: Hooks are unavailable
+- **WHEN** Session Viewer status Hooks are absent or disabled
+- **THEN** the avatar remains available and its enabled preference is not changed
 
-#### Scenario: User enables the desktop pet
-- **WHEN** an eligible user enables the desktop pet and no pet window exists
-- **THEN** the system creates one pet window near the bottom-right of the primary display
+### Requirement: Codex-compatible pet catalog
+The system SHALL discover runtime-local Codex pets and custom packages under `~/.codex/pets` using the Codex manifest and atlas contract.
 
-#### Scenario: Enable is requested repeatedly
-- **WHEN** the desktop pet is already open and another enable request occurs
-- **THEN** the system reuses the existing pet window without creating a duplicate
+#### Scenario: A version 1 package is scanned
+- **WHEN** a package resolves to a PNG or WebP atlas sized 1536 by 1872
+- **THEN** it is listed as a nine-row pet without pointer-look frames
 
-#### Scenario: User disables the desktop pet
-- **WHEN** the user turns off the desktop pet
-- **THEN** the system closes the pet window and preserves no background pet webview
+#### Scenario: A version 2 package is scanned
+- **WHEN** a package resolves to a PNG or WebP atlas sized 1536 by 2288
+- **THEN** it is listed as an eleven-row pet with 16 pointer-look frames
 
-### Requirement: Hook-gated enablement
-The system MUST allow desktop pet enablement only when session-status tracking Hooks are fully installed for every supported agent integration.
+#### Scenario: Optional manifest values are omitted
+- **WHEN** `pet.json` omits identity, display metadata, sprite version, or sprite path fields
+- **THEN** safe directory-derived metadata, version 1, and `spritesheet.webp` defaults are used
 
-#### Scenario: User opens desktop pet settings
-- **WHEN** the user navigates through Settings
-- **THEN** the system exposes a dedicated desktop-pet section separate from the Hooks configuration section
+#### Scenario: User manages custom pets
+- **WHEN** the user refreshes the catalog or opens the pet directory
+- **THEN** the system rescans or opens `~/.codex/pets` without restarting the application
 
-#### Scenario: Hooks are incomplete
-- **WHEN** at least one required session-status Hook is missing
-- **THEN** Settings disables the desktop pet switch and explains that session-status tracking must be enabled first
+### Requirement: Codex atlas state machine
+The avatar SHALL use the Codex row mapping, per-frame timing, repetition, and idle fallback behavior.
 
-#### Scenario: Hooks become incomplete after pet enablement
-- **WHEN** the application detects incomplete session-status Hooks while the desktop pet preference is enabled
-- **THEN** the system closes the pet window and resets the enabled preference
+#### Scenario: A transient animation plays
+- **WHEN** waving, jumping, failed, waiting, running, review, running-left, or running-right becomes active
+- **THEN** the authored row plays for three cycles and then continues with slow idle frames
 
-### Requirement: Status counts and task inspection
-The desktop pet SHALL keep the selected character compact while idle, show persistent notices for completed, waiting-for-approval, and failed records, and SHALL reveal separate counts plus current task details when the user hovers or focuses the pet.
+#### Scenario: The avatar is idle
+- **WHEN** no transient animation or look frame applies
+- **THEN** the idle row loops with every authored frame duration multiplied by six
 
-#### Scenario: User is not inspecting the pet
-- **WHEN** the pet is neither hovered nor focused
-- **THEN** no status cards or task panel remain visible, while current terminal-state notices remain beside the character
+#### Scenario: Reduced motion is preferred
+- **WHEN** the operating system requests reduced motion
+- **THEN** the avatar shows a stable authored frame instead of cycling frames
 
-#### Scenario: User inspects current progress
-- **WHEN** the user hovers or focuses the pet
-- **THEN** the character gives a visible hover response and the pet displays all four status counts and current tasks with the session's human-readable title, agent, state, and update information
+### Requirement: Pointer look and hover response
+The avatar SHALL match Codex pointer tracking and hover behavior.
 
-#### Scenario: No tasks exist in a status
-- **WHEN** no current task record matches a status
-- **THEN** that status displays a zero count without showing stale tasks from another status
+#### Scenario: Pointer direction changes around a version 2 avatar
+- **WHEN** the pointer is outside the one-pixel center dead zone and the base state supports looking
+- **THEN** one of 16 look frames is selected in 22.5-degree sectors from global cursor coordinates
 
-### Requirement: Completed task reminder
-The desktop pet SHALL briefly animate only when a new real-time completed Hook event arrives and SHALL keep a completed-task notice visible until that exact event is dismissed through successful navigation or replaced by a later state.
+#### Scenario: Pointer enters the avatar
+- **WHEN** the avatar is not being dragged and receives pointer enter
+- **THEN** it plays the jumping animation
 
-#### Scenario: A task completes while the pet is open
-- **WHEN** the pet receives a new `completed` turn-state event
-- **THEN** the character briefly raises both hands with a happy expression and displays a completion notice that can open the completed session
+#### Scenario: Pointer leaves the avatar
+- **WHEN** the pointer leaves and no drag is active
+- **THEN** it restores its base animation state
 
-#### Scenario: Initial snapshot contains completed tasks
-- **WHEN** the pet loads an initial snapshot containing completed task records
-- **THEN** the pet shows their persistent notice without replaying completion reminder animations
+### Requirement: Drag feedback and release positioning
+The avatar SHALL use Codex's drag threshold and directional running feedback, then stop at the pointer release position without coasting.
 
-#### Scenario: User opens a completed task
-- **WHEN** the completed task is opened successfully from its notice or task row
-- **THEN** the pet dismisses that exact completed event from its current list while allowing a later completion for the same session to appear
+#### Scenario: A drag begins
+- **WHEN** a left-button pointer gesture moves at least four pixels outside a `.no-drag` target
+- **THEN** the window follows the pointer and horizontal movement plays the corresponding running direction
 
-### Requirement: State-driven character gestures
-The desktop pet SHALL animate its existing character parts rather than moving the whole character image and SHALL reflect active Hook task states through recognizable gestures.
+#### Scenario: A drag is released
+- **WHEN** the user releases the left mouse button after moving the avatar
+- **THEN** the window stops at the release position, persists it, and does not move afterward
 
-#### Scenario: A task is running
-- **WHEN** at least one current task is running
-- **THEN** the character alternates its hands over the enlarged laptop keyboard while the bright screen casts a breathing, soft-edged trapezoidal light that widens upward across the character's lower face without outlining the whole laptop
+### Requirement: Avatar preferences and Settings
+The system SHALL persist enabled state, selected pet, avatar size from 80 through 224 pixels, and settled window position, and SHALL expose the matching pet selection and management controls in Settings.
 
-#### Scenario: A task needs approval
-- **WHEN** at least one current task is waiting for approval
-- **THEN** the character raises one hand to notify the user
+#### Scenario: The selected pet changes
+- **WHEN** the user selects a catalog pet while the avatar is visible
+- **THEN** the open avatar updates without recreating the window
 
-#### Scenario: A task fails
-- **WHEN** at least one current task has failed
-- **THEN** the character gives a visible failed response using its head, ears, and laptop screen
+#### Scenario: Avatar size changes
+- **WHEN** the user changes the size control
+- **THEN** the visible avatar and its pointer hit area update immediately within the supported range
 
-### Requirement: Persistent terminal-state notices
-The desktop pet SHALL keep separate actionable notices for current completed, waiting-for-approval, and failed records until their underlying state is replaced or the completed event is dismissed.
+#### Scenario: Application restarts
+- **WHEN** the avatar was enabled before shutdown
+- **THEN** it reopens with the saved pet, size, and settled position without checking Hooks
 
-#### Scenario: Multiple terminal states exist
-- **WHEN** completed, waiting-for-approval, or failed records coexist
-- **THEN** the pet displays one notice for each represented state and each notice opens the latest task in that state
+### Requirement: Legacy pet behavior is absent
+The avatar overlay SHALL NOT expose the superseded Session Viewer-specific task counters, large task panel, bespoke notices, custom SVG gestures, or Hook-gated enablement.
 
-#### Scenario: User inspects the full task panel
-- **WHEN** the hover or focus task panel is open
-- **THEN** the compact notices temporarily yield to the full panel and return when the panel closes if their states still exist
+#### Scenario: Session Hook state changes
+- **WHEN** a running, completed, approval, or failed Hook event is received
+- **THEN** the avatar uses the shared Codex-style activity state without creating the removed task UI or changing its availability
 
-#### Scenario: Whole-character motion
-- **WHEN** any idle, hover, or task-state animation is active
-- **THEN** the outer character stage remains fixed while only the relevant body parts and effects animate
+### Requirement: Shared Codex-style activity state
+The system SHALL reuse the existing tab-status Hook pipeline as the single source for pet activity, retain the latest state per agent and normalized session path, and expose a snapshot to newly created pet windows.
 
-### Requirement: Direct session navigation
-The system SHALL let the user open a listed task in the main Session Viewer window without creating duplicate tabs for the same agent and session path.
+#### Scenario: Pet opens after activity starts
+- **WHEN** a Hook state was received before the pet webview mounted
+- **THEN** the pet obtains the latest activity from the central snapshot and does not wait for another Hook event
 
-#### Scenario: User clicks an existing terminal task
-- **WHEN** the user clicks a pet task whose agent and session path match an open or saved terminal tab
-- **THEN** the system shows and focuses the main window and activates or restores that terminal tab without creating a Session Viewer tab
+#### Scenario: Multiple sessions have activity
+- **WHEN** more than one session is active
+- **THEN** the pet prioritizes Needs input, Blocked, Ready, and Running in that order and sorts equal states by most recent update
 
-#### Scenario: User clicks an existing Session Viewer task
-- **WHEN** the user clicks a pet task that is already open in a Session Viewer tab
-- **THEN** the system shows and focuses the main window and activates the existing matching tab
+### Requirement: Activity animation and tray
+The avatar SHALL map started, blocked, completed, and failed Hook states to the running, waiting, review, and failed atlas animations and SHALL expose a compact activity tray without legacy counters.
 
-#### Scenario: User clicks a task that is not open
-- **WHEN** the user clicks a pet task that has no matching open tab
-- **THEN** the system shows and focuses the main window, creates a session tab for the task's agent and path, and loads that session
+#### Scenario: Pointer interaction temporarily overrides activity
+- **WHEN** the user hovers or drags the pet while an activity animation is selected
+- **THEN** the interaction animation plays temporarily and the selected activity animation returns afterward
 
-### Requirement: Switchable original appearances
-The system SHALL include three original anime-style pet appearances and SHALL allow the user to select one from Settings.
+#### Scenario: User inspects activities
+- **WHEN** the activity tray is opened
+- **THEN** each item shows its agent, authoritative session title, and current status
 
-#### Scenario: User changes the appearance while the pet is open
-- **WHEN** the user selects another bundled appearance
-- **THEN** the open pet window updates to the selected appearance without being recreated
+### Requirement: Exact activity navigation and acknowledgement
+The system SHALL open activity by exact agent and session path, preferring an existing terminal or session tab before creating a Session Viewer tab.
 
-### Requirement: Preference persistence and startup behavior
-The system SHALL persist the desktop pet enabled preference and selected appearance across application restarts while keeping task records process-local.
+#### Scenario: User opens completed or failed activity
+- **WHEN** the target session opens successfully
+- **THEN** its Ready or Blocked activity is acknowledged and removed from the tray
 
-#### Scenario: Eligible enabled preference is restored
-- **WHEN** the application starts with the pet preference enabled and all required Hooks installed
-- **THEN** the system opens the pet using the persisted appearance
+#### Scenario: User opens an approval activity
+- **WHEN** the target session opens successfully while it still Needs input
+- **THEN** the activity remains until a later Hook state replaces it
 
-#### Scenario: Task records after restart
-- **WHEN** the application restarts before any new Hook event is received
-- **THEN** the pet displays zero current task records rather than restoring stale task states
+#### Scenario: Session navigation fails
+- **WHEN** the target session cannot be resolved or opened
+- **THEN** its activity remains visible and is not acknowledged
