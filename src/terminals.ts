@@ -52,6 +52,7 @@ import {
   shouldHandleTerminalSelectionDelete,
   type TerminalSelectionRange,
 } from './terminalSelectionDelete'
+import { installTerminalScrollbackProtection } from './terminalScrollback'
 
 export type {
   TerminalProcessState,
@@ -1294,6 +1295,7 @@ export async function openOrFocusTui(opts: OpenTuiOptions): Promise<void> {
       theme: xtermTheme(isDarkActive()),
     }),
   )
+  installTerminalScrollbackProtection(term, opts.agent, false)
   const fitAddon = markRaw(new FitAddon())
   term.loadAddon(fitAddon)
 
@@ -1519,6 +1521,7 @@ export async function openShellTab(opts: {
       theme: xtermTheme(isDarkActive()),
     }),
   )
+  installTerminalScrollbackProtection(term, opts.agent, true)
   const fitAddon = markRaw(new FitAddon())
   term.loadAddon(fitAddon)
 
