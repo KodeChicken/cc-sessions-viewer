@@ -648,7 +648,26 @@ function syncRepairCodexUserMessageColors(tab: TerminalTab) {
   repairCodexUserMessageBufferColors(tab)
 }
 
-function captureStableTerminalCursor(tab: TerminalTab, followInput = false) {
+function codexComposerEndRow(tab: TerminalTab, promptRow: number): number {
+  const buffer = tab.term.buffer.active
+  let endRow = promptRow
+
+  for (let row = promptRow + 1; row < tab.term.rows; row++) {
+    const line = buffer.getLine(buffer.viewportY + row)
+    if (!line) break
+    const text = line.translateToString(true)
+    if (text.trim() === '') continue
+    if (text.includes(' · ')) break
+    const continuation = line.isWrapped
+      || (text.startsWith('  ') && !text.trimStart().startsWith('›'))
+    if (!continuation) break
+    endRow = row
+  }
+
+  return endRow
+}
+
+export function captureStableTerminalCursor(tab: TerminalTab, followInput = false) {
   const buffer = tab.term.buffer.active
   let cursorX = buffer.cursorX
   let cursorY = buffer.cursorY
@@ -660,18 +679,32 @@ function captureStableTerminalCursor(tab: TerminalTab, followInput = false) {
     const trimmed = text.trimStart()
     if (!trimmed.startsWith('›')) continue
     const promptEnd = text.length - trimmed.length + 2
-    // Working 状态刷新会把真实光标临时挪到状态行。只有它最终回到 composer 行时
-    // 才跟随横向位置；否则保留上次输入位置，避免静态光标也跟着状态刷新跳动。
-    cursorX =
-      followInput && buffer.cursorY === row && buffer.cursorX >= promptEnd
-        ? buffer.cursorX
-        : (followInput ? tab.stableCursorX : undefined) ?? promptEnd
-    cursorY = row
+    const composerEndRow = codexComposerEndRow(tab, row)
+    const cursorInComposer = buffer.cursorY >= row
+      && buffer.cursorY <= composerEndRow
+      && (buffer.cursorY !== row || buffer.cursorX >= promptEnd)
+
+    if (followInput && cursorInComposer) {
+      cursorX = buffer.cursorX
+      cursorY = buffer.cursorY
+    } else if (
+      followInput
+      && tab.stableCursorX !== undefined
+      && tab.stableCursorRowFromBottom !== undefined
+    ) {
+      // 状态刷新会临时把真实光标挪出 composer；此时横纵坐标都保持上一次输入位置。
+      cursorX = tab.stableCursorX
+      cursorY = tab.term.rows - 1 - tab.stableCursorRowFromBottom
+    } else {
+      cursorX = promptEnd
+      cursorY = row
+    }
     break
   }
 
   tab.stableCursorX = Math.max(0, Math.min(tab.term.cols - 1, cursorX))
-  tab.stableCursorRowFromBottom = Math.max(0, tab.term.rows - 1 - cursorY)
+  const clampedCursorY = Math.max(0, Math.min(tab.term.rows - 1, cursorY))
+  tab.stableCursorRowFromBottom = tab.term.rows - 1 - clampedCursorY
 }
 
 function syncStableTerminalCursorGeometry(tab: TerminalTab) {

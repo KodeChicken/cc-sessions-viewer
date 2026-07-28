@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
+  captureStableTerminalCursor,
   codexSgrNormalizer,
   shouldBlinkTerminalCursor,
   shouldCopyWindowsTerminalSelection,
   shouldUseStableTerminalCursor,
+  type TerminalTab,
 } from '../src/terminals'
 
 // Windows：实测 codex 认不出背景、按深色主题出色 → 浅色主题下镜像前景。
@@ -200,5 +202,76 @@ describe('terminal cursor rendering', () => {
     expect(shouldUseStableTerminalCursor('claude', 'working', false, 'Win32')).toBe(false)
     expect(shouldUseStableTerminalCursor('codex', 'working', false, 'MacIntel')).toBe(false)
     expect(shouldUseStableTerminalCursor('codex', 'working', true, 'Win32')).toBe(false)
+  })
+
+  it('tracks the real cursor across wrapped and pasted composer lines', () => {
+    const lines = [
+      { text: '› [Image #1] curl command', isWrapped: false },
+      { text: 'wrapped argument', isWrapped: true },
+      { text: '  --insecure', isWrapped: false },
+      { text: 'gpt-5.6-sol · C:/workspace', isWrapped: false },
+      { text: 'working status', isWrapped: false },
+    ]
+    const buffer = {
+      cursorX: 12,
+      cursorY: 2,
+      viewportY: 0,
+      getLine: (row: number) => lines[row]
+        ? {
+            isWrapped: lines[row].isWrapped,
+            translateToString: () => lines[row].text,
+          }
+        : undefined,
+    }
+    const tab = {
+      term: {
+        buffer: { active: buffer },
+        cols: 80,
+        rows: lines.length,
+      },
+    } as unknown as TerminalTab
+
+    captureStableTerminalCursor(tab, true)
+    expect(tab.stableCursorX).toBe(12)
+    expect(tab.stableCursorRowFromBottom).toBe(2)
+
+    buffer.cursorX = 6
+    buffer.cursorY = 1
+    captureStableTerminalCursor(tab, true)
+    expect(tab.stableCursorX).toBe(6)
+    expect(tab.stableCursorRowFromBottom).toBe(3)
+  })
+
+  it('keeps the previous multi-line cursor while Codex refreshes its status row', () => {
+    const lines = [
+      { text: '› [Image #1] curl command', isWrapped: false },
+      { text: '  --insecure', isWrapped: false },
+      { text: 'gpt-5.6-sol · C:/workspace', isWrapped: false },
+      { text: 'working status', isWrapped: false },
+    ]
+    const buffer = {
+      cursorX: 20,
+      cursorY: 3,
+      viewportY: 0,
+      getLine: (row: number) => lines[row]
+        ? {
+            isWrapped: lines[row].isWrapped,
+            translateToString: () => lines[row].text,
+          }
+        : undefined,
+    }
+    const tab = {
+      term: {
+        buffer: { active: buffer },
+        cols: 80,
+        rows: lines.length,
+      },
+      stableCursorX: 11,
+      stableCursorRowFromBottom: 2,
+    } as unknown as TerminalTab
+
+    captureStableTerminalCursor(tab, true)
+    expect(tab.stableCursorX).toBe(11)
+    expect(tab.stableCursorRowFromBottom).toBe(2)
   })
 })
