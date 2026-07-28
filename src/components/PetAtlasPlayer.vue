@@ -93,9 +93,14 @@ const column = computed(() => hasLookFrame.value
   ? normalizedLookFrame.value % 8
   : animatedFrame.value.columnIndex)
 const spriteStyle = computed(() => ({
-  backgroundImage: `url(${JSON.stringify(props.src)})`,
-  backgroundPosition: `${column.value / 7 * 100}% ${row.value / (spriteRowCount.value - 1) * 100}%`,
-  backgroundSize: `800% ${spriteRowCount.value * 100}%`,
+  '--pet-atlas-image': `url(${JSON.stringify(props.src)})`,
+  '--pet-atlas-size': `800% ${spriteRowCount.value * 100}%`,
+}))
+const animatedSpriteStyle = computed(() => ({
+  backgroundPosition: `${animatedFrame.value.columnIndex / 7 * 100}% ${animatedFrame.value.rowIndex / (spriteRowCount.value - 1) * 100}%`,
+}))
+const lookSpriteStyle = computed(() => ({
+  backgroundPosition: `${normalizedLookFrame.value % 8 / 7 * 100}% ${(9 + Math.floor(normalizedLookFrame.value / 8)) / (spriteRowCount.value - 1) * 100}%`,
 }))
 
 function stopAnimation() {
@@ -129,7 +134,6 @@ watch(
   () => [
     props.src,
     props.state,
-    props.lookFrame,
     props.spriteVersionNumber,
     props.restartKey,
     props.paused,
@@ -141,6 +145,7 @@ watch(
   },
   { immediate: true },
 )
+watch(hasLookFrame, playFrame)
 
 media?.addEventListener?.('change', onReducedMotionChange)
 onBeforeUnmount(() => {
@@ -160,14 +165,59 @@ onBeforeUnmount(() => {
     :data-look-frame="hasLookFrame ? normalizedLookFrame : undefined"
     :data-sprite-version="spriteVersionNumber"
     :style="spriteStyle"
-  />
+    :class="{ 'pet-atlas-sprite--looking': hasLookFrame }"
+  >
+    <span
+      class="pet-atlas-layer pet-atlas-animation-layer"
+      aria-hidden="true"
+      :style="animatedSpriteStyle"
+    />
+    <span
+      v-if="spriteVersionNumber === 2"
+      class="pet-atlas-layer pet-atlas-look-layer"
+      aria-hidden="true"
+      :style="lookSpriteStyle"
+    />
+  </span>
 </template>
 
 <style scoped>
 .pet-atlas-sprite {
+  position: relative;
   display: block;
   aspect-ratio: 192 / 208;
+}
+
+.pet-atlas-layer {
+  position: absolute;
+  inset: 0;
+  background-image: var(--pet-atlas-image);
   background-repeat: no-repeat;
+  background-size: var(--pet-atlas-size);
   image-rendering: pixelated;
+  pointer-events: none;
+  transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.pet-atlas-animation-layer {
+  opacity: 1;
+}
+
+.pet-atlas-look-layer {
+  opacity: 0;
+}
+
+.pet-atlas-sprite--looking .pet-atlas-animation-layer {
+  opacity: 0;
+}
+
+.pet-atlas-sprite--looking .pet-atlas-look-layer {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-atlas-layer {
+    transition: none;
+  }
 }
 </style>
