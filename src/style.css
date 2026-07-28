@@ -4063,7 +4063,7 @@ body.is-tab-reordering * {
   height: var(--terminal-stable-cursor-height);
   z-index: 10;
   pointer-events: none;
-  background: var(--terminal-stable-cursor-color);
+  box-shadow: inset 0 0 0 1px var(--terminal-stable-cursor-color);
 }
 .terminal-stable-cursor.terminal-ime-composing .xterm-screen::after {
   display: none;

@@ -47,6 +47,7 @@ type DragSession = {
 }
 
 const DRAG_THRESHOLD = 4
+const GAZE_HOLD_MS = 1000
 
 const currentWindow = getCurrentWindow()
 const characterArea = ref<HTMLElement>()
@@ -54,6 +55,7 @@ const hovered = ref(false)
 const dragging = ref(false)
 const dragState = ref<'running-left' | 'running-right' | null>(null)
 const lookFrame = ref<number | null>(null)
+const gazeActive = ref(false)
 const baseState = ref<PetAnimationState>('waving')
 const tasks = ref<DesktopTask[]>([])
 const activityOpen = ref(false)
@@ -86,10 +88,10 @@ const animationState = computed<PetAnimationState>(() => {
   return activityAnimation.value ?? baseState.value
 })
 const effectiveLookFrame = computed(() => {
-  if (dragging.value || hovered.value || activeDesktopPet.value?.spriteVersionNumber !== 2) {
+  if (!gazeActive.value || dragging.value || activeDesktopPet.value?.spriteVersionNumber !== 2) {
     return null
   }
-  return ['idle', 'running', 'waving'].includes(animationState.value) ? lookFrame.value : null
+  return lookFrame.value
 })
 const avatarStyle = computed(() => ({
   width: `${desktopPetSize.value}px`,
@@ -115,6 +117,8 @@ let pendingWindowPosition: { x: number; y: number } | null = null
 let moveFrame = 0
 let cursorTimer: ReturnType<typeof setInterval> | null = null
 let wakeTimer: ReturnType<typeof setTimeout> | null = null
+let gazeTimer: ReturnType<typeof setTimeout> | null = null
+let lastCursorPosition: { x: number; y: number } | null = null
 let activityCloseTimer: ReturnType<typeof setTimeout> | null = null
 let cursorPollPending = false
 let unlisten: UnlistenFn[] = []
@@ -319,9 +323,19 @@ function updateLookDirection(deltaX: number, deltaY: number, deadZone: number) {
   lookFrame.value = (Math.round(angle / (Math.PI / 8)) + 16) % 16
 }
 
+function activateGaze() {
+  gazeActive.value = true
+  if (gazeTimer) clearTimeout(gazeTimer)
+  gazeTimer = setTimeout(() => {
+    gazeActive.value = false
+    gazeTimer = null
+  }, GAZE_HOLD_MS)
+}
+
 function updateLocalLook(event: PointerEvent) {
   const bounds = characterArea.value?.getBoundingClientRect()
   if (!bounds) return
+  if (!dragging.value) activateGaze()
   updateLookDirection(
     event.clientX - (bounds.left + bounds.width / 2),
     event.clientY - (bounds.top + bounds.height / 2),
@@ -338,6 +352,12 @@ async function pollGlobalCursor() {
       currentWindow.outerPosition(),
       currentWindow.scaleFactor(),
     ])
+    if (lastCursorPosition && (
+      pointer.x !== lastCursorPosition.x || pointer.y !== lastCursorPosition.y
+    )) {
+      activateGaze()
+    }
+    lastCursorPosition = { x: pointer.x, y: pointer.y }
     const bounds = characterArea.value.getBoundingClientRect()
     const centerX = windowPosition.x + (bounds.left + bounds.width / 2) * scaleFactor
     const centerY = windowPosition.y + (bounds.top + bounds.height / 2) * scaleFactor
@@ -387,6 +407,7 @@ onUnmounted(() => {
   cancelWindowMotion()
   if (cursorTimer) clearInterval(cursorTimer)
   if (wakeTimer) clearTimeout(wakeTimer)
+  if (gazeTimer) clearTimeout(gazeTimer)
   if (activityCloseTimer) clearTimeout(activityCloseTimer)
   window.removeEventListener('pointerup', endDrag)
   window.removeEventListener('pointercancel', cancelDrag)
