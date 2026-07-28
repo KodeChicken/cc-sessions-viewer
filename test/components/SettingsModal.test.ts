@@ -327,6 +327,25 @@ describe('SettingsModal', () => {
     expect(openPathExternalMock).toHaveBeenCalledWith('C:/Users/test/.codex/pets')
   })
 
+  it('shows a fallback pet preview when the sprite catalog is empty', async () => {
+    tauriInvokeMock.mockImplementation((command: string) => {
+      if (command === 'desktop_pet_catalog') {
+        return Promise.resolve({
+          pets: [],
+          customDirectory: 'C:/Users/test/.codex/pets',
+          codexInstalled: false,
+        })
+      }
+      return Promise.resolve(undefined)
+    })
+    const wrapper = factory({ initialTab: 'pet' })
+    await flushPromises()
+
+    expect(wrapper.find('.set-desktop-pet-preview .desktop-pet-fallback').exists()).toBe(true)
+    expect(wrapper.find('.set-desktop-pet-preview .pet-atlas-sprite').exists()).toBe(false)
+    expect(wrapper.text()).toContain('No Codex Desktop pets were found')
+  })
+
   it('reports when an update is available', async () => {
     checkAppUpdateMock.mockResolvedValue({ hasUpdate: true, latest: '2.0.0', current: '1.0.0' })
     const wrapper = factory({ initialTab: 'updates' })

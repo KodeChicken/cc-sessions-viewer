@@ -6,6 +6,26 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.3.6]
+
+### Features
+
+- **Desktop pet task activity** — the desktop pet now reflects active session work: running, ready, blocked, and failed tasks drive the pet animation and show a compact status pill. Hovering the pill opens a task activity panel with the current agent, session title, and state, and clicking a task brings the related session back into focus. Task updates flow from the existing turn-state hooks and are acknowledged when the session is opened.
+- **Codex Desktop pet sprites** — the desktop pet catalog now imports official Codex/ChatGPT pet spritesheets from the installed desktop app instead of using the old bundled SVG mascots. Settings → Desktop Pet lists Codex pets and custom pets, supports refresh/open-directory actions, and previews the selected spritesheet with the same atlas player used by the floating pet.
+- **Custom desktop pets** — users can add their own pets under `~/.codex/pets/<pet>/` with `pet.json` and a PNG/WebP spritesheet. Custom pets use the same atlas validation and selection flow as the imported Codex pets.
+
+### Bug Fixes
+
+- **Opencode session deletion** — deleting opencode sessions now handles `opencode://...` virtual paths correctly. The app exports the SQLite session rows to a trash dump, deletes the session/message/part rows from the opencode database, and can restore the dump back into the database from the shared trash UI.
+- **Codex pet discovery on current installs** — official pet import no longer depends on the older `webview/files/assets/files` asar layout. The importer recursively finds `*-spritesheet-*.webp` assets, scans ChatGPT.app/Codex.app locations on macOS, and also checks the `codex-plusplus` backup location used by some installs.
+- **Desktop pet fallback** — when no official or custom spritesheet is available, the floating pet and Settings preview show a lightweight Codex fallback avatar instead of an empty transparent window.
+- **Desktop pet activity hover** — the activity panel stays open while moving between the trigger and the tray, so the task list no longer disappears before it can be clicked.
+- **Desktop pet transparent window sizing** — the floating pet window now resizes with the visible pet/status content, reducing the invisible WebView area that can intercept clicks around the pet.
+
+### Tests
+
+- Added coverage for opencode trash dump/delete/restore, nested Codex spritesheet discovery, atlas playback, empty-catalog fallback rendering, desktop pet preference sync, task activity ordering, hover behavior, and window-size updates.
+
 ## [v0.3.4]
 
 ### Features

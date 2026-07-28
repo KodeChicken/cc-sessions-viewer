@@ -118,17 +118,9 @@ pub fn desktop_pet_catalog(app: tauri::AppHandle) -> Result<DesktopPetCatalog, S
 fn import_codex_pets(asar_path: &Path, output_directory: &Path) -> Result<(), String> {
     let mut file = File::open(asar_path).map_err(|error| error.to_string())?;
     let (content_start, header) = read_asar_header(&mut file)?;
-    let assets = header
-        .pointer("/files/webview/files/assets/files")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "Codex sprite asset directory is missing from app.asar".to_string())?;
 
     for (id, _, _) in CODEX_PETS {
-        let prefix = format!("{id}-spritesheet-");
-        let Some((_, metadata)) = assets
-            .iter()
-            .find(|(name, _)| name.starts_with(&prefix) && name.ends_with(".webp"))
-        else {
+        let Some(metadata) = find_spritesheet_entry(&header, id) else {
             continue;
         };
         let entry = parse_asar_entry(metadata)?;
@@ -141,6 +133,22 @@ fn import_codex_pets(asar_path: &Path, output_directory: &Path) -> Result<(), St
             .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn find_spritesheet_entry<'a>(node: &'a Value, id: &str) -> Option<&'a Value> {
+    let files = node.get("files").and_then(Value::as_object)?;
+    let prefix = format!("{id}-spritesheet-");
+    for (name, metadata) in files {
+        if name.starts_with(&prefix) && name.ends_with(".webp") {
+            return Some(metadata);
+        }
+    }
+    for metadata in files.values() {
+        if let Some(found) = find_spritesheet_entry(metadata, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn collect_imported_codex_pets(directory: &Path) -> Vec<DesktopPetDefinition> {
@@ -387,17 +395,34 @@ fn find_codex_asar() -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn find_codex_asar() -> Option<PathBuf> {
-    let mut candidates = vec![PathBuf::from(
-        "/Applications/Codex.app/Contents/Resources/app.asar",
-    )];
+    fn app_asar(app: impl AsRef<Path>) -> PathBuf {
+        app.as_ref()
+            .join("Contents")
+            .join("Resources")
+            .join("app.asar")
+    }
+
+    let mut candidates = vec![
+        app_asar("/Applications/ChatGPT.app"),
+        app_asar("/Applications/Codex.app"),
+    ];
     if let Some(home) = dirs::home_dir() {
+        candidates.push(app_asar(home.join("Applications").join("ChatGPT.app")));
+        candidates.push(app_asar(home.join("Applications").join("Codex.app")));
         candidates.push(
-            home.join("Applications")
-                .join("Codex.app")
-                .join("Contents")
-                .join("Resources")
+            home.join("Library")
+                .join("Application Support")
+                .join("codex-plusplus")
+                .join("backup")
                 .join("app.asar"),
         );
+        candidates.push(app_asar(
+            home.join("Library")
+                .join("Application Support")
+                .join("codex-plusplus")
+                .join("backup")
+                .join("Codex.app"),
+        ));
     }
     candidates.into_iter().find(|path| path.is_file())
 }
@@ -451,6 +476,29 @@ mod tests {
             read_asar_entry(&mut cursor, content_start, &entry).unwrap(),
             b"TEST"
         );
+    }
+
+    #[test]
+    fn finds_codex_spritesheets_in_nested_asar_assets() {
+        let header = serde_json::json!({
+            "files": {
+                "webview": {
+                    "files": {
+                        "assets": {
+                            "files": {
+                                "codex-spritesheet-v6-BRBFriCM.webp": {
+                                    "size": 42,
+                                    "offset": "7"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let entry = find_spritesheet_entry(&header, "codex").unwrap();
+        assert_eq!(entry.get("size").and_then(Value::as_u64), Some(42));
+        assert!(find_spritesheet_entry(&header, "bsod").is_none());
     }
 
     #[test]

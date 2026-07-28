@@ -96,6 +96,7 @@ import {
   type DesktopPetCharacter,
   type DesktopPetDefinition,
 } from '../desktopPet'
+import DesktopPetFallback from './DesktopPetFallback.vue'
 import PetAtlasPlayer from './PetAtlasPlayer.vue'
 
 type SettingsTab = 'general' | 'advanced' | 'hooks' | 'pet' | 'cli' | 'shortcuts' | 'updates'
@@ -931,6 +932,12 @@ async function installTurnHooks() {
                   state="idle"
                   :sprite-version-number="activeDesktopPet.spriteVersionNumber"
                   :label="activeDesktopPet.displayName"
+                  paused
+                />
+                <DesktopPetFallback
+                  v-else
+                  state="idle"
+                  label="Codex pet"
                   paused
                 />
               </span>

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   cursorPosition,
   getCurrentWindow,
+  LogicalSize,
   monitorFromPoint,
   PhysicalPosition,
 } from '@tauri-apps/api/window'
@@ -27,6 +28,7 @@ import {
   type DesktopTaskState,
 } from '../desktopPet'
 import { t } from '../i18n'
+import DesktopPetFallback from './DesktopPetFallback.vue'
 import PetAtlasPlayer, { type PetAnimationState } from './PetAtlasPlayer.vue'
 
 type PointerSample = {
@@ -93,6 +95,17 @@ const avatarStyle = computed(() => ({
   width: `${desktopPetSize.value}px`,
   height: `${desktopPetSize.value * 208 / 192}px`,
 }))
+const windowSize = computed(() => {
+  const avatarWidth = desktopPetSize.value + 16
+  const avatarHeight = Math.ceil(desktopPetSize.value * 208 / 192) + 16
+  const activityWidth = orderedTasks.value.length ? desktopPetSize.value + 146 : 0
+  const trayWidth = activityOpen.value ? 242 : 0
+  const trayHeight = activityOpen.value ? 294 : 0
+  return {
+    width: Math.ceil(Math.max(avatarWidth, activityWidth, trayWidth)),
+    height: Math.ceil(Math.max(avatarHeight, trayHeight)),
+  }
+})
 const overlayStyle = computed(() => ({
   '--desktop-pet-size': `${desktopPetSize.value}px`,
 }))
@@ -105,6 +118,11 @@ let wakeTimer: ReturnType<typeof setTimeout> | null = null
 let activityCloseTimer: ReturnType<typeof setTimeout> | null = null
 let cursorPollPending = false
 let unlisten: UnlistenFn[] = []
+
+function syncWindowSize() {
+  const next = windowSize.value
+  void currentWindow.setSize(new LogicalSize(next.width, next.height)).catch(() => {})
+}
 
 async function refreshTasks() {
   try {
@@ -374,6 +392,12 @@ onUnmounted(() => {
   window.removeEventListener('pointercancel', cancelDrag)
   for (const stop of unlisten) stop()
 })
+
+watch(
+  () => [desktopPetSize.value, orderedTasks.value.length, activityOpen.value],
+  () => syncWindowSize(),
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -447,6 +471,13 @@ onUnmounted(() => {
         :look-frame="effectiveLookFrame"
         :sprite-version-number="activeDesktopPet?.spriteVersionNumber"
         :label="activeDesktopPet?.displayName"
+        :data-character="desktopPetCharacter"
+      />
+      <DesktopPetFallback
+        v-else
+        class="avatar-sprite"
+        :state="animationState"
+        :label="activeDesktopPet?.displayName || 'Codex pet'"
         :data-character="desktopPetCharacter"
       />
     </div>

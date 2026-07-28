@@ -11,6 +11,7 @@ const {
   outerSizeMock,
   scaleFactorMock,
   setPositionMock,
+  setSizeMock,
   showMock,
 } = vi.hoisted(() => ({
   cursorPositionMock: vi.fn(),
@@ -22,6 +23,7 @@ const {
   outerSizeMock: vi.fn(),
   scaleFactorMock: vi.fn(),
   setPositionMock: vi.fn(),
+  setSizeMock: vi.fn(),
   showMock: vi.fn(),
 }))
 
@@ -34,6 +36,9 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: listenMock,
 }))
 vi.mock('@tauri-apps/api/window', () => ({
+  LogicalSize: class LogicalSize {
+    constructor(public width: number, public height: number) {}
+  },
   PhysicalPosition: class PhysicalPosition {
     constructor(public x: number, public y: number) {}
   },
@@ -44,6 +49,7 @@ vi.mock('@tauri-apps/api/window', () => ({
     outerSize: outerSizeMock,
     scaleFactor: scaleFactorMock,
     setPosition: setPositionMock,
+    setSize: setSizeMock,
     show: showMock,
   }),
 }))
@@ -107,6 +113,7 @@ beforeEach(() => {
   outerSizeMock.mockReset().mockResolvedValue({ width: 356, height: 320 })
   scaleFactorMock.mockReset().mockResolvedValue(1)
   setPositionMock.mockReset().mockResolvedValue(undefined)
+  setSizeMock.mockReset().mockResolvedValue(undefined)
   showMock.mockReset().mockResolvedValue(undefined)
   monitorFromPointMock.mockReset().mockResolvedValue({
     position: { x: 0, y: 0 },
@@ -139,6 +146,64 @@ async function dispatchPointer(
 }
 
 describe('DesktopPet', () => {
+  it('shrinks the transparent window to the visible avatar area', async () => {
+    setDesktopPetSize(80)
+    const wrapper = await factory()
+
+    expect(setSizeMock).toHaveBeenCalledWith(expect.objectContaining({
+      width: 96,
+      height: 103,
+    }))
+    wrapper.unmount()
+  })
+
+  it('expands the transparent window only when activity controls need room', async () => {
+    taskSnapshot = [{
+      agent: 'codex',
+      path: 'running',
+      state: 'started',
+      title: 'Running task',
+      updatedAt: 40,
+    }]
+    setDesktopPetSize(80)
+    const wrapper = await factory()
+
+    expect(setSizeMock).toHaveBeenCalledWith(expect.objectContaining({
+      width: 226,
+      height: 103,
+    }))
+
+    await wrapper.get('.activity-trigger').trigger('mouseenter')
+    await flushPromises()
+    expect(setSizeMock).toHaveBeenCalledWith(expect.objectContaining({
+      width: 242,
+      height: 294,
+    }))
+    wrapper.unmount()
+  })
+
+  it('renders a fallback avatar when no pet spritesheets are available', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'desktop_pet_catalog') {
+        return Promise.resolve({
+          pets: [],
+          customDirectory: 'C:/Users/test/.codex/pets',
+          codexInstalled: false,
+        })
+      }
+      if (command === 'desktop_pet_tasks') return Promise.resolve(taskSnapshot)
+      return Promise.resolve(undefined)
+    })
+
+    const wrapper = await factory()
+
+    expect(wrapper.find('.pet-atlas-sprite').exists()).toBe(false)
+    expect(wrapper.get('.desktop-pet-fallback').attributes('data-character')).toBe('codex:codex')
+    expect(wrapper.get('.desktop-pet-fallback').attributes('data-state')).toBe('waving')
+    expect(showMock).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
   it('renders the Codex avatar without legacy task UI when no activity exists', async () => {
     const wrapper = await factory()
 

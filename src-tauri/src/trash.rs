@@ -20,6 +20,29 @@ pub fn trash_dir() -> PathBuf {
 }
 
 pub fn soft_delete(agent: &str, path: &str, project_label: &str) -> Result<(), String> {
+    if agent == "opencode" && agents::opencode::is_virtual_path(path) {
+        let sid = path.trim_start_matches("opencode://");
+        let base = if sid.is_empty() {
+            "session.jsonl".to_string()
+        } else {
+            format!("{sid}.jsonl")
+        };
+        let now = now_millis();
+        let trash_name = format!("{now}-{base}");
+        let td = trash_dir();
+        let dest = td.join(&trash_name);
+        agents::opencode::soft_delete_to_trash(path, &dest)?;
+        let meta = serde_json::json!({
+            "agent": agent,
+            "originalPath": path,
+            "projectLabel": project_label,
+            "deletedAt": now,
+        });
+        fs::write(td.join(format!("{trash_name}.meta")), meta.to_string())
+            .map_err(|e| format!("Failed to write trash metadata: {e}"))?;
+        return Ok(());
+    }
+
     let src = PathBuf::from(path);
     if !src.exists() {
         return Err("Session file does not exist".to_string());
@@ -110,6 +133,14 @@ pub fn restore(trash_file: &str) -> Result<(), String> {
         .get("originalPath")
         .and_then(|x| x.as_str())
         .ok_or("Metadata missing original path")?;
+    let agent = v.get("agent").and_then(|x| x.as_str()).unwrap_or("claude");
+    if agent == "opencode" && agents::opencode::is_virtual_path(original_path) {
+        agents::opencode::restore_from_trash(&src)?;
+        let _ = fs::remove_file(&src);
+        let _ = fs::remove_file(&meta_path);
+        return Ok(());
+    }
+
     let dest = PathBuf::from(original_path);
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;

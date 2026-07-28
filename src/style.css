@@ -4713,7 +4713,7 @@ body.is-tab-reordering * {
   border-radius: 12px;
   background: color-mix(in srgb, #8b78e6 8%, var(--surface));
 }
-.set-desktop-pet-preview :is(.pet-atlas-sprite) {
+.set-desktop-pet-preview :is(.pet-atlas-sprite, .desktop-pet-fallback) {
   width: 44px;
 }
 .set-desktop-pet-info {
