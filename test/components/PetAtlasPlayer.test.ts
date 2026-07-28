@@ -50,6 +50,25 @@ describe('PetAtlasPlayer', () => {
     wrapper.unmount()
   })
 
+  it('keeps animation and look frames on separate layers for gaze transitions', async () => {
+    const wrapper = mount(PetAtlasPlayer, {
+      props: { src: 'asset://pet.webp', state: 'review', spriteVersionNumber: 2 },
+    })
+
+    const animationLayer = wrapper.get('.pet-atlas-animation-layer')
+    const lookLayer = wrapper.get('.pet-atlas-look-layer')
+    expect(wrapper.classes()).not.toContain('pet-atlas-sprite--looking')
+    expect(animationLayer.attributes('style')).toContain('0% 80%')
+
+    await wrapper.setProps({ lookFrame: 4 })
+    expect(wrapper.classes()).toContain('pet-atlas-sprite--looking')
+    expect(lookLayer.attributes('style')).toContain('57.14285714285714% 90%')
+
+    await wrapper.setProps({ lookFrame: null })
+    expect(wrapper.classes()).not.toContain('pet-atlas-sprite--looking')
+    wrapper.unmount()
+  })
+
   it('uses the nine-row v1 atlas and ignores unavailable look frames', () => {
     const wrapper = mount(PetAtlasPlayer, {
       props: { src: 'asset://pet.png', state: 'idle', lookFrame: 12, spriteVersionNumber: 1 },

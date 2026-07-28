@@ -300,9 +300,17 @@ describe('DesktopPet', () => {
     wrapper.unmount()
   })
 
-  it('maps the global cursor into one of sixteen look frames with a one-pixel dead zone', async () => {
+  it('temporarily prioritizes cursor gaze over task animation, then restores it', async () => {
     vi.useFakeTimers()
-    cursorPositionMock.mockResolvedValue({ x: 256, y: 261 })
+    taskSnapshot = [{
+      agent: 'codex',
+      path: 'C:/sessions/ready.jsonl',
+      state: 'completed',
+      title: 'Ready task',
+      updatedAt: 50,
+    }]
+    let cursor = { x: 156, y: 261 }
+    cursorPositionMock.mockImplementation(() => Promise.resolve(cursor))
     const wrapper = await factory()
     const area = wrapper.get('.avatar-button').element as HTMLElement
     area.getBoundingClientRect = () => ({
@@ -317,11 +325,22 @@ describe('DesktopPet', () => {
       toJSON: () => ({}),
     })
 
+    expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('review')
+    expect(wrapper.get('.pet-atlas-sprite').attributes('data-look-frame')).toBeUndefined()
+
+    cursor = { x: 256, y: 261 }
     await vi.advanceTimersByTimeAsync(50)
     await flushPromises()
 
+    expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('review')
     expect(wrapper.get('.pet-atlas-sprite').attributes('data-look-frame')).toBe('4')
     expect(wrapper.get('.pet-atlas-sprite').attributes('data-row')).toBe('9')
+
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+
+    expect(wrapper.get('.pet-atlas-sprite').attributes('data-look-frame')).toBeUndefined()
+    expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('review')
     wrapper.unmount()
     vi.useRealTimers()
   })
@@ -344,6 +363,7 @@ describe('DesktopPet', () => {
 
     expect(avatar.classes()).toContain('dragging')
     expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('running-right')
+    expect(wrapper.get('.pet-atlas-sprite').attributes('data-look-frame')).toBeUndefined()
 
     await dispatchPointer(avatar.element, 'pointermove', {
       pointerId: 7,
