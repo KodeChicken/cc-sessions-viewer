@@ -12,28 +12,61 @@ const SPRITESHEET_WIDTH: u32 = 1536;
 const V1_SPRITESHEET_HEIGHT: u32 = 1872;
 const V2_SPRITESHEET_HEIGHT: u32 = 2288;
 
-const CODEX_PETS: &[(&str, &str, &str)] = &[
-    ("codex", "Codex", "The original Codex companion."),
+const CODEX_PETS: &[(&str, &str, &str, &[u8])] = &[
+    (
+        "codex",
+        "Codex",
+        "The original Codex companion.",
+        include_bytes!("../assets/desktop-pets/codex/codex/spritesheet.webp"),
+    ),
     (
         "dewey",
         "Dewey",
         "A calm companion for focused workspace days",
+        include_bytes!("../assets/desktop-pets/codex/dewey/spritesheet.webp"),
     ),
     (
         "fireball",
         "Fireball",
         "Hot path energy for fast iteration.",
+        include_bytes!("../assets/desktop-pets/codex/fireball/spritesheet.webp"),
     ),
     (
         "hoots",
         "Hoots",
         "A sharp-eyed owl for polished work in a blink.",
+        include_bytes!("../assets/desktop-pets/codex/hoots/spritesheet.webp"),
     ),
-    ("rocky", "Rocky", "A steady rock when the diff gets large."),
-    ("seedy", "Seedy", "Small green shoots for new ideas."),
-    ("stacky", "Stacky", "A balanced stack for deep work."),
-    ("bsod", "BSOD", "A tiny blue-screen gremlin."),
-    ("null-signal", "Null Signal", "Quiet signal from the void."),
+    (
+        "rocky",
+        "Rocky",
+        "A steady rock when the diff gets large.",
+        include_bytes!("../assets/desktop-pets/codex/rocky/spritesheet.webp"),
+    ),
+    (
+        "seedy",
+        "Seedy",
+        "Small green shoots for new ideas.",
+        include_bytes!("../assets/desktop-pets/codex/seedy/spritesheet.webp"),
+    ),
+    (
+        "stacky",
+        "Stacky",
+        "A balanced stack for deep work.",
+        include_bytes!("../assets/desktop-pets/codex/stacky/spritesheet.webp"),
+    ),
+    (
+        "bsod",
+        "BSOD",
+        "A tiny blue-screen gremlin.",
+        include_bytes!("../assets/desktop-pets/codex/bsod/spritesheet.webp"),
+    ),
+    (
+        "null-signal",
+        "Null Signal",
+        "Quiet signal from the void.",
+        include_bytes!("../assets/desktop-pets/codex/null-signal/spritesheet.webp"),
+    ),
 ];
 
 #[derive(Clone, serde::Serialize)]
@@ -96,8 +129,11 @@ pub fn desktop_pet_catalog(app: tauri::AppHandle) -> Result<DesktopPetCatalog, S
 
     let codex_asar = find_codex_asar();
     if let Some(path) = codex_asar.as_deref() {
-        import_codex_pets(path, &imported_directory)?;
+        if let Err(error) = import_codex_pets(path, &imported_directory) {
+            eprintln!("Failed to import Codex desktop pets: {error}");
+        }
     }
+    install_bundled_codex_pets(&imported_directory)?;
 
     let custom_directory = dirs::home_dir()
         .ok_or_else(|| "Home directory is unavailable".to_string())?
@@ -115,11 +151,28 @@ pub fn desktop_pet_catalog(app: tauri::AppHandle) -> Result<DesktopPetCatalog, S
     })
 }
 
+fn install_bundled_codex_pets(output_directory: &Path) -> Result<(), String> {
+    for (id, _, _, bundled_spritesheet) in CODEX_PETS {
+        validate_spritesheet(bundled_spritesheet, 2)?;
+
+        let pet_directory = output_directory.join(id);
+        fs::create_dir_all(&pet_directory).map_err(|error| error.to_string())?;
+        let spritesheet = pet_directory.join("spritesheet.webp");
+        let existing_is_valid = fs::read(&spritesheet)
+            .map(|bytes| validate_spritesheet(&bytes, 2).is_ok())
+            .unwrap_or(false);
+        if !existing_is_valid {
+            fs::write(spritesheet, bundled_spritesheet).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 fn import_codex_pets(asar_path: &Path, output_directory: &Path) -> Result<(), String> {
     let mut file = File::open(asar_path).map_err(|error| error.to_string())?;
     let (content_start, header) = read_asar_header(&mut file)?;
 
-    for (id, _, _) in CODEX_PETS {
+    for (id, _, _, _) in CODEX_PETS {
         let Some(metadata) = find_spritesheet_entry(&header, id) else {
             continue;
         };
@@ -154,7 +207,7 @@ fn find_spritesheet_entry<'a>(node: &'a Value, id: &str) -> Option<&'a Value> {
 fn collect_imported_codex_pets(directory: &Path) -> Vec<DesktopPetDefinition> {
     CODEX_PETS
         .iter()
-        .filter_map(|(id, display_name, description)| {
+        .filter_map(|(id, display_name, description, _)| {
             let spritesheet = directory.join(id).join("spritesheet.webp");
             let bytes = fs::read(&spritesheet).ok()?;
             validate_spritesheet(&bytes, 2).ok()?;
@@ -519,5 +572,25 @@ mod tests {
         assert!(manifest.id.is_none());
         assert!(is_safe_relative_path("art/pet.png"));
         assert!(!is_safe_relative_path("../pet.png"));
+    }
+
+    #[test]
+    fn installs_all_bundled_codex_pets_without_codex_desktop() {
+        let directory = std::env::temp_dir().join(format!(
+            "cc-sessions-viewer-bundled-pets-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+
+        install_bundled_codex_pets(&directory).unwrap();
+
+        let pets = collect_imported_codex_pets(&directory);
+        assert_eq!(pets.len(), CODEX_PETS.len());
+        for (id, _, _, bundled_spritesheet) in CODEX_PETS {
+            let installed = fs::read(directory.join(id).join("spritesheet.webp")).unwrap();
+            assert_eq!(installed, *bundled_spritesheet);
+        }
+
+        let _ = fs::remove_dir_all(directory);
     }
 }
