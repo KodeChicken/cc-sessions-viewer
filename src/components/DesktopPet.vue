@@ -123,9 +123,9 @@ let activityCloseTimer: ReturnType<typeof setTimeout> | null = null
 let cursorPollPending = false
 let unlisten: UnlistenFn[] = []
 
-function syncWindowSize() {
+async function syncWindowSize() {
   const next = windowSize.value
-  void currentWindow.setSize(new LogicalSize(next.width, next.height)).catch(() => {})
+  await currentWindow.setSize(new LogicalSize(next.width, next.height)).catch(() => {})
 }
 
 async function refreshTasks() {
@@ -381,7 +381,6 @@ onMounted(async () => {
     console.warn('[desktop-pet] failed to load pet catalog:', error)
   })
   await restoreWindowPosition().catch(() => {})
-  await currentWindow.show().catch(() => {})
 
   unlisten = await Promise.all([
     listen<{ character?: DesktopPetCharacter; size?: number }>(
@@ -396,6 +395,8 @@ onMounted(async () => {
     listen('desktop-pet://activity-acknowledged', () => refreshTasks()),
   ])
   await refreshTasks()
+  await syncWindowSize()
+  await currentWindow.show().catch(() => {})
   cursorTimer = setInterval(pollGlobalCursor, 50)
   wakeTimer = setTimeout(() => { baseState.value = 'idle' }, 8000)
   window.addEventListener('pointerup', endDrag)
@@ -416,7 +417,7 @@ onUnmounted(() => {
 
 watch(
   () => [desktopPetSize.value, orderedTasks.value.length, activityOpen.value],
-  () => syncWindowSize(),
+  () => { void syncWindowSize() },
   { immediate: true },
 )
 </script>
