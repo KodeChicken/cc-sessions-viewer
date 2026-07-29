@@ -230,7 +230,7 @@ describe('DesktopPet', () => {
     expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('waiting')
     expect(wrapper.get('.activity-trigger').attributes('data-state')).toBe('blocked')
     await avatar.trigger('pointerenter')
-    expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('jumping')
+    expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('waving')
     await avatar.trigger('pointerleave')
     expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('waiting')
 
@@ -274,15 +274,27 @@ describe('DesktopPet', () => {
     wrapper.unmount()
   })
 
-  it('plays jumping on hover and restores the base state on leave', async () => {
+  it('uses a stable waving hover without competing gaze frames', async () => {
+    vi.useFakeTimers()
     const wrapper = await factory()
     const avatar = wrapper.get('.avatar-button')
 
+    await vi.advanceTimersByTimeAsync(8000)
+    expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('idle')
+
     await avatar.trigger('pointerenter')
-    expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('jumping')
-    await avatar.trigger('pointerleave')
+    await dispatchPointer(avatar.element, 'pointermove', {
+      pointerId: 1,
+      clientX: 100,
+      clientY: 60,
+    })
     expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('waving')
+    expect(wrapper.get('.pet-atlas-sprite').attributes('data-look-frame')).toBeUndefined()
+
+    await avatar.trigger('pointerleave')
+    expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('idle')
     wrapper.unmount()
+    vi.useRealTimers()
   })
 
   it('updates the selected pet and size from the shared preference event', async () => {

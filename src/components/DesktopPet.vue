@@ -84,11 +84,16 @@ const spritesheetSrc = computed(() => activeDesktopPet.value
   : '')
 const animationState = computed<PetAnimationState>(() => {
   if (dragState.value) return dragState.value
-  if (hovered.value) return 'jumping'
+  if (hovered.value) return 'waving'
   return activityAnimation.value ?? baseState.value
 })
 const effectiveLookFrame = computed(() => {
-  if (!gazeActive.value || dragging.value || activeDesktopPet.value?.spriteVersionNumber !== 2) {
+  if (
+    !gazeActive.value
+    || hovered.value
+    || dragging.value
+    || activeDesktopPet.value?.spriteVersionNumber !== 2
+  ) {
     return null
   }
   return lookFrame.value
