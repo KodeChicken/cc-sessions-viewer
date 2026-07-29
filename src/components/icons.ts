@@ -82,6 +82,7 @@ import IconGitBranchRaw from '~icons/lucide/git-branch'
 import IconClaudeRaw from '~icons/material-icon-theme/claude'
 import IconKeyboardRaw from '~icons/lucide/keyboard'
 import IconSlidersRaw from '~icons/lucide/sliders-horizontal'
+import IconWebhookRaw from '~icons/lucide/webhook'
 import IconPaperclipRaw from '~icons/lucide/paperclip'
 import IconSlashSquareRaw from '~icons/lucide/square-slash'
 import IconSkillRaw from '~icons/lucide/box'
@@ -162,6 +163,7 @@ export const IconEye = IconEyeRaw
 export const IconGitBranch = IconGitBranchRaw
 export const IconKeyboard = IconKeyboardRaw
 export const IconSliders = IconSlidersRaw
+export const IconWebhook = IconWebhookRaw
 export const IconPaperclip = IconPaperclipRaw
 export const IconSlashSquare = IconSlashSquareRaw
 export const IconSkill = IconSkillRaw

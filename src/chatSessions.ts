@@ -42,6 +42,7 @@ import type {
   ChatResultPayload,
   ChatStderrPayload,
   ChatTurnState,
+  CodexRuntimeInfo,
   Msg,
   UsageSummary,
 } from './types'
@@ -149,6 +150,37 @@ function claudeApiKeyDisablesEffort(s: Pick<ChatSession, 'agent' | 'apiKeySource
 function sessionEffectiveEffort(s: Pick<ChatSession, 'agent' | 'model' | 'effort' | 'apiKeySource'>): string | undefined {
   if (claudeApiKeyDisablesEffort(s)) return undefined
   return effectiveEffort(s.agent, s.model, s.effort)
+}
+
+async function codexRuntimeForAgent(agent: Agent): Promise<CodexRuntimeInfo | null> {
+  if (agent !== 'codex') return null
+  return api
+    .codexRuntimeInfo()
+    .catch(() => null)
+}
+
+function isFreshCodexChat(opts: StartChatOptions): boolean {
+  return opts.agent === 'codex' && !opts.sessionId && !opts.forkSessionId && !opts.fork
+}
+
+function initialChatModel(agent: Agent, model: string | undefined, codexRuntime: CodexRuntimeInfo | null): string | undefined {
+  if (agent === 'codex' && codexRuntime?.usesApiKey) return model ?? codexRuntime.model
+  return sanitizeModel(agent, model) ?? defaultModel(agent)
+}
+
+function initialChatEffort(agent: Agent, effort: string | undefined, codexRuntime: CodexRuntimeInfo | null): string | undefined {
+  if (agent === 'codex' && codexRuntime?.usesApiKey) return effort ?? codexRuntime.effort
+  return effort ?? defaultEffort(agent)
+}
+
+function initialLastModel(
+  agent: Agent,
+  preloadMsgs: Msg[] | undefined,
+  codexRuntime: CodexRuntimeInfo | null,
+): string | undefined {
+  const model = lastAssistantModel(preloadMsgs)
+  if (agent === 'codex' && codexRuntime?.usesApiKey) return codexRuntime.model || model
+  return sanitizeModel(agent, model)
 }
 
 export function chatEffectiveEffortForTest(
@@ -608,6 +640,7 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
   await ensureListeners()
 
   const uiId = nextUiId++
+  const codexRuntime = isFreshCodexChat(opts) ? await codexRuntimeForAgent(opts.agent) : null
   const session = reactive<ChatSession>({
     uiId,
     chatId: null,
@@ -629,15 +662,17 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
     pendingPermissions: [],
     pendingQuestions: [],
     permissionMode: opts.permissionMode ?? defaultPermissionMode(opts.agent),
-    // 「不存在 default」：每个会话起步即带一个明确模型 + effort（用户可改）。
+    // 官方模型菜单下：会话起步带一个明确模型 + effort（用户可改）。
+    // Codex 自定义 provider：用 ~/.codex/config.toml 的 model/effort 初始化 GUI，确保
+    // UI、app-server 参数、全局配置三者一致；没有配置值时才保持 undefined。
     // sanitizeModel：旧会话记忆的模型可能已不在菜单里（如 gpt-5.3-codex），回退到该 agent
-    // 的兜底，避免会话停在一个选不中、也发不出去的幽灵模型上。
-    model: sanitizeModel(opts.agent, opts.model) ?? defaultModel(opts.agent),
-    effort: opts.effort ?? defaultEffort(opts.agent),
+    // 的兜底；自定义 provider 保留原模型名，让反代/别名配置自行接管。
+    model: initialChatModel(opts.agent, opts.model, codexRuntime),
+    effort: initialChatEffort(opts.agent, opts.effort, codexRuntime),
     // 续聊：从预载 transcript 末尾的 assistant 记录回填 lastModel，让模型在「进会话即显」
     // （而非等首轮回复后才由 onMsg 填上）。effort 不在 transcript 里 → 无法同样回填，
     // 由 composer 用运行时 settings.effortLevel 兜底显示真实生效默认。
-    lastModel: sanitizeModel(opts.agent, lastAssistantModel(opts.preloadMsgs)),
+    lastModel: initialLastModel(opts.agent, opts.preloadMsgs, codexRuntime),
     // 续聊种子：原会话末尾上下文规模，首个 result 到达前给进度角标兜底。
     usage: opts.initialUsage,
   }) as ChatSession

@@ -48,6 +48,14 @@ import { recordRecent } from './recents'
 import { recordExport, type ExportRecord } from './exportHistory'
 import { globalSearchOpen, openGlobalSearch } from './globalSearch'
 import { runBackgroundCheck } from './updateCheck'
+import { refreshTurnHookStatus } from './turnHookStatus'
+import {
+  acknowledgeDesktopPetTask,
+  resolveDesktopPetSession,
+  restoreDesktopPet as restoreDesktopPetWindow,
+  type DesktopPetResolvedSession,
+  type DesktopTask,
+} from './desktopPet'
 import type { SearchHit } from './types'
 import ChatSidePanel from './components/ChatSidePanel.vue'
 import CodexSidePanel from './components/CodexSidePanel.vue'
@@ -95,6 +103,7 @@ import {
   markTabTurnCompleted,
   markTabTurnBlocked,
   markTabTurnFailed,
+  markTabViewed,
   migrateTabsProjectKey,
   tabs as tuiTabs,
   persistTabState,
@@ -110,6 +119,7 @@ import {
   type SavedNav,
   type SavedActiveTui,
 } from './terminals'
+import { sessionPathsEqual } from './tabStatus'
 import {
   recordView,
   setViewTitle,
@@ -186,7 +196,7 @@ const showStats = ref(false)
 const showExportHistory = ref(false)
 const showPricing = ref(false)
 const showSettings = ref(false)
-const settingsTab = ref<'general' | 'advanced' | 'shortcuts' | 'updates'>('general')
+const settingsTab = ref<'general' | 'advanced' | 'hooks' | 'pet' | 'shortcuts' | 'updates'>('general')
 const sidebarOpen = ref(true)
 const refreshing = ref(false)
 const isWindows = /Win/i.test(navigator.platform)
@@ -3307,6 +3317,8 @@ function onClearTabs() {
 const windowFocused = ref(document.hasFocus())
 async function onFocus() {
   windowFocused.value = true
+  const activeTuiTab = currentActiveTab()
+  if (activeTuiTab) markTabViewed(activeTuiTab.uiId)
   clearPendingLiveNotification()
   const activeTab = viewTabs.value.find(t => t.uiId === activeViewTabId.value)
   if (activeTab && activeTab.type === 'session' && activeTab.session?.path) {
@@ -3324,7 +3336,6 @@ async function onFocus() {
       }
     } catch {}
   }
-  api.checkSessionTurns().catch(() => {})
 }
 function onBlur() {
   windowFocused.value = false
@@ -3724,7 +3735,10 @@ type TerminalTurnEvent = {
   agent: Agent
   path: string
   state: 'started' | 'completed' | 'blocked' | 'failed'
+  source: 'hook'
 }
+
+type DesktopPetSessionTarget = Pick<DesktopTask, 'agent' | 'path'>
 
 async function installLiveTailListeners() {
   const appendUnlisten = await listen<{ path: string; messages: Msg[] }>(
@@ -3770,14 +3784,146 @@ async function installLiveTailListeners() {
 
 async function installTerminalTurnListeners() {
   const turnUnlisten = await listen<TerminalTurnEvent>('terminal-turn://state', (e) => {
-    const { agent: eventAgent, path, state } = e.payload
+    const { agent: eventAgent, path, state, source } = e.payload
     if (!path) return
-    if (state === 'started') markTabTurnStarted(eventAgent, path)
-    else if (state === 'completed') markTabTurnCompleted(eventAgent, path)
-    else if (state === 'blocked') markTabTurnBlocked(eventAgent, path)
-    else if (state === 'failed') markTabTurnFailed(eventAgent, path)
+    if (state === 'started') markTabTurnStarted(eventAgent, path, source)
+    else if (state === 'completed') markTabTurnCompleted(eventAgent, path, source)
+    else if (state === 'blocked') markTabTurnBlocked(eventAgent, path, source)
+    else if (state === 'failed') markTabTurnFailed(eventAgent, path, source)
   })
-  liveUnlisteners.push(turnUnlisten)
+  const desktopPetUnlisten = await listen<DesktopPetSessionTarget>(
+    'desktop-pet://open-session',
+    (event) => { void openDesktopPetSession(event.payload) },
+  )
+  liveUnlisteners.push(turnUnlisten, desktopPetUnlisten)
+}
+
+function prepareDesktopPetAgent(targetAgent: Agent) {
+  if (agent.value === targetAgent) return
+  rememberActiveNav()
+  lastDirByAgent.set(agent.value, activeDir.value)
+  agent.value = targetAgent
+  activeDir.value = null
+  projects.value = []
+  sessions.value = []
+  sessionTotal.value = 0
+  setActiveViewTab(null)
+  void loadProjects()
+}
+
+function closeDesktopPetNavigationOverlays() {
+  setActiveTui(null)
+  closeAllSideChats()
+  closeAllCodexSideChats()
+  openTrashItem.value = null
+  showTrash.value = false
+  showStats.value = false
+  showExportHistory.value = false
+  showPricing.value = false
+  sessionStatsTarget.value = null
+}
+
+async function openDesktopPetSession(target: DesktopPetSessionTarget) {
+  if (!['claude', 'codex', 'agy'].includes(target.agent) || !target.path) return
+
+  const existingTui = tuiTabs.value.find(
+    (tab) =>
+      !tab.isShell
+      && tab.agent === target.agent
+      && sessionPathsEqual(tab.sessionPath, target.path),
+  )
+  const existingSavedTui = savedTabs.value.find(
+    (tab) =>
+      !tab.isShell
+      && tab.agent === target.agent
+      && sessionPathsEqual(tab.sessionPath, target.path),
+  )
+  const existingView = findViewTab(
+    (tab) =>
+      tab.type === 'session'
+      && tab.agent === target.agent
+      && sessionPathsEqual(tab.session?.path ?? '', target.path),
+  )
+
+  let resolved: DesktopPetResolvedSession | null = null
+  let projectKey = existingTui?.projectKey
+    || existingSavedTui?.projectKey
+    || existingView?.projectKey
+    || ''
+  if (!projectKey || (!existingTui && !existingSavedTui && !existingView)) {
+    try {
+      resolved = await resolveDesktopPetSession(target)
+    } catch (error) {
+      notify(t('toast.readFail', { e: String(error) }), true)
+      return
+    }
+    if (!resolved) {
+      notify(t('desktopPet.activity.sessionMissing'), true)
+      return
+    }
+    projectKey = resolved.projectKey
+  }
+  if (existingView && resolved) {
+    existingView.projectKey = resolved.projectKey
+    existingView.session = resolved.session
+    existingView.title = resolved.session.title
+  }
+
+  prepareDesktopPetAgent(target.agent)
+  closeDesktopPetNavigationOverlays()
+  if (activeDir.value !== projectKey) await selectProject(projectKey)
+
+  let opened = false
+  if (existingTui) {
+    setActiveTui(existingTui.uiId)
+    opened = true
+  } else if (existingSavedTui) {
+    opened = await hydrateSavedTabOnce(existingSavedTui)
+  } else if (existingView) {
+    existingView.loadingMsgs = true
+    setActiveViewTab(existingView.uiId)
+    try {
+      existingView.msgs = await api.readSession(target.agent, target.path)
+      await api.watchSession(target.agent, target.path).catch(() => {})
+      opened = true
+    } catch (error) {
+      notify(t('toast.readFail', { e: String(error) }), true)
+    } finally {
+      existingView.loadingMsgs = false
+    }
+  } else if (resolved) {
+    const tab = createViewTab({
+      type: 'session',
+      agent: target.agent,
+      projectKey: resolved.projectKey,
+      title: resolved.session.title,
+      session: resolved.session,
+      loadingMsgs: true,
+    })
+    await nextTick()
+    try {
+      tab.msgs = await api.readSession(target.agent, target.path)
+      await api.watchSession(target.agent, target.path).catch(() => {})
+      opened = true
+      recordView({
+        agent: target.agent,
+        dir: resolved.projectKey,
+        session: resolved.session,
+        mode: 'read',
+      })
+    } catch (error) {
+      notify(t('toast.readFail', { e: String(error) }), true)
+      removeViewTab(tab.uiId)
+    } finally {
+      tab.loadingMsgs = false
+    }
+  }
+
+  if (opened) {
+    await acknowledgeDesktopPetTask(target).catch((error) => {
+      console.warn('[desktop-pet] failed to acknowledge activity:', error)
+    })
+  }
 }
 
 onMounted(() => {
@@ -3785,6 +3931,10 @@ onMounted(() => {
   installBeforeQuitSave()
   installLiveTailListeners()
   installTerminalTurnListeners()
+  void refreshTurnHookStatus()
+  void restoreDesktopPetWindow().catch((error) => {
+    console.warn('[desktop-pet] failed to restore window:', error)
+  })
 })
 
 onUnmounted(() => {

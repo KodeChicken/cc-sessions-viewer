@@ -28,11 +28,12 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::types::{Value as SqlValue, ValueRef};
+use rusqlite::{params, params_from_iter, Connection, OpenFlags};
 use serde_json::Value;
 
 use super::SessionSource;
@@ -180,6 +181,288 @@ fn usage_from_tokens(t: &Value) -> UsageSummary {
         total: 0,
     }
     .finalize()
+}
+
+// ── opencode DB trash dump ──
+
+const TARGET_SESSIONS_CTE: &str = "WITH RECURSIVE target(id) AS (\
+    SELECT id FROM session WHERE id = ?1 \
+    UNION ALL \
+    SELECT s.id FROM session s JOIN target t ON s.parent_id = t.id\
+)";
+
+fn sql_value_to_json(v: ValueRef<'_>) -> Value {
+    match v {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(i) => Value::from(i),
+        ValueRef::Real(f) => Value::from(f),
+        ValueRef::Text(t) => Value::String(String::from_utf8_lossy(t).to_string()),
+        ValueRef::Blob(b) => Value::String(String::from_utf8_lossy(b).to_string()),
+    }
+}
+
+fn json_to_sql_value(v: &Value) -> SqlValue {
+    match v {
+        Value::Null => SqlValue::Null,
+        Value::Bool(b) => SqlValue::Integer(if *b { 1 } else { 0 }),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                SqlValue::Integer(i)
+            } else if let Some(u) = n.as_u64().and_then(|u| i64::try_from(u).ok()) {
+                SqlValue::Integer(u)
+            } else {
+                SqlValue::Real(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        Value::String(s) => SqlValue::Text(s.clone()),
+        Value::Array(_) | Value::Object(_) => SqlValue::Text(v.to_string()),
+    }
+}
+
+fn query_json_rows(
+    conn: &Connection,
+    sql: &str,
+    args: impl rusqlite::Params,
+) -> Result<Vec<Value>, String> {
+    let mut stmt = conn.prepare(sql).map_err(db_err)?;
+    let names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let mut rows = stmt.query(args).map_err(db_err)?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().map_err(db_err)? {
+        let mut obj = serde_json::Map::new();
+        for (i, name) in names.iter().enumerate() {
+            obj.insert(
+                name.clone(),
+                sql_value_to_json(row.get_ref(i).map_err(db_err)?),
+            );
+        }
+        out.push(Value::Object(obj));
+    }
+    Ok(out)
+}
+
+fn write_jsonl_line(w: &mut impl Write, v: &Value) -> Result<(), String> {
+    serde_json::to_writer(&mut *w, v).map_err(|e| format!("Failed to write opencode dump: {e}"))?;
+    w.write_all(b"\n")
+        .map_err(|e| format!("Failed to write opencode dump: {e}"))
+}
+
+fn dump_session(conn: &Connection, sid: &str, dest: &Path) -> Result<(), String> {
+    let projects = query_json_rows(
+        conn,
+        &format!(
+            "{TARGET_SESSIONS_CTE} \
+             SELECT DISTINCT p.* FROM project p \
+             JOIN session s ON s.project_id = p.id \
+             WHERE s.id IN (SELECT id FROM target) \
+             ORDER BY p.id"
+        ),
+        params![sid],
+    )?;
+    let sessions = query_json_rows(
+        conn,
+        &format!(
+            "{TARGET_SESSIONS_CTE} \
+             SELECT s.* FROM session s \
+             WHERE s.id IN (SELECT id FROM target) \
+             ORDER BY CASE WHEN s.id = ?1 THEN 0 ELSE 1 END, s.time_created, s.id"
+        ),
+        params![sid],
+    )?;
+    if sessions.is_empty() {
+        return Err("Session not found in opencode database".to_string());
+    }
+    let messages = query_json_rows(
+        conn,
+        &format!(
+            "{TARGET_SESSIONS_CTE} \
+             SELECT m.* FROM message m \
+             WHERE m.session_id IN (SELECT id FROM target) \
+             ORDER BY m.session_id, m.time_created, m.id"
+        ),
+        params![sid],
+    )?;
+    let parts = query_json_rows(
+        conn,
+        &format!(
+            "{TARGET_SESSIONS_CTE} \
+             SELECT p.* FROM part p \
+             WHERE p.session_id IN (SELECT id FROM target) \
+             ORDER BY p.session_id, p.time_created, p.id"
+        ),
+        params![sid],
+    )?;
+
+    let mut f =
+        fs::File::create(dest).map_err(|e| format!("Failed to create opencode trash dump: {e}"))?;
+    write_jsonl_line(
+        &mut f,
+        &serde_json::json!({
+            "kind": "opencode-session",
+            "version": 1,
+            "session": sessions[0],
+        }),
+    )?;
+    for row in projects {
+        write_jsonl_line(
+            &mut f,
+            &serde_json::json!({ "kind": "opencode-project-row", "row": row }),
+        )?;
+    }
+    for row in sessions {
+        write_jsonl_line(
+            &mut f,
+            &serde_json::json!({ "kind": "opencode-session-row", "row": row }),
+        )?;
+    }
+    for row in messages {
+        write_jsonl_line(
+            &mut f,
+            &serde_json::json!({ "kind": "opencode-message-row", "row": row }),
+        )?;
+    }
+    for row in parts {
+        write_jsonl_line(
+            &mut f,
+            &serde_json::json!({ "kind": "opencode-part-row", "row": row }),
+        )?;
+    }
+    Ok(())
+}
+
+fn delete_session_rows(conn: &Connection, sid: &str) -> Result<(), String> {
+    conn.execute(
+        &format!(
+            "{TARGET_SESSIONS_CTE} \
+             DELETE FROM part WHERE session_id IN (SELECT id FROM target)"
+        ),
+        params![sid],
+    )
+    .map_err(db_err)?;
+    conn.execute(
+        &format!(
+            "{TARGET_SESSIONS_CTE} \
+             DELETE FROM message WHERE session_id IN (SELECT id FROM target)"
+        ),
+        params![sid],
+    )
+    .map_err(db_err)?;
+    let n = conn
+        .execute(
+            &format!(
+                "{TARGET_SESSIONS_CTE} \
+                 DELETE FROM session WHERE id IN (SELECT id FROM target)"
+            ),
+            params![sid],
+        )
+        .map_err(db_err)?;
+    if n == 0 {
+        return Err("Session not found in opencode database".to_string());
+    }
+    Ok(())
+}
+
+fn soft_delete_impl(conn: &mut Connection, sid: &str, dest: &Path) -> Result<(), String> {
+    let tx = conn.transaction().map_err(db_err)?;
+    dump_session(&tx, sid, dest)?;
+    if let Err(e) = delete_session_rows(&tx, sid) {
+        let _ = fs::remove_file(dest);
+        return Err(e);
+    }
+    if let Err(e) = tx.commit().map_err(db_err) {
+        let _ = fs::remove_file(dest);
+        return Err(e);
+    }
+    Ok(())
+}
+
+pub fn soft_delete_to_trash(path: &str, dest: &Path) -> Result<(), String> {
+    let sid = session_id_of(path)?.to_string();
+    let mut conn = open_db_rw()?;
+    soft_delete_impl(&mut conn, &sid, dest)
+}
+
+fn row_object(v: &Value) -> Result<&serde_json::Map<String, Value>, String> {
+    v.get("row")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "Corrupted opencode trash dump: missing row".to_string())
+}
+
+fn insert_json_row(
+    conn: &Connection,
+    table: &str,
+    row: &serde_json::Map<String, Value>,
+    or_ignore: bool,
+) -> Result<(), String> {
+    if row.is_empty() {
+        return Ok(());
+    }
+    let cols: Vec<&String> = row.keys().collect();
+    let placeholders = std::iter::repeat_n("?", cols.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let verb = if or_ignore {
+        "INSERT OR IGNORE"
+    } else {
+        "INSERT"
+    };
+    let sql = format!(
+        "{verb} INTO {table} ({}) VALUES ({placeholders})",
+        cols.iter()
+            .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let values: Vec<SqlValue> = cols.iter().map(|c| json_to_sql_value(&row[*c])).collect();
+    conn.execute(&sql, params_from_iter(values))
+        .map_err(db_err)?;
+    Ok(())
+}
+
+fn restore_impl(conn: &mut Connection, dump: &Path) -> Result<(), String> {
+    let f = fs::File::open(dump).map_err(|e| format!("Failed to read opencode trash dump: {e}"))?;
+    let mut projects = Vec::new();
+    let mut sessions = Vec::new();
+    let mut messages = Vec::new();
+    let mut parts = Vec::new();
+    for line in std::io::BufReader::new(f).lines() {
+        let line = line.map_err(|e| format!("Failed to read opencode trash dump: {e}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: Value = serde_json::from_str(&line)
+            .map_err(|e| format!("Corrupted opencode trash dump: {e}"))?;
+        match v.get("kind").and_then(Value::as_str).unwrap_or("") {
+            "opencode-project-row" => projects.push(v),
+            "opencode-session-row" => sessions.push(v),
+            "opencode-message-row" => messages.push(v),
+            "opencode-part-row" => parts.push(v),
+            _ => {}
+        }
+    }
+    if sessions.is_empty() {
+        return Err("Corrupted opencode trash dump: missing session rows".to_string());
+    }
+
+    let tx = conn.transaction().map_err(db_err)?;
+    for v in projects {
+        insert_json_row(&tx, "project", row_object(&v)?, true)?;
+    }
+    for v in sessions {
+        insert_json_row(&tx, "session", row_object(&v)?, false)?;
+    }
+    for v in messages {
+        insert_json_row(&tx, "message", row_object(&v)?, false)?;
+    }
+    for v in parts {
+        insert_json_row(&tx, "part", row_object(&v)?, false)?;
+    }
+    tx.commit().map_err(db_err)
+}
+
+pub fn restore_from_trash(dump: &Path) -> Result<(), String> {
+    let mut conn = open_db_rw()?;
+    restore_impl(&mut conn, dump)
 }
 
 // ── part → Block 映射 ──
@@ -1358,6 +1641,44 @@ mod tests {
             .unwrap();
         let page = list_sessions_impl(&conn, "proj1", 0, 10, false).unwrap();
         assert_eq!(page.sessions[0].title, "lucky-moon");
+    }
+
+    #[test]
+    fn soft_delete_dumps_rows_and_restore_reinserts_them() {
+        let mut conn = test_db();
+        seed_basic_session(&conn);
+        let dump = std::env::temp_dir().join(format!(
+            "opencode-trash-test-{}-{}.jsonl",
+            std::process::id(),
+            now_millis()
+        ));
+
+        soft_delete_impl(&mut conn, "ses_a", &dump).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM session WHERE id = 'ses_a'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM message WHERE session_id = 'ses_a'",
+                [],
+                |r| { r.get::<_, i64>(0) }
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(OpencodeSource.trash_title(&dump), "Greeting");
+
+        restore_impl(&mut conn, &dump).unwrap();
+        let page = list_sessions_impl(&conn, "proj1", 0, 10, false).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.sessions[0].id, "ses_a");
+        assert_eq!(read(&conn, "ses_a").unwrap().len(), 2);
+
+        let _ = fs::remove_file(dump);
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub mod agents;
 mod bookmarks;
 mod claude_config;
 mod cli_env;
+mod desktop_pet_assets;
 mod git;
 #[cfg(target_os = "macos")]
 mod menu;
@@ -251,23 +252,152 @@ fn check_watched_session(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn check_session_turns(app: tauri::AppHandle) -> Result<(), String> {
-    turn::check_session_turns(app)
-}
-
-#[tauri::command]
 fn terminal_turn_signal(
     app: tauri::AppHandle,
     agent: String,
     path: String,
     state: String,
 ) -> Result<(), String> {
-    turn::emit_turn_signal(&app, turn::TerminalTurnPayload { agent, path, state })
+    turn::emit_turn_signal(
+        &app,
+        turn::TerminalTurnPayload {
+            agent,
+            path,
+            state,
+            source: "hook".to_string(),
+        },
+    )
 }
 
 #[tauri::command]
-fn install_claude_turn_hooks() -> Result<String, String> {
-    turn::install_claude_hooks()
+fn install_turn_hooks() -> Result<turn::TurnHookInstallResult, String> {
+    turn::install_turn_hooks()
+}
+
+#[tauri::command]
+fn turn_hook_status() -> Result<turn::TurnHookStatus, String> {
+    turn::turn_hook_status()
+}
+
+#[tauri::command]
+fn desktop_pet_tasks() -> Result<Vec<turn::DesktopTask>, String> {
+    turn::desktop_task_snapshot()
+}
+
+#[derive(Clone, serde::Serialize)]
+struct DesktopPetSessionTarget {
+    agent: String,
+    path: String,
+}
+
+#[tauri::command]
+fn acknowledge_desktop_pet_task(
+    app: tauri::AppHandle,
+    agent: String,
+    path: String,
+) -> Result<(), String> {
+    if turn::acknowledge_desktop_task_by_path(&agent, &path)? {
+        app.emit(
+            "desktop-pet://activity-acknowledged",
+            DesktopPetSessionTarget { agent, path },
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn resolve_desktop_pet_session(
+    agent: String,
+    path: String,
+) -> Result<Option<turn::DesktopPetResolvedSession>, String> {
+    turn::resolve_desktop_pet_session(&agent, &path)
+}
+
+fn position_desktop_pet(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let Some(monitor) = window
+        .primary_monitor()
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+    let window_size = window.outer_size().map_err(|error| error.to_string())?;
+    let margin = 24;
+    let x = monitor_position.x + monitor_size.width as i32 - window_size.width as i32 - margin;
+    let y = monitor_position.y + monitor_size.height as i32 - window_size.height as i32 - margin;
+    window
+        .set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+            x.max(monitor_position.x),
+            y.max(monitor_position.y),
+        )))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_desktop_pet_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if !enabled {
+        if let Some(window) = app.get_webview_window("desktop-pet") {
+            window.close().map_err(|error| error.to_string())?;
+        }
+        return Ok(());
+    }
+
+    if let Some(window) = app.get_webview_window("desktop-pet") {
+        window.show().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "desktop-pet",
+        tauri::WebviewUrl::App("index.html?desktop-pet=1".into()),
+    )
+    .title("Codex Pet")
+    .inner_size(356.0, 320.0)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .shadow(false)
+    .visible(false)
+    .build()
+    .map_err(|error| error.to_string())?;
+    position_desktop_pet(&window)?;
+    window.show().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn focus_desktop_pet_main(app: tauri::AppHandle) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window is unavailable".to_string())?;
+    main.show().map_err(|error| error.to_string())?;
+    main.unminimize().map_err(|error| error.to_string())?;
+    main.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn open_desktop_pet_session(
+    app: tauri::AppHandle,
+    agent: String,
+    path: String,
+) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window is unavailable".to_string())?;
+    main.show().map_err(|error| error.to_string())?;
+    main.unminimize().map_err(|error| error.to_string())?;
+    main.set_focus().map_err(|error| error.to_string())?;
+    main.emit(
+        "desktop-pet://open-session",
+        DesktopPetSessionTarget { agent, path },
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -281,34 +411,103 @@ fn claude_runtime_info() -> Result<ClaudeRuntimeInfo, String> {
 #[tauri::command]
 fn codex_runtime_info() -> CodexRuntimeInfo {
     let config_path = util::home().join(".codex").join("config.toml");
-    let uses_api_key = fs::read_to_string(&config_path)
-        .ok()
-        .map(|content| {
-            content.lines().any(|l| {
-                let l = l.trim();
-                l.starts_with("model_provider")
-                    && l.contains('=')
-                    && !l.starts_with('#')
-                    && !l.starts_with('[')
-            })
-        })
-        .unwrap_or(false);
-    CodexRuntimeInfo { uses_api_key }
+    let content = fs::read_to_string(&config_path).unwrap_or_default();
+    let uses_api_key = content.lines().any(|l| {
+        let l = l.trim();
+        l.starts_with("model_provider")
+            && l.contains('=')
+            && !l.starts_with('#')
+            && !l.starts_with('[')
+    });
+    CodexRuntimeInfo {
+        uses_api_key,
+        model: top_level_toml_string(&content, "model"),
+        effort: top_level_toml_string(&content, "model_reasoning_effort"),
+    }
 }
 
-#[tauri::command]
-fn watch_session_turn(
-    app: tauri::AppHandle,
-    agent: String,
-    path: String,
-    catch_up: bool,
-) -> Result<(), String> {
-    turn::watch_session_turn(app, agent, path, catch_up)
+fn top_level_toml_string(content: &str, key: &str) -> Option<String> {
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            break;
+        }
+        let Some((k, value)) = line.split_once('=') else {
+            continue;
+        };
+        if k.trim() != key {
+            continue;
+        }
+        return parse_toml_string_value(value.trim());
+    }
+    None
 }
 
-#[tauri::command]
-fn unwatch_session_turn(path: String) -> Result<(), String> {
-    turn::unwatch_session_turn(path)
+fn parse_toml_string_value(value: &str) -> Option<String> {
+    let value = value.trim_start();
+    if !value.starts_with('"') {
+        return None;
+    }
+    let mut escaped = false;
+    let mut out = String::new();
+    for ch in value[1..].chars() {
+        if escaped {
+            let decoded = match ch {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '"' => '"',
+                '\\' => '\\',
+                other => other,
+            };
+            out.push(decoded);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Some(out),
+            other => out.push(other),
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod codex_runtime_tests {
+    use super::top_level_toml_string;
+
+    #[test]
+    fn reads_top_level_codex_model() {
+        let content = r#"
+model_provider = "custom"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+
+[model_providers.custom]
+model = "provider-level"
+"#;
+        assert_eq!(
+            top_level_toml_string(content, "model").as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            top_level_toml_string(content, "model_reasoning_effort").as_deref(),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn ignores_section_values() {
+        let content = r#"
+[model_providers.custom]
+model = "provider-level"
+"#;
+        assert_eq!(top_level_toml_string(content, "model"), None);
+    }
 }
 
 /// 单个会话的 token 用量汇总（按 path + mtime 缓存）。
@@ -2034,13 +2233,18 @@ pub fn run() {
             watch_session,
             unwatch_session,
             check_watched_session,
-            check_session_turns,
             terminal_turn_signal,
-            install_claude_turn_hooks,
+            install_turn_hooks,
+            turn_hook_status,
+            desktop_pet_tasks,
+            acknowledge_desktop_pet_task,
+            resolve_desktop_pet_session,
+            desktop_pet_assets::desktop_pet_catalog,
+            set_desktop_pet_enabled,
+            focus_desktop_pet_main,
+            open_desktop_pet_session,
             claude_runtime_info,
             codex_runtime_info,
-            watch_session_turn,
-            unwatch_session_turn,
             session_usage,
             session_last_prompt,
             session_context_usage,

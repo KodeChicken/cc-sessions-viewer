@@ -82,6 +82,13 @@ pub struct CodexRuntimeInfo {
     /// `true` = 用户通过第三方 API key / 自定义端点使用 Codex（config.toml 里
     /// `model_provider` 不是官方默认值）。前端据此隐藏仅官方订阅可用的模型。
     pub uses_api_key: bool,
+    /// ~/.codex/config.toml 顶层 `model`。自定义 provider 下仅用于前端显示/勾选，
+    /// 不代表 GUI chat 会强制下发该模型。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// ~/.codex/config.toml 顶层 `model_reasoning_effort`。保留给 UI 展示/后续扩展。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// `reclaude_info` 返回：本地 reclaude 守护进程的运行状态，供前端判断能否启用代理。

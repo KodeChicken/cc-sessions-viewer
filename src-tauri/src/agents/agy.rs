@@ -721,42 +721,6 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
     Ok(msgs)
 }
 
-// ── turn-state 分类（供 turn.rs 的文件 watcher） ──
-
-pub fn classify_turn_state(value: &Value) -> Option<&'static str> {
-    let step_type = value.get("type").and_then(Value::as_str)?;
-    let source = value.get("source").and_then(Value::as_str).unwrap_or("");
-    match (source, step_type) {
-        ("USER_EXPLICIT", "USER_INPUT") => {
-            let content = value.get("content").and_then(Value::as_str).unwrap_or("");
-            let req = extract_user_request(content);
-            if req.is_empty() {
-                None
-            } else {
-                Some("started")
-            }
-        }
-        ("MODEL", "PLANNER_RESPONSE") => {
-            let has_content = value
-                .get("content")
-                .and_then(Value::as_str)
-                .is_some_and(|s| !s.trim().is_empty());
-            let has_thinking = value
-                .get("thinking")
-                .and_then(Value::as_str)
-                .is_some_and(|s| !s.trim().is_empty());
-            if has_content || has_thinking {
-                Some("completed")
-            } else {
-                None
-            }
-        }
-        ("MODEL", "ASK_QUESTION") => Some("blocked"),
-        (_, "ERROR") => Some("failed"),
-        _ => None,
-    }
-}
-
 // ── read_turns（统计用） ──
 
 fn last_user_text(fp: &Path) -> Option<String> {
@@ -1149,73 +1113,6 @@ mod tests {
             extract_code_action_file(content),
             Some("/Users/wuchao/apps/project/src/foo.ts".to_string())
         );
-    }
-
-    #[test]
-    fn classify_turn_state_user_input_started() {
-        let v = serde_json::json!({
-            "type": "USER_INPUT",
-            "source": "USER_EXPLICIT",
-            "content": "<USER_REQUEST>\nhi\n</USER_REQUEST>"
-        });
-        assert_eq!(classify_turn_state(&v), Some("started"));
-    }
-
-    #[test]
-    fn classify_turn_state_empty_user_input_ignored() {
-        let v = serde_json::json!({
-            "type": "USER_INPUT",
-            "source": "USER_EXPLICIT",
-            "content": "<USER_REQUEST>\n\n</USER_REQUEST>"
-        });
-        assert_eq!(classify_turn_state(&v), None);
-    }
-
-    #[test]
-    fn classify_turn_state_planner_response_completed() {
-        let v = serde_json::json!({
-            "type": "PLANNER_RESPONSE",
-            "source": "MODEL",
-            "content": "Here is my answer."
-        });
-        assert_eq!(classify_turn_state(&v), Some("completed"));
-    }
-
-    #[test]
-    fn classify_turn_state_planner_with_only_thinking_completed() {
-        let v = serde_json::json!({
-            "type": "PLANNER_RESPONSE",
-            "source": "MODEL",
-            "content": "",
-            "thinking": "Let me think about this."
-        });
-        assert_eq!(classify_turn_state(&v), Some("completed"));
-    }
-
-    #[test]
-    fn classify_turn_state_empty_planner_ignored() {
-        let v = serde_json::json!({
-            "type": "PLANNER_RESPONSE",
-            "source": "MODEL",
-            "content": ""
-        });
-        assert_eq!(classify_turn_state(&v), None);
-    }
-
-    #[test]
-    fn classify_turn_state_ask_question_blocked() {
-        let v = serde_json::json!({
-            "type": "ASK_QUESTION",
-            "source": "MODEL",
-            "content": "Which option?"
-        });
-        assert_eq!(classify_turn_state(&v), Some("blocked"));
-    }
-
-    #[test]
-    fn classify_turn_state_error_failed() {
-        let v = serde_json::json!({"type": "ERROR", "source": "SYSTEM"});
-        assert_eq!(classify_turn_state(&v), Some("failed"));
     }
 
     #[test]
