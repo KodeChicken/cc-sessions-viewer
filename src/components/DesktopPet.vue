@@ -542,6 +542,7 @@ watch(
   position: absolute;
   right: calc(var(--desktop-pet-size) + 14px);
   bottom: 28px;
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -603,6 +604,7 @@ watch(
   position: absolute;
   left: 8px;
   bottom: 64px;
+  box-sizing: border-box;
   width: 226px;
   max-height: 222px;
   padding: 8px;
