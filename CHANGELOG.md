@@ -6,6 +6,41 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.3.9]
+
+### Bug Fixes
+
+- **Desktop pet activity clipping** — adjusted the floating pet activity layer so task status content is no longer clipped by the transparent pet window.
+- **Desktop pet activity display** — simplified the activity UI to reduce overlay complexity while keeping the active task state visible and covered by component tests.
+
+### Performance
+
+- **Bundled desktop pet spritesheets** — recompressed the nine bundled Codex pet WebP atlases with conservative alpha settings, reducing the spritesheet payload from about 11.28 MiB to about 2.09 MiB while preserving the 1536 × 2288 atlas dimensions.
+
+## [v0.3.8]
+
+### Bug Fixes
+
+- **Bundled Codex pets** — included the full Codex desktop pet sprite catalog so users without a detectable Codex/ChatGPT desktop install still have all official pets available, and stabilized the hover animation behavior.
+- **Windows event loop crashes** — patched the vendored `tao` event loop integration to prevent reentrant event loop crashes on Windows and added panic logging support around that path.
+- **Vendored `tao` warnings** — silenced warnings from the vendored windowing dependency so strict Rust warning checks stay clean.
+
+## [v0.3.7]
+
+### Features
+
+- **Terminal selection deletion** — terminal input now tracks cursor/selection state closely enough to delete selected in-terminal text with Backspace, with focused coverage for selection and tab-status behavior.
+
+### Bug Fixes
+
+- **Codex terminal scrollback** — preserved Codex terminal scrollback across terminal lifecycle updates so existing output is not dropped unexpectedly.
+- **Desktop pet window bounds** — tightened the desktop pet transparent window bounds so the pet and status content use less unnecessary screen area.
+- **Terminal Backspace selection handling** — refined Backspace behavior around terminal selections to avoid leaving stale selected text behind.
+
+### Maintenance
+
+- **Local worktrees** — ignored local worktree directories to keep repository status cleaner during development.
+
 ## [v0.3.6]
 
 ### Features
