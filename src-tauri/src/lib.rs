@@ -355,7 +355,7 @@ async fn set_desktop_pet_enabled(app: tauri::AppHandle, enabled: bool) -> Result
         tauri::WebviewUrl::App("index.html?desktop-pet=1".into()),
     )
     .title("Codex Pet")
-    .inner_size(356.0, 320.0)
+    .inner_size(258.0, 138.0)
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
