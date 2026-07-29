@@ -157,28 +157,22 @@ describe('DesktopPet', () => {
     wrapper.unmount()
   })
 
-  it('expands the transparent window only when activity controls need room', async () => {
-    taskSnapshot = [{
-      agent: 'codex',
-      path: 'running',
-      state: 'started',
-      title: 'Running task',
-      updatedAt: 40,
-    }]
+  it('keeps the transparent window at avatar size while activity drives animation', async () => {
+    taskSnapshot = [
+      { agent: 'codex', path: 'running', state: 'started', title: 'Running task', updatedAt: 40 },
+      { agent: 'claude', path: 'ready', state: 'completed', title: 'Ready task', updatedAt: 30 },
+      { agent: 'agy', path: 'failed', state: 'failed', title: 'Failed task', updatedAt: 20 },
+      { agent: 'claude', path: 'approval', state: 'blocked', title: 'Approval task', updatedAt: 10 },
+    ]
     setDesktopPetSize(80)
     const wrapper = await factory()
 
-    expect(setSizeMock).toHaveBeenCalledWith(expect.objectContaining({
-      width: 226,
-      height: 103,
-    }))
-
-    await wrapper.get('.activity-trigger').trigger('mouseenter')
-    await flushPromises()
-    expect(setSizeMock).toHaveBeenCalledWith(expect.objectContaining({
-      width: 242,
-      height: 294,
-    }))
+    expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('waiting')
+    expect(wrapper.find('.activity-trigger').exists()).toBe(false)
+    expect(wrapper.find('.activity-tray').exists()).toBe(false)
+    for (const [size] of setSizeMock.mock.calls) {
+      expect(size).toEqual(expect.objectContaining({ width: 96, height: 103 }))
+    }
     wrapper.unmount()
   })
 
@@ -228,19 +222,12 @@ describe('DesktopPet', () => {
     const avatar = wrapper.get('.avatar-button')
 
     expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('waiting')
-    expect(wrapper.get('.activity-trigger').attributes('data-state')).toBe('blocked')
+    expect(wrapper.find('.activity-trigger').exists()).toBe(false)
     await avatar.trigger('pointerenter')
     expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('waving')
     await avatar.trigger('pointerleave')
     expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('waiting')
 
-    await wrapper.get('.activity-trigger').trigger('mouseenter')
-    expect(wrapper.findAll('.activity-item').map((item) => item.classes().find((name) => name.startsWith('is-')))).toEqual([
-      'is-blocked',
-      'is-failed',
-      'is-completed',
-      'is-started',
-    ])
     wrapper.unmount()
   })
 
@@ -257,14 +244,7 @@ describe('DesktopPet', () => {
     await eventHandlers.get('terminal-turn://state')?.({ payload: {} })
     await flushPromises()
     expect(wrapper.get('.pet-atlas-sprite').attributes('data-state')).toBe('review')
-
-    await wrapper.get('.activity-trigger').trigger('mouseenter')
-    await wrapper.get('.activity-item').trigger('click')
-    expect(invokeMock).toHaveBeenCalledWith('open_desktop_pet_session', {
-      agent: 'codex',
-      path: 'C:/sessions/ready.jsonl',
-    })
-    expect(wrapper.find('.activity-trigger').exists()).toBe(true)
+    expect(wrapper.find('.activity-trigger').exists()).toBe(false)
 
     taskSnapshot = []
     await eventHandlers.get('desktop-pet://activity-acknowledged')?.({ payload: {} })
