@@ -22,6 +22,7 @@ mod desktop_pet_assets;
 mod git;
 #[cfg(target_os = "macos")]
 mod menu;
+mod panic_log;
 mod pty;
 pub mod stats;
 mod trash;
@@ -2208,6 +2209,7 @@ fn pin_traffic_lights(window: &tauri::WebviewWindow) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    panic_log::install();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())

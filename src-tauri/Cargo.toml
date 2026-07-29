@@ -60,6 +60,11 @@ uuid = { version = "1", features = ["v4"] }
 default = []
 dev-mcp = ["tauri-plugin-mcp-bridge"]
 
+[patch.crates-io]
+# tao 0.35.x aborts the whole Windows process when Win32 paint/event dispatch
+# re-enters the event loop. Keep this local patch until upstream ships a fix.
+tao = { path = "../vendor/tao" }
+
 [profile.release]
 strip = true
 lto = true
