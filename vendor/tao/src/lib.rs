@@ -143,7 +143,10 @@
   clippy::type_complexity,
   clippy::identity_op,
   clippy::wrong_self_convention,
-  clippy::non_send_fields_in_send_ty
+  clippy::non_send_fields_in_send_ty,
+  dead_code,
+  deprecated,
+  unused_unsafe
 )]
 #![deny(rustdoc::broken_intra_doc_links)]
 
