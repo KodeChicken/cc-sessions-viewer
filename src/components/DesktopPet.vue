@@ -18,16 +18,13 @@ import {
   fetchDesktopPetTasks,
   focusDesktopPetMain,
   loadDesktopPetCatalog,
-  openDesktopPetSession,
   setDesktopPetCharacter,
   setDesktopPetPosition,
   setDesktopPetSize,
-  sortDesktopTasks,
   type DesktopPetCharacter,
   type DesktopTask,
   type DesktopTaskState,
 } from '../desktopPet'
-import { t } from '../i18n'
 import DesktopPetFallback from './DesktopPetFallback.vue'
 import PetAtlasPlayer, { type PetAnimationState } from './PetAtlasPlayer.vue'
 
@@ -58,26 +55,18 @@ const lookFrame = ref<number | null>(null)
 const gazeActive = ref(false)
 const baseState = ref<PetAnimationState>('waving')
 const tasks = ref<DesktopTask[]>([])
-const activityOpen = ref(false)
-const orderedTasks = computed(() => sortDesktopTasks(tasks.value))
 const dominantTaskState = computed(() => dominantDesktopTaskState(tasks.value))
 const taskPresentation: Record<DesktopTaskState, {
   animation: PetAnimationState
-  icon: string
-  labelKey: string
 }> = {
-  blocked: { animation: 'waiting', icon: '?', labelKey: 'desktopPet.activity.needsInput' },
-  failed: { animation: 'failed', icon: '!', labelKey: 'desktopPet.activity.blocked' },
-  completed: { animation: 'review', icon: '✓', labelKey: 'desktopPet.activity.ready' },
-  started: { animation: 'running', icon: '▶', labelKey: 'desktopPet.activity.running' },
+  blocked: { animation: 'waiting' },
+  failed: { animation: 'failed' },
+  completed: { animation: 'review' },
+  started: { animation: 'running' },
 }
 const activityAnimation = computed<PetAnimationState | null>(() => {
   const state = dominantTaskState.value
   return state ? taskPresentation[state].animation : null
-})
-const dominantPresentation = computed(() => {
-  const state = dominantTaskState.value
-  return state ? taskPresentation[state] : taskPresentation.started
 })
 const spritesheetSrc = computed(() => activeDesktopPet.value
   ? convertFileSrc(activeDesktopPet.value.spritesheetPath)
@@ -105,17 +94,11 @@ const avatarStyle = computed(() => ({
 const windowSize = computed(() => {
   const avatarWidth = desktopPetSize.value + 16
   const avatarHeight = Math.ceil(desktopPetSize.value * 208 / 192) + 16
-  const activityWidth = orderedTasks.value.length ? desktopPetSize.value + 146 : 0
-  const trayWidth = activityOpen.value ? 242 : 0
-  const trayHeight = activityOpen.value ? 294 : 0
   return {
-    width: Math.ceil(Math.max(avatarWidth, activityWidth, trayWidth)),
-    height: Math.ceil(Math.max(avatarHeight, trayHeight)),
+    width: Math.ceil(avatarWidth),
+    height: Math.ceil(avatarHeight),
   }
 })
-const overlayStyle = computed(() => ({
-  '--desktop-pet-size': `${desktopPetSize.value}px`,
-}))
 
 let dragSession: DragSession | null = null
 let pendingWindowPosition: { x: number; y: number } | null = null
@@ -124,50 +107,36 @@ let cursorTimer: ReturnType<typeof setInterval> | null = null
 let wakeTimer: ReturnType<typeof setTimeout> | null = null
 let gazeTimer: ReturnType<typeof setTimeout> | null = null
 let lastCursorPosition: { x: number; y: number } | null = null
-let activityCloseTimer: ReturnType<typeof setTimeout> | null = null
 let cursorPollPending = false
 let unlisten: UnlistenFn[] = []
 
 async function syncWindowSize() {
   const next = windowSize.value
-  await currentWindow.setSize(new LogicalSize(next.width, next.height)).catch(() => {})
+  try {
+    const [position, size, scaleFactor] = await Promise.all([
+      currentWindow.outerPosition(),
+      currentWindow.outerSize(),
+      currentWindow.scaleFactor(),
+    ])
+    await currentWindow.setSize(new LogicalSize(next.width, next.height))
+    const nextSize = await currentWindow.outerSize().catch(() => ({
+      width: Math.round(next.width * scaleFactor),
+      height: Math.round(next.height * scaleFactor),
+    }))
+    await currentWindow.setPosition(new PhysicalPosition(
+      Math.round(position.x + size.width - nextSize.width),
+      Math.round(position.y + size.height - nextSize.height),
+    ))
+  } catch {
+    await currentWindow.setSize(new LogicalSize(next.width, next.height)).catch(() => {})
+  }
 }
 
 async function refreshTasks() {
   try {
     tasks.value = await fetchDesktopPetTasks()
-    if (!tasks.value.length) activityOpen.value = false
   } catch (error) {
     console.warn('[desktop-pet] failed to load task activity:', error)
-  }
-}
-
-function showActivity() {
-  if (activityCloseTimer) clearTimeout(activityCloseTimer)
-  activityCloseTimer = null
-  activityOpen.value = true
-}
-
-function scheduleActivityClose() {
-  if (activityCloseTimer) clearTimeout(activityCloseTimer)
-  activityCloseTimer = setTimeout(() => {
-    activityOpen.value = false
-    activityCloseTimer = null
-  }, 220)
-}
-
-function formatAgent(agent: string) {
-  if (agent === 'claude') return 'Claude Code'
-  if (agent === 'codex') return 'Codex'
-  if (agent === 'agy') return 'Antigravity'
-  return agent
-}
-
-async function openTask(task: DesktopTask) {
-  try {
-    await openDesktopPetSession(task)
-  } catch (error) {
-    console.warn('[desktop-pet] failed to open task activity:', error)
   }
 }
 
@@ -414,67 +383,20 @@ onUnmounted(() => {
   if (cursorTimer) clearInterval(cursorTimer)
   if (wakeTimer) clearTimeout(wakeTimer)
   if (gazeTimer) clearTimeout(gazeTimer)
-  if (activityCloseTimer) clearTimeout(activityCloseTimer)
   window.removeEventListener('pointerup', endDrag)
   window.removeEventListener('pointercancel', cancelDrag)
   for (const stop of unlisten) stop()
 })
 
 watch(
-  () => [desktopPetSize.value, orderedTasks.value.length, activityOpen.value],
+  () => desktopPetSize.value,
   () => { void syncWindowSize() },
   { immediate: true },
 )
 </script>
 
 <template>
-  <main class="desktop-avatar-overlay" :style="overlayStyle" @pointermove="updateLocalLook">
-    <section v-if="orderedTasks.length" class="activity-shell no-drag">
-      <button
-        type="button"
-        class="activity-trigger"
-        :class="`is-${dominantTaskState}`"
-        :data-state="dominantTaskState"
-        :aria-expanded="activityOpen"
-        @click="activityOpen ? scheduleActivityClose() : showActivity()"
-        @mouseenter="showActivity"
-        @mouseleave="scheduleActivityClose"
-        @focus="showActivity"
-        @blur="scheduleActivityClose"
-      >
-        <span class="activity-trigger-icon">{{ dominantPresentation.icon }}</span>
-        <span>{{ t(dominantPresentation.labelKey) }}</span>
-      </button>
-
-      <Transition name="activity-tray">
-        <div
-          v-if="activityOpen"
-          class="activity-tray"
-          @mouseenter="showActivity"
-          @mouseleave="scheduleActivityClose"
-        >
-          <div class="activity-tray-title">{{ t('desktopPet.activity.title') }}</div>
-          <div class="activity-list">
-            <button
-              v-for="task in orderedTasks"
-              :key="`${task.agent}:${task.path}`"
-              type="button"
-              class="activity-item"
-              :class="`is-${task.state}`"
-              @click="openTask(task)"
-            >
-              <span class="activity-item-icon">{{ taskPresentation[task.state].icon }}</span>
-              <span class="activity-item-copy">
-                <span class="activity-item-agent">{{ formatAgent(task.agent) }}</span>
-                <span class="activity-item-title">{{ task.title }}</span>
-              </span>
-              <span class="activity-item-status">{{ t(taskPresentation[task.state].labelKey) }}</span>
-            </button>
-          </div>
-        </div>
-      </Transition>
-    </section>
-
+  <main class="desktop-avatar-overlay" @pointermove="updateLocalLook">
     <div
       ref="characterArea"
       class="avatar-button"
@@ -528,166 +450,6 @@ watch(
   height: 100%;
   overflow: hidden;
   user-select: none;
-}
-
-.activity-shell {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  pointer-events: none;
-  font-family: Inter, ui-rounded, "SF Pro Rounded", "Microsoft YaHei", sans-serif;
-}
-
-.activity-trigger {
-  position: absolute;
-  right: calc(var(--desktop-pet-size) + 14px);
-  bottom: 28px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 116px;
-  min-height: 30px;
-  padding: 5px 9px 5px 6px;
-  border: 1px solid rgba(74, 67, 91, .13);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, .92);
-  box-shadow: 0 7px 20px rgba(42, 34, 64, .15);
-  color: #51495e;
-  font: 600 11px/1.2 inherit;
-  white-space: nowrap;
-  cursor: pointer;
-  pointer-events: auto;
-  backdrop-filter: blur(12px);
-}
-
-.activity-trigger:hover,
-.activity-trigger:focus-visible {
-  transform: translateY(-1px);
-  border-color: rgba(102, 84, 171, .26);
-  outline: none;
-}
-
-.activity-trigger-icon,
-.activity-item-icon {
-  display: inline-grid;
-  place-items: center;
-  flex: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #eef0ff;
-  color: #6555a4;
-  font-size: 10px;
-  font-weight: 800;
-}
-
-.activity-trigger.is-blocked .activity-trigger-icon,
-.activity-item.is-blocked .activity-item-icon {
-  background: #fff2d9;
-  color: #a56608;
-}
-
-.activity-trigger.is-failed .activity-trigger-icon,
-.activity-item.is-failed .activity-item-icon {
-  background: #ffe9ec;
-  color: #c34758;
-}
-
-.activity-trigger.is-completed .activity-trigger-icon,
-.activity-item.is-completed .activity-item-icon {
-  background: #e5f7ee;
-  color: #23865a;
-}
-
-.activity-tray {
-  position: absolute;
-  left: 8px;
-  bottom: 64px;
-  width: 226px;
-  max-height: 222px;
-  padding: 8px;
-  overflow: hidden;
-  border: 1px solid rgba(66, 57, 84, .12);
-  border-radius: 15px;
-  background: rgba(255, 255, 255, .95);
-  box-shadow: 0 16px 38px rgba(37, 29, 55, .2);
-  pointer-events: auto;
-  backdrop-filter: blur(18px);
-}
-
-.activity-tray-title {
-  padding: 2px 6px 7px;
-  color: #6c6477;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.activity-list {
-  display: grid;
-  gap: 4px;
-  max-height: 190px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-}
-
-.activity-item {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  min-height: 42px;
-  padding: 6px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: #494251;
-  text-align: left;
-  cursor: pointer;
-}
-
-.activity-item:hover,
-.activity-item:focus-visible {
-  background: rgba(103, 87, 159, .08);
-  outline: none;
-}
-
-.activity-item-copy {
-  display: grid;
-  min-width: 0;
-}
-
-.activity-item-agent {
-  color: #8a8293;
-  font-size: 9px;
-  font-weight: 700;
-}
-
-.activity-item-title {
-  overflow: hidden;
-  color: #443d4c;
-  font-size: 11px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.activity-item-status {
-  color: #8a8293;
-  font-size: 9px;
-  white-space: nowrap;
-}
-
-.activity-tray-enter-active,
-.activity-tray-leave-active {
-  transition: opacity 140ms ease, transform 140ms ease;
-  transform-origin: bottom right;
-}
-
-.activity-tray-enter-from,
-.activity-tray-leave-to {
-  opacity: 0;
-  transform: translateY(5px) scale(.98);
 }
 
 .avatar-button {
