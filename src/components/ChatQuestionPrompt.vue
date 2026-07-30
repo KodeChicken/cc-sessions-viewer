@@ -5,7 +5,7 @@
 // 多问题时一次只展示一题，用 上一题 / 下一题 翻页（对齐原生体验），最后一题才出现提交。
 import { computed, reactive, ref } from 'vue'
 import { t } from '../i18n'
-import type { ChatQuestionItem, ChatQuestionRequest } from '../types'
+import type { Agent, ChatQuestionItem, ChatQuestionRequest } from '../types'
 import {
   allQuestionsAnswered,
   questionAnswered,
@@ -14,7 +14,9 @@ import {
 } from '../chatQuestion'
 import { IconHelpCircle, IconCheck, IconClose, IconChevronRight, IconArrowLeft } from './icons'
 
-const props = defineProps<{ request: ChatQuestionRequest }>()
+const props = withDefaults(defineProps<{ request: ChatQuestionRequest; agent?: Agent }>(), {
+  agent: 'claude',
+})
 const emit = defineEmits<{
   (e: 'submit', selections: QuestionSelection[]): void
   (e: 'cancel'): void
@@ -44,6 +46,7 @@ const cur = ref(0) // 当前展示第几题（翻页）
 const total = computed(() => props.request.questions.length)
 const current = computed(() => props.request.questions[cur.value])
 const isLast = computed(() => cur.value >= total.value - 1)
+const agentLabel = computed(() => (props.agent === 'codex' ? 'Codex' : 'Claude'))
 
 const selections = computed<QuestionSelection[]>(() =>
   state.map((s) => ({
@@ -57,6 +60,7 @@ const canSubmit = computed(() => allQuestionsAnswered(props.request, selections.
 
 const answeredAt = (i: number) => questionAnswered(selections.value[i])
 const hasPreview = (q: ChatQuestionItem) => questionHasPreview(q)
+const allowOther = (q: ChatQuestionItem) => q.allowOther !== false
 
 function isChecked(qi: number, label: string): boolean {
   return state[qi].labels.includes(label)
@@ -128,7 +132,7 @@ function proceed() {
   <div class="q-prompt" role="alertdialog" aria-modal="false">
     <div class="q-head">
       <IconHelpCircle class="q-icon" />
-      <span class="q-title">{{ t('chat.question.title') }}</span>
+      <span class="q-title">{{ t('chat.question.title', { agent: agentLabel }) }}</span>
       <span v-if="total > 1" class="q-progress">{{ cur + 1 }} / {{ total }}</span>
     </div>
 
@@ -164,7 +168,7 @@ function proceed() {
             <span class="q-mark" :class="current.multiSelect ? 'box' : 'dot'"></span>
           </button>
 
-          <div class="q-opt q-other" :class="{ on: state[cur].otherOn }">
+          <div v-if="allowOther(current)" class="q-opt q-other" :class="{ on: state[cur].otherOn }">
             <button type="button" class="q-other-toggle" @click="toggleOther(cur, current)">
               <span class="q-opt-label">{{ t('chat.question.other') }}</span>
               <span class="q-mark" :class="current.multiSelect ? 'box' : 'dot'"></span>

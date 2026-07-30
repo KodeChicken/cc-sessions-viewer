@@ -13,9 +13,28 @@ use crate::types::{Block, DiffHunk, DiffLine, Msg, ProjectFileEntry};
 /// `@` 文件浮层永远跳过的重目录（构建产物 / 依赖 / VCS）。点文件（`.codex` 等）保留 ——
 /// 用户就是要 @ 它们。
 const SKIP_DIRS: &[&str] = &[
-    ".git", "node_modules", "target", "dist", "build", "out", "coverage", ".next",
-    ".nuxt", ".svelte-kit", ".turbo", ".cache", "vendor", ".venv", "venv",
-    "__pycache__", ".idea", "Pods", "DerivedData", ".dart_tool", ".gradle", ".fvm",
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "out",
+    "coverage",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".turbo",
+    ".cache",
+    "vendor",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".idea",
+    "Pods",
+    "DerivedData",
+    ".dart_tool",
+    ".gradle",
+    ".fvm",
 ];
 
 /// 目录是否含**可见子项**（任一非 .DS_Store、非 SKIP_DIRS 的条目）。空目录 / 只含被跳过
@@ -165,13 +184,18 @@ pub fn truncate_subtitle(raw: &str) -> String {
     static RE_STRIP: Lazy<regex_lite::Regex> = Lazy::new(|| {
         regex_lite::Regex::new(r"@\[?[A-Za-z0-9_./-]+\]?|\[Image[^\]]*\]|\!\[[^\]]*\]").unwrap()
     });
-    let line = raw.lines()
+    let line = raw
+        .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('<') && !l.starts_with("Caveat:"))
         .find_map(|l| {
             let stripped = RE_STRIP.replace_all(l, "");
             let trimmed = stripped.trim().to_string();
-            if trimmed.is_empty() { None } else { Some(trimmed) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
         })
         .unwrap_or_default();
     let cleaned = std::borrow::Cow::Borrowed(line.as_str());
@@ -223,7 +247,20 @@ pub fn format_iso8601_utc(secs: i64, ms: u32) -> String {
         year += 1;
     }
     let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mdays = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month: usize = 0;
     while month < 12 && days >= mdays[month] as i64 {
         days -= mdays[month] as i64;
@@ -294,7 +331,16 @@ pub fn parse_iso8601_ms(s: &str) -> Option<i64> {
     let mdays: [i64; 12] = [
         31,
         if leap { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
     for &md in mdays.iter().take((mon - 1) as usize) {
         days += md;
@@ -408,11 +454,13 @@ pub fn append_jsonl_line(path: &Path, line: &str) -> Result<(), String> {
         .open(path)
         .map_err(|e| format!("Failed to open session file: {e}"))?;
     if needs_nl {
-        f.write_all(b"\n").map_err(|e| format!("Failed to append newline: {e}"))?;
+        f.write_all(b"\n")
+            .map_err(|e| format!("Failed to append newline: {e}"))?;
     }
     f.write_all(line.as_bytes())
         .map_err(|e| format!("Failed to write rename entry: {e}"))?;
-    f.write_all(b"\n").map_err(|e| format!("Failed to write newline: {e}"))?;
+    f.write_all(b"\n")
+        .map_err(|e| format!("Failed to write newline: {e}"))?;
     Ok(())
 }
 
@@ -609,10 +657,19 @@ mod tests {
         let dir = scratch("filter");
         // 末段是过滤词（VS Code 路径式 `<dir>/<filter>`）。顶层用 "codex" 过滤。
         let top = list_project_files(dir.to_str().unwrap(), "codex", 200);
-        assert_eq!(top.iter().map(|e| e.rel_path.as_str()).collect::<Vec<_>>(), vec![".codex"]);
+        assert_eq!(
+            top.iter().map(|e| e.rel_path.as_str()).collect::<Vec<_>>(),
+            vec![".codex"]
+        );
         // 进入后再用末段过滤：.codex/ 下含 "sk" 的只有 skills。
         let nested = list_project_files(dir.to_str().unwrap(), ".codex/sk", 200);
-        assert_eq!(nested.iter().map(|e| e.rel_path.as_str()).collect::<Vec<_>>(), vec![".codex/skills"]);
+        assert_eq!(
+            nested
+                .iter()
+                .map(|e| e.rel_path.as_str())
+                .collect::<Vec<_>>(),
+            vec![".codex/skills"]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -624,7 +681,13 @@ mod tests {
         assert!(out.is_empty());
         // 即便显式进入 node_modules/，也按「跳过」处理（不列内容）。
         let inside = list_project_files(dir.to_str().unwrap(), "node_modules/", 200);
-        assert_eq!(inside.iter().map(|e| e.rel_path.as_str()).collect::<Vec<_>>(), vec!["node_modules/pkg"]);
+        assert_eq!(
+            inside
+                .iter()
+                .map(|e| e.rel_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["node_modules/pkg"]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -645,15 +708,25 @@ mod tests {
     fn git_branch_reads_ref_head() {
         let dir = git_scratch("ref");
         fs::write(dir.join(".git/HEAD"), "ref: refs/heads/feature/chat\n").unwrap();
-        assert_eq!(git_current_branch(dir.to_str().unwrap()).as_deref(), Some("feature/chat"));
+        assert_eq!(
+            git_current_branch(dir.to_str().unwrap()).as_deref(),
+            Some("feature/chat")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn git_branch_detached_head_is_short_sha() {
         let dir = git_scratch("detached");
-        fs::write(dir.join(".git/HEAD"), "0123456789abcdef0123456789abcdef01234567\n").unwrap();
-        assert_eq!(git_current_branch(dir.to_str().unwrap()).as_deref(), Some("0123456"));
+        fs::write(
+            dir.join(".git/HEAD"),
+            "0123456789abcdef0123456789abcdef01234567\n",
+        )
+        .unwrap();
+        assert_eq!(
+            git_current_branch(dir.to_str().unwrap()).as_deref(),
+            Some("0123456")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -663,7 +736,10 @@ mod tests {
         fs::write(dir.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         let sub = dir.join("a/b/c");
         fs::create_dir_all(&sub).unwrap();
-        assert_eq!(git_current_branch(sub.to_str().unwrap()).as_deref(), Some("main"));
+        assert_eq!(
+            git_current_branch(sub.to_str().unwrap()).as_deref(),
+            Some("main")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -676,8 +752,15 @@ mod tests {
         fs::write(real_gitdir.join("HEAD"), "ref: refs/heads/wt-branch\n").unwrap();
         let wt = dir.join("wt");
         fs::create_dir_all(&wt).unwrap();
-        fs::write(wt.join(".git"), format!("gitdir: {}\n", real_gitdir.display())).unwrap();
-        assert_eq!(git_current_branch(wt.to_str().unwrap()).as_deref(), Some("wt-branch"));
+        fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}\n", real_gitdir.display()),
+        )
+        .unwrap();
+        assert_eq!(
+            git_current_branch(wt.to_str().unwrap()).as_deref(),
+            Some("wt-branch")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -758,7 +841,10 @@ mod tests {
     #[test]
     fn resolve_file_ref_none_when_missing_or_empty() {
         let dir = ref_scratch("missing");
-        assert_eq!(resolve_file_ref(dir.to_str().unwrap(), "nope/ghost.dart"), None);
+        assert_eq!(
+            resolve_file_ref(dir.to_str().unwrap(), "nope/ghost.dart"),
+            None
+        );
         assert_eq!(resolve_file_ref("", "bank/refund_detail.dart"), None);
         assert_eq!(resolve_file_ref(dir.to_str().unwrap(), ""), None);
         let _ = fs::remove_dir_all(&dir);
@@ -843,11 +929,15 @@ fn lift_paths_from_text(text: &str) -> (Vec<Block>, String) {
         if looks_like_file_path(path) {
             temp.push_str(&cleaned_text[last..whole.start()]);
             last = whole.end();
-            let is_dir = path.ends_with('/') || path.ends_with('\\')
-                || std::path::Path::new(path).is_dir();
+            let is_dir =
+                path.ends_with('/') || path.ends_with('\\') || std::path::Path::new(path).is_dir();
             lifted.push(Block {
                 kind: "file".to_string(),
-                file_path: Some(path.trim_end_matches('/').trim_end_matches('\\').to_string()),
+                file_path: Some(
+                    path.trim_end_matches('/')
+                        .trim_end_matches('\\')
+                        .to_string(),
+                ),
                 is_dir: if is_dir { Some(true) } else { None },
                 ..Default::default()
             });
@@ -867,8 +957,9 @@ fn lift_paths_from_text(text: &str) -> (Vec<Block>, String) {
             [\w.@-]+ \. [a-zA-Z0-9]+
             (?: :\d+(?::\d+)? )?
         )
-        "#
-    ).expect("valid regex");
+        "#,
+    )
+    .expect("valid regex");
 
     let mut temp = String::new();
     let mut last = 0;
@@ -878,6 +969,9 @@ fn lift_paths_from_text(text: &str) -> (Vec<Block>, String) {
 
         let capture = caps.get(1).unwrap();
         let capture_start = capture.start();
+        if is_rust_diagnostic_location(&cleaned_text, capture_start) {
+            continue;
+        }
 
         temp.push_str(&cleaned_text[last..capture_start]);
         last = whole.end();
@@ -908,9 +1002,18 @@ fn lift_paths_from_text(text: &str) -> (Vec<Block>, String) {
     (lifted, remaining_text)
 }
 
+fn is_rust_diagnostic_location(text: &str, path_start: usize) -> bool {
+    let line_start = text[..path_start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    text[line_start..path_start].trim_end().ends_with("-->")
+}
+
 fn lift_path_block(path: &str, lifted: &mut Vec<Block>) {
-    if path.contains('{') || path.contains('}') || path.contains('$')
-        || path.contains('|') || path.contains('^') || path.contains('*')
+    if path.contains('{')
+        || path.contains('}')
+        || path.contains('$')
+        || path.contains('|')
+        || path.contains('^')
+        || path.contains('*')
     {
         return;
     }
@@ -940,9 +1043,10 @@ fn parse_line_as_path(line: &str) -> Option<String> {
         s = &s[1..];
     }
     if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
-        && s.len() >= 2 {
-            s = &s[1..s.len() - 1];
-        }
+        && s.len() >= 2
+    {
+        s = &s[1..s.len() - 1];
+    }
     s = s.trim();
     if s.is_empty() {
         return None;
@@ -966,9 +1070,12 @@ fn parse_line_as_path(line: &str) -> Option<String> {
             &s[2..] // drive letter C:
         };
         let has_sep = after_root.contains('/') || after_root.contains('\\');
-        let has_ext = after_root.rsplit_once('.').map(|(_, ext)| {
-            !ext.is_empty() && ext.len() <= 10 && ext.chars().all(|c| c.is_ascii_alphanumeric())
-        }).unwrap_or(false);
+        let has_ext = after_root
+            .rsplit_once('.')
+            .map(|(_, ext)| {
+                !ext.is_empty() && ext.len() <= 10 && ext.chars().all(|c| c.is_ascii_alphanumeric())
+            })
+            .unwrap_or(false);
         if has_sep || has_ext || std::path::Path::new(s).exists() {
             return Some(s.to_string());
         }
@@ -980,9 +1087,10 @@ fn parse_line_as_path(line: &str) -> Option<String> {
     }
 
     let has_sep = s.contains('/') || s.contains('\\');
-    let has_ext = s.rsplit_once('.').map(|(_, ext)| {
-        !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric())
-    }).unwrap_or(false);
+    let has_ext = s
+        .rsplit_once('.')
+        .map(|(_, ext)| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or(false);
 
     if (has_sep && has_ext) || std::path::Path::new(s).exists() {
         return Some(s.to_string());
@@ -992,6 +1100,9 @@ fn parse_line_as_path(line: &str) -> Option<String> {
 }
 
 fn looks_like_file_path(s: &str) -> bool {
+    if s.contains("://") {
+        return false;
+    }
     s.starts_with('/')
         || s.starts_with('~')
         || s.starts_with("./")
@@ -1043,22 +1154,35 @@ mod path_lifting_tests {
 
     #[test]
     fn test_parse_line_as_path() {
-        assert_eq!(parse_line_as_path("/var/folders/pic.png").unwrap(), "/var/folders/pic.png");
-        assert_eq!(parse_line_as_path("~/.config/config.json").unwrap(), "~/.config/config.json");
+        assert_eq!(
+            parse_line_as_path("/var/folders/pic.png").unwrap(),
+            "/var/folders/pic.png"
+        );
+        assert_eq!(
+            parse_line_as_path("~/.config/config.json").unwrap(),
+            "~/.config/config.json"
+        );
         assert_eq!(parse_line_as_path("@\"/abs/path\"").unwrap(), "/abs/path");
         assert_eq!(parse_line_as_path("not_a_path"), None);
     }
 
     #[test]
     fn test_lift_paths_from_text() {
-        let text = "/var/folders/some_image.png\n\nSome normal message\n/Users/jerry/document.pdf\nDone.";
+        let text =
+            "/var/folders/some_image.png\n\nSome normal message\n/Users/jerry/document.pdf\nDone.";
         let (blocks, remaining) = lift_paths_from_text(text);
         assert_eq!(blocks.len(), 2);
         // 文件不存在时一律 file chip（不渲染破碎图片）
         assert_eq!(blocks[0].kind, "file");
-        assert_eq!(blocks[0].file_path.as_deref().unwrap(), "/var/folders/some_image.png");
+        assert_eq!(
+            blocks[0].file_path.as_deref().unwrap(),
+            "/var/folders/some_image.png"
+        );
         assert_eq!(blocks[1].kind, "file");
-        assert_eq!(blocks[1].file_path.as_deref().unwrap(), "/Users/jerry/document.pdf");
+        assert_eq!(
+            blocks[1].file_path.as_deref().unwrap(),
+            "/Users/jerry/document.pdf"
+        );
         assert_eq!(remaining, "Some normal message\n\nDone.");
     }
 
@@ -1094,4 +1218,3 @@ mod path_lifting_tests {
         assert_eq!(remaining, "hello");
     }
 }
-

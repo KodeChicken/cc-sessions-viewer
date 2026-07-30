@@ -2,7 +2,7 @@
 //
 // 它们**不来自**磁盘扫描（headless 下 CLI 的内置斜杠命令不在 agentChatSlashCommands 里），
 // 而是前端硬编码一份，让用户能在浮层里发现 / 补全。提交行为分两类：
-//   · 客户端拦截（不发给 agent）：/model /export /rename /clear /fork /btw /side —— 见 chatSlashActions.ts；
+//   · 客户端拦截（不发给 agent）：/model /export /rename /clear /fork /btw /side /plan；
 //   · 透传给 agent（照常发送）：/compact /context /reload-skills。
 //
 // 描述走 i18n（随语言切换刷新），故对外是个函数而非常量。

@@ -6,6 +6,10 @@ import type { ChatPermissionRequest } from './types'
 
 export type PermissionChoice = 'allow-once' | 'always-allow' | 'deny'
 
+export function isExitPlanModeRequest(req: ChatPermissionRequest): boolean {
+  return req.toolName === 'ExitPlanMode'
+}
+
 /** 把 request.input 当对象安全读取（CLI 总会带工具参数对象，防御性兜底）。 */
 function inputObj(req: ChatPermissionRequest): Record<string, unknown> {
   return req.input && typeof req.input === 'object' && !Array.isArray(req.input)
@@ -19,6 +23,7 @@ export function permissionCommandPreview(req: ChatPermissionRequest): string | u
   const input = inputObj(req)
   const str = (k: string): string | undefined =>
     typeof input[k] === 'string' && (input[k] as string).length ? (input[k] as string) : undefined
+  if (isExitPlanModeRequest(req)) return str('plan') ?? str('planFilePath')
   if (req.toolName === 'Bash' || req.toolName === 'shell') return str('command')
   // 文件类工具（Write / Edit / Read / NotebookEdit …）统一展示目标路径。
   return str('file_path') ?? str('path') ?? str('notebook_path') ?? str('pattern') ?? str('url')

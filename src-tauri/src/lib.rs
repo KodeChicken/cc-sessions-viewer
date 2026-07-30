@@ -199,7 +199,10 @@ fn list_sessions(
     // 零会话 worktree 及合成父项目的 key —— 自身无 transcript，返回空页。worktree 跑过会话后
     // 会以普通项目 key 出现（display_path 命中），不再走这里。
     if project_key.starts_with("worktree:") || project_key.starts_with("worktree-root:") {
-        return Ok(SessionPage { total: 0, sessions: vec![] });
+        return Ok(SessionPage {
+            total: 0,
+            sessions: vec![],
+        });
     }
     agents::source(&agent)?.list_sessions(
         &project_key,
@@ -217,7 +220,10 @@ fn read_session(agent: String, path: String) -> Result<Vec<Msg>, String> {
 
 #[tauri::command]
 fn codex_archive_session(session_id: String) -> Result<(), String> {
-    if !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+    if !session_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
         return Err("Invalid session id".to_string());
     }
     let output = std::process::Command::new("codex")
@@ -855,9 +861,17 @@ fn valid_permission_mode(mode: &str) -> bool {
     )
 }
 
+fn default_permission_mode_for_agent(agent: &str) -> &'static str {
+    if agent == "codex" {
+        "fullAccess"
+    } else {
+        "bypassPermissions"
+    }
+}
+
 /// 启动一个 GUI chat 子进程，返回 chat id + 进程模型。`session_id` 给出时续聊既有
-/// 会话；`permission_mode` / `model` / `effort` 走校验后透传给 CLI（默认 acceptEdits，
-/// model/effort 为空走 CLI 自身默认）。
+/// 会话；`permission_mode` / `model` / `effort` 走校验后透传给 CLI（权限默认按 agent
+/// 取最大档，model/effort 为空走 CLI 自身默认）。
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn agent_chat_start(
@@ -888,7 +902,8 @@ async fn agent_chat_start(
             return Err("Invalid session ID".to_string());
         }
     }
-    let mode = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
+    let mode =
+        permission_mode.unwrap_or_else(|| default_permission_mode_for_agent(&agent).to_string());
     if !valid_permission_mode(&mode) {
         return Err("Invalid permission mode".to_string());
     }
@@ -956,6 +971,7 @@ fn agent_chat_send(
     model: Option<String>,
     effort: Option<String>,
     permission_mode: Option<String>,
+    text_elements: Option<Vec<serde_json::Value>>,
 ) -> Result<(), String> {
     if let Some(m) = model.as_deref() {
         if !valid_flag_token(m) {
@@ -978,6 +994,7 @@ fn agent_chat_send(
         model.as_deref(),
         effort.as_deref(),
         &mode,
+        &text_elements.unwrap_or_default(),
     )
 }
 

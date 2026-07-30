@@ -15,7 +15,13 @@ import { reactive, ref } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import * as api from './api'
 import { defaultModel, defaultEffort, defaultPermissionMode, effectiveEffort, sanitizeModel } from './chatComposerOptions'
-import { buildPermissionDecision, type PermissionChoice } from './chatPermission'
+import {
+  rememberedChatEffort,
+  rememberedChatModel,
+  rememberedChatPermissionMode,
+  rememberChatGuiPreference,
+} from './chatGuiPreferences'
+import { buildPermissionDecision, isExitPlanModeRequest, type PermissionChoice } from './chatPermission'
 import {
   buildQuestionCancelDecision,
   buildQuestionDecision,
@@ -24,6 +30,8 @@ import {
 import { useReclaude } from './settings'
 import { bumpUsage } from './usage'
 import { markProjectsDirty } from './projectsRefresh'
+import { codexPluginMentionTextElements, expandCodexPluginMentionsForPrompt } from './codexPluginMentions'
+import { isFileChangeResult } from './toolResultRouting'
 import type {
   Agent,
   Block,
@@ -33,6 +41,7 @@ import type {
   ChatExitPayload,
   ChatImageAttachment,
   ChatFileAttachment,
+  ChatTextElement,
   ChatInitPayload,
   ChatPermissionPayload,
   ChatPermissionRequest,
@@ -50,6 +59,7 @@ import type {
 // Claude Code 给 /context、/compact、/model 等本地命令的 synthetic 记录打的「伪模型」标记 ——
 // 它不是真实模型，绝不能让它流进底栏模型选择器（模型只应在用户手动调整时变动）。
 const SYNTHETIC_MODEL = '<synthetic>'
+const LOCAL_CODEX_PLAN_REQUEST_PREFIX = 'local-codex-plan-'
 
 /** 一条待发消息（带可选图片 + 文件附件），形参与 sendPrompt 对齐 —— 出队时原样转发。 */
 export interface QueuedMessage {
@@ -106,7 +116,7 @@ export interface ChatSession {
    */
   live?: { kind: string; text: string } | null
   // ---- §10.2/10.3/10.4 切换器：当前选择（底栏 picker 改它，懒生效）----
-  /** 权限模式：plan | acceptEdits | bypassPermissions。默认 acceptEdits。 */
+  /** 权限模式：Claude 默认 bypassPermissions；Codex 默认 fullAccess。 */
   permissionMode: string
   /** 模型（别名 / 全名）；undefined = 用 CLI/配置默认。 */
   model?: string
@@ -292,10 +302,119 @@ function onMsg(s: ChatSession, msg: Msg) {
   // 权威记录到达 → 当前块定稿，清掉流式预览（避免预览与真气泡并存）。
   s.live = null
   s.retry = null // 有权威输出 = 网络恢复，撤掉「重试中」。
+  if (shouldDropDuplicatePatchOutputForTest(s.msgs, msg)) return
+  if (mergeToolUpdate(s, msg)) return
   // stream-json 的每个 assistant / tool_result(user) 事件就是一条完整气泡。
   // **重建数组**（而非 push）：ChatView 的 mermaid / 代码高亮 watcher 按引用比较
   // `props.messages`，只有引用变化才会重跑 —— 与只读模式 reassign chatMsgs 一致。
   s.msgs = [...s.msgs, msg]
+}
+
+function messageText(msg: Msg): string {
+  return msg.blocks
+    .filter((b) => b.kind === 'text' && b.text)
+    .map((b) => b.text!)
+    .join('\n')
+}
+
+function looksLikeCodexPlanMessage(msg: Msg): boolean {
+  if (msg.role !== 'assistant') return false
+  if (!msg.blocks.length) return false
+  if (msg.blocks.some((b) => b.kind !== 'text')) return false
+  const text = messageText(msg).trim()
+  if (!text) return false
+  return (
+    /proposed\s+plan/i.test(text) ||
+    /(?:^|\n)##\s+Summary\b/i.test(text) ||
+    /(?:^|\n)##\s+Test\s+Plan\b/i.test(text) ||
+    /(?:^|\n)\s*-\s+\[[ x]\]\s+/.test(text)
+  )
+}
+
+function latestCodexPlanMessageIndex(s: ChatSession): number {
+  for (let i = s.msgs.length - 1; i >= 0; i -= 1) {
+    const msg = s.msgs[i]
+    if (looksLikeCodexPlanMessage(msg)) return i
+    if (msg.role === 'user' && !msg.metaKind) break
+  }
+  return -1
+}
+
+function maybePromptForCodexPlanImplementation(s: ChatSession): void {
+  if (s.agent !== 'codex' || s.permissionMode !== 'plan') return
+  if (s.pendingQuestions.length) return
+  const planIndex = latestCodexPlanMessageIndex(s)
+  if (planIndex < 0) return
+  const requestId = `${LOCAL_CODEX_PLAN_REQUEST_PREFIX}${s.uiId}-${planIndex}`
+  s.pendingQuestions = [
+    ...s.pendingQuestions,
+    {
+      requestId,
+      keepAfterTurn: true,
+      localCodexPlanPrompt: true,
+      questions: [{
+        header: 'Plan',
+        question: 'Implement this plan?',
+        allowOther: false,
+        options: [
+          { label: 'Yes, implement this plan', description: 'Switch to coding.' },
+          { label: 'No, stay in Plan mode', description: 'Keep planning.' },
+        ],
+      }],
+    },
+  ]
+}
+
+export function shouldDropDuplicatePatchOutputForTest(existing: Msg[], incoming: Msg): boolean {
+  if (!incoming.blocks.length) return false
+  if (!incoming.blocks.every((b) => b.kind === 'tool_result')) return false
+  if (!incoming.blocks.every(isPlainPatchSuccessResult)) return false
+  return existing
+    .slice(-8)
+    .some((msg) => msg.blocks.some((b) => b.kind === 'tool_result' && isFileChangeResult(b)))
+}
+
+function isPlainPatchSuccessResult(b: Block): boolean {
+  if (isFileChangeResult(b)) return false
+  const text = b.text ?? ''
+  if (!text.includes('Success. Updated the following files:')) return false
+  return /(?:^|\n)\s*[AMD]\s+.+/.test(text)
+}
+
+function mergeToolUpdate(s: ChatSession, msg: Msg): boolean {
+  if (msg.role !== 'assistant') return false
+  const incomingToolIds = new Set(
+    msg.blocks
+      .filter((b) => (b.kind === 'tool_use' || b.kind === 'tool_result') && b.toolId)
+      .map((b) => b.toolId!),
+  )
+  if (!incomingToolIds.size) return false
+
+  for (let i = s.msgs.length - 1; i >= 0; i -= 1) {
+    const existing = s.msgs[i]
+    if (existing.role !== 'assistant') continue
+    const hasSameTool = existing.blocks.some(
+      (b) => (b.kind === 'tool_use' || b.kind === 'tool_result') && b.toolId && incomingToolIds.has(b.toolId),
+    )
+    if (!hasSameTool) continue
+
+    const retainedBlocks = existing.blocks.filter(
+      (b) => !((b.kind === 'tool_use' || b.kind === 'tool_result') && b.toolId && incomingToolIds.has(b.toolId)),
+    )
+    const merged: Msg = {
+      ...existing,
+      model: msg.model ?? existing.model,
+      timestamp: existing.timestamp ?? msg.timestamp,
+      blocks: [...retainedBlocks, ...msg.blocks],
+    }
+    s.msgs = [
+      ...s.msgs.slice(0, i),
+      merged,
+      ...s.msgs.slice(i + 1),
+    ]
+    return true
+  }
+  return false
 }
 
 /**
@@ -342,8 +461,13 @@ function onResult(s: ChatSession, p: ChatResultPayload) {
   endTurn(s)
   // 一轮结束 → 账号 5h/周额度刚被这次对话消耗、值会变 → 事件驱动强制刷新（慢轮询之外的实时补位）。
   bumpUsage()
+  maybePromptForCodexPlanImplementation(s)
   // 本轮结束 → 若有待发消息，按序发下一条（type-while-running 队列）。
-  drainQueue(s)
+  if (!s.pendingQuestions.some((q) => q.keepAfterTurn)) drainQueue(s)
+}
+
+export function chatOnResultForTest(s: ChatSession, p: ChatResultPayload) {
+  onResult(s, p)
 }
 
 function onExit(s: ChatSession, p: ChatExitPayload) {
@@ -470,9 +594,13 @@ function endTurn(s: ChatSession) {
   }
   s.turnState = 'idle'
   s.retry = null // 一轮结束撤掉「重试中」。
-  // 一轮结束（含 result / exit / 中断 / 清屏）→ 任何还没应答的权限请求 / 提问都已失效，清掉。
+  // 一轮结束（含 result / exit / 中断 / 清屏）→ 大多数未应答请求已失效；Codex app-server
+  // requestUserInput 例外，它可能在 plan turn completed 后继续等待用户确认。
   if (s.pendingPermissions.length) s.pendingPermissions = []
-  if (s.pendingQuestions.length) s.pendingQuestions = []
+  if (s.pendingQuestions.length) {
+    const kept = s.pendingQuestions.filter((q) => q.keepAfterTurn)
+    if (kept.length !== s.pendingQuestions.length) s.pendingQuestions = kept
+  }
 }
 
 // ============================ 消息队列 ============================
@@ -641,6 +769,13 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
 
   const uiId = nextUiId++
   const codexRuntime = isFreshCodexChat(opts) ? await codexRuntimeForAgent(opts.agent) : null
+  const initialPermissionMode = opts.permissionMode ?? rememberedChatPermissionMode(opts.agent)
+  const initialModel = initialChatModel(opts.agent, opts.model ?? rememberedChatModel(opts.agent), codexRuntime)
+  const initialEffort = initialChatEffort(
+    opts.agent,
+    opts.effort ?? rememberedChatEffort(opts.agent, initialModel),
+    codexRuntime,
+  )
   const session = reactive<ChatSession>({
     uiId,
     chatId: null,
@@ -661,14 +796,14 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
     live: null,
     pendingPermissions: [],
     pendingQuestions: [],
-    permissionMode: opts.permissionMode ?? defaultPermissionMode(opts.agent),
+    permissionMode: initialPermissionMode,
     // 官方模型菜单下：会话起步带一个明确模型 + effort（用户可改）。
     // Codex 自定义 provider：用 ~/.codex/config.toml 的 model/effort 初始化 GUI，确保
     // UI、app-server 参数、全局配置三者一致；没有配置值时才保持 undefined。
     // sanitizeModel：旧会话记忆的模型可能已不在菜单里（如 gpt-5.3-codex），回退到该 agent
     // 的兜底；自定义 provider 保留原模型名，让反代/别名配置自行接管。
-    model: initialChatModel(opts.agent, opts.model, codexRuntime),
-    effort: initialChatEffort(opts.agent, opts.effort, codexRuntime),
+    model: initialModel,
+    effort: initialEffort,
     // 续聊：从预载 transcript 末尾的 assistant 记录回填 lastModel，让模型在「进会话即显」
     // （而非等首轮回复后才由 onMsg 填上）。effort 不在 transcript 里 → 无法同样回填，
     // 由 composer 用运行时 settings.effortLevel 兜底显示真实生效默认。
@@ -733,8 +868,10 @@ export async function sendPrompt(
   }
 
   const isStdinAgent = session.processModel === 'longLivedStdin'
+  const isCodexAppServer = session.processModel === 'codexAppServer'
   let sendImages: ChatImageAttachment[] = images
   let sendText: string
+  let textElements: ChatTextElement[] = []
 
   if (isStdinAgent) {
     // Claude（LongLived / stdin）：文件/文件夹用 @"path"，图片走 base64 参数。
@@ -745,6 +882,7 @@ export async function sendPrompt(
     //   文件/图片 → # Files mentioned by the user: 结构（server 会自动注入到 context）
     //   文件夹   → [name](path/) markdown 链接（内联到正文）
     //   图片     → 额外传 base64 给后端，由 codex_turn_params 放入 input_image
+    const codexPrompt = isCodexAppServer ? trimmed : expandCodexPluginMentionsForPrompt(trimmed)
     const mentionedFiles: { name: string; path: string }[] = []
     const folderRefs: string[] = []
 
@@ -780,10 +918,12 @@ export async function sendPrompt(
         header += `## ${f.name}: ${f.path}\n\n`
       }
       header += `## My request for Codex:\n`
-      const userParts = [trimmed, ...folderRefs].filter(Boolean).join(' ')
+      const userParts = [codexPrompt, ...folderRefs].filter(Boolean).join(' ')
       sendText = header + userParts + '\n'
+      if (isCodexAppServer) textElements = codexPluginMentionTextElements(trimmed, new TextEncoder().encode(header).length)
     } else {
-      sendText = [trimmed, ...folderRefs].filter(Boolean).join(' ')
+      sendText = [codexPrompt, ...folderRefs].filter(Boolean).join(' ')
+      if (isCodexAppServer) textElements = codexPluginMentionTextElements(trimmed)
     }
 
     // Codex app-server 自己从 # Files mentioned 的路径读取文件/图片，不需要传 base64。
@@ -807,10 +947,9 @@ export async function sendPrompt(
     { role: 'user', sidechain: false, blocks, timestamp: new Date().toISOString() },
   ]
 
-  // 长驻进程（Claude）：模型/effort/权限在进程 start 时已定型，若用户改了就先
-  // restart-with-resume 换新进程再发；one-shot（Codex）不用 restart —— 设置随这一轮
-  // 的 agentChatSend 下发，下一轮带新 flag 即生效。
-  if (session.processModel === 'longLivedStdin' && settingsChanged(session)) {
+  // 长驻进程 / Codex app-server：模型/effort/权限在当前进程或 thread 上有粘性，若用户改了
+  // 就先 restart-with-resume 换新实例再发；one-shot 才能靠本轮 agentChatSend 直接生效。
+  if (requiresRestartForSettings(session) && settingsChanged(session)) {
     const ok = await restartChat(session)
     if (!ok) return // restart 失败：status 已置 error
   }
@@ -827,6 +966,7 @@ export async function sendPrompt(
       session.model,
       sessionEffectiveEffort(session),
       session.permissionMode,
+      textElements,
     )
   } catch (err) {
     endTurn(session)
@@ -835,7 +975,7 @@ export async function sendPrompt(
   }
 }
 
-/** 运行中的长驻进程实际生效的设置，与当前选择是否已不一致（需 restart 才能换）。 */
+/** 运行中的进程/thread 实际生效的设置，与当前选择是否已不一致（需 restart 才能换）。 */
 function settingsChanged(s: ChatSession): boolean {
   const a = s.applied
   if (!a) return false
@@ -846,13 +986,17 @@ function settingsChanged(s: ChatSession): boolean {
   )
 }
 
+function requiresRestartForSettings(s: ChatSession): boolean {
+  return s.processModel === 'longLivedStdin' || s.processModel === 'codexAppServer'
+}
+
 /**
- * §10.0 restart-with-resume：停掉旧长驻进程，用当前 model/effort/权限重起一个 `--resume`
- * 既有 session 的新进程，热替换 `chatId` 并重注册路由（`msgs` 原样保留）。one-shot
+ * §10.0 restart-with-resume：停掉旧长驻进程/app-server，用当前 model/effort/权限重起一个
+ * `--resume` 既有 session 的新实例，热替换 `chatId` 并重注册路由（`msgs` 原样保留）。one-shot
  * agent 无需 restart（直接返回 true）。返回 false 表示 restart 失败（已置 error）。
  */
 async function restartChat(s: ChatSession): Promise<boolean> {
-  if (s.processModel !== 'longLivedStdin' || s.chatId === null) return true
+  if (!requiresRestartForSettings(s) || s.chatId === null) return true
   const old = s.chatId
   try {
     sessionsByChatId.delete(old)
@@ -1060,10 +1204,23 @@ export async function respondPermission(
       request.requestId,
       buildPermissionDecision(request, choice),
     )
+    maybeExitClaudePlanMode(session, request, choice)
   } catch (err) {
     session.status = 'error'
     session.errorMessage = String(err)
   }
+}
+
+function maybeExitClaudePlanMode(
+  session: ChatSession,
+  request: ChatPermissionRequest,
+  choice: PermissionChoice,
+) {
+  if (session.agent !== 'claude' || session.permissionMode !== 'plan') return
+  if (!isExitPlanModeRequest(request) || choice === 'deny') return
+  const next = defaultPermissionMode('claude')
+  session.permissionMode = next
+  rememberChatGuiPreference('claude', { permissionMode: next })
 }
 
 /**
@@ -1078,6 +1235,15 @@ export async function respondQuestion(
   session.pendingQuestions = session.pendingQuestions.filter(
     (q) => q.requestId !== request.requestId,
   )
+  if (request.localCodexPlanPrompt || request.requestId.startsWith(LOCAL_CODEX_PLAN_REQUEST_PREFIX)) {
+    if (codexPlanSelectionAcceptsImplementation(selections)) {
+      maybeExitCodexPlanMode(session, selections)
+      await sendPrompt(session, 'Implement the plan.')
+    } else {
+      drainQueue(session)
+    }
+    return
+  }
   if (session.chatId === null) return
   const decision =
     selections === null
@@ -1085,10 +1251,34 @@ export async function respondQuestion(
       : buildQuestionDecision(request, selections)
   try {
     await api.agentChatRespondQuestion(session.chatId, request.requestId, decision)
+    maybeExitCodexPlanMode(session, selections)
   } catch (err) {
     session.status = 'error'
     session.errorMessage = String(err)
   }
+}
+
+function codexPlanSelectionAcceptsImplementation(selections: QuestionSelection[] | null): boolean {
+  if (!selections) return false
+  return selections.some((selection) =>
+    selection.labels.some((label) => {
+      const normalized = label.trim().toLowerCase()
+      return normalized.startsWith('yes') && (
+        normalized.includes('implement') ||
+        normalized.includes('coding') ||
+        normalized.includes('编码') ||
+        normalized.includes('执行')
+      )
+    }),
+  )
+}
+
+function maybeExitCodexPlanMode(session: ChatSession, selections: QuestionSelection[] | null) {
+  if (session.agent !== 'codex' || session.permissionMode !== 'plan' || !selections) return
+  if (!codexPlanSelectionAcceptsImplementation(selections)) return
+  const next = defaultPermissionMode('codex')
+  session.permissionMode = next
+  rememberChatGuiPreference('codex', { permissionMode: next })
 }
 
 /**

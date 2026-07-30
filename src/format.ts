@@ -1,5 +1,6 @@
 // 轻量文本格式化：把会话内容渲染成可读的 HTML（无第三方依赖）。
 import { t } from './i18n'
+import { renderCodexPluginLinkHtml } from './codexPluginMentions'
 
 function escapeHtml(s: string): string {
   return s
@@ -49,6 +50,8 @@ function isAbsoluteLocalPath(target: string): boolean {
 
 function renderMarkdownLink(label: string, rawTarget: string): string {
   const target = rawTarget.trim().replace(/^<|>$/g, '')
+  const plugin = renderCodexPluginLinkHtml(label, target, escapeHtml)
+  if (plugin) return plugin
   const text = escapeHtml(label)
   if (isAbsoluteLocalPath(target)) {
     const escapedTarget = escapeHtmlAttr(target)

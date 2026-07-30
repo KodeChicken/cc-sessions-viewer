@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
-const { appVersionMock, checkAppUpdateMock, emitToMock, installTurnHooksMock, openPathExternalMock, tauriInvokeMock, turnHookStatusMock } = vi.hoisted(() => ({
+const { appVersionMock, checkAppUpdateMock, emitToMock, installTurnHooksMock, openPathExternalMock, reclaudeInfoMock, tauriInvokeMock, turnHookStatusMock } = vi.hoisted(() => ({
   appVersionMock: vi.fn(),
   checkAppUpdateMock: vi.fn(),
   emitToMock: vi.fn(),
   installTurnHooksMock: vi.fn(),
   openPathExternalMock: vi.fn(),
+  reclaudeInfoMock: vi.fn(),
   tauriInvokeMock: vi.fn(),
   turnHookStatusMock: vi.fn(),
 }))
@@ -19,6 +20,7 @@ vi.mock('../../src/api', () => ({
   appVersion: appVersionMock,
   installTurnHooks: installTurnHooksMock,
   openPathExternal: openPathExternalMock,
+  reclaudeInfo: reclaudeInfoMock,
   turnHookStatus: turnHookStatusMock,
 }))
 vi.mock('../../src/updateCheck', async (importOriginal) => {
@@ -28,7 +30,7 @@ vi.mock('../../src/updateCheck', async (importOriginal) => {
 
 import SettingsModal from '../../src/components/SettingsModal.vue'
 import { vTooltip } from '../../src/tooltip'
-import { lang, setLang, setTheme, theme } from '../../src/settings'
+import { lang, setLang, setTheme, setUseReclaude, theme, useReclaude } from '../../src/settings'
 import {
   turnHookStatus,
   turnHookStatusError,
@@ -141,6 +143,11 @@ beforeEach(() => {
   checkAppUpdateMock.mockReset()
   installTurnHooksMock.mockReset().mockResolvedValue({})
   openPathExternalMock.mockReset().mockResolvedValue(undefined)
+  reclaudeInfoMock.mockReset().mockResolvedValue({
+    installed: false,
+    daemonRunning: false,
+    daemonPort: null,
+  })
   tauriInvokeMock.mockReset().mockImplementation((command: string) => {
     if (command === 'desktop_pet_catalog') return Promise.resolve(petCatalog)
     return Promise.resolve(undefined)
@@ -153,12 +160,14 @@ beforeEach(() => {
   setDesktopPetEnabled(false)
   setDesktopPetCharacter('codex:codex')
   setDesktopPetSize(112)
+  setUseReclaude(false)
   desktopPetCatalog.value = null
   desktopPetCatalogError.value = ''
 })
 afterEach(() => {
   setLang('en')
   setTheme('system')
+  setUseReclaude(false)
 })
 
 type Props = InstanceType<typeof SettingsModal>['$props']
@@ -222,6 +231,16 @@ describe('SettingsModal', () => {
     await flushPromises()
     expect(appVersionMock).toHaveBeenCalled()
     expect(wrapper.text()).toContain('v9.9.9')
+  })
+
+  it('hides ReClaude settings and clears stale routing when the wrapper is unavailable', async () => {
+    setUseReclaude(true)
+    const wrapper = factory()
+    await flushPromises()
+
+    expect(reclaudeInfoMock).toHaveBeenCalledOnce()
+    expect(wrapper.text()).not.toContain('Route chat through ReClaude')
+    expect(useReclaude.value).toBe(false)
   })
 
   it('shows hook config files without rendering individual hook details', async () => {

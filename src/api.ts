@@ -4,6 +4,7 @@ import type {
   Agent,
   AgentStats,
   ChatImageInput,
+  ChatTextElement,
   ClaudeRuntimeInfo,
   CodexRuntimeInfo,
   ChatStartInfo,
@@ -357,9 +358,10 @@ export const ptyKill = (id: number) => invoke<void>('pty_kill', { id })
 // ---------- GUI chat（程序化聊天：管道子进程跑 stream-json）----------
 
 /** 启动一个 GUI chat 子进程，返回 { chatId, processModel }。`sessionId` 给出时续聊既有
- *  会话；`permissionMode` 走后端允许列表（default | acceptEdits | plan | bypassPermissions），
- *  缺省 acceptEdits。`model` / `effort` 缺省走 CLI 自身默认。`processModel` 让前端决定切
- *  设置走 restart-with-resume（长驻）还是下轮 flag（one-shot）。后续通过
+ *  会话；`permissionMode` 走后端允许列表（default | acceptEdits | plan | bypassPermissions
+ *  | ask | approve | fullAccess | custom），缺省由 agent 决定。`model` / `effort`
+ *  缺省走 CLI 自身默认。`processModel` 让前端决定切
+ *  设置走 restart-with-resume（长驻/app-server）还是下轮 flag（one-shot）。后续通过
  *  `agent-chat://event|init|result|delta|exit|stderr` 事件接收。 */
 export const agentChatStart = (
   agent: Agent,
@@ -398,8 +400,7 @@ export const agentChatSetTitle = (id: number, title: string) =>
   invoke<void>('agent_chat_set_title', { id, title })
 
 /** 向某个 chat 子进程发送一条用户消息（含可选图片附件 + 本轮 model/effort/权限）。
- *  one-shot agent（Codex）据此每轮切换；长驻 agent（Claude）后端忽略这三者（在 start
- *  已定型，切换走 restart）。 */
+ *  one-shot agent 据此每轮切换；长驻/app-server agent 的切换走 restart。 */
 export const agentChatSend = (
   id: number,
   text: string,
@@ -407,6 +408,7 @@ export const agentChatSend = (
   model?: string,
   effort?: string,
   permissionMode?: string,
+  textElements?: ChatTextElement[],
 ) =>
   invoke<void>('agent_chat_send', {
     id,
@@ -415,6 +417,7 @@ export const agentChatSend = (
     model,
     effort,
     permissionMode,
+    textElements: textElements ?? [],
   })
 
 /** 读取本地图片文件为 base64（系统选择器只给路径，这里取字节做缩略图 + 视觉块）。 */

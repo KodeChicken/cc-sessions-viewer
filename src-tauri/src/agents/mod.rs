@@ -143,12 +143,14 @@ pub enum ChatEvent {
 ///
 /// - `LongLivedStdin`（Claude）：起**一个长驻进程**，多轮用户消息持续写进 stdin
 ///   （`--input-format stream-json`）。
-/// - `OneShotResume`（Codex）：**一轮一进程**，每条用户消息 spawn 一个
+/// - `OneShotResume`：**一轮一进程**，每条用户消息 spawn 一个
 ///   `<cli> [resume <id>] "<prompt>"`，跑完即退出；靠 session/thread id resume 续上下文。
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// - `CodexAppServer`：Codex rich-client app-server 长驻 thread；切设置需 restart/resume。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChatProcessModel {
     LongLivedStdin,
     OneShotResume,
+    CodexAppServer,
 }
 
 impl ChatProcessModel {
@@ -158,6 +160,7 @@ impl ChatProcessModel {
         match self {
             ChatProcessModel::LongLivedStdin => "longLivedStdin",
             ChatProcessModel::OneShotResume => "oneShotResume",
+            ChatProcessModel::CodexAppServer => "codexAppServer",
         }
     }
 }
@@ -254,8 +257,8 @@ pub trait SessionSource: Send + Sync {
         ChatEvent::Ignore
     }
 
-    /// 该 agent 的 GUI chat 进程模型。默认 `LongLivedStdin`（Claude）；one-shot 的 agent
-    /// （Codex）覆写为 `OneShotResume`。`agent_chat.rs` 据此选驱动路径。
+    /// 该 agent 的 GUI chat 进程模型。默认 `LongLivedStdin`（Claude）；
+    /// Codex 覆写为 `CodexAppServer`。`agent_chat.rs` 据此选驱动路径。
     fn chat_process_model(&self) -> ChatProcessModel {
         ChatProcessModel::LongLivedStdin
     }

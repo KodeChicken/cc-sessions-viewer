@@ -39,9 +39,10 @@ describe('chatComposerOptions', () => {
     ])
   })
 
-  it('Codex 权限四档，独立于 Claude', () => {
+  it('Codex 权限五档，独立于 Claude', () => {
     expect(CODEX_PERMISSION_MODES.map((m) => m.value)).toEqual([
       'ask',
+      'plan',
       'approve',
       'fullAccess',
       'custom',
@@ -53,14 +54,15 @@ describe('chatComposerOptions', () => {
     expect(permissionModesFor('codex')).toBe(CODEX_PERMISSION_MODES)
   })
 
-  it('defaultPermissionMode：Claude → acceptEdits，Codex → approve', () => {
-    expect(defaultPermissionMode('claude')).toBe('acceptEdits')
-    expect(defaultPermissionMode('codex')).toBe('approve')
+  it('defaultPermissionMode：Claude → bypassPermissions，Codex → fullAccess', () => {
+    expect(defaultPermissionMode('claude')).toBe('bypassPermissions')
+    expect(defaultPermissionMode('codex')).toBe('fullAccess')
   })
 
   it('permissionLabelKey：按 agent 从对应列表查找，未知回退首项', () => {
     expect(permissionLabelKey('claude', 'plan')).toBe('chat.composer.permission.plan')
     expect(permissionLabelKey('claude', 'nope')).toBe('chat.composer.permission.ask')
+    expect(permissionLabelKey('codex', 'plan')).toBe('chat.composer.permission.plan')
     expect(permissionLabelKey('codex', 'fullAccess')).toBe('chat.composer.permission.codex.fullAccess')
     expect(permissionLabelKey('codex', 'nope')).toBe('chat.composer.permission.codex.ask')
   })
@@ -75,11 +77,12 @@ describe('chatComposerOptions', () => {
   it('Claude 模型用完整标准 id（主列表 + More），且一律不带 [1m]', () => {
     expect(CHAT_MODEL_MENU.claude.primary.map((m) => m.value)).toEqual([
       'claude-fable-5',
-      'claude-opus-4-8',
+      'claude-opus-5',
       'claude-sonnet-5',
       'claude-haiku-4-5-20251001',
     ])
     expect(CHAT_MODEL_MENU.claude.more.map((m) => m.value)).toEqual([
+      'claude-opus-4-8',
       'claude-sonnet-4-6',
       'claude-opus-4-7',
       'claude-opus-4-6',
@@ -110,11 +113,11 @@ describe('chatComposerOptions', () => {
     ).toBe('Opus (mimo-v2.5-pro)')
   })
 
-  it('autoPickModel：Fable 5 需 credits 不作新会话默认，订阅落到 Opus 4.8，alias 照常取 opus', () => {
+  it('autoPickModel：Fable 5 需 credits 不作新会话默认，订阅落到 Opus 5，alias 照常取 opus', () => {
     expect(requiresCredits('claude-fable-5')).toBe(true)
-    expect(requiresCredits('claude-opus-4-8')).toBe(false)
-    // 订阅：primary[0] 是烧额度的 Fable 5 → 跳过 → 第一个不烧额度的 Opus 4.8
-    expect(autoPickModel('claude')).toBe('claude-opus-4-8')
+    expect(requiresCredits('claude-opus-5')).toBe(false)
+    // 订阅：primary[0] 是烧额度的 Fable 5 → 跳过 → 第一个不烧额度的 Opus 5
+    expect(autoPickModel('claude')).toBe('claude-opus-5')
     // alias 模式：primary[0] 是 opus 别名（不烧额度）→ 照常返回
     expect(autoPickModel('claude', { claudeAliasMode: true })).toBe('opus')
   })
@@ -150,6 +153,7 @@ describe('chatComposerOptions', () => {
   })
 
   it('modelLabel / effortLabel：命中返回展示名，未知回退原值', () => {
+    expect(modelLabel('claude', 'claude-opus-5')).toBe('Opus 5')
     expect(modelLabel('claude', 'claude-opus-4-8')).toBe('Opus 4.8')
     expect(modelLabel('claude', 'claude-opus-4-7')).toBe('Opus 4.7')
     expect(modelLabel('claude', 'opus')).toBe('Opus')
@@ -168,9 +172,10 @@ describe('chatComposerOptions', () => {
     expect(effortLabel('low')).toBe('Low')
   })
 
-  it('effortLevelsFor：Fable 5 / Opus 4.7 / 4.8 在 max 后多一档 ultracode，其余模型只有基础五档', () => {
+  it('effortLevelsFor：Fable 5 / Opus 5 / Opus 4.7 / 4.8 在 max 后多一档 ultracode，其余模型只有基础五档', () => {
     const base = ['low', 'medium', 'high', 'xhigh', 'max']
     expect(effortLevelsFor('claude', 'claude-fable-5')).toEqual([...base, 'ultracode'])
+    expect(effortLevelsFor('claude', 'claude-opus-5')).toEqual([...base, 'ultracode'])
     expect(effortLevelsFor('claude', 'claude-opus-4-8')).toEqual([...base, 'ultracode'])
     expect(effortLevelsFor('claude', 'claude-opus-4-7')).toEqual([...base, 'ultracode'])
     expect(effortLevelsFor('claude', 'claude-opus-4-6')).toEqual(base)
@@ -183,6 +188,7 @@ describe('chatComposerOptions', () => {
   })
 
   it('modelSupportsEffort：Haiku 无 effort；Opus/Sonnet 有', () => {
+    expect(modelSupportsEffort('claude', 'claude-opus-5')).toBe(true)
     expect(modelSupportsEffort('claude', 'claude-opus-4-8')).toBe(true)
     expect(modelSupportsEffort('claude', 'claude-sonnet-5')).toBe(true)
     expect(modelSupportsEffort('claude', 'claude-haiku-4-5-20251001')).toBe(false)
@@ -191,15 +197,18 @@ describe('chatComposerOptions', () => {
   })
 
   it('effectiveEffort：Haiku 抹掉 effort；ultracode 落到 max（headless 天花板）；其余透传', () => {
+    expect(effectiveEffort('claude', 'claude-opus-5', 'high')).toBe('high')
+    expect(effectiveEffort('claude', 'claude-opus-5', 'ultracode')).toBe('max')
     expect(effectiveEffort('claude', 'claude-opus-4-8', 'high')).toBe('high')
     expect(effectiveEffort('claude', 'claude-opus-4-8', 'ultracode')).toBe('max')
     expect(effectiveEffort('claude', 'claude-haiku-4-5-20251001', 'high')).toBeUndefined()
   })
 
   it('fallbackEffort：切到不支持当前档的模型 → 退最高可用档；否则原样', () => {
-    // 4.8 的 ultracode 切到 Sonnet（无 ultracode）→ 退到 max。
+    // Opus 的 ultracode 切到 Sonnet（无 ultracode）→ 退到 max。
     expect(fallbackEffort('ultracode', 'claude', 'claude-sonnet-5')).toBe('max')
     // 档位在新模型下仍存在 → 原样。
+    expect(fallbackEffort('high', 'claude', 'claude-opus-5')).toBe('high')
     expect(fallbackEffort('high', 'claude', 'claude-opus-4-8')).toBe('high')
     expect(fallbackEffort('ultracode', 'claude', 'claude-opus-4-7')).toBe('ultracode')
     expect(fallbackEffort(undefined, 'claude', 'claude-sonnet-5')).toBeUndefined()
@@ -207,6 +216,7 @@ describe('chatComposerOptions', () => {
 
   it('Claude: Haiku 不支持 auto 权限模式；其它模型不受限', () => {
     expect(permissionModeDisabled('claude', 'auto', 'claude-haiku-4-5-20251001')).toBe(true)
+    expect(permissionModeDisabled('claude', 'auto', 'claude-opus-5')).toBe(false)
     expect(permissionModeDisabled('claude', 'auto', 'claude-opus-4-8')).toBe(false)
     expect(permissionModeDisabled('claude', 'auto', 'claude-sonnet-5')).toBe(false)
     expect(permissionModeDisabled('claude', 'acceptEdits', 'claude-haiku-4-5-20251001')).toBe(false)
@@ -218,8 +228,9 @@ describe('chatComposerOptions', () => {
     expect(permissionModeDisabled('codex', 'ask', 'gpt-5.4')).toBe(false)
   })
 
-  it('fallbackPermissionMode：Claude Haiku+auto → acceptEdits，其余原样返回', () => {
-    expect(fallbackPermissionMode('claude', 'auto', 'claude-haiku-4-5-20251001')).toBe('acceptEdits')
+  it('fallbackPermissionMode：Claude Haiku+auto → bypassPermissions，其余原样返回', () => {
+    expect(fallbackPermissionMode('claude', 'auto', 'claude-haiku-4-5-20251001')).toBe('bypassPermissions')
+    expect(fallbackPermissionMode('claude', 'auto', 'claude-opus-5')).toBe('auto')
     expect(fallbackPermissionMode('claude', 'auto', 'claude-opus-4-8')).toBe('auto')
     expect(fallbackPermissionMode('claude', 'plan', 'claude-haiku-4-5-20251001')).toBe('plan')
     expect(fallbackPermissionMode('codex', 'fullAccess', 'gpt-5.5')).toBe('fullAccess')
@@ -283,12 +294,13 @@ describe('chatComposerOptions', () => {
       expect(sanitizeModel('codex', 'gpt-5.3-codex-spark')).toBe('gpt-5.3-codex-spark')
     })
 
-    it('claude 不在菜单的模型 → 回退 opus-4-8', () => {
-      expect(sanitizeModel('claude', 'claude-opus-4-5')).toBe('claude-opus-4-8')
-      expect(sanitizeModel('claude', 'gpt-5.3-codex')).toBe('claude-opus-4-8')
+    it('claude 不在菜单的模型 → 回退 opus-5', () => {
+      expect(sanitizeModel('claude', 'claude-opus-4-5')).toBe('claude-opus-5')
+      expect(sanitizeModel('claude', 'gpt-5.3-codex')).toBe('claude-opus-5')
     })
 
     it('claude 在菜单内(含 alias 档)的模型原样保留', () => {
+      expect(sanitizeModel('claude', 'claude-opus-5')).toBe('claude-opus-5')
       expect(sanitizeModel('claude', 'claude-opus-4-8')).toBe('claude-opus-4-8')
       expect(sanitizeModel('claude', 'claude-sonnet-5')).toBe('claude-sonnet-5')
       expect(sanitizeModel('claude', 'opus')).toBe('opus')

@@ -235,7 +235,7 @@ export default {
   'chat.permission.alwaysAllow': 'Always allow',
   'chat.permission.alwaysAllowHint': "Don't ask again — saved to this project's local settings",
   'chat.permission.deny': 'Deny',
-  'chat.question.title': 'Claude is asking',
+  'chat.question.title': '{agent} is asking',
   'chat.question.multiHint': 'Select all that apply',
   'chat.question.other': 'Other',
   'chat.question.otherPlaceholder': 'Type your answer…',

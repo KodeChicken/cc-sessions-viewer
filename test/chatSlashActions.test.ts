@@ -28,6 +28,7 @@ describe('parseChatSlashAction', () => {
     expect(parseChatSlashAction('/clear')).toEqual({ kind: 'clear' })
     expect(parseChatSlashAction('/fork')).toEqual({ kind: 'fork' })
     expect(parseChatSlashAction('/model')).toEqual({ kind: 'model' })
+    expect(parseChatSlashAction('/plan')).toEqual({ kind: 'plan' })
   })
 
   it('is case-insensitive and tolerates surrounding whitespace', () => {
@@ -51,6 +52,7 @@ describe('parseChatSlashAction', () => {
   it('/clear and /fork require exact match (no trailing text)', () => {
     expect(parseChatSlashAction('/clear all')).toBeNull()
     expect(parseChatSlashAction('/fork please')).toBeNull()
+    expect(parseChatSlashAction('/plan please')).toBeNull()
   })
 
   it('passes through real CLI commands and plain prose (send normally)', () => {

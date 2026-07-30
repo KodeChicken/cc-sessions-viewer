@@ -11,7 +11,7 @@ import type { Agent } from './types'
 export interface ModelOption {
   /** 下发给 CLI 的完整 model id。 */
   value: string
-  /** 展示名（如 "Opus 4.8"）。 */
+  /** 展示名（如 "Opus 5"）。 */
   label: string
 }
 
@@ -45,12 +45,13 @@ export const CHAT_MODEL_MENU: Record<Agent, ModelMenuConfig> = {
     // "Requires usage credits"），选中/作为新会话默认都会计费。
     primary: [
       { value: 'claude-fable-5', label: 'Fable 5' },
-      { value: 'claude-opus-4-8', label: 'Opus 4.8' },
+      { value: 'claude-opus-5', label: 'Opus 5' },
       { value: 'claude-sonnet-5', label: 'Sonnet 5' },
       { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
     ],
     // 旧版本收在 More：上一代 Sonnet 4.6 + 旧 Opus。
     more: [
+      { value: 'claude-opus-4-8', label: 'Opus 4.8' },
       { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
       { value: 'claude-opus-4-7', label: 'Opus 4.7' },
       { value: 'claude-opus-4-6', label: 'Opus 4.6' },
@@ -144,7 +145,7 @@ export function requiresCredits(value: string | undefined): boolean {
 
 /**
  * 全新会话进来时自动选中的模型 = 主列表里第一个「不烧额度」的模型。
- * Fable 5 虽排在展示第一位，但需 credits，默认跳过，落到 Opus 4.8；alias 模式下
+ * Fable 5 虽排在展示第一位，但需 credits，默认跳过，落到 Opus 5；alias 模式下
  * primary[0]（opus 别名）不烧额度，照常返回。都没有则回落 primary[0]。
  */
 export function autoPickModel(agent: Agent, opts: ModelMenuOptions = {}): string | undefined {
@@ -191,7 +192,7 @@ export const CHAT_EFFORT_LEVELS: Record<Agent, string[]> = {
 }
 
 /** Claude 多一档「ultracode」的模型（排在 max 之后）。 */
-const ULTRACODE_MODELS = new Set(['claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7'])
+const ULTRACODE_MODELS = new Set(['claude-fable-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7'])
 
 /** Codex 5.6-luna: base + max */
 const CODEX_MAX_MODELS = new Set(['gpt-5.6-luna'])
@@ -250,7 +251,7 @@ export function effectiveEffort(
 }
 
 /**
- * 模型变更后，若当前 effort 档在新模型下不存在（如从 Opus 4.8 的 `ultracode` 切到 Sonnet），
+ * 模型变更后，若当前 effort 档在新模型下不存在（如从 Opus 5 的 `ultracode` 切到 Sonnet），
  * 退到新模型的最高可用档；否则原样保留。
  */
 export function fallbackEffort(
@@ -283,12 +284,12 @@ function knownModelValues(agent: Agent): Set<string> {
 /**
  * 会话记忆的模型可能来自旧数据、已不在当前菜单里（如 `gpt-5.3-codex`）。这时别把会话停在
  * 一个不存在的模型上 —— 回退到该 agent 的兜底：codex → gpt-5.5（= defaultModel），
- * claude → opus-4-8。model 为空则原样返回，交给上层的 `?? defaultModel(agent)` 处理。
+ * claude → opus-5。model 为空则原样返回，交给上层的 `?? defaultModel(agent)` 处理。
  */
 export function sanitizeModel(agent: Agent, model: string | undefined): string | undefined {
   if (!model) return model
   if (knownModelValues(agent).has(model)) return model
-  if (agent === 'claude') return 'claude-opus-4-8'
+  if (agent === 'claude') return 'claude-opus-5'
   return defaultModel(agent)
 }
 
@@ -323,13 +324,14 @@ export const CLAUDE_PERMISSION_MODES: { value: string; labelKey: string }[] = [
 ]
 
 /**
- * Codex 权限模式四档（独立于 Claude，对齐 Codex 桌面端截图）。
- * Ask for approval / Approve for me / Full access / Custom (config.toml)。
- * 后端通过 `-c sandbox_mode=` 映射（ask → read-only, approve → workspace-write,
+ * Codex 权限模式五档（独立于 Claude，对齐 Codex 桌面端截图）。
+ * Ask for approval / Plan mode / Approve for me / Full access / Custom (config.toml)。
+ * 后端通过 `-c sandbox_mode=` 映射（ask/plan → read-only, approve → workspace-write,
  * fullAccess → bypass, custom → 不传）。
  */
 export const CODEX_PERMISSION_MODES: { value: string; labelKey: string }[] = [
   { value: 'ask', labelKey: 'chat.composer.permission.codex.ask' },
+  { value: 'plan', labelKey: 'chat.composer.permission.plan' },
   { value: 'approve', labelKey: 'chat.composer.permission.codex.approve' },
   { value: 'fullAccess', labelKey: 'chat.composer.permission.codex.fullAccess' },
   { value: 'custom', labelKey: 'chat.composer.permission.codex.custom' },
@@ -343,8 +345,8 @@ export function permissionModesFor(agent: Agent): { value: string; labelKey: str
 
 /** 按 agent 返回默认权限模式（新会话初始值）。 */
 export function defaultPermissionMode(agent: Agent): string {
-  if (agent === 'codex') return 'approve'
-  return 'acceptEdits'
+  if (agent === 'codex') return 'fullAccess'
+  return 'bypassPermissions'
 }
 
 /** 权限模式 value → labelKey（按 agent 从对应列表查找）。 */

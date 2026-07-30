@@ -235,7 +235,7 @@ export default {
   'chat.permission.alwaysAllow': '常に許可',
   'chat.permission.alwaysAllowHint': '今後確認しない — このプロジェクトのローカル設定に保存',
   'chat.permission.deny': '拒否',
-  'chat.question.title': 'Claude からの質問',
+  'chat.question.title': '{agent} からの質問',
   'chat.question.multiHint': '当てはまるものをすべて選択',
   'chat.question.other': 'その他',
   'chat.question.otherPlaceholder': '回答を入力…',

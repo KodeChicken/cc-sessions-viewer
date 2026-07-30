@@ -39,8 +39,8 @@ pub struct SlashCommand {
 }
 
 /// `agent_chat_start` 的返回：内部 chat id + 该 agent 的进程模型标识。前端据
-/// `process_model`（"longLivedStdin" / "oneShotResume"）决定切模型 / effort / 权限时
-/// 是要 restart-with-resume（长驻）还是改下轮 flag 即可（one-shot）。
+/// `process_model`（"longLivedStdin" / "oneShotResume" / "codexAppServer"）决定切模型 /
+/// effort / 权限时是要 restart-with-resume（长驻/app-server）还是改下轮 flag 即可（one-shot）。
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatStartInfo {
@@ -167,6 +167,9 @@ pub struct ChatQuestionRequest {
     /// 提问数组原文：每项 `{question, header?, multiSelect?, options:[{label, description?, preview?}]}`。
     /// 原样透传给前端（回写 decision 的 `updatedInput.questions` 要把它带回去）。
     pub questions: serde_json::Value,
+    /// Codex app-server 的 requestUserInput 可能在 turn completed 后仍有效，需要前端保留弹框。
+    #[serde(default)]
+    pub keep_after_turn: bool,
 }
 
 #[derive(Serialize)]
@@ -272,6 +275,9 @@ pub struct Block {
     pub is_error: bool,
     /// 文件改动类工具结果携带的目标文件路径。
     pub file_path: Option<String>,
+    /// 文件改动类型：add / update / delete。Codex GUI 的 fileChange 用于渲染文件头状态。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_change_type: Option<String>,
     /// file 块：该 `@path` 引用是目录而非文件。前端据此用文件夹图标 +「打开文件夹」。
     /// 仅在确为目录时才置 `Some(true)`（普通文件留 None），让历史会话的文件夹 chip 与
     /// 实时回显一致，而不至于全都显示成文件图标。

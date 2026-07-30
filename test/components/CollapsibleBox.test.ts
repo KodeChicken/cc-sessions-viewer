@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import CollapsibleBox from '../../src/components/CollapsibleBox.vue'
 import { setLang } from '../../src/settings'
@@ -45,34 +45,18 @@ describe('CollapsibleBox', () => {
     expect(() => wrapper.unmount()).not.toThrow()
   })
 
-  describe('when the content overflows', () => {
-    let spy: ReturnType<typeof vi.spyOn>
-
-    beforeEach(() => {
-      // jsdom reports scrollHeight as 0; force an overflow so the measure()
-      // pass in onMounted flips `overflowing` to true.
-      spy = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(9999)
-    })
-    afterEach(() => spy.mockRestore())
-
-    it('reveals a "Show more" toggle and expands/collapses on click', async () => {
+  describe('scroll container behavior', () => {
+    it('caps the box height and keeps content scrollable without a toggle', async () => {
       const wrapper = mount(CollapsibleBox, {
         props: { maxHeight: 100 },
         slots: { default: slot },
       })
       await flushPromises()
 
-      const toggle = wrapper.find('.collapsible-toggle')
-      expect(toggle.exists()).toBe(true)
-      expect(wrapper.find('.collapsible-box').classes()).toContain('collapsed')
-      expect(toggle.text()).toContain('Show more')
-
-      await toggle.trigger('click')
-      expect(wrapper.find('.collapsible-box').classes()).not.toContain('collapsed')
-      expect(wrapper.find('.collapsible-toggle').text()).toContain('Show less')
-
-      await wrapper.find('.collapsible-toggle').trigger('click')
-      expect(wrapper.find('.collapsible-box').classes()).toContain('collapsed')
+      const box = wrapper.find('.collapsible-box')
+      expect(box.attributes('style')).toContain('max-height: 100px')
+      expect(wrapper.find('.collapsible-toggle').exists()).toBe(false)
+      expect(box.classes()).not.toContain('collapsed')
     })
   })
 })

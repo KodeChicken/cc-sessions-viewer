@@ -4,7 +4,7 @@
 //   · 图片：粘贴(⌘V) / 拖拽 / "+" 选择 → 上方缩略图附件行，可单独移除
 //   · 行首 "/" 调出可过滤的指令浮层（MVP 内置一份常用命令）
 //   · 底栏：左 权限模式 chip + "+" 附件；右 模型名 + running spinner
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { t } from '../i18n'
 import * as api from '../api'
 import { enqueuePrompt, removeQueued, interruptChat, clearChat, now, type ChatSession, type QueuedMessage } from '../chatSessions'
@@ -20,7 +20,11 @@ import type { ChatImageAttachment, ChatFileAttachment, SlashCommand, ProjectFile
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { IconPlus, IconSend, IconStop, IconClose, IconFolder, IconPaperclip, IconSlashSquare, IconSkill, IconChevronRight, IconZap, IconGitBranch, IconCornerDownLeft, fileIconFor } from './icons'
+import {
+  IconPlus, IconSend, IconStop, IconClose, IconFolder, IconPaperclip, IconSlashSquare, IconSkill,
+  IconChevronRight, IconZap, IconGitBranch, IconCornerDownLeft,
+  fileIconFor,
+} from './icons'
 import ChatModeMenu from './ChatModeMenu.vue'
 import ChatModelMenu from './ChatModelMenu.vue'
 import ChatEffortSlider from './ChatEffortSlider.vue'
@@ -49,6 +53,10 @@ import {
   startUsagePolling,
   stopUsagePolling,
 } from '../usage'
+import {
+  codexPluginMentionRanges,
+} from '../codexPluginMentions'
+import { rememberChatGuiPreference } from '../chatGuiPreferences'
 
 const props = defineProps<{ session: ChatSession }>()
 // 客户端 slash 指令里需要 ChatView / App 出手的几个（展开右上角导出菜单、打开重命名框、
@@ -274,7 +282,7 @@ const effectiveModel = computed(() => props.session.model ?? props.session.lastM
 // 全新 claude 会话默认选中一个明确的「标准上下文」模型。否则 session.model 为空 → 后端不带
 // --model → CLI 回落到 settings 里的默认模型（常被映射成 1M 上下文，需额度）→ 首条消息直接
 // 「API Error: Usage credits required for 1M context」。等 runtime info 就位后再选，alias 模式
-// 选别名（opus…，让 settings 映射接管），订阅模式选完整 id（claude-opus-4-8）。续聊（有历史
+// 选别名（opus…，让 settings 映射接管），订阅模式选完整 id（claude-opus-5）。续聊（有历史
 // 或已选过模型）不强选 —— 模型随历史/用户选择。
 watch(
   [runtimeLoaded, () => props.session.model, () => props.session.lastModel],
@@ -307,10 +315,12 @@ function onPickPermission(v: string) {
     return
   }
   props.session.permissionMode = v
+  rememberChatGuiPreference(props.session.agent, { permissionMode: props.session.permissionMode })
 }
 function confirmAutoMode() {
   rememberAutoModeConfirmed(props.session.cwd)
   props.session.permissionMode = 'auto'
+  rememberChatGuiPreference(props.session.agent, { permissionMode: props.session.permissionMode })
   askAutoMode.value = false
 }
 function cancelAutoMode() {
@@ -323,9 +333,15 @@ function onPickModel(v: string) {
   props.session.permissionMode = fallbackPermissionMode(agent.value, props.session.permissionMode, model)
   // 当前 effort 档在新模型下不存在（如从 4.8 的 ultracode 切到 Sonnet）→ 退到最高可用档。
   props.session.effort = fallbackEffort(props.session.effort, props.session.agent, model)
+  rememberChatGuiPreference(props.session.agent, {
+    permissionMode: props.session.permissionMode,
+    model: props.session.model,
+    effort: props.session.effort,
+  })
 }
 function onPickEffort(v: string) {
   props.session.effort = v || undefined
+  rememberChatGuiPreference(props.session.agent, { effort: props.session.effort })
 }
 
 // ---------- §10.5 上下文窗口 + 限额指示 ----------
@@ -450,6 +466,7 @@ const slashOpen = ref(false)
 const slashIdx = ref(0)
 const slashStart = ref(-1) // 触发用 `/` 在 text 中的下标（-1 = 未触发）
 const slashQuery = ref('') // `/` 与光标之间的过滤词（保证不含空白）
+let dismissedSlashToken: { at: number; query: string } | null = null // Esc 关闭后，抑制同一 token 被 keyup 立刻重开
 // 过滤：按调用名或展示名子串匹配（不分大小写）；空 query 列全部。后端已按「命令在前、技能在后」排好序。
 const slashMatches = computed<SlashItem[]>(() => {
   const q = slashQuery.value.toLowerCase()
@@ -509,7 +526,12 @@ const leadingCommand = computed(() => {
   const m = text.value.match(/^[/$](\S+)(?=\s|$)/)
   return m && recognizedNames.value.has(m[1]) ? m[1] : null
 })
-const highlightActive = computed(() => leadingCommand.value !== null && !composing.value)
+const pluginHighlightRanges = computed(() =>
+  props.session.agent === 'codex' ? codexPluginMentionRanges(text.value) : [],
+)
+const highlightActive = computed(() =>
+  (leadingCommand.value !== null || pluginHighlightRanges.value.length > 0) && !composing.value,
+)
 // 当前开头命令对应的扫描项（取 argument-hint）。
 const leadingCommandObj = computed<SlashItem | null>(() => {
   const name = leadingCommand.value
@@ -527,18 +549,47 @@ const argHintGhost = computed(() => {
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
+function escapeAttr(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
 // 镜像 HTML：开头 `/命令` 包成蓝色 span，其余原样（转义）；未填参数时再追加暗色 ghost 提示。
 // ghost 只在镜像层渲染、不进 textarea 真实值，故不会被透传给 CLI。
 const highlightHtml = computed(() => {
+  const ranges: { start: number; end: number; html: string }[] = pluginHighlightRanges.value.map((range) => ({
+    start: range.start,
+    end: range.end,
+    html: `<span class="cc-cmd cc-plugin-name" data-cmd-desc="${escapeAttr(range.plugin.description)}">${escapeHtml(text.value.slice(range.start, range.end))}</span>`,
+  }))
   const cmd = leadingCommand.value
-  if (!cmd) return ''
-  const token = `${leadingPrefix.value}${cmd}`
-  const rest = text.value.slice(token.length)
-  const ghost = argHintGhost.value
-  const ghostHtml = ghost
-    ? `<span class="cc-arg-hint">${rest ? '' : ' '}${escapeHtml(ghost)}</span>`
-    : ''
-  return `<span class="cc-cmd">${escapeHtml(token)}</span>${escapeHtml(rest)}${ghostHtml}`
+  let ghostHtml = ''
+  if (cmd) {
+    const token = `${leadingPrefix.value}${cmd}`
+    ranges.push({
+      start: 0,
+      end: token.length,
+      html: `<span class="cc-cmd">${escapeHtml(token)}</span>`,
+    })
+    const ghost = argHintGhost.value
+    const rest = text.value.slice(token.length)
+    ghostHtml = ghost
+      ? `<span class="cc-arg-hint">${rest ? '' : ' '}${escapeHtml(ghost)}</span>`
+      : ''
+  }
+  ranges.sort((a, b) => a.start - b.start || b.end - a.end)
+  let out = ''
+  let last = 0
+  for (const range of ranges) {
+    if (range.start < last) continue
+    out += escapeHtml(text.value.slice(last, range.start))
+    out += range.html
+    last = range.end
+  }
+  out += escapeHtml(text.value.slice(last))
+  return out + ghostHtml
 })
 function onCompositionStart() {
   composing.value = true
@@ -552,7 +603,9 @@ function syncHlScroll() {
 }
 function onHlHover(e: MouseEvent) {
   const cmd = (e.target as HTMLElement).closest?.('.cc-cmd') as HTMLElement | null
-  if (cmd && leadingCommandObj.value?.description) {
+  if (cmd?.dataset.cmdDesc != null) {
+    showTooltipFor(cmd, cmd.dataset.cmdDesc || '')
+  } else if (cmd && leadingCommandObj.value?.description) {
     showTooltipFor(cmd, `${leadingPrefix.value}${leadingCommandObj.value.name} — ${leadingCommandObj.value.description}`)
   }
 }
@@ -584,12 +637,21 @@ function closeSlash() {
   slashQuery.value = ''
 }
 
+function dismissSlash() {
+  const s = activeSlash()
+  dismissedSlashToken = s ? { at: s.at, query: s.query } : null
+  closeSlash()
+}
+
 function detectSlash() {
   const s = activeSlash()
   if (!s) {
+    dismissedSlashToken = null
     if (slashOpen.value || slashStart.value >= 0) closeSlash()
     return
   }
+  if (dismissedSlashToken?.at === s.at && dismissedSlashToken.query === s.query) return
+  dismissedSlashToken = null
   slashStart.value = s.at
   slashQuery.value = s.query
   slashOpen.value = slashMatches.value.length > 0
@@ -619,17 +681,31 @@ function pickSlash(item: SlashItem) {
   })
 }
 
-// ---------- @ 文件浮层（引用项目文件 / 目录）----------
+// ---------- @ 浮层（引用项目文件 / 目录）----------
 // 输入框**任意位置**键入 `@`（前面是行首或空白）即触发：浮层列出会话 cwd 下的目录/文件
 // （空 query→顶层；有 query→递归子串匹配）。↑/↓ 选择；↵/点击=「引用」加成 chip；
 // →/chevron=「展开」目录继续下钻；Esc 关。chip 走与系统选择器附件同一条 `@"path"` 通道。
+type FileMentionItem = ProjectFileEntry & { kind?: 'file' }
+type MentionItem = FileMentionItem
+
 const mentionOpen = ref(false)
-const mentionItems = ref<ProjectFileEntry[]>([])
+const mentionItems = ref<MentionItem[]>([])
 const mentionIdx = ref(0)
 const mentionStart = ref(-1) // 触发用 `@` 在 text 中的下标
 const mentionQuery = ref('')
 const mentionListEl = ref<HTMLElement>() // 滚动容器（↑/↓ 时让高亮项跟随滚动进视野）
 const mentionLeft = ref(0) // 浮层左偏移（px）—— 跟随 `@` 在输入框里的水平位置
+const MENTION_POPUP_MAX_WIDTH = 680
+const mentionSections = computed(() => {
+  const groups: { key: string; title: string; rows: { item: MentionItem; index: number }[] }[] = []
+  const files: { item: MentionItem; index: number }[] = []
+  mentionItems.value.forEach((item, index) => {
+    files.push({ item, index })
+  })
+  if (files.length) groups.push({ key: 'files', title: mentionPathLabel.value, rows: files })
+  return groups
+})
+const activeMentionItem = computed(() => mentionItems.value[mentionIdx.value])
 
 // 镜像 div 量出 textarea 中某字符位置的像素坐标（标准做法：复制样式 + 同文到测量 span）。
 const CARET_PROPS = [
@@ -671,12 +747,13 @@ function updateMentionPos() {
   let left = taRect.left - wrapRect.left - borderLeft + caretLeft(el, mentionStart.value)
   if (!Number.isFinite(left)) left = 0
   const avail = wrap.clientWidth
-  const popupW = Math.min(400, avail)
+  const popupW = Math.min(MENTION_POPUP_MAX_WIDTH, avail)
   mentionLeft.value = Math.max(0, Math.min(left, Math.max(0, avail - popupW)))
 }
 let mentionSeq = 0 // 异步请求竞态守卫（只认最新一次）
 let mentionTimer: number | null = null
 let mentionFetched: string | null = null // 已拉取过的 query，避免重复抖动
+let dismissedMentionToken: { at: number; query: string } | null = null // Esc 关闭后，抑制同一 token 被 keyup 立刻重开
 
 /** 从光标处向前找触发用的 `@`：前面须为行首或空白，且 `@`→光标间无空白。命中返回
  *  { at, query }，否则 null（避开 foo@bar / 已被空白结束的 token）。 */
@@ -702,12 +779,21 @@ function closeMention() {
   mentionFetched = null
 }
 
+function dismissMention() {
+  const m = activeMention()
+  dismissedMentionToken = m ? { at: m.at, query: m.query } : null
+  closeMention()
+}
+
 function detectMention() {
   const m = activeMention()
   if (!m) {
+    dismissedMentionToken = null
     if (mentionOpen.value) closeMention()
     return
   }
+  if (dismissedMentionToken?.at === m.at && dismissedMentionToken.query === m.query) return
+  dismissedMentionToken = null
   mentionStart.value = m.at
   updateMentionPos() // @ 的水平位置可能因其前面文字增删而移动 → 每次都校准
   // query 没变且已展开 → 不重复请求（光标在 token 内左右移 / 方向键导航时避免抖动）。
@@ -720,16 +806,17 @@ function detectMention() {
 async function fetchMentions(q: string) {
   const seq = ++mentionSeq
   try {
-    const items = await api.listProjectFiles(props.session.cwd, q, 200)
+    const projectItems = await api.listProjectFiles(props.session.cwd, q, 200)
     if (seq !== mentionSeq) return // 过期请求丢弃
     if (!activeMention()) {
       closeMention()
       return
     }
     mentionFetched = q
+    const items: MentionItem[] = projectItems.map((item) => ({ ...item, kind: 'file' as const }))
     mentionItems.value = items
     mentionOpen.value = items.length > 0
-    if (mentionIdx.value >= items.length) mentionIdx.value = 0
+    if (mentionIdx.value >= items.length || q !== mentionQuery.value) mentionIdx.value = 0
   } catch {
     closeMention()
   }
@@ -780,7 +867,7 @@ function replaceMentionToken(insert: string, keepOpen: boolean) {
 }
 
 /** 引用 = 把条目加成 chip（文件 / 目录皆可），并从输入里抹掉 `@token`。 */
-function commitMention(item: ProjectFileEntry) {
+function commitMention(item: MentionItem) {
   addMentionRef(item.relPath, item.isDir)
   const start = mentionStart.value
   const end = start + 1 + mentionQuery.value.length
@@ -802,14 +889,18 @@ function commitMention(item: ProjectFileEntry) {
 }
 
 /** 是否可进入下一级（目录且含可见子项）。空目录没有下级 → 不显示 chevron / 不响应 →。 */
-function canDrill(item: ProjectFileEntry): boolean {
+function canDrill(item: MentionItem): boolean {
   return item.isDir && item.hasChildren
 }
 
 /** 进入 = 目录下钻（token 变 `@dir/` 续列）；空目录 / 文件没有下级 → 等同引用。 */
-function openMention(item: ProjectFileEntry) {
+function openMention(item: MentionItem) {
   if (canDrill(item)) replaceMentionToken(`@${item.relPath}/`, true)
   else commitMention(item)
+}
+
+function mentionIconFor(item: MentionItem): Component {
+  return item.isDir ? IconFolder : fileIconFor(item.relPath)
 }
 
 /** ← 逐级返回上一层：把 query 弹掉最后一段（含尾斜杠）。`web/icons/`→`web/`→``。 */
@@ -927,7 +1018,46 @@ function historyNext(): boolean {
 }
 
 // ---------- 键盘 ----------
+function deleteCodexPluginMentionAtCaret(key: 'Backspace' | 'Delete'): boolean {
+  if (props.session.agent !== 'codex') return false
+  const el = taEl.value
+  if (!el || el.selectionStart !== el.selectionEnd) return false
+  const caret = el.selectionStart
+  for (const range of pluginHighlightRanges.value) {
+    let start = range.start
+    let end = range.end
+    if (key === 'Backspace') {
+      if (caret > start && caret <= end) {
+        // inside the token or just after @Plugin
+      } else if (caret === end + 1 && text.value[end] === ' ') {
+        end += 1
+      } else {
+        continue
+      }
+    } else if (caret >= start && caret < end) {
+      if (caret === start && text.value[end] === ' ') end += 1
+    } else {
+      continue
+    }
+    text.value = text.value.slice(0, start) + text.value.slice(end)
+    nextTick(() => {
+      el.selectionStart = el.selectionEnd = start
+      autosize()
+      detectSlash()
+      detectMention()
+    })
+    return true
+  }
+  return false
+}
+
 function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && mentionOpen.value) {
+    e.preventDefault()
+    e.stopPropagation()
+    dismissMention()
+    return
+  }
   if (mentionOpen.value && mentionItems.value.length) {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
@@ -984,9 +1114,26 @@ function onKeydown(e: KeyboardEvent) {
     }
     if (e.key === 'Escape') {
       e.preventDefault()
-      closeSlash()
+      e.stopPropagation()
+      dismissSlash()
       return
     }
+  }
+  if (
+    e.key === 'Escape' &&
+    !e.repeat &&
+    !e.shiftKey &&
+    !e.metaKey &&
+    !e.ctrlKey &&
+    !e.altKey &&
+    !e.isComposing
+  ) {
+    if (running.value) {
+      e.preventDefault()
+      e.stopPropagation()
+      void interruptChat(props.session)
+    }
+    return
   }
   // 历史回填：浮层都关着、无修饰键时，↑/↓ 在首/末行回填上一条/下一条用户消息（参考 Claude 客户端）。
   if (!e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing) {
@@ -1032,6 +1179,10 @@ function onKeydown(e: KeyboardEvent) {
   }
   // Backspace 整体删除已识别的 slash command token（蓝色高亮部分）。
   // 光标在 token 范围内（含紧跟的空格）且无选区时，一次 Backspace 清掉整个 `/command `。
+  if ((e.key === 'Backspace' || e.key === 'Delete') && !e.isComposing && deleteCodexPluginMentionAtCaret(e.key)) {
+    e.preventDefault()
+    return
+  }
   if (e.key === 'Backspace' && !e.isComposing && leadingCommand.value) {
     const el = taEl.value
     if (el && el.selectionStart === el.selectionEnd) {
@@ -1213,6 +1364,9 @@ async function submit() {
       case 'model':
         modelMenuRef.value?.openMenu()
         break
+      case 'plan':
+        onPickPermission('plan')
+        break
       case 'archive':
         emit('archive')
         break
@@ -1319,38 +1473,41 @@ function queuedLabel(q: QueuedMessage): string {
         <IconPaperclip class="cc-drop-ic" />
         <span>{{ t('chat.composer.dropHint') }}</span>
       </div>
-      <!-- @ 文件浮层：列项目 cwd 下目录/文件。↵/点击=引用 chip；→/chevron=进入目录、←=返回上级 -->
+      <!-- @ 浮层：Codex 插件 + 项目 cwd 下目录/文件。插件插入 @Plugin，文件引用为 chip。 -->
       <div v-if="mentionOpen" class="cc-mention" role="listbox" :style="{ left: mentionLeft + 'px' }">
-        <!-- 面包屑：灰色小字，实时显示当前匹配的目录路径（左截断保住最深一段） -->
-        <div class="cc-mention-path">{{ mentionPathLabel }}</div>
         <div ref="mentionListEl" class="cc-mention-list">
-          <div
-            v-for="(it, i) in mentionItems"
-            :key="it.relPath"
-            class="cc-mention-item"
-            :class="{ active: i === mentionIdx }"
-            role="option"
-            :aria-selected="i === mentionIdx"
-            @mouseenter="mentionIdx = i"
-            @mousedown.prevent
-            @click="commitMention(it)"
-          >
-            <component :is="it.isDir ? IconFolder : fileIconFor(it.relPath)" class="cc-mention-ic" />
-            <span class="cc-mention-nm">{{ it.isDir ? it.name + '/' : it.name }}</span>
-            <button
-              v-if="canDrill(it)"
-              class="cc-mention-open"
-              v-tooltip="t('chat.composer.mention.open')"
+          <div v-for="section in mentionSections" :key="section.key" class="cc-mention-section">
+            <div class="cc-mention-path">{{ section.title }}</div>
+            <div
+              v-for="{ item: it, index: i } in section.rows"
+              :key="it.relPath"
+              class="cc-mention-item"
+              :class="{ active: i === mentionIdx }"
+              role="option"
+              :aria-selected="i === mentionIdx"
+              @mouseenter="mentionIdx = i"
               @mousedown.prevent
-              @click.stop="openMention(it)"
+              @click="commitMention(it)"
             >
-              <IconChevronRight />
-            </button>
+              <component :is="mentionIconFor(it)" class="cc-mention-ic" />
+              <span class="cc-mention-main">
+                <span class="cc-mention-nm">{{ it.isDir ? it.name + '/' : it.name }}</span>
+              </span>
+              <button
+                v-if="canDrill(it)"
+                class="cc-mention-open"
+                v-tooltip="t('chat.composer.mention.open')"
+                @mousedown.prevent
+                @click.stop="openMention(it)"
+              >
+                <IconChevronRight />
+              </button>
+            </div>
           </div>
         </div>
         <div class="cc-mention-hint">
           <kbd>↵</kbd>{{ t('chat.composer.mention.attach') }}
-          <template v-if="mentionItems[mentionIdx] && canDrill(mentionItems[mentionIdx])"><kbd>→</kbd>{{ t('chat.composer.mention.open') }}</template>
+          <template v-if="activeMentionItem && canDrill(activeMentionItem)"><kbd>→</kbd>{{ t('chat.composer.mention.open') }}</template>
           <template v-if="mentionDrilled"><kbd>←</kbd>{{ t('chat.composer.mention.back') }}</template>
         </div>
       </div>
@@ -1974,11 +2131,11 @@ function queuedLabel(q: QueuedMessage): string {
 
 /* @ 文件浮层（结构同 slash，多一列右对齐父目录灰字 + 底部按键提示）。
    单层描边：用 border + 无 ring 的柔和投影（--shadow-md 自带 0 0 0 1px ring，叠加 border
-   会显成双框）；宽度收到 400px（窄窗时回落到容器宽）。 */
+   会显成双框）；宽度收到 680px（窄窗时回落到容器宽）。 */
 .cc-mention {
   position: absolute;
   left: 0; /* 默认值；实际由 :style 绑定的 mentionLeft 跟随 @ 的水平位置 */
-  width: 400px;
+  width: 680px;
   max-width: 100%;
   bottom: calc(100% + 6px);
   display: flex;
@@ -1995,19 +2152,26 @@ function queuedLabel(q: QueuedMessage): string {
    左侧（保住最深一段，面包屑更有用）；纯 ASCII 路径在 WebKit 下方向正常。 */
 .cc-mention-path {
   flex: none;
+  position: sticky;
+  top: 0;
+  z-index: 1;
   padding: 5px 11px 6px;
   font-size: 11px;
   color: var(--text-mute);
+  background: var(--surface);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   direction: rtl;
   text-align: left;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
   margin-bottom: 2px;
 }
 .cc-mention-list {
   overflow-y: auto;
+}
+.cc-mention-section + .cc-mention-section {
+  margin-top: 2px;
 }
 .cc-mention-item {
   display: flex;
@@ -2026,6 +2190,13 @@ function queuedLabel(q: QueuedMessage): string {
   width: 15px;
   height: 15px;
   color: var(--text-dim);
+}
+.cc-mention-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .cc-mention-nm {
   flex: 1;
@@ -2060,11 +2231,22 @@ function queuedLabel(q: QueuedMessage): string {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 6px 10px 3px;
+  position: relative;
+  padding: 7px 10px 3px;
   font-size: 11px;
   color: var(--text-mute);
-  border-top: 1px solid var(--border);
-  margin-top: 2px;
+  background: var(--surface);
+  margin-top: 0;
+}
+.cc-mention-hint::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -10px;
+  height: 10px;
+  pointer-events: none;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.035), transparent);
 }
 .cc-mention-hint kbd {
   font-family: inherit;

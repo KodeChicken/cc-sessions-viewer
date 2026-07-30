@@ -19,6 +19,8 @@ import { parseContextUsage, type ContextUsage } from '../contextUsage'
 const VueEasyLightbox = defineAsyncComponent(() => import('vue-easy-lightbox'))
 import { highlightDiff, looksLikeDiff } from '../diffHighlight'
 import { renderCodexApplyPatchHtml } from '../codexApplyPatch'
+import { codexPluginLinkForUri, renderCodexPluginLinkHtml, renderCodexPluginMentionHtmlText } from '../codexPluginMentions'
+import { isFileChangeResult, isFileMutatingToolName, shouldAttachToolResult, shouldPreferToolResult } from '../toolResultRouting'
 import {
   search,
   searchCount,
@@ -201,33 +203,19 @@ function toolUseCodeClass(b: Block): string[] {
   return ['code-block', looksLikeDiff(b.toolInput ?? '') ? 'lang-diff' : 'lang-json']
 }
 
-// 这几个工具会让 tool_result 携带 structuredPatch / 文件 diff，需要单独以
-// 一个块呈现，便于一眼看到改动；其它工具（Read / Bash / TaskUpdate / Grep …）
-// 的结果只是文本输出，嵌入到 Tool call 内部更紧凑。
-const FILE_MUTATING_TOOLS = new Set([
-  'Write',
-  'Edit',
-  'MultiEdit',
-  'NotebookEdit',
-  'apply_patch',
-  'edit',
-  'write',
-])
-
 // 搜索范围分类 —— 给 .msg-row / tool_use <details> 打 data-search-scope，
 // applySearch 沿祖先链找最近的 scope 决定是否收录该文本节点。
 //   'user' / 'assistant'：用户消息 / 助手文本（含 thinking）
 //   'tools-edit'：文件改动型工具（与 'agent' 选项合并）
 //   'tools-other'：其它工具调用（与 'tools' 选项匹配）
 function rowScope(m: Msg): string {
-  // tool-only 行只在 FILE_MUTATING_TOOLS 的 tool_result 拆出来时出现，所以一定是 edit 类
-  if (isToolOnly(m)) return 'tools-edit'
+  if (isToolOnly(m)) return m.blocks.some((b) => isFileChangeResult(b)) ? 'tools-edit' : 'tools-other'
   // 系统注入块不是用户 prose 也不是助手回复 —— 给个独立 scope，只在「全部」筛选下命中。
   if (m.metaKind) return 'meta'
   return m.role
 }
 function toolUseScope(b: Block): string {
-  return FILE_MUTATING_TOOLS.has(b.toolName ?? '') ? 'tools-edit' : 'tools-other'
+  return isFileMutatingToolName(b.toolName) ? 'tools-edit' : 'tools-other'
 }
 
 const resultByToolId = computed(() => {
@@ -236,7 +224,7 @@ const resultByToolId = computed(() => {
     for (const b of m.blocks) {
       if (b.kind === 'tool_result' && b.toolId) {
         const previous = map.get(b.toolId)
-        if (!previous || b.isError) map.set(b.toolId, b)
+        if (shouldPreferToolResult(b, previous)) map.set(b.toolId, b)
       }
     }
   }
@@ -260,8 +248,8 @@ const inlinedResultIds = computed(() => {
       if (
         b.kind === 'tool_use' &&
         b.toolId &&
-        !FILE_MUTATING_TOOLS.has(b.toolName ?? '') &&
-        resultByToolId.value.has(b.toolId)
+        resultByToolId.value.has(b.toolId) &&
+        !shouldAttachToolResult(b, resultByToolId.value.get(b.toolId))
       ) {
         set.add(b.toolId)
       }
@@ -291,8 +279,8 @@ const attachedResultIds = computed(() => {
       if (
         b.kind === 'tool_use' &&
         b.toolId &&
-        FILE_MUTATING_TOOLS.has(b.toolName ?? '') &&
-        resultByToolId.value.has(b.toolId)
+        resultByToolId.value.has(b.toolId) &&
+        shouldAttachToolResult(b, resultByToolId.value.get(b.toolId))
       ) {
         set.add(b.toolId)
       }
@@ -344,7 +332,9 @@ function imageBlocks(m: Msg): Block[] {
 // 带图消息的正文要滤掉 [Image #n] 占位符（缩略图已单独展示）；无图消息原样渲染，
 // 免得误删正文里对图片的文字引用。
 function bubbleText(m: Msg, raw: string): string {
-  return imageBlocks(m).length ? stripImagePlaceholders(raw) : raw
+  let text = imageBlocks(m).length ? stripImagePlaceholders(raw) : raw
+  if (m.blocks.some(isCodexPluginFileBlock)) text = text.replace(/^\[\s*/, '')
+  return text
 }
 // 用户消息以 /命令 开头时，把开头那段 /token 标蓝（对齐输入框命令高亮 + 官方客户端渲染）。
 // 只处理开头：renderText 把首段文本包成 <div class="text-run">，正则只命中首段开头的 /token
@@ -357,6 +347,9 @@ function renderBubble(m: Msg, raw: string): string {
       /(<div class="text-run">)([/$][^\s<]+)/,
       '$1<span class="cmd-name">$2</span>',
     )
+  }
+  if (m.role === 'user' && props.agent === 'codex' && text.includes('@')) {
+    html = renderCodexPluginMentionHtmlText(html)
   }
   return injectCmdDesc(html)
 }
@@ -414,9 +407,15 @@ function isImagePath(path: string): boolean {
 function fileBlocks(m: Msg): Block[] {
   const hasThumbs = m.blocks.some((b) => b.kind === 'image' && b.imageSrc)
   const files = m.blocks.filter(
-    (b) => b.kind === 'file' && b.filePath && !(hasThumbs && isImagePath(b.filePath)),
+    (b) => b.kind === 'file' && b.filePath && !isCodexPluginFileBlock(b) && !(hasThumbs && isImagePath(b.filePath)),
   )
   return files
+}
+function isCodexPluginFileBlock(b: Block): boolean {
+  return !!(b.kind === 'file' && b.filePath && codexPluginLinkForUri(b.filePath))
+}
+function codexPluginFileHtml(b: Block): string {
+  return b.filePath ? renderCodexPluginLinkHtml('', b.filePath, escapeHtml) ?? '' : ''
 }
 // 文件名 = 路径 basename（兼容 `/` 与 `\`）；空则回退整段路径。
 function fileName(path: string): string {
@@ -449,7 +448,8 @@ function contextUsageOf(m: Msg): ContextUsage | null {
 // 气泡是否还有非图片 / 非文件正文 —— 纯图片 / 纯文件消息不渲染空灰泡，只留上方缩略图 / chip。
 function hasBubbleBody(m: Msg): boolean {
   return m.blocks.some((b) => {
-    if (b.kind === 'image' || b.kind === 'file') return false
+    if (b.kind === 'image') return false
+    if (b.kind === 'file') return isCodexPluginFileBlock(b)
     if (b.kind === 'text') return bubbleText(m, b.text ?? '').trim().length > 0
     return true
   })
@@ -1045,9 +1045,9 @@ function messageSegments(m: Msg): { scope: string; text: string }[] {
   const segs: { scope: string; text: string }[] = []
   for (const b of m.blocks) {
     if (b.kind === 'tool_use') {
-      const s = toolUseScope(b)
-      segs.push({ scope: s, text: `${b.toolName ?? ''} ${b.toolInput ?? ''}` })
       const r = inlinedResultFor(b) ?? attachedResultFor(b)
+      const s = r && isFileChangeResult(r) ? 'tools-edit' : toolUseScope(b)
+      segs.push({ scope: s, text: `${b.toolName ?? ''} ${b.toolInput ?? ''}` })
       if (r?.text) segs.push({ scope: s, text: r.text })
     } else if (b.kind === 'tool_result') {
       segs.push({ scope: isToolOnly(m) ? 'tools-edit' : rscope, text: b.text ?? '' })
@@ -1804,6 +1804,7 @@ function onDocClick(e: MouseEvent) {
           <CollapsibleBox :enabled="m.role === 'user'" :max-height="320">
             <template v-for="(b, bi) in m.blocks" :key="bi">
               <div v-if="b.kind === 'text'" class="text-run" v-html="renderBubble(m, b.text ?? '')" />
+              <div v-else-if="isCodexPluginFileBlock(b)" class="text-run" v-html="codexPluginFileHtml(b)" />
 
               <!-- image 块已渲染在气泡上方，正文里跳过 -->
 
@@ -1849,6 +1850,7 @@ function onDocClick(e: MouseEvent) {
                   <ToolResult
                     v-if="inlinedResultFor(b)"
                     :block="inlinedResultFor(b)!"
+                    :cwd="cwd"
                     :persist-open="isDetailOpen(vr.index, bi, 'r')"
                     @toggle="v => onResultToggle(vr.index, bi, v)"
                   />
@@ -1863,6 +1865,7 @@ function onDocClick(e: MouseEvent) {
                   !shouldHideToolResult(b)
                 "
                 :block="b"
+                :cwd="cwd"
                 :in-user="m.role === 'user'"
                 :persist-open="isDetailOpen(vr.index, bi, 'r')"
                 @toggle="v => onResultToggle(vr.index, bi, v)"
@@ -1881,6 +1884,7 @@ function onDocClick(e: MouseEvent) {
             >
               <ToolResult
                 :block="attachedResultFor(b)!"
+                :cwd="cwd"
                 :persist-open="isDetailOpen(vr.index, bi, 'r')"
                 @toggle="v => onResultToggle(vr.index, bi, v)"
               />
@@ -1966,6 +1970,7 @@ function onDocClick(e: MouseEvent) {
         v-for="q in (liveSession ? liveSession.pendingQuestions : [])"
         :key="q.requestId"
         :request="q"
+        :agent="agent"
         @submit="(sel: QuestionSelection[]) => liveSession && respondQuestion(liveSession, q, sel)"
         @cancel="liveSession && respondQuestion(liveSession, q, null)"
       />

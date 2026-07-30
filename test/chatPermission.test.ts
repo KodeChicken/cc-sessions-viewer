@@ -31,6 +31,12 @@ describe('permissionCommandPreview', () => {
     expect(permissionCommandPreview(req({ toolName: 'WebFetch', input: { url: 'https://x.dev' } }))).toBe('https://x.dev')
   })
 
+  it('shows the proposed plan for ExitPlanMode', () => {
+    expect(permissionCommandPreview(req({ toolName: 'ExitPlanMode', input: { plan: '# Plan\n\n- Create file' } }))).toBe(
+      '# Plan\n\n- Create file',
+    )
+  })
+
   it('returns undefined when nothing salient is present', () => {
     expect(permissionCommandPreview(req({ toolName: 'Bash', input: {} }))).toBeUndefined()
     expect(permissionCommandPreview(req({ toolName: 'Bash', input: null }))).toBeUndefined()

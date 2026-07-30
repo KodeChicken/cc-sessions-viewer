@@ -19,7 +19,8 @@ const multi: ChatQuestionItem = {
 }
 
 const req = (questions: ChatQuestionItem[]): ChatQuestionRequest => ({ requestId: 'r1', questions })
-const mountPrompt = (request: ChatQuestionRequest) => mount(ChatQuestionPrompt, { props: { request } })
+const mountPrompt = (request: ChatQuestionRequest, agent: 'claude' | 'codex' = 'claude') =>
+  mount(ChatQuestionPrompt, { props: { request, agent } })
 const submitDisabled = (w: ReturnType<typeof mountPrompt>) =>
   (w.find('.q-submit').element as HTMLButtonElement).disabled
 const firstSubmit = (w: ReturnType<typeof mountPrompt>) =>
@@ -30,6 +31,11 @@ describe('ChatQuestionPrompt', () => {
     const w = mountPrompt(req([single]))
     expect(w.find('.q-title').text().length).toBeGreaterThan(0)
     expect(w.find('.q-text').text()).toBe('Pick a language')
+  })
+
+  it('uses the current agent in the title', () => {
+    const w = mountPrompt(req([single]), 'codex')
+    expect(w.find('.q-title').text()).toContain('Codex')
   })
 
   it('keeps submit disabled until a selection is made, then emits the picked label', async () => {
@@ -75,6 +81,11 @@ describe('ChatQuestionPrompt', () => {
     await w.find('.q-other-input').setValue('Zig')
     await w.find('.q-submit').trigger('click')
     expect(firstSubmit(w)).toEqual([{ labels: [], otherText: 'Zig' }])
+  })
+
+  it('can hide Other for fixed-choice prompts', () => {
+    const w = mountPrompt(req([{ ...single, allowOther: false }]))
+    expect(w.find('.q-other').exists()).toBe(false)
   })
 
   it('shows one question at a time and advances with Next', async () => {

@@ -2529,50 +2529,61 @@ mark.locate-hl {
 :root.theme-dark .bubble .cmd-name {
   color: #60a5fa;
 }
+.bubble .codex-plugin-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  vertical-align: -3px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.bubble .codex-plugin-ref-ic {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-dim);
+}
+.bubble .codex-plugin-ref-ic svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.bubble .codex-plugin-ref-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #2563eb;
+}
+:root.theme-dark .bubble .codex-plugin-ref-name {
+  color: #60a5fa;
+}
 
-/* Long "Me" bubbles get folded with a fade + show-more toggle, like CSDN posts. */
+/* Long bubbles keep a stable max height and scroll vertically. */
 .collapsible-box {
   position: relative;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 .collapsible-inner {
-  overflow: hidden;
+  min-width: 0;
 }
-.collapsible-box.collapsed .collapsible-inner {
-  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
-          mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
-}
-.collapsible-toggle {
-  margin: 6px auto 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--text-mute);
-  background: transparent;
-  border: 0;
-  padding: 2px 8px;
-  border-radius: 5px;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-}
-.collapsible-toggle:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-.collapsible-toggle .chev {
-  width: 12px;
-  height: 12px;
-  display: inline-flex;
-  transform: rotate(90deg);
-  transition: transform 0.16s ease;
-}
-.collapsible-toggle .chev svg {
-  width: 12px;
-  height: 12px;
-}
-.collapsible-toggle .chev.open {
-  transform: rotate(-90deg);
+.collapsible-box::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 /* 消息图片：小缩略图成排浮在气泡上方（参考 Claude 客户端），不进灰底气泡。
    对齐由 .msg-row 的 align-items 决定（用户右、AI 左）；自身收缩贴合内容。 */

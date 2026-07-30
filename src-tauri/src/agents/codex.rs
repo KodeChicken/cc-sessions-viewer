@@ -1155,6 +1155,33 @@ fn read_with_title_index(
                     }
                 }
             }
+            ("event_msg", "item_completed") => {
+                let Some(item) = p.get("item") else {
+                    continue;
+                };
+                if !matches!(
+                    item.get("type").and_then(Value::as_str),
+                    Some("Plan" | "plan")
+                ) {
+                    continue;
+                }
+                let Some(text) = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                else {
+                    continue;
+                };
+                msgs.push(Msg {
+                    uuid: None,
+                    role: "assistant".to_string(),
+                    timestamp: ts,
+                    model: model_hint.clone(),
+                    sidechain: false,
+                    blocks: vec![text_block("text", text)],
+                    meta_kind: None,
+                });
+            }
             ("event_msg", "thread_name_updated") => {
                 if let Some(name) = p.get("thread_name").and_then(|x| x.as_str()) {
                     let trimmed = name.trim();
@@ -1856,8 +1883,9 @@ impl SessionSource for CodexSource {
     }
 
     fn chat_process_model(&self) -> ChatProcessModel {
-        // codex exec 一轮一进程 + resume 续上下文。
-        ChatProcessModel::OneShotResume
+        // GUI 使用 Codex rich-client app-server；thread 设置在 app-server 里有粘性，
+        // 切模型/effort/权限需 restart/resume 才可靠生效。
+        ChatProcessModel::CodexAppServer
     }
 
     fn chat_turn_command(
@@ -2842,6 +2870,27 @@ mod tests {
     }
 
     #[test]
+    fn read_session_renders_completed_plan_items() {
+        let p = write_temp(
+            "codex-read-session-plan-item.jsonl",
+            &[
+                r#"{"timestamp":"2026-07-30T10:25:49.000Z","type":"session_meta","payload":{"id":"abc","cwd":"/tmp"}}"#,
+                r#"{"timestamp":"2026-07-30T10:25:50.000Z","type":"event_msg","payload":{"type":"user_message","message":"创建一个文件 plan-mode-test.txt，内容写 hello"}}"#,
+                r##"{"timestamp":"2026-07-30T10:25:51.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"Plan","id":"plan-1","text":"# 创建测试文件\n\n## Summary\n\n在仓库根目录新增 `plan-mode-test.txt`，文件内容为 `hello`（末尾换行）。\n\n## Test Plan\n\n确认文件存在，且完整内容精确为 `hello`。\n"}}}"##,
+            ],
+        );
+
+        let msgs = read_with_title_index(p.to_string_lossy().as_ref(), &HashMap::new())
+            .expect("session should parse");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1].role, "assistant");
+        let text = msgs[1].blocks[0].text.as_deref().unwrap_or_default();
+        assert!(text.contains("# 创建测试文件"));
+        assert!(text.contains("## Summary"));
+        assert!(text.contains("## Test Plan"));
+    }
+
+    #[test]
     fn read_session_synthesizes_rename_from_title_index_when_rollout_lacks_event() {
         let p = write_temp(
             "codex-read-session-synth-rename.jsonl",
@@ -3078,3 +3127,11 @@ const result = await tools.apply_patch(patch);"#;
         );
     }
 }
+    #[test]
+    fn gui_chat_uses_codex_app_server_process_model() {
+        assert_eq!(
+            <CodexSource as crate::agents::SessionSource>::chat_process_model(&CodexSource),
+            ChatProcessModel::CodexAppServer
+        );
+        assert_eq!(ChatProcessModel::CodexAppServer.as_str(), "codexAppServer");
+    }

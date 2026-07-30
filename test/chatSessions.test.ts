@@ -14,6 +14,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import {
   chatEffectiveEffortForTest,
+  chatOnResultForTest,
   enqueuePrompt,
   interruptChat,
   parseRetryLine,
@@ -22,8 +23,10 @@ import {
   respondPermission,
   respondQuestion,
   startChat,
+  shouldDropDuplicatePatchOutputForTest,
 } from '../src/chatSessions'
-import type { ChatPermissionRequest, ChatQuestionRequest } from '../src/types'
+import { rememberChatGuiPreference } from '../src/chatGuiPreferences'
+import type { ChatPermissionRequest, ChatQuestionRequest, Msg } from '../src/types'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -122,9 +125,100 @@ describe('chatSessions Claude API-key compatibility', () => {
   })
 })
 
+describe('chatSessions live tool result routing', () => {
+  it('drops duplicate apply_patch success output after a structured file change', () => {
+    const existing: Msg[] = [{
+      role: 'assistant',
+      blocks: [{
+        kind: 'tool_result',
+        isError: false,
+        toolId: 'file-change-1',
+        filePath: 'test-88.md',
+        diff: [{
+          oldStart: 0,
+          newStart: 1,
+          lines: [{ kind: 'add', oldNo: null, newNo: 1, text: '1111===2222' }],
+        }],
+      }],
+    } as Msg]
+    const incoming = {
+      role: 'user',
+      blocks: [{
+        kind: 'tool_result',
+        isError: false,
+        toolId: 'call-1',
+        text: 'Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess. Updated the following files:\nA test-88.md\n',
+      }],
+    } as Msg
+
+    expect(shouldDropDuplicatePatchOutputForTest(existing, incoming)).toBe(true)
+  })
+
+  it('keeps ordinary tool output after a structured file change', () => {
+    const existing: Msg[] = [{
+      role: 'assistant',
+      blocks: [{
+        kind: 'tool_result',
+        isError: false,
+        toolId: 'file-change-1',
+        filePath: 'test-88.md',
+        diff: [{
+          oldStart: 0,
+          newStart: 1,
+          lines: [{ kind: 'add', oldNo: null, newNo: 1, text: '1111===2222' }],
+        }],
+      }],
+    } as Msg]
+    const incoming = {
+      role: 'user',
+      blocks: [{
+        kind: 'tool_result',
+        isError: false,
+        toolId: 'call-2',
+        text: 'hello.md  7B\n',
+      }],
+    } as Msg
+
+    expect(shouldDropDuplicatePatchOutputForTest(existing, incoming)).toBe(false)
+  })
+})
+
 describe('chatSessions Codex custom provider compatibility', () => {
   beforeEach(() => {
     invokeMock.mockReset()
+  })
+
+  it('uses remembered GUI permission, model, and effort for a new Codex chat', async () => {
+    rememberChatGuiPreference('codex', {
+      permissionMode: 'approve',
+      model: 'gpt-5.6-sol',
+      effort: 'ultra',
+    })
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'codex_runtime_info') return Promise.resolve({ usesApiKey: false })
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 5, processModel: 'codexAppServer' })
+      return Promise.resolve(undefined)
+    })
+
+    const s = await startChat({
+      agent: 'codex',
+      projectKey: 'proj',
+      cwd: '/tmp',
+      title: 'Codex',
+    })
+
+    expect(s.permissionMode).toBe('approve')
+    expect(s.model).toBe('gpt-5.6-sol')
+    expect(s.effort).toBe('ultra')
+    expect(invokeMock).toHaveBeenCalledWith(
+      'agent_chat_start',
+      expect.objectContaining({
+        agent: 'codex',
+        permissionMode: 'approve',
+        model: 'gpt-5.6-sol',
+        effort: 'ultra',
+      }),
+    )
   })
 
   it('uses config.toml Codex model and effort for custom providers', async () => {
@@ -331,6 +425,27 @@ describe('respondPermission — interactive tool-permission reply', () => {
 
     expect(s.pendingPermissions.map((p) => p.requestId)).toEqual(['b'])
   })
+
+  it('exits Claude plan mode after allowing ExitPlanMode', async () => {
+    invokeMock.mockResolvedValueOnce({ chatId: 8, processModel: 'longLivedStdin' })
+    const s = await startChat({ agent: 'claude', projectKey: 'p', cwd: '/tmp', title: 'C', permissionMode: 'plan' })
+    const r = permReq({
+      toolName: 'ExitPlanMode',
+      input: { plan: '# Plan\n\n- Create file' },
+    })
+    s.pendingPermissions = [r]
+    invokeMock.mockReset()
+    invokeMock.mockResolvedValueOnce(undefined)
+
+    await respondPermission(s, r, 'allow-once')
+
+    expect(s.permissionMode).toBe('bypassPermissions')
+    expect(invokeMock).toHaveBeenCalledWith('agent_chat_respond_permission', {
+      id: 8,
+      requestId: 'req-1',
+      decision: { behavior: 'allow', updatedInput: { plan: '# Plan\n\n- Create file' } },
+    })
+  })
 })
 
 describe('respondQuestion — structured AskUserQuestion reply', () => {
@@ -396,6 +511,142 @@ describe('respondQuestion — structured AskUserQuestion reply', () => {
 
     expect(s.pendingQuestions.map((q) => q.requestId)).toEqual(['b'])
   })
+
+  it('exits Codex plan mode after accepting plan implementation', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'codex_runtime_info') return Promise.resolve({ usesApiKey: false })
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 11, processModel: 'codexAppServer' })
+      return Promise.resolve(undefined)
+    })
+    const s = await startChat({ agent: 'codex', projectKey: 'p', cwd: '/tmp', title: 'C', permissionMode: 'plan' })
+    const r = qReq({
+      questions: [{
+        question: 'Implement this plan?',
+        allowOther: false,
+        options: [{ label: 'Yes, implement this plan' }, { label: 'No, stay in Plan mode' }],
+      }],
+    })
+    s.pendingQuestions = [r]
+    invokeMock.mockReset()
+    invokeMock.mockResolvedValueOnce(undefined)
+
+    await respondQuestion(s, r, [{ labels: ['Yes, implement this plan'] }])
+
+    expect(s.permissionMode).toBe('fullAccess')
+  })
+
+  it('keeps Codex in plan mode when implementation is declined', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'codex_runtime_info') return Promise.resolve({ usesApiKey: false })
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 12, processModel: 'codexAppServer' })
+      return Promise.resolve(undefined)
+    })
+    const s = await startChat({ agent: 'codex', projectKey: 'p', cwd: '/tmp', title: 'C', permissionMode: 'plan' })
+    const r = qReq({
+      questions: [{
+        question: 'Implement this plan?',
+        allowOther: false,
+        options: [{ label: 'Yes, implement this plan' }, { label: 'No, stay in Plan mode' }],
+      }],
+    })
+    s.pendingQuestions = [r]
+    invokeMock.mockReset()
+    invokeMock.mockResolvedValueOnce(undefined)
+
+    await respondQuestion(s, r, [{ labels: ['No, stay in Plan mode'] }])
+
+    expect(s.permissionMode).toBe('plan')
+  })
+
+  it('creates a local Codex plan confirmation when app-server only emits a plan item', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'codex_runtime_info') return Promise.resolve({ usesApiKey: false })
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 15, processModel: 'codexAppServer' })
+      return Promise.resolve(undefined)
+    })
+    const s = await startChat({ agent: 'codex', projectKey: 'p', cwd: '/tmp', title: 'C', permissionMode: 'plan' })
+    s.turnState = 'running'
+    s.msgs = [
+      {
+        role: 'assistant',
+        sidechain: false,
+        blocks: [{ kind: 'text', text: '## Proposed Plan\n\n- [ ] Create plan-mode-test.txt', isError: false }],
+      },
+    ]
+
+    chatOnResultForTest(s, { chatId: 15, ok: true })
+
+    expect(s.pendingQuestions).toHaveLength(1)
+    expect(s.pendingQuestions[0].localCodexPlanPrompt).toBe(true)
+    expect(s.pendingQuestions[0].keepAfterTurn).toBe(true)
+    expect(s.pendingQuestions[0].questions[0].question).toBe('Implement this plan?')
+  })
+
+  it('answers local Codex plan confirmation by switching modes and sending implementation prompt', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'codex_runtime_info') return Promise.resolve({ usesApiKey: false })
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 16, processModel: 'codexAppServer' })
+      return Promise.resolve(undefined)
+    })
+    const s = await startChat({ agent: 'codex', projectKey: 'p', cwd: '/tmp', title: 'C', permissionMode: 'plan' })
+    const r = qReq({
+      requestId: 'local-codex-plan-1-0',
+      keepAfterTurn: true,
+      localCodexPlanPrompt: true,
+      questions: [{
+        question: 'Implement this plan?',
+        allowOther: false,
+        options: [{ label: 'Yes, implement this plan' }, { label: 'No, stay in Plan mode' }],
+      }],
+    })
+    s.pendingQuestions = [r]
+    invokeMock.mockReset()
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'agent_chat_stop') return Promise.resolve(undefined)
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 17, processModel: 'codexAppServer' })
+      if (command === 'agent_chat_send') return Promise.resolve(undefined)
+      return Promise.resolve(undefined)
+    })
+
+    await respondQuestion(s, r, [{ labels: ['Yes, implement this plan'] }])
+
+    expect(s.permissionMode).toBe('fullAccess')
+    expect(invokeMock).not.toHaveBeenCalledWith('agent_chat_respond_question', expect.anything())
+    expect(invokeMock).toHaveBeenCalledWith('agent_chat_send', expect.objectContaining({
+      id: 17,
+      text: 'Implement the plan.',
+      permissionMode: 'fullAccess',
+    }))
+  })
+
+  it('preserves Codex app-server questions across turn result', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'codex_runtime_info') return Promise.resolve({ usesApiKey: false })
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 13, processModel: 'codexAppServer' })
+      return Promise.resolve(undefined)
+    })
+    const s = await startChat({ agent: 'codex', projectKey: 'p', cwd: '/tmp', title: 'C' })
+    const r = qReq({ requestId: 'keep', keepAfterTurn: true })
+    s.turnState = 'running'
+    s.pendingQuestions = [r]
+
+    chatOnResultForTest(s, { chatId: 13, ok: true })
+
+    expect(s.pendingQuestions.map((q) => q.requestId)).toEqual(['keep'])
+    expect(s.turnState).toBe('idle')
+  })
+
+  it('clears normal questions across turn result', async () => {
+    invokeMock.mockResolvedValueOnce({ chatId: 14, processModel: 'longLivedStdin' })
+    const s = await startChat({ agent: 'claude', projectKey: 'p', cwd: '/tmp', title: 'C' })
+    s.turnState = 'running'
+    s.pendingQuestions = [qReq({ requestId: 'drop' })]
+
+    chatOnResultForTest(s, { chatId: 14, ok: true })
+
+    expect(s.pendingQuestions).toHaveLength(0)
+    expect(s.turnState).toBe('idle')
+  })
 })
 
 describe('chatSessions message queue (type-while-running)', () => {
@@ -411,6 +662,18 @@ describe('chatSessions message queue (type-while-running)', () => {
     return s
   }
 
+  async function startCodex() {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'codex_runtime_info') return Promise.resolve({ usesApiKey: false })
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 2, processModel: 'codexAppServer' })
+      return Promise.resolve(undefined)
+    })
+    const s = await startChat({ agent: 'codex', projectKey: 'p', cwd: '/tmp', title: 'C' })
+    invokeMock.mockReset()
+    invokeMock.mockResolvedValue(undefined)
+    return s
+  }
+
   it('sends immediately when idle and the queue is empty', async () => {
     const s = await startClaude()
     enqueuePrompt(s, 'hello')
@@ -421,6 +684,101 @@ describe('chatSessions message queue (type-while-running)', () => {
       'agent_chat_send',
       expect.objectContaining({ id: 1, text: 'hello' }),
     )
+  })
+
+  it('sends Codex app-server plugin mentions as structured text elements', async () => {
+    const s = await startCodex()
+    enqueuePrompt(s, '@Computer 打开todesk')
+    await Promise.resolve()
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      'agent_chat_send',
+      expect.objectContaining({
+        id: 2,
+        text: '@Computer 打开todesk',
+        textElements: [
+          expect.objectContaining({
+            type: 'mention',
+            byteRange: { start: 0, end: 9 },
+            path: 'plugin://computer-use@openai-bundled',
+            name: 'Computer',
+            placeholder: '@Computer',
+          }),
+        ],
+      }),
+    )
+    const msg = s.msgs[s.msgs.length - 1]
+    const block = msg?.blocks[msg.blocks.length - 1]
+    expect(block).toMatchObject({
+      kind: 'text',
+      text: '@Computer 打开todesk',
+    })
+  })
+
+  it('restarts Codex app-server before sending when permission mode changes', async () => {
+    const s = await startCodex()
+    s.sessionId = 'thread-1'
+    s.permissionMode = 'plan'
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'agent_chat_stop') return Promise.resolve(undefined)
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 3, processModel: 'codexAppServer' })
+      if (command === 'agent_chat_send') return Promise.resolve(undefined)
+      return Promise.resolve(undefined)
+    })
+
+    enqueuePrompt(s, '创建一个文件 plan-mode-test.txt，内容写 hello')
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(invokeMock).toHaveBeenCalledWith('agent_chat_stop', { id: 2 })
+    expect(invokeMock).toHaveBeenCalledWith(
+      'agent_chat_start',
+      expect.objectContaining({
+        agent: 'codex',
+        sessionId: 'thread-1',
+        permissionMode: 'plan',
+      }),
+    )
+    expect(invokeMock).toHaveBeenCalledWith(
+      'agent_chat_send',
+      expect.objectContaining({
+        id: 3,
+        permissionMode: 'plan',
+        text: '创建一个文件 plan-mode-test.txt，内容写 hello',
+      }),
+    )
+    expect(s.chatId).toBe(3)
+    expect(s.applied?.permissionMode).toBe('plan')
+  })
+
+  it('expands Codex one-shot plugin mentions before sending while keeping the local bubble short', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'codex_runtime_info') return Promise.resolve({ usesApiKey: false })
+      if (command === 'agent_chat_start') return Promise.resolve({ chatId: 3, processModel: 'oneShotResume' })
+      return Promise.resolve(undefined)
+    })
+    const s = await startChat({ agent: 'codex', projectKey: 'p', cwd: '/tmp', title: 'C' })
+    invokeMock.mockReset()
+    invokeMock.mockResolvedValue(undefined)
+
+    enqueuePrompt(s, '@Chrome 打开bing.com')
+    await Promise.resolve()
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      'agent_chat_send',
+      expect.objectContaining({
+        id: 3,
+        text: '[@Chrome](plugin://chrome@openai-bundled) 打开bing.com',
+        textElements: [],
+      }),
+    )
+    const msg = s.msgs[s.msgs.length - 1]
+    const block = msg?.blocks[msg.blocks.length - 1]
+    expect(block).toMatchObject({
+      kind: 'text',
+      text: '@Chrome 打开bing.com',
+    })
   })
 
   it('queues instead of sending while a turn is running, preserving FIFO order and attachments', async () => {

@@ -2,13 +2,13 @@
 import { computed } from 'vue'
 import type { Block } from '../types'
 import { t } from '../i18n'
-import DiffBlock from './DiffBlock.vue'
 import CollapsibleBox from './CollapsibleBox.vue'
 import { IconChevronRight } from './icons'
 import { highlightJsonInPlace, looksLikeJson } from '../jsonHighlight'
 import { highlightDiff, looksLikeDiff } from '../diffHighlight'
+import { renderCodexFileChangeHtml } from '../codexApplyPatch'
 
-const props = withDefaults(defineProps<{ block: Block; inUser?: boolean; persistOpen?: boolean }>(), {
+const props = withDefaults(defineProps<{ block: Block; inUser?: boolean; persistOpen?: boolean; cwd?: string }>(), {
   persistOpen: undefined,
 })
 const emit = defineEmits<{ toggle: [open: boolean] }>()
@@ -37,7 +37,7 @@ function baseName(p?: string): string {
 }
 
 const label = computed(() => {
-  if (props.block.diff)
+  if (props.block.diff || props.block.filePath)
     return t('tool.resultDiff', { file: baseName(props.block.filePath) })
   return props.block.isError ? t('tool.resultError') : t('tool.result')
 })
@@ -55,17 +55,33 @@ const diffStat = computed(() => {
 })
 
 const hasRenderableText = computed(() => {
-  if (props.block.diff) return true
+  if (props.block.diff || props.block.filePath) return true
   return !!(props.block.text ?? '').trim()
+})
+
+const shouldAutoOpen = computed(() => !!props.block.diff || !!props.block.filePath)
+const fileChangeHtml = computed(() => {
+  if (!props.block.filePath) return null
+  return renderCodexFileChangeHtml(
+    props.block.diff,
+    props.block.filePath,
+    props.block.fileChangeType,
+    props.cwd,
+  )
 })
 </script>
 
 <template>
+  <div
+    v-if="fileChangeHtml"
+    class="tool-result-file-change"
+    v-html="fileChangeHtml"
+  />
   <details
-    v-if="hasRenderableText"
+    v-else-if="hasRenderableText"
     class="block-card"
-    :class="{ 'in-user': inUser, 'auto-open': !!block.diff }"
-    :open="persistOpen ?? !!block.diff"
+    :class="{ 'in-user': inUser, 'auto-open': shouldAutoOpen }"
+    :open="persistOpen ?? shouldAutoOpen"
     @toggle="emit('toggle', ($event.target as HTMLDetailsElement).open)"
   >
     <summary class="block-summary">
@@ -74,8 +90,7 @@ const hasRenderableText = computed(() => {
       <span v-if="diffStat" class="diff-stat">{{ diffStat }}</span>
     </summary>
     <div class="block-body">
-      <DiffBlock v-if="block.diff" :hunks="block.diff" :file-path="block.filePath" class="diff-scroll" />
-      <CollapsibleBox v-else :max-height="400">
+      <CollapsibleBox :max-height="400">
         <pre v-if="diffHtml" class="lang-diff" v-html="diffHtml" />
         <pre v-else-if="jsonHtml" class="lang-json" v-html="jsonHtml" />
         <pre v-else>{{ block.text }}</pre>

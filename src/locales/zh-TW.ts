@@ -234,7 +234,7 @@ export default {
   'chat.permission.alwaysAllow': '一律允許',
   'chat.permission.alwaysAllowHint': '不再詢問 — 儲存到此專案的本機設定',
   'chat.permission.deny': '拒絕',
-  'chat.question.title': 'Claude 想詢問',
+  'chat.question.title': '{agent} 想詢問',
   'chat.question.multiHint': '可複選符合的項目',
   'chat.question.other': '其他',
   'chat.question.otherPlaceholder': '輸入你的回答…',

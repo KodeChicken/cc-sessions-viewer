@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseCodexApplyPatch, renderCodexApplyPatchHtml } from '../src/codexApplyPatch'
+import { parseCodexApplyPatch, renderCodexApplyPatchHtml, renderCodexFileChangeHtml } from '../src/codexApplyPatch'
 
 describe('parseCodexApplyPatch', () => {
   it('splits apply_patch content into per-file sections', () => {
@@ -93,5 +93,23 @@ describe('renderCodexApplyPatchHtml', () => {
       { kind: 'add', text: 'first', newNo: 1 },
       { kind: 'add', text: 'second', newNo: 2 },
     ])
+  })
+})
+
+describe('renderCodexFileChangeHtml', () => {
+  it('renders filePath-only empty deletes as codex patch cards', () => {
+    const html = renderCodexFileChangeHtml(
+      [{ oldStart: 1, newStart: 0, lines: [] }],
+      '/repo/.claude/worktrees/hello.md',
+      'delete',
+      '/repo',
+    )
+
+    expect(html).toContain('codex-patch-file')
+    expect(html).toContain('.claude/worktrees/hello.md')
+    expect(html).toContain('Deleted')
+    expect(html).toContain('<span class="add">+0</span>')
+    expect(html).toContain('<span class="del">-0</span>')
+    expect(html).not.toContain('File changed.')
   })
 })

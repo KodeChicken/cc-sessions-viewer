@@ -2,7 +2,8 @@
 //
 // 背景：Claude / Codex 的不少内置斜杠命令在 headless stream-json 模式下并不可用，但在桌面
 // 客户端里它们是「客户端动作」：展开导出菜单（/export）、打开重命名框（/rename）、清屏 +
-// 重置上下文（/clear）、fork 会话（/fork）、展开底部模型面板（/model）、转交侧聊（/btw、/side）。
+// 重置上下文（/clear）、fork 会话（/fork）、展开底部模型面板（/model）、切换 Plan（/plan）、
+// 转交侧聊（/btw、/side）。
 // 这里只做**分类**，具体动作由 ChatComposer 分派。返回 null = 不是客户端命令，照常发给 agent
 // （如 /compact、/context、/reload-skills 等真·CLI 命令，以及普通 prose）。
 //
@@ -16,6 +17,7 @@ export type ChatSlashAction =
   | { kind: 'clear' }
   | { kind: 'fork' }
   | { kind: 'model' }
+  | { kind: 'plan' }
   | { kind: 'archive' }
 
 /**
@@ -34,6 +36,7 @@ export function parseChatSlashAction(input: string): ChatSlashAction | null {
   if (/^\/clear$/i.test(body)) return { kind: 'clear' }
   if (/^\/fork$/i.test(body)) return { kind: 'fork' }
   if (/^\/model(\s|$)/i.test(body)) return { kind: 'model' }
+  if (/^\/plan$/i.test(body)) return { kind: 'plan' }
   if (/^\/archive(\s|$)/i.test(body)) return { kind: 'archive' }
   return null
 }

@@ -224,6 +224,33 @@ describe('messagesToHtml', () => {
     expect(html).toContain('collapsible-box')
   })
 
+  it('renders Codex plugin mentions with bounded icons in HTML export', async () => {
+    const html = await messagesToHtml(
+      session(),
+      [
+        msg('user', [text('@Visualize hi')]),
+        msg('user', [text('[@template-creator](plugin://template-creator@openai-primary-runtime) 创建一个readme模版')]),
+      ],
+      'codex',
+    )
+    expect(html).toContain('class="codex-plugin-ref cmd-name"')
+    expect(html).toContain('codex-plugin-ref-ic--visualize')
+    expect(html).toContain('codex-plugin-ref-ic--template')
+    expect(html).toContain('<span class="codex-plugin-ref-name">Visualize</span>')
+    expect(html).toContain('<span class="codex-plugin-ref-name">Template Creator</span>')
+    expect(html).toContain('.bubble .codex-plugin-ref-ic svg')
+    expect(html).toContain('width: 16px;')
+    expect(html).not.toContain('plugin://template-creator')
+  })
+
+  it('styles the prompt locator scrollbar for light HTML exports', async () => {
+    const html = await messagesToHtml(session(), [msg('user', [text('hi')])], 'claude')
+    expect(html).toContain('.locate-panel-list::-webkit-scrollbar')
+    expect(html).toContain('.locate-panel-list::-webkit-scrollbar-thumb')
+    expect(html).toContain('scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent')
+    expect(html).toContain('width: 7px;')
+  })
+
   it('converts newlines in assistant text to <br>', async () => {
     const html = await messagesToHtml(session(), [msg('assistant', [text('a\nb')])], 'claude')
     expect(html).toContain('a<br>b')

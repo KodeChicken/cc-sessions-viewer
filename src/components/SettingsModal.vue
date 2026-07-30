@@ -380,6 +380,7 @@ onMounted(async () => {
     const info = await api.reclaudeInfo()
     reclaudeInstalled.value = info.installed
     reclaudeRunning.value = info.daemonRunning
+    if (!info.installed && useReclaude.value) setUseReclaude(false)
   } catch {
     /* ignore */
   }

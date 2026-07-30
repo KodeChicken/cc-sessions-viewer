@@ -28,12 +28,13 @@ describe('ToolResult', () => {
     expect(wrapper.find('.label').classes()).toContain('error')
   })
 
-  it('labels a diff result with the file basename and opens it', () => {
+  it('renders a diff result as a codex patch card', () => {
     const wrapper = mount(ToolResult, {
       props: {
         block: blk({
           kind: 'tool_result',
           filePath: '/deep/nested/file.ts',
+          fileChangeType: 'delete',
           diff: [
             {
               oldStart: 1,
@@ -48,10 +49,30 @@ describe('ToolResult', () => {
         }),
       },
     })
-    expect(wrapper.find('.label').text()).toBe('File change · file.ts')
-    expect(wrapper.find('details').attributes('open')).toBeDefined()
-    expect(wrapper.find('.diff-stat').text()).toBe('+2 −1')
-    expect(wrapper.findComponent({ name: 'DiffBlock' }).exists()).toBe(true)
+    expect(wrapper.find('details').exists()).toBe(false)
+    expect(wrapper.find('.codex-patch-file').exists()).toBe(true)
+    expect(wrapper.find('.codex-patch-path').text()).toBe('/deep/nested/file.ts')
+    expect(wrapper.find('.codex-patch-op').text()).toBe('Deleted')
+    expect(wrapper.find('.codex-patch-stat').text()).toBe('+2-1')
+    expect(wrapper.find('.codex-patch-line.add').exists()).toBe(true)
+    expect(wrapper.find('.codex-patch-line.del').exists()).toBe(true)
+  })
+
+  it('renders a filePath-only result as an empty codex patch card', () => {
+    const wrapper = mount(ToolResult, {
+      props: {
+        block: blk({
+          kind: 'tool_result',
+          filePath: '/deep/nested/empty.md',
+          fileChangeType: 'delete',
+          text: 'File changed.',
+        }),
+      },
+    })
+    expect(wrapper.find('details').exists()).toBe(false)
+    expect(wrapper.find('.codex-patch-path').text()).toBe('/deep/nested/empty.md')
+    expect(wrapper.find('.codex-patch-op').text()).toBe('Deleted')
+    expect(wrapper.text()).not.toContain('File changed.')
   })
 
   it('omits the diff-stat element when there is no diff', () => {

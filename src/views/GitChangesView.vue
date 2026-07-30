@@ -151,9 +151,12 @@ function selectRef(ref: string) {
   emit('refChange', ref)
 }
 
-function refresh() {
-  loadFiles()
-  if (currentRef.value === 'working') loadWorkingCount()
+async function refresh() {
+  await loadFiles()
+  if (selectedFile.value && files.value.find((f) => f.path === selectedFile.value)) {
+    await loadDiff(selectedFile.value)
+  }
+  if (currentRef.value === 'working') await loadWorkingCount()
 }
 
 function onDocClick(e: MouseEvent) {
@@ -162,7 +165,9 @@ function onDocClick(e: MouseEvent) {
   }
 }
 
-watch(() => props.gitRef, loadFiles)
+watch(() => props.gitRef, () => {
+  void refresh()
+})
 
 onMounted(async () => {
   document.addEventListener('click', onDocClick, true)

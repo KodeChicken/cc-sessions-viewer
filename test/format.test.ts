@@ -265,6 +265,20 @@ describe('renderText', () => {
     expect(html).not.toMatch(/<code class="cmd-tag">\s*<\/code>/)
   })
 
+  it('renders Codex plugin markdown links as plugin mention tokens', () => {
+    const html = renderText('[@visualize](plugin://visualize@openai-bundled) xxx')
+    expect(html).toContain('class="codex-plugin-ref cmd-name"')
+    expect(html).toContain('codex-plugin-ref-ic--visualize')
+    expect(html).toContain('<span class="codex-plugin-ref-name">Visualize</span>')
+    expect(html).toContain(' xxx</div>')
+    expect(html).not.toContain('plugin://visualize')
+  })
+
+  it('uses friendly names for slug-labeled Codex plugin links', () => {
+    const html = renderText('[@template-creator](plugin://template-creator@openai-primary-runtime) xxx')
+    expect(html).toContain('<span class="codex-plugin-ref-name">Template Creator</span>')
+  })
+
   it('returns an empty string for empty input', () => {
     expect(renderText('')).toBe('')
   })

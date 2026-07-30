@@ -236,7 +236,7 @@ export default {
   'chat.permission.alwaysAllow': '始终允许',
   'chat.permission.alwaysAllowHint': '不再询问 — 保存到本项目的本地设置',
   'chat.permission.deny': '拒绝',
-  'chat.question.title': 'Claude 想询问',
+  'chat.question.title': '{agent} 想询问',
   'chat.question.multiHint': '可多选符合的项',
   'chat.question.other': '其他',
   'chat.question.otherPlaceholder': '输入你的回答…',

@@ -77,6 +77,7 @@ export interface Block {
   toolId?: string
   isError: boolean
   filePath?: string
+  fileChangeType?: 'add' | 'update' | 'delete' | string
   /** file 块：该路径是目录（GUI chat 的「Add folder」附件）。决定 chip 用文件夹图标 +
    *  「打开文件夹」提示，而非文件图标 +「打开文件」。 */
   isDir?: boolean
@@ -262,6 +263,17 @@ export interface ChatImageInput {
   data: string
 }
 
+export interface ChatTextElement {
+  type: 'mention'
+  byteRange: {
+    start: number
+    end: number
+  }
+  path: string
+  name: string
+  placeholder?: string
+}
+
 /**
  * 非图片附件（文件 / 文件夹）。由系统选择器选出，发送时以 `@"path"` 追加到 prompt，
  * 让 agent 自己按路径读取。`isDir` 仅影响 chip 图标（文件夹用 folder 图标）。
@@ -299,9 +311,9 @@ export interface SlashCommand {
   argumentHint?: string
 }
 
-/** GUI chat 的进程模型：长驻 stdin（Claude，切设置需 restart-with-resume）
- *  vs 一轮一进程 resume（Codex，切设置改下轮 flag 即生效）。 */
-export type ChatProcessModel = 'longLivedStdin' | 'oneShotResume'
+/** GUI chat 的进程模型：长驻 stdin / Codex app-server 切设置需 restart-with-resume；
+ *  one-shot resume 则切设置改下轮 flag 即生效。 */
+export type ChatProcessModel = 'longLivedStdin' | 'oneShotResume' | 'codexAppServer'
 
 /** agent_chat_start 的返回（与 Rust ChatStartInfo 同形）。 */
 export interface ChatStartInfo {
@@ -398,6 +410,7 @@ export interface ChatQuestionItem {
   question: string
   header?: string
   multiSelect?: boolean
+  allowOther?: boolean
   options: ChatQuestionOption[]
 }
 /** 模型向用户提的结构化选择题（Claude `AskUserQuestion`，与 Rust ChatQuestionRequest 同形）。
@@ -405,6 +418,8 @@ export interface ChatQuestionItem {
 export interface ChatQuestionRequest {
   requestId: string
   questions: ChatQuestionItem[]
+  keepAfterTurn?: boolean
+  localCodexPlanPrompt?: boolean
 }
 export interface ChatQuestionPayload { chatId: number; request: ChatQuestionRequest }
 

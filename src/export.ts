@@ -16,6 +16,8 @@ import {
   prettifyAndHighlightJson,
 } from './jsonHighlight'
 import { highlightDiff, looksLikeDiff } from './diffHighlight'
+import { shouldAttachToolResult, shouldPreferToolResult } from './toolResultRouting'
+import { renderCodexPluginMentionHtmlText } from './codexPluginMentions'
 
 function sanitizeFilename(name: string): string {
   const cleaned = name.replace(/[\\/:*?"<>|\n\r\t]/g, '_').trim()
@@ -114,18 +116,8 @@ function computeStats(messages: Msg[]): { u: number; a: number } {
   return { u, a }
 }
 
-// 跟 ChatView 一致：这些工具的 result 单独以一行 diff 块展示；
-// 其它工具（Read/Bash/Grep/…）的 result 折叠回它对应的 tool_use 内。
-const FILE_MUTATING_TOOLS = new Set([
-  'Write',
-  'Edit',
-  'MultiEdit',
-  'NotebookEdit',
-  'apply_patch',
-])
-
-// 把 toolId 对应的 tool_result 找出来；非 file-mutating 的会被内联到 tool_use 里展示，
-// 这些 result 不再单独成行。
+// 把 toolId 对应的 tool_result 找出来；普通工具输出内联到 tool_use 里展示，
+// 文件改动结果则保留为独立块，和 ChatView 的 live GUI 渲染一致。
 function buildInlinedResults(messages: Msg[]): {
   resultByToolId: Map<string, Block>
   inlinedIds: Set<string>
@@ -133,7 +125,9 @@ function buildInlinedResults(messages: Msg[]): {
   const resultByToolId = new Map<string, Block>()
   for (const m of messages) {
     for (const b of m.blocks) {
-      if (b.kind === 'tool_result' && b.toolId) resultByToolId.set(b.toolId, b)
+      if (b.kind === 'tool_result' && b.toolId && shouldPreferToolResult(b, resultByToolId.get(b.toolId))) {
+        resultByToolId.set(b.toolId, b)
+      }
     }
   }
   const inlinedIds = new Set<string>()
@@ -142,8 +136,8 @@ function buildInlinedResults(messages: Msg[]): {
       if (
         b.kind === 'tool_use' &&
         b.toolId &&
-        !FILE_MUTATING_TOOLS.has(b.toolName ?? '') &&
-        resultByToolId.has(b.toolId)
+        resultByToolId.has(b.toolId) &&
+        !shouldAttachToolResult(b, resultByToolId.get(b.toolId))
       ) {
         inlinedIds.add(b.toolId)
       }
@@ -535,6 +529,50 @@ h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; flex
   font-family: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
 }
 .cmd-tag { background: var(--surface-hover); }
+.bubble .cmd-name {
+  color: #2563eb;
+}
+:root[data-theme="dark"] .bubble .cmd-name {
+  color: #60a5fa;
+}
+.bubble .codex-plugin-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  vertical-align: -3px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.bubble .codex-plugin-ref-ic {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-dim);
+}
+.bubble .codex-plugin-ref-ic svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.bubble .codex-plugin-ref-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #2563eb;
+}
+:root[data-theme="dark"] .bubble .codex-plugin-ref-name {
+  color: #60a5fa;
+}
 /* JSON syntax highlight：tool_use args 与 JSON 形态的 tool_result。 */
 .lang-json .json-key { color: hsl(214 65% 42%); }
 .lang-json .json-string { color: hsl(140 50% 32%); }
@@ -647,26 +685,12 @@ img.msg-image:hover { border-color: var(--border-strong); }
 .diff .del { background: var(--diff-del); display: block; }
 .diff .ctx { display: block; color: var(--text-mute); }
 
-/* Show-more / Show-less. JS wraps existing children in .collapsible-inner
-   on first scan, measures inner height, and only injects the toggle button
-   when content exceeds --max. Matches CollapsibleBox.vue in the app. */
-.collapsible-box { position: relative; --max: 320px; }
-.collapsible-inner { overflow: hidden; }
-.collapsible-box.collapsed .collapsible-inner {
-  max-height: var(--max);
-  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
-          mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+/* Long blocks keep a stable max height and scroll vertically. */
+.collapsible-box {
+  position: relative; max-height: 320px; overflow-y: auto; overflow-x: hidden;
+  overscroll-behavior: contain; scrollbar-width: none; -ms-overflow-style: none;
 }
-.collapsible-toggle {
-  display: flex; align-items: center; justify-content: center; gap: 4px;
-  margin: 8px auto 0; padding: 4px 10px;
-  background: transparent; border: 0; color: var(--text-mute);
-  font: inherit; font-size: 12px; cursor: pointer;
-  border-radius: 6px; transition: background .12s, color .12s;
-}
-.collapsible-toggle:hover { background: var(--surface-hover); color: var(--text); }
-.collapsible-toggle .chev { display: inline-block; transition: transform .15s; }
-.collapsible-toggle.open .chev { transform: rotate(180deg); }
+.collapsible-box::-webkit-scrollbar { width: 0; height: 0; display: none; }
 
 /* Scroll-to-top / scroll-to-bottom floating buttons (mirrors ChatView FABs).
    Hidden when at the corresponding edge with an 8px tolerance. */
@@ -747,7 +771,20 @@ img.msg-image:hover { border-color: var(--border-strong); }
   color: var(--text); background: var(--surface-2); outline: none;
 }
 .locate-panel-input:focus { border-color: var(--border-strong); }
-.locate-panel-list { overflow-y: auto; padding: 4px; }
+.locate-panel-list {
+  overflow-y: auto; padding: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
+}
+.locate-panel-list::-webkit-scrollbar { width: 7px; height: 7px; }
+.locate-panel-list::-webkit-scrollbar-track { background: transparent; }
+.locate-panel-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text) 22%, transparent);
+  border-radius: 999px;
+}
+.locate-panel-list::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text) 38%, transparent);
+}
 .locate-panel-item {
   appearance: none; background: transparent; border: 0; color: var(--text);
   font: inherit; text-align: left; padding: 6px 10px; border-radius: 6px;
@@ -775,8 +812,6 @@ mark.locate-hl { background: rgba(255,213,79,0.55); color: inherit; border-radiu
 `
 
 function buildRuntimeScript(labels: {
-  more: string
-  less: string
   themeLight: string
   themeDark: string
   hideLabel: string
@@ -810,36 +845,6 @@ function buildRuntimeScript(labels: {
     // Button shows the *destination* theme — clicking it switches you there.
     btn.textContent = dark ? THEME_LIGHT : THEME_DARK;
   }
-  var L_MORE = ${JSON.stringify(labels.more)};
-  var L_LESS = ${JSON.stringify(labels.less)};
-  var MAX_PX = 320;
-  function setupCollapsible(box) {
-    if (box.dataset.csvCollapsible) return;
-    box.dataset.csvCollapsible = '1';
-    // Wrap whatever the box had in a single .collapsible-inner so we can
-    // size/mask it without touching the toggle button we add as a sibling.
-    var inner = document.createElement('div');
-    inner.className = 'collapsible-inner';
-    while (box.firstChild) inner.appendChild(box.firstChild);
-    box.appendChild(inner);
-    if (inner.scrollHeight <= MAX_PX + 1) return;
-    box.classList.add('collapsed');
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'collapsible-toggle';
-    btn.innerHTML = '<span class="chev">▾</span><span class="label">' + L_MORE + '</span>';
-    box.appendChild(btn);
-    btn.addEventListener('click', function () {
-      var collapsedNow = box.classList.contains('collapsed');
-      box.classList.toggle('collapsed', !collapsedNow);
-      btn.classList.toggle('open', collapsedNow);
-      btn.querySelector('.label').textContent = collapsedNow ? L_LESS : L_MORE;
-    });
-  }
-  function scan() {
-    var boxes = document.querySelectorAll('[data-collapsible]');
-    for (var i = 0; i < boxes.length; i++) setupCollapsible(boxes[i]);
-  }
   document.addEventListener('DOMContentLoaded', function () {
     paintTheme();
     var btn = document.getElementById('theme-toggle');
@@ -850,13 +855,6 @@ function buildRuntimeScript(labels: {
       try { localStorage.setItem(KEY, next); } catch (_) {}
       paintTheme();
     });
-    scan();
-    // Re-measure when a <details> opens for the first time — file change is
-    // already open at load, but Read/Bash results expand on click.
-    document.addEventListener('toggle', function (e) {
-      if (e.target && e.target.tagName === 'DETAILS' && e.target.open) scan();
-    }, true);
-
     // ----- smooth scroll FABs (mirrors ChatView.scrollToTop / ToBottom) -----
     var fabTop = document.getElementById('fab-top');
     var fabBottom = document.getElementById('fab-bottom');
@@ -1205,14 +1203,16 @@ function toolResultLabel(b: Block): string {
 
 function blockToHtml(
   b: Block,
-  ctx: { resultByToolId: Map<string, Block>; inlinedIds: Set<string> },
+  ctx: { resultByToolId: Map<string, Block>; inlinedIds: Set<string>; renderCodexPluginMentions?: boolean },
 ): string {
   switch (b.kind) {
     case 'text':
       // 跟聊天界面一致：renderText() 给出表格 / fenced code / 行内强调 + 一个 mermaid
       // 占位符（<div class="md-mermaid" data-source="..."/>）。占位符在 messagesToHtml
       // 收尾阶段统一被 prerenderMermaidInHtml 替换成 SVG（一次性烤进 HTML，不依赖运行时 JS）。
-      return renderText(b.text ?? '')
+      return ctx.renderCodexPluginMentions
+        ? renderCodexPluginMentionHtmlText(renderText(b.text ?? ''))
+        : renderText(b.text ?? '')
     case 'thinking':
       return `<details><summary>🧠 ${escapeHtml(t('tool.thinking'))}</summary><pre>${escapeHtml(b.text ?? '')}</pre></details>`
     case 'tool_use': {
@@ -1322,12 +1322,16 @@ function msgToHtml(
   const imagesHtml = imgs.length
     ? `<div class="msg-images">${imgs.map((b) => blockToHtml(b, ctx)).join('')}</div>`
     : ''
+  const blockCtx = {
+    ...ctx,
+    renderCodexPluginMentions: displayRole === 'user' && agent === 'codex',
+  }
   const body = m.blocks
     .filter((b) => b.kind !== 'image')
     .map((b) =>
       b.kind === 'text' && imgs.length
-        ? blockToHtml({ ...b, text: stripImagePlaceholders(b.text ?? '') }, ctx)
-        : blockToHtml(b, ctx),
+        ? blockToHtml({ ...b, text: stripImagePlaceholders(b.text ?? '') }, blockCtx)
+        : blockToHtml(b, blockCtx),
     )
     .filter(Boolean)
     .join('\n')
@@ -1445,8 +1449,6 @@ export async function messagesToHtml(
   const hideMsgLabel = t('chat.action.hideMsg')
   const unhideMsgLabel = t('chat.action.unhideMsg')
   const runtimeScript = buildRuntimeScript({
-    more: t('chat.collapse.more'),
-    less: t('chat.collapse.less'),
     themeLight,
     themeDark,
     hideLabel,

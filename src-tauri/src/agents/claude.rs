@@ -1805,17 +1805,19 @@ pub(crate) fn parse_chat_line(line: &str) -> ChatEvent {
             Some(msg) => ChatEvent::Message(msg),
             None => ChatEvent::Ignore,
         },
-        "system" => ChatEvent::Init {
-            session_id: v
-                .get("session_id")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string()),
-            // init 携带 apiKeySource：用来区分订阅登录（"none"）与 API key 计费。
-            api_key_source: v
-                .get("apiKeySource")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string()),
-        },
+        "system" if v.get("subtype").and_then(|x| x.as_str()) == Some("init") => {
+            ChatEvent::Init {
+                session_id: v
+                    .get("session_id")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
+                // init 携带 apiKeySource：用来区分订阅登录（"none"）与 API key 计费。
+                api_key_source: v
+                    .get("apiKeySource")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
+            }
+        }
         "result" => {
             let is_error = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
             let ok =
@@ -1862,6 +1864,7 @@ fn parse_can_use_tool(v: &Value) -> ChatEvent {
                 .and_then(|i| i.get("questions"))
                 .cloned()
                 .unwrap_or(Value::Null),
+            keep_after_turn: false,
         });
     }
     ChatEvent::Permission(crate::types::ChatPermissionRequest {
@@ -2980,6 +2983,17 @@ mod tests {
                 assert_eq!(api_key_source.as_deref(), Some("none"));
             }
             _ => panic!("expected Init"),
+        }
+    }
+
+    #[test]
+    fn parse_chat_line_non_init_system_events_are_ignored() {
+        for line in [
+            r#"{"type":"system","subtype":"status","status":"requesting"}"#,
+            r#"{"type":"system","subtype":"thinking_tokens","estimated_tokens":25}"#,
+            r#"{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}"#,
+        ] {
+            assert!(matches!(parse_chat_line(line), ChatEvent::Ignore));
         }
     }
 

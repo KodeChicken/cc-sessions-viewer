@@ -170,7 +170,7 @@ import {
 import { projectsDirty, markProjectsDirty } from './projectsRefresh'
 import { paneViewsOf } from './paneRegistry'
 import { PaneActionsKey, type PaneActions } from './paneActions'
-import { chatSupported, defaultPermissionMode } from './chatComposerOptions'
+import { chatSupported } from './chatComposerOptions'
 
 // ---------- 状态 ----------
 // 默认进首个可见 agent —— 用户若在设置里关掉了 claude，启动时就不该停在隐藏的 agent 上。
@@ -2695,7 +2695,6 @@ async function startLiveChat(opts: {
       sessionId: opts.sessionId,
       title: opts.title,
       created: opts.created,
-      permissionMode: defaultPermissionMode(opts.agent),
       preloadMsgs: opts.preloadMsgs,
       initialUsage: opts.initialUsage,
       onReady: (session) => {
@@ -2757,7 +2756,6 @@ async function resumeChatFromSession(s: SessionMeta) {
     sessionId: s.id,
     title: s.title,
     created: s.created,
-    permissionMode: defaultPermissionMode(chatAgent.value),
     model: lastAssistantModel(preload),
     preloadMsgs: preload,
     initialUsage,
@@ -3526,7 +3524,6 @@ onMounted(() => {
           sessionId: s.id,
           title: sv.title,
           created: s.created,
-          permissionMode: defaultPermissionMode(sv.agent),
           preloadMsgs: preload,
           initialUsage,
         })

@@ -10,15 +10,18 @@ const {
   listProjectFilesMock,
   openSideChatMock,
   openCodexSideChatMock,
+  agentChatInterruptMock,
 } = vi.hoisted(() => ({
   claudeRuntimeInfoMock: vi.fn().mockResolvedValue({ hasCustomBaseUrl: false }),
   listProjectFilesMock: vi.fn().mockResolvedValue([]),
   openSideChatMock: vi.fn().mockResolvedValue(null),
   openCodexSideChatMock: vi.fn().mockResolvedValue(null),
+  agentChatInterruptMock: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('../../src/api', () => ({
   agentChatSlashCommands: vi.fn().mockResolvedValue([]),
+  agentChatInterrupt: agentChatInterruptMock,
   claudeRuntimeInfo: claudeRuntimeInfoMock,
   codexRuntimeInfo: vi.fn().mockResolvedValue({ usesApiKey: false }),
   listProjectFiles: listProjectFilesMock,
@@ -84,6 +87,10 @@ const baseSession = (over: Partial<ChatSession> = {}): ChatSession =>
   }) as ChatSession
 
 describe('ChatComposer', () => {
+  beforeEach(() => {
+    agentChatInterruptMock.mockClear()
+  })
+
   it('hides the effort slider for Claude API-key sessions', () => {
     setLang('en')
     const wrapper = mount(ChatComposer, {
@@ -115,6 +122,26 @@ describe('ChatComposer', () => {
     })
     expect(wrapper.findComponent({ name: 'ChatModelMenu' }).exists()).toBe(true)
     expect(wrapper.text()).toContain('Opus')
+  })
+
+  it('interrupts the running turn when Escape is pressed in the input', async () => {
+    const session = baseSession({
+      chatId: 42,
+      turnState: 'running',
+      processModel: 'oneShotResume',
+      live: { kind: 'text', text: 'working' },
+    })
+    const wrapper = mount(ChatComposer, {
+      props: { session },
+      global: { directives: { tooltip: vTooltip } },
+    })
+
+    await wrapper.find('textarea').trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+
+    expect(agentChatInterruptMock).toHaveBeenCalledWith(42)
+    expect(session.turnState).toBe('idle')
+    expect(session.live).toBeNull()
   })
 
   it('keeps the effort slider for Claude subscription sessions', () => {
@@ -186,7 +213,7 @@ describe('ChatComposer', () => {
     })
     expect(session.model).toBeUndefined() // runtime info 就位前先不乱选
     await flushPromises()
-    expect(session.model).toBe('claude-opus-4-8') // 标准上下文，不是会触发 1M 报错的默认别名
+    expect(session.model).toBe('claude-opus-5') // 标准上下文，不是会触发 1M 报错的默认别名
   })
 
   it('auto-selects the alias model for a brand-new API-key chat so settings.json mapping applies', async () => {
@@ -249,10 +276,10 @@ describe('ChatComposer @ file mention', () => {
     await wrapper.vm.$nextTick()
   }
 
-  function mountComposer() {
+  function mountComposer(over: Partial<ChatSession> = {}) {
     setLang('en')
     return mount(ChatComposer, {
-      props: { session: baseSession() },
+      props: { session: baseSession(over) },
       global: { directives: { tooltip: vTooltip } },
     })
   }
@@ -346,6 +373,64 @@ describe('ChatComposer @ file mention', () => {
     expect(chip.exists()).toBe(true)
     expect(chip.text()).toContain('.codex')
     expect(wrapper.find('.cc-mention').exists()).toBe(false)
+  })
+
+  it('keeps the mention popup closed after Escape until the token changes', async () => {
+    const wrapper = mountComposer()
+    await typeAt(wrapper, '@')
+    expect(wrapper.find('.cc-mention').exists()).toBe(true)
+
+    const ta = wrapper.find('textarea')
+    await ta.trigger('keydown', { key: 'Escape' })
+    await ta.trigger('keyup', { key: 'Escape' })
+    await new Promise((r) => setTimeout(r, 90))
+    await flushPromises()
+    expect(wrapper.find('.cc-mention').exists()).toBe(false)
+
+    const el = ta.element as HTMLTextAreaElement
+    el.value = '@r'
+    el.selectionStart = el.selectionEnd = el.value.length
+    await ta.trigger('input')
+    await new Promise((r) => setTimeout(r, 90))
+    await flushPromises()
+    expect(wrapper.find('.cc-mention').exists()).toBe(true)
+  })
+
+  it('does not list Codex built-in plugins in the @ popup', async () => {
+    const wrapper = mountComposer({ agent: 'codex', processModel: 'oneShotResume' })
+    await typeAt(wrapper, '@chr')
+
+    expect(listProjectFilesMock).toHaveBeenCalledWith('/work/proj', 'chr', expect.any(Number))
+    expect(wrapper.find('.cc-mention').exists()).toBe(true)
+    expect(wrapper.find('.cc-mention').text()).not.toContain('Plugins')
+    expect(wrapper.find('.cc-mention').text()).not.toContain('Chrome')
+    expect(wrapper.find('.cc-mention-item.plugin').exists()).toBe(false)
+  })
+
+  it('highlights Codex plugin mentions in the input and deletes the mention as a unit', async () => {
+    const wrapper = mountComposer({ agent: 'codex', processModel: 'oneShotResume' })
+    const ta = wrapper.find('textarea')
+    const el = ta.element as HTMLTextAreaElement
+    const value = '@Computer open trae'
+    el.value = value
+    el.selectionStart = el.selectionEnd = '@Computer '.length
+    await ta.trigger('input')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.cc-highlight').html()).toContain('cc-plugin-name')
+    expect(wrapper.find('.cc-highlight').text()).toContain('@Computer')
+
+    await ta.trigger('keydown', { key: 'Backspace' })
+    await wrapper.vm.$nextTick()
+    expect(el.value).toBe('open trae')
+
+    el.value = '@Chrome open tab'
+    el.selectionStart = el.selectionEnd = 0
+    await ta.trigger('input')
+    await wrapper.vm.$nextTick()
+    await ta.trigger('keydown', { key: 'Delete' })
+    await wrapper.vm.$nextTick()
+    expect(el.value).toBe('open tab')
   })
 })
 
@@ -621,6 +706,22 @@ describe('ChatComposer client slash commands', () => {
     expect(wrapper.props('session').msgs.length).toBe(0)
   })
 
+  it('switches Codex to Plan mode for "/plan" and does not send', async () => {
+    const wrapper = mountComposer({ agent: 'codex', permissionMode: 'approve' })
+    await submitText(wrapper, '/plan')
+    expect(wrapper.props('session').permissionMode).toBe('plan')
+    expect(wrapper.props('session').msgs.length).toBe(0)
+    expect((wrapper.find('textarea').element as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('switches Claude to Plan mode for "/plan" and does not send', async () => {
+    const wrapper = mountComposer({ permissionMode: 'acceptEdits' })
+    await submitText(wrapper, '/plan')
+    expect(wrapper.props('session').permissionMode).toBe('plan')
+    expect(wrapper.props('session').msgs.length).toBe(0)
+    expect((wrapper.find('textarea').element as HTMLTextAreaElement).value).toBe('')
+  })
+
   it('lists a "System" group in the "/" popup', async () => {
     const wrapper = mountComposer()
     await flushPromises() // loadSlashCommands 异步 resolve 后 system 指令才入列
@@ -636,5 +737,28 @@ describe('ChatComposer client slash commands', () => {
     expect(text).toContain('/export')
     expect(text).toContain('/model')
     expect(text).toContain('/clear')
+  })
+
+  it('keeps the slash popup closed after Escape until the token changes', async () => {
+    const wrapper = mountComposer()
+    await flushPromises()
+    const ta = wrapper.find('textarea')
+    const el = ta.element as HTMLTextAreaElement
+    el.value = '/'
+    el.selectionStart = el.selectionEnd = 1
+    await ta.trigger('input')
+    await flushPromises()
+    expect(wrapper.find('.cc-slash').exists()).toBe(true)
+
+    await ta.trigger('keydown', { key: 'Escape' })
+    await ta.trigger('keyup', { key: 'Escape' })
+    await flushPromises()
+    expect(wrapper.find('.cc-slash').exists()).toBe(false)
+
+    el.value = '/m'
+    el.selectionStart = el.selectionEnd = el.value.length
+    await ta.trigger('input')
+    await flushPromises()
+    expect(wrapper.find('.cc-slash').exists()).toBe(true)
   })
 })

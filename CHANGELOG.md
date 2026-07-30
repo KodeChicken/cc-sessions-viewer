@@ -6,6 +6,30 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.3.10]
+
+### Features
+
+- **Codex GUI plugin mentions** — added the `@...` plugin picker for Codex GUI chat with colored plugin rows, sticky section headers, mention deletion behavior in the composer, and structured Codex app-server text elements so built-in plugins render as icon + plugin name in GUI, read mode, and HTML exports.
+- **GUI plan mode parity** — Codex GUI plan mode now uses app-server collaboration mode, read-only sandboxing, streamed plan rendering, and a local "Implement this plan?" confirmation when the app-server emits a plan without a separate prompt. Claude GUI also treats `/plan` as a client action instead of sending the literal command to Claude Code.
+- **Remembered GUI chat settings** — Codex and Claude GUI chats now remember the last selected permission mode, model, and effort for new chats and resume flows. Default GUI permissions are set to the highest available mode for each agent.
+- **Running-turn interrupt** — pressing Escape in the GUI composer can stop the most recent running turn, matching the existing stop action more closely.
+- **Claude Opus 5 model option** — added `claude-opus-5` as "Opus 5" in the Claude subscription model menu, moved Opus 4.8 into More models, and made Opus 5 the new standard-context auto-pick.
+
+### Bug Fixes
+
+- **GUI file-change rendering while running** — Codex GUI now keeps file create/update/delete results visible while a turn is still executing instead of folding them away until the chat is reopened.
+- **Plugin mention transcript/export rendering** — fixed plugin mentions being displayed as raw `plugin://...` links in GUI/read views and HTML export output.
+- **Light-mode HTML export styling** — improved exported HTML styling for light mode so plugin/tool content matches the in-app rendering.
+- **Git diff refresh** — refreshing a Git diff tab now reloads the currently selected file after file content changes, including edits that remove lines.
+- **Collapsible output overflow** — replaced show more/show less expansion with bounded vertical scrolling for long rendered blocks, including shared rendering used by all agents and HTML exports.
+- **Question prompt agent label** — GUI question prompts now label the requesting agent correctly, so Codex questions no longer say "Claude is asking".
+- **Claude plan approval flow** — allowing Claude's `ExitPlanMode` request now switches the GUI back to the normal Claude permission mode before continuing the implementation turn.
+
+### Tests
+
+- Added and updated focused coverage for GUI plan mode, plugin mentions, question prompt labels, chat setting persistence, Git diff refresh behavior, collapsible overflow rendering, HTML export output, and Claude/Codex model menu behavior.
+
 ## [v0.3.9]
 
 ### Bug Fixes

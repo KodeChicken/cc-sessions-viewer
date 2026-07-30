@@ -1,3 +1,5 @@
+import type { DiffHunk } from './types'
+
 type PatchOp = 'update' | 'add' | 'delete'
 type PatchLineKind = 'ctx' | 'add' | 'del' | 'hunk'
 
@@ -149,6 +151,65 @@ export function renderCodexApplyPatchHtml(input: string, cwd?: string): string |
   const sections = parseCodexApplyPatch(input)
   if (!sections.length) return null
 
+  return renderCodexPatchSectionsHtml(sections, cwd)
+}
+
+export function renderCodexFileChangeHtml(
+  hunks: DiffHunk[] | undefined,
+  path: string,
+  changeType?: string,
+  cwd?: string,
+): string {
+  const op = patchOpFromChangeType(changeType) ?? patchOpFromHunks(hunks)
+  const lines: CodexPatchLine[] = []
+  let addCount = 0
+  let delCount = 0
+  for (const hunk of hunks ?? []) {
+    const oldCount = hunk.lines.filter((line) => line.kind !== 'add').length
+    const newCount = hunk.lines.filter((line) => line.kind !== 'del').length
+    lines.push({
+      kind: 'hunk',
+      text: `@@ -${hunk.oldStart},${oldCount} +${hunk.newStart},${newCount} @@`,
+    })
+    for (const line of hunk.lines) {
+      if (line.kind === 'add') addCount += 1
+      if (line.kind === 'del') delCount += 1
+      lines.push({
+        kind: line.kind,
+        text: line.text,
+        oldNo: line.oldNo ?? undefined,
+        newNo: line.newNo ?? undefined,
+      })
+    }
+  }
+  return renderCodexPatchSectionsHtml([{
+    op,
+    path,
+    lines,
+    addCount,
+    delCount,
+  }], cwd)
+}
+
+function patchOpFromChangeType(changeType?: string): PatchOp | null {
+  const op = changeType?.toLowerCase()
+  if (!op) return null
+  if (['add', 'added', 'create', 'created', 'new'].includes(op)) return 'add'
+  if (['delete', 'deleted', 'remove', 'removed', 'del'].includes(op)) return 'delete'
+  if (['update', 'updated', 'modify', 'modified', 'change', 'changed'].includes(op)) return 'update'
+  return null
+}
+
+function patchOpFromHunks(hunks: DiffHunk[] | undefined): PatchOp {
+  const lines = (hunks ?? []).flatMap((hunk) => hunk.lines)
+  const addCount = lines.filter((line) => line.kind === 'add').length
+  const delCount = lines.filter((line) => line.kind === 'del').length
+  if (delCount === 0 && (hunks ?? []).some((hunk) => hunk.oldStart === 0)) return 'add'
+  if (addCount === 0 && (hunks ?? []).some((hunk) => hunk.newStart === 0)) return 'delete'
+  return 'update'
+}
+
+function renderCodexPatchSectionsHtml(sections: CodexPatchSection[], cwd?: string): string {
   return sections
     .map((section) => {
       const target = section.movedTo ?? section.path
