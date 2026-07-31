@@ -3624,8 +3624,9 @@ details[open] > .thinking-summary .thinking-chev {
   color: var(--text-dim);
   opacity: 0.8;
 }
-/* 普通工具卡片隐藏时，工具名在状态行中以只读胶囊展示。切换工具/阶段时交给 Vue Transition
- * 做轻短的淡入位移；calling 的小点呼吸，result / failed 各自给一次收束反馈。 */
+/* 普通工具卡片隐藏时，工具摘要在状态行中以只读胶囊展示。切换工具/阶段时交给 Vue
+ * Transition 做轻短的淡入位移；calling 的小点呼吸，result / failed 先高亮，随后以低强调
+ * 的 stale 状态保留最近动作，避免长时间工具间隙出现空白。 */
 .chat-running-tool {
   display: inline-flex;
   align-items: center;
@@ -3670,6 +3671,16 @@ details[open] > .thinking-summary .thinking-chev {
   animation: chat-running-tool-settle 420ms cubic-bezier(.2,.8,.25,1);
 }
 .chat-running-tool.failed .chat-running-tool-dot { background: var(--danger); }
+.chat-running-tool.stale {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text-mute);
+  animation: none;
+}
+.chat-running-tool.stale .chat-running-tool-dot {
+  background: var(--text-mute);
+  box-shadow: none;
+}
 @keyframes chat-running-tool-settle {
   from { transform: scale(0.96); filter: brightness(1.2); }
   to { transform: scale(1); filter: brightness(1); }

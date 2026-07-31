@@ -199,14 +199,31 @@ describe('chatSessions compact live tool activity', () => {
       sidechain: false,
       blocks: [{ kind: 'tool_use', toolName: 'Bash', toolId: 'bash-1', toolInput: '{"command":"pwd"}', isError: false }],
     })
-    expect(session.toolActivity).toMatchObject({ toolName: 'Bash', toolId: 'bash-1', phase: 'calling' })
+    expect(session.toolActivity).toMatchObject({
+      toolName: 'Bash',
+      toolId: 'bash-1',
+      phase: 'calling',
+      summary: { kind: 'runCommand' },
+    })
 
     chatOnMsgForTest(session, {
       role: 'user',
       sidechain: false,
       blocks: [{ kind: 'tool_result', toolId: 'bash-1', text: '/tmp', isError: false }],
     })
-    expect(session.toolActivity).toMatchObject({ toolName: 'Bash', toolId: 'bash-1', phase: 'result' })
+    expect(session.toolActivity).toMatchObject({
+      toolName: 'Bash',
+      toolId: 'bash-1',
+      phase: 'result',
+      summary: { kind: 'runCommand' },
+    })
+
+    chatOnMsgForTest(session, {
+      role: 'assistant',
+      sidechain: false,
+      blocks: [{ kind: 'text', text: 'Done', isError: false }],
+    })
+    expect(session.toolActivity).toMatchObject({ toolName: 'Bash', phase: 'result' })
 
     chatOnMsgForTest(session, {
       role: 'user',
@@ -214,6 +231,32 @@ describe('chatSessions compact live tool activity', () => {
       blocks: [{ kind: 'tool_result', toolId: 'bash-1', text: 'permission denied', isError: true }],
     })
     expect(session.toolActivity).toMatchObject({ toolName: 'Bash', toolId: 'bash-1', phase: 'failed' })
+  })
+
+  it('keeps parallel tool calls available after one result arrives', async () => {
+    invokeMock.mockResolvedValueOnce({ chatId: 84, processModel: 'longLivedStdin' })
+    const session = await startChat({ agent: 'codex', projectKey: 'p', cwd: '/tmp', title: 'C' })
+    session.turnState = 'running'
+
+    chatOnMsgForTest(session, {
+      role: 'assistant',
+      sidechain: false,
+      blocks: [
+        { kind: 'tool_use', toolName: 'shell', toolId: 'shell-1', toolInput: 'rg TODO src', isError: false },
+        { kind: 'tool_use', toolName: 'shell', toolId: 'shell-2', toolInput: 'git status', isError: false },
+      ],
+    })
+    expect(session.toolActivities).toHaveLength(2)
+    expect(session.toolActivity?.toolId).toBe('shell-2')
+
+    chatOnMsgForTest(session, {
+      role: 'user',
+      sidechain: false,
+      blocks: [{ kind: 'tool_result', toolId: 'shell-1', text: 'src/a.ts', isError: false }],
+    })
+    expect(session.toolActivities).toHaveLength(1)
+    expect(session.toolActivities[0].toolId).toBe('shell-2')
+    expect(session.toolActivity).toMatchObject({ toolId: 'shell-1', phase: 'result' })
   })
 
   it('marks a completed turn so the UI can play its completion feedback', async () => {

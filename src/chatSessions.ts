@@ -32,6 +32,7 @@ import { bumpUsage } from './usage'
 import { markProjectsDirty } from './projectsRefresh'
 import { codexPluginMentionTextElements, expandCodexPluginMentionsForPrompt } from './codexPluginMentions'
 import { isFileChangeResult } from './toolResultRouting'
+import { summarizeTool, type ToolSummary } from './liveToolSummary'
 import type {
   Agent,
   Block,
@@ -69,10 +70,11 @@ export interface QueuedMessage {
   files: ChatFileAttachment[]
 }
 
-/** 最近一次工具事件的紧凑状态。用于工具卡片隐藏时的实时状态行，不保存工具输入或输出。 */
+/** 最近一次工具事件的紧凑状态。只保存状态行需要的摘要，不保存完整工具输入或输出。 */
 export interface LiveToolActivity {
   toolName: string
   toolId?: string
+  summary: ToolSummary
   phase: 'calling' | 'result' | 'failed'
   updatedAt: number
 }
@@ -127,6 +129,8 @@ export interface ChatSession {
   live?: { kind: string; text: string } | null
   /** 当前/最近一次工具调用的轻量活动信息；只供运行状态行展示。 */
   toolActivity: LiveToolActivity | null
+  /** 并行工具调用的未完成集合；状态行只展示其中最新的一项。 */
+  toolActivities: LiveToolActivity[]
   /** 本轮结束原因，供 UI 在状态行消失前播放一次完成/失败/取消反馈。 */
   lastTurnOutcome: ChatTurnOutcome | null
   // ---- §10.2/10.3/10.4 切换器：当前选择（底栏 picker 改它，懒生效）----
@@ -330,49 +334,82 @@ export function chatOnMsgForTest(s: ChatSession, msg: Msg) {
   onMsg(s, msg)
 }
 
-function toolNameForResult(s: ChatSession, msg: Msg, toolId?: string): string {
+function toolForResult(s: ChatSession, msg: Msg, toolId?: string): Block | undefined {
   if (toolId) {
     for (let bi = msg.blocks.length - 1; bi >= 0; bi -= 1) {
       const b = msg.blocks[bi]
-      if (b.kind === 'tool_use' && b.toolId === toolId && b.toolName) return b.toolName
+      if (b.kind === 'tool_use' && b.toolId === toolId) return b
     }
     for (let mi = s.msgs.length - 1; mi >= 0; mi -= 1) {
       const prior = s.msgs[mi]
       for (let bi = prior.blocks.length - 1; bi >= 0; bi -= 1) {
         const b = prior.blocks[bi]
-        if (b.kind === 'tool_use' && b.toolId === toolId && b.toolName) return b.toolName
+        if (b.kind === 'tool_use' && b.toolId === toolId) return b
       }
     }
   }
-  return 'Tool'
+  return undefined
 }
 
-/** 记录最新一条 tool_use / tool_result，让 GUI 在隐藏工具卡片后仍能说明正在执行什么。
+function sameToolActivity(a: LiveToolActivity, b: LiveToolActivity): boolean {
+  if (a.toolId || b.toolId) return !!a.toolId && a.toolId === b.toolId
+  return a.toolName === b.toolName
+}
+
+function addActiveTool(s: ChatSession, activity: LiveToolActivity): void {
+  s.toolActivities = [
+    ...s.toolActivities.filter((item) => !sameToolActivity(item, activity)),
+    activity,
+  ]
+}
+
+function removeActiveTool(s: ChatSession, activity: LiveToolActivity): void {
+  s.toolActivities = s.toolActivities.filter((item) => !sameToolActivity(item, activity))
+}
+
+/** 记录 tool_use / tool_result，让 GUI 在隐藏工具卡片后仍能说明正在执行什么。
  *  不尝试伪造命令内部百分比：协议能可靠提供的只有 calling / result / failed 三种阶段。 */
 function updateToolActivity(s: ChatSession, msg: Msg) {
-  for (let i = msg.blocks.length - 1; i >= 0; i -= 1) {
-    const b = msg.blocks[i]
+  let sawToolEvent = false
+  for (const b of msg.blocks) {
     if (b.kind === 'tool_use') {
-      s.toolActivity = {
+      sawToolEvent = true
+      const activity: LiveToolActivity = {
         toolName: b.toolName || 'Tool',
         ...(b.toolId ? { toolId: b.toolId } : {}),
+        summary: summarizeTool(b.toolName, b.toolInput, b.filePath),
         phase: 'calling',
         updatedAt: Date.now(),
       }
-      return
+      addActiveTool(s, activity)
+      s.toolActivity = activity
+      continue
     }
     if (b.kind === 'tool_result') {
-      s.toolActivity = {
-        toolName: b.toolName || toolNameForResult(s, msg, b.toolId),
+      sawToolEvent = true
+      const source = toolForResult(s, msg, b.toolId)
+      const toolName = b.toolName || source?.toolName || 'Tool'
+      const activity: LiveToolActivity = {
+        toolName,
         ...(b.toolId ? { toolId: b.toolId } : {}),
+        summary: summarizeTool(toolName, source?.toolInput, b.filePath || source?.filePath),
         phase: b.isError ? 'failed' : 'result',
         updatedAt: Date.now(),
       }
-      return
+      removeActiveTool(s, activity)
+      s.toolActivity = activity
     }
   }
-  // 模型重新开始输出 prose / thinking 后，不再把旧工具名留在运行状态行。
-  if (msg.blocks.some((b) => b.kind === 'text' || b.kind === 'thinking')) s.toolActivity = null
+  // 模型重新开始输出 prose / thinking 后，结束仍在调用中的旧状态；完成/失败反馈交给
+  // ChatView 的短时效逻辑保留一小段时间，避免结果文案刚到就被下一条文本吞掉。
+  if (
+    !sawToolEvent
+    && s.toolActivity?.phase === 'calling'
+    && msg.blocks.some((b) => b.kind === 'text' || b.kind === 'thinking')
+  ) {
+    s.toolActivities = []
+    s.toolActivity = null
+  }
 }
 
 function messageText(msg: Msg): string {
@@ -492,7 +529,10 @@ function onDelta(s: ChatSession, d: ChatDelta) {
   if (d.phase === 'start') {
     // 仅文本块起预览；thinking / tool_use 不预览（authoritative 记录会补）。
     s.live = d.kind === 'text' ? { kind: 'text', text: '' } : null
-    if (d.kind === 'text') s.toolActivity = null
+    if (d.kind === 'text' && s.toolActivity?.phase === 'calling') {
+      s.toolActivities = []
+      s.toolActivity = null
+    }
   } else if (d.phase === 'delta') {
     if (d.kind === 'text' && d.text) {
       const prev = s.live ?? { kind: 'text', text: '' }
@@ -651,6 +691,7 @@ function startTurn(s: ChatSession) {
   s.turnStartedAt = Date.now()
   s.retry = null // 新一轮重置重试态。
   s.toolActivity = null
+  s.toolActivities = []
   s.lastTurnOutcome = null
   s.pendingPermissions = [] // 新一轮不带上一轮残留的权限请求。
   s.pendingQuestions = [] // 同理，残留的提问也清掉。
@@ -865,6 +906,7 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
     retry: null,
     live: null,
     toolActivity: null,
+    toolActivities: [],
     lastTurnOutcome: null,
     pendingPermissions: [],
     pendingQuestions: [],
@@ -1193,6 +1235,7 @@ export async function clearChat(session: ChatSession): Promise<void> {
   session.msgs = []
   session.live = null
   session.toolActivity = null
+  session.toolActivities = []
   session.lastTurnOutcome = null
   session.usage = undefined
   session.retry = null
@@ -1395,6 +1438,7 @@ export async function reconnectChats(): Promise<ChatSession[]> {
       retry: null,
       live: null,
       toolActivity: null,
+      toolActivities: [],
       lastTurnOutcome: null,
       pendingPermissions: [],
       pendingQuestions: [],

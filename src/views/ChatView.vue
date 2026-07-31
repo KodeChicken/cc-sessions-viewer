@@ -181,20 +181,42 @@ const runningToolActivity = computed(() => {
   if (!session || session.turnState !== 'running' || showToolCalls.value) return null
   // 交互式确认卡片本身已经说明“需要用户操作”，不要用旧的工具名抢占状态行。
   if (session.pendingPermissions.length || session.pendingQuestions.length) return null
-  return session.toolActivity
+  const activity = session.toolActivity
+  if (activity && (activity.phase === 'calling' || chatNow.value - activity.updatedAt <= 1800)) {
+    return activity
+  }
+  // 完成/失败反馈过期后，恢复仍在运行的并行工具中最新的一项。
+  return session.toolActivities[session.toolActivities.length - 1] ?? activity ?? null
+})
+
+const runningToolStale = computed(() => {
+  const activity = runningToolActivity.value
+  return !!activity && activity.phase !== 'calling' && chatNow.value - activity.updatedAt > 1800
 })
 
 const runningToolLabel = computed(() => {
   const activity = runningToolActivity.value
   if (!activity) return ''
-  if (activity.phase === 'calling') return t('chat.running.toolCalling', { name: activity.toolName })
-  if (activity.phase === 'failed') return t('chat.running.toolFailed', { name: activity.toolName })
-  return t('chat.running.toolResult', { name: activity.toolName })
+  const target = activity.summary.target ? ` ${activity.summary.target}` : ''
+  if (activity.summary.kind === 'callTool') {
+    const name = activity.summary.target || activity.toolName
+    if (runningToolStale.value) return t('chat.running.toolLastAction', { name })
+    if (activity.phase === 'calling') return t('chat.running.toolCalling', { name })
+    if (activity.phase === 'failed') return t('chat.running.toolFailed', { name })
+    return t('chat.running.toolResult', { name })
+  }
+  const action = t(`chat.running.action.${activity.summary.kind}`)
+  if (runningToolStale.value) return t('chat.running.toolLastActionAction', { action, target })
+  if (activity.phase === 'calling') return t('chat.running.toolCallingAction', { action, target })
+  if (activity.phase === 'failed') return t('chat.running.toolFailedAction', { action, target })
+  return t('chat.running.toolResultAction', { action, target })
 })
 
 const runningToolKey = computed(() => {
   const activity = runningToolActivity.value
-  return activity ? `${activity.phase}:${activity.toolId ?? activity.toolName}:${activity.updatedAt}` : ''
+  return activity
+    ? `${activity.phase}:${runningToolStale.value ? 'stale' : 'fresh'}:${activity.toolId ?? activity.toolName}:${activity.summary.kind}:${activity.summary.target ?? ''}:${activity.updatedAt}`
+    : ''
 })
 
 const runningFeedback = computed(() => {
@@ -2205,7 +2227,7 @@ function onDocClick(e: MouseEvent) {
                 v-if="runningToolLabel"
                 :key="runningToolKey"
                 class="chat-running-tool"
-                :class="runningToolActivity?.phase"
+                :class="[runningToolActivity?.phase, { stale: runningToolStale }]"
               >
                 <span class="chat-running-tool-dot" aria-hidden="true" />
                 {{ runningToolLabel }}
