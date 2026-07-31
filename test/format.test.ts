@@ -6,6 +6,7 @@ import {
   formatTime,
   formatTokens,
   highlightSegments,
+  isAskUserQuestionInstructionOnlyMsg,
   isCaveatOnlyMsg,
   metaKindIsPre,
   parseFileRef,
@@ -46,6 +47,38 @@ describe('parseFileRef', () => {
       line: 42,
       col: undefined,
     })
+  })
+})
+
+describe('isAskUserQuestionInstructionOnlyMsg', () => {
+  it('hides an explicit tool-test instruction because the assistant card is the visible question', () => {
+    expect(
+      isAskUserQuestionInstructionOnlyMsg(
+        userMsg({
+          kind: 'text',
+          text: 'Use the AskUserQuestion tool exactly once and NOTHING else. Ask TWO questions in a single call.',
+        }),
+      ),
+    ).toBe(true)
+  })
+
+  it('hides a single-select instruction with an inline question description', () => {
+    expect(
+      isAskUserQuestionInstructionOnlyMsg(
+        userMsg({
+          kind: 'text',
+          text: 'Use the AskUserQuestion tool exactly once and NOTHING else. Ask ONE single-select question (multiSelect false): header "布局", question "选择一个页面布局".',
+        }),
+      ),
+    ).toBe(true)
+  })
+
+  it('keeps ordinary discussion about the tool visible', () => {
+    expect(
+      isAskUserQuestionInstructionOnlyMsg(
+        userMsg({ kind: 'text', text: 'What is the AskUserQuestion tool used for?' }),
+      ),
+    ).toBe(false)
   })
 })
 

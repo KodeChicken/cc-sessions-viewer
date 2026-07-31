@@ -152,4 +152,24 @@ describe('ChatQuestionPrompt', () => {
     const w = mountPrompt(req([mp]))
     expect(w.find('.q-preview').exists()).toBe(false)
   })
+
+  it('renders historical questions as a read-only Claude card', () => {
+    const w = mount(ChatQuestionPrompt, {
+      props: {
+        request: req([single, multi]),
+        readonly: true,
+        historyResult: {
+          text: 'Your questions have been answered: "Pick a language"="Rust", "Which have you used?"="Python,Go".',
+        },
+      },
+    })
+    expect(w.classes()).toContain('q-prompt-history')
+    expect(w.findAll('.q-history-item')).toHaveLength(2)
+    expect(w.findAll('button')).toHaveLength(0)
+    expect(w.findAll('.q-opt-static.selected')).toHaveLength(3)
+    expect(w.findAll('.q-history-item .q-mark')).toHaveLength(0)
+    expect(w.findAll('.q-history-selected-icon')).toHaveLength(3)
+    expect(w.find('.q-history-status').text()).toContain('Answered')
+    expect(w.find('.q-head .q-history-status').exists()).toBe(true)
+  })
 })

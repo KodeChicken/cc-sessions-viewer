@@ -3,6 +3,8 @@ import {
   allQuestionsAnswered,
   buildQuestionCancelDecision,
   buildQuestionDecision,
+  parseQuestionAnswers,
+  parseQuestionRequest,
   questionAnswered,
   questionHasPreview,
   type QuestionSelection,
@@ -118,5 +120,47 @@ describe('questionHasPreview — two-pane gating', () => {
 
   it('is false when no option carries a preview', () => {
     expect(questionHasPreview(single)).toBe(false)
+  })
+})
+
+describe('history transcript parsing', () => {
+  it('normalizes an AskUserQuestion tool input for the read-only card', () => {
+    const parsed = parseQuestionRequest(
+      JSON.stringify({
+        questions: [
+          {
+            header: 'Frameworks',
+            question: 'Which have you used?',
+            multiSelect: true,
+            options: [{ label: 'Vue', description: 'UI' }, { label: 'React' }],
+          },
+        ],
+      }),
+      'tool-1',
+    )
+    expect(parsed).toEqual({
+      requestId: 'tool-1',
+      questions: [
+        {
+          header: 'Frameworks',
+          question: 'Which have you used?',
+          multiSelect: true,
+          options: [{ label: 'Vue', description: 'UI' }, { label: 'React' }],
+        },
+      ],
+    })
+  })
+
+  it('rejects malformed tool input without throwing', () => {
+    expect(parseQuestionRequest('{bad json}')).toBeNull()
+    expect(parseQuestionRequest(JSON.stringify({ questions: [{ question: 'empty', options: [] }] }))).toBeNull()
+  })
+
+  it('extracts answers from Claude tool-result text', () => {
+    expect(
+      parseQuestionAnswers(
+        'Your questions have been answered: "Frameworks"="Vue,React", "Build tool"="Vite".',
+      ),
+    ).toEqual({ Frameworks: 'Vue,React', 'Build tool': 'Vite' })
   })
 })

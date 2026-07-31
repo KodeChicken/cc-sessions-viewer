@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, defineAsyncComponent } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import type { Agent, Msg, SessionMeta, Block } from '../types'
-import { renderText, formatTime, formatElapsedSeconds, isCaveatOnlyMsg, parseSystemEvent, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage, stripImagePlaceholders, parseFileRef } from '../format'
+import type { Agent, Msg, SessionMeta, Block, ChatQuestionRequest } from '../types'
+import { renderText, formatTime, formatElapsedSeconds, isCaveatOnlyMsg, isAskUserQuestionInstructionOnlyMsg, parseSystemEvent, cleanMetaText, metaKindIsPre, parseMetaFields, parseTeammateMessage, stripImagePlaceholders, parseFileRef } from '../format'
 import type { MetaField } from '../format'
 import { prettifyAndHighlightJson } from '../jsonHighlight'
 import { renderAllMermaid, resetMermaidForTheme } from '../mermaid'
@@ -71,6 +71,7 @@ import {
 } from '../chatSessions'
 import type { PermissionChoice } from '../chatPermission'
 import type { QuestionSelection } from '../chatQuestion'
+import { parseQuestionRequest } from '../chatQuestion'
 import { openPathExternal, agentChatSlashCommands } from '../api'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { useGitBranch } from '../gitBranch'
@@ -162,6 +163,21 @@ function isToolOnly(m: Msg): boolean {
   return m.role === 'user' && m.blocks.every((b) => b.kind === 'tool_result' || (b.kind === 'image' && b.toolId))
 }
 
+function isAskUserQuestion(b: Block): boolean {
+  return b.kind === 'tool_use' && b.toolName === 'AskUserQuestion'
+}
+
+/** AskUserQuestion 是 Claude 发起的工具调用。即使遇到旧 transcript 把这类
+ * block 放在 user 外壳里，也按 assistant 视觉归属，避免把模型提问显示成「Me」。 */
+function effectiveRole(m: Msg): Msg['role'] {
+  return m.role === 'assistant' || m.blocks.some(isAskUserQuestion) ? 'assistant' : m.role
+}
+
+function askUserQuestionRequest(b: Block): ChatQuestionRequest | null {
+  if (!isAskUserQuestion(b)) return null
+  return parseQuestionRequest(b.toolInput ?? '', b.toolId ?? 'history-question')
+}
+
 function toolLabel(b: Block): string {
   if (b.kind === 'tool_use') return t('tool.call', { name: b.toolName ?? '' })
   if (b.kind === 'thinking') return t('tool.thinking')
@@ -212,7 +228,7 @@ function rowScope(m: Msg): string {
   if (isToolOnly(m)) return m.blocks.some((b) => isFileChangeResult(b)) ? 'tools-edit' : 'tools-other'
   // 系统注入块不是用户 prose 也不是助手回复 —— 给个独立 scope，只在「全部」筛选下命中。
   if (m.metaKind) return 'meta'
-  return m.role
+  return effectiveRole(m)
 }
 function toolUseScope(b: Block): string {
   return isFileMutatingToolName(b.toolName) ? 'tools-edit' : 'tools-other'
@@ -301,13 +317,22 @@ function isAttachedResult(b: Block): boolean {
 
 function shouldHideToolResult(b: Block): boolean {
   if (b.kind !== 'tool_result' || !b.toolId) return false
-  const toolUse = toolUseById.value.get(b.toolId)
-  return !!toolUse && isCodexInlineCodeToolUse(toolUse)
+  const sourceTool = toolUseById.value.get(b.toolId)
+  if (sourceTool && isAskUserQuestion(sourceTool)) return true
+  return !!sourceTool && isCodexInlineCodeToolUse(sourceTool)
+}
+
+function askUserQuestionResult(b: Block): Block | undefined {
+  if (!isAskUserQuestion(b) || !b.toolId) return undefined
+  return resultByToolId.value.get(b.toolId)
 }
 
 function rowHasContent(m: Msg): boolean {
   // Local-command caveat user messages are pure plumbing — hide the row entirely.
   if (isCaveatOnlyMsg(m)) return false
+  // The actual AskUserQuestion card is rendered on Claude's side; the explicit
+  // tool-test instruction is protocol scaffolding and would only duplicate it.
+  if (isAskUserQuestionInstructionOnlyMsg(m)) return false
   if (!isToolOnly(m)) return true
   return m.blocks.some((b) => !isInlinedResult(b) && !isAttachedResult(b) && !shouldHideToolResult(b))
 }
@@ -342,13 +367,13 @@ function bubbleText(m: Msg, raw: string): string {
 function renderBubble(m: Msg, raw: string): string {
   const text = bubbleText(m, raw)
   let html = renderText(text)
-  if (m.role === 'user' && /^[/$]\S/.test(text)) {
+  if (effectiveRole(m) === 'user' && /^[/$]\S/.test(text)) {
     html = html.replace(
       /(<div class="text-run">)([/$][^\s<]+)/,
       '$1<span class="cmd-name">$2</span>',
     )
   }
-  if (m.role === 'user' && props.agent === 'codex' && text.includes('@')) {
+  if (effectiveRole(m) === 'user' && props.agent === 'codex' && text.includes('@')) {
     html = renderCodexPluginMentionHtmlText(html)
   }
   return injectCmdDesc(html)
@@ -435,7 +460,7 @@ function openFile(b: Block) {
 // ContextWindowCard。先用 startsWith 廉价过滤，再 parseContextUsage 严格确认；按文本缓存避免重解析。
 const ctxUsageCache = new Map<string, ContextUsage | null>()
 function contextUsageOf(m: Msg): ContextUsage | null {
-  if (m.role !== 'assistant' && m.metaKind !== 'command-output') return null
+  if (effectiveRole(m) !== 'assistant' && m.metaKind !== 'command-output') return null
   // 廉价子串过滤在前（每行 class 绑定都会调本函数）；命中的极少数块才去壳 + 严格确认结构。
   const b = m.blocks.find((x) => x.kind === 'text' && x.text && x.text.includes('## Context Usage'))
   if (!b?.text) return null
@@ -593,13 +618,14 @@ function metaFieldsOf(text: string): MetaField[] | null {
 const stats = computed(() => {
   const u = props.messages.filter(
     (m) =>
-      m.role === 'user' &&
+      effectiveRole(m) === 'user' &&
       !m.metaKind &&
       !isToolOnly(m) &&
       !isCaveatOnlyMsg(m) &&
+      !isAskUserQuestionInstructionOnlyMsg(m) &&
       !systemEventLabel(m),
   ).length
-  const a = props.messages.filter((m) => m.role === 'assistant').length
+  const a = props.messages.filter((m) => effectiveRole(m) === 'assistant').length
   return { u, a }
 })
 
@@ -1050,7 +1076,11 @@ function messageSegments(m: Msg): { scope: string; text: string }[] {
       segs.push({ scope: s, text: `${b.toolName ?? ''} ${b.toolInput ?? ''}` })
       if (r?.text) segs.push({ scope: s, text: r.text })
     } else if (b.kind === 'tool_result') {
-      segs.push({ scope: isToolOnly(m) ? 'tools-edit' : rscope, text: b.text ?? '' })
+      // AskUserQuestion 的协议回执已经并入 Claude 的提问卡；不再让隐藏的
+      // user/tool_result 行单独制造一个搜索命中。
+      if (!shouldHideToolResult(b)) {
+        segs.push({ scope: isToolOnly(m) ? 'tools-edit' : rscope, text: b.text ?? '' })
+      }
     } else if (b.text) {
       segs.push({ scope: rscope, text: b.text })
     }
@@ -1406,7 +1436,14 @@ const promptEntries = computed<PromptEntry[]>(() => {
   const entries: PromptEntry[] = []
   for (let i = 0; i < props.messages.length; i++) {
     const m = props.messages[i]
-    if (m.role !== 'user' || m.metaKind || isToolOnly(m) || isCaveatOnlyMsg(m) || systemEventLabel(m)) continue
+    if (
+      m.role !== 'user' ||
+      m.metaKind ||
+      isToolOnly(m) ||
+      isCaveatOnlyMsg(m) ||
+      isAskUserQuestionInstructionOnlyMsg(m) ||
+      systemEventLabel(m)
+    ) continue
     const textBlock = m.blocks.find((b) => b.kind === 'text' && b.text)
     const raw = textBlock?.text ?? ''
     const plain = raw.replace(/<[^>]*>/g, '').trim()
@@ -1691,7 +1728,7 @@ function onDocClick(e: MouseEvent) {
         v-show="rowHasContent(m) && (!isHidden(m, vr.index) || showHidden)"
         class="msg-row"
         :class="[
-          contextUsageOf(m) ? 'assistant' : systemEventLabel(m) ? 'system' : m.metaKind ? 'meta' : isToolOnly(m) ? 'tool-only' : m.role,
+          contextUsageOf(m) ? 'assistant' : systemEventLabel(m) ? 'system' : m.metaKind ? 'meta' : isToolOnly(m) ? 'tool-only' : effectiveRole(m),
           { 'msg-flash': flashIdx === vr.index, 'msg-hidden': isHidden(m, vr.index) && showHidden, 'row-active': hoveredKey === msgKey(m, vr.index) },
         ]"
         :data-search-scope="rowScope(m)"
@@ -1784,16 +1821,16 @@ function onDocClick(e: MouseEvent) {
             </button>
           </div>
 
-          <div v-if="hasBubbleBody(m)" class="bubble" :class="m.role">
+          <div v-if="hasBubbleBody(m)" class="bubble" :class="effectiveRole(m)">
           <div class="role-tag">
             <span class="name">
               <component
-                v-if="m.role === 'assistant'"
+                v-if="effectiveRole(m) === 'assistant'"
                 :is="agentIcons[agent]"
                 class="agent-icon"
                 :class="agent"
               />
-              {{ m.role === 'user' ? t('chat.role.me') : assistantName }}
+              {{ effectiveRole(m) === 'user' ? t('chat.role.me') : assistantName }}
             </span>
             <span v-if="m.model" class="tool-chip">{{ formatModelName(m.model) }}</span>
             <span v-if="m.sidechain" class="sidechain-badge">
@@ -1801,17 +1838,28 @@ function onDocClick(e: MouseEvent) {
             </span>
           </div>
 
-          <CollapsibleBox :enabled="m.role === 'user'" :max-height="320">
+          <CollapsibleBox :enabled="effectiveRole(m) === 'user'" :max-height="320">
             <template v-for="(b, bi) in m.blocks" :key="bi">
               <div v-if="b.kind === 'text'" class="text-run" v-html="renderBubble(m, b.text ?? '')" />
               <div v-else-if="isCodexPluginFileBlock(b)" class="text-run" v-html="codexPluginFileHtml(b)" />
+
+              <!-- AskUserQuestion 是 Claude 的提问工具。历史回放也使用和 live 一致的
+                   选择题视觉；对应的 user/tool_result 协议记录在下方被隐藏并合并进状态。 -->
+              <ChatQuestionPrompt
+                v-else-if="isAskUserQuestion(b) && askUserQuestionRequest(b)"
+                :request="askUserQuestionRequest(b)!"
+                :agent="agent"
+                :readonly="true"
+                :history-result="askUserQuestionResult(b)"
+                :data-search-scope="toolUseScope(b)"
+              />
 
               <!-- image 块已渲染在气泡上方，正文里跳过 -->
 
               <details
                 v-else-if="b.kind === 'thinking'"
                 class="block-card"
-                :class="{ 'in-user': m.role === 'user' }"
+                :class="{ 'in-user': effectiveRole(m) === 'user' }"
                 :open="isDetailOpen(vr.index, bi)"
                 @toggle="onDetailToggle(vr.index, bi, $event)"
               >
@@ -1836,7 +1884,7 @@ function onDocClick(e: MouseEvent) {
               <details
                 v-else-if="b.kind === 'tool_use'"
                 class="block-card"
-                :class="{ 'in-user': m.role === 'user' }"
+                :class="{ 'in-user': effectiveRole(m) === 'user' }"
                 :data-search-scope="toolUseScope(b)"
                 :open="isDetailOpen(vr.index, bi)"
                 @toggle="onDetailToggle(vr.index, bi, $event)"
@@ -1866,7 +1914,7 @@ function onDocClick(e: MouseEvent) {
                 "
                 :block="b"
                 :cwd="cwd"
-                :in-user="m.role === 'user'"
+                :in-user="effectiveRole(m) === 'user'"
                 :persist-open="isDetailOpen(vr.index, bi, 'r')"
                 @toggle="v => onResultToggle(vr.index, bi, v)"
               />

@@ -172,6 +172,22 @@ const RENAME_INNER_RE = /The user named this session\s+"([^"]+)"/i
 // not prose — render it as a centered line like /rename, not a "Me" bubble.
 const INTERRUPT_RE = /^\[Request interrupted by user(?: for tool use)?\]$/
 
+// Claude Code 的 GUI / SDK 测试有时会把「要求模型调用 AskUserQuestion」的指令原样写入
+// transcript。真正的问题随后会由 assistant 的 AskUserQuestion tool_use 渲染成提问卡，
+// 所以这类纯协议指令不应再占一个用户气泡。只匹配明确的工具测试句式，避免误伤普通
+// 提到 AskUserQuestion 的用户讨论。
+const ASK_USER_QUESTION_INSTRUCTION_RE =
+  /^Use\s+the\s+AskUserQuestion\s+tool\s+exactly\s+once\b[\s\S]*\bAsk\s+(?:ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|\d+)\b[\s\S]*\bquestions?\b[\s\S]*$/i
+
+/** True when a user record is only the explicit instruction that asks Claude to emit questions. */
+export function isAskUserQuestionInstructionOnlyMsg(m: {
+  role: string
+  blocks: Array<{ kind: string; text?: string }>
+}): boolean {
+  if (m.role !== 'user' || m.blocks.length !== 1 || m.blocks[0].kind !== 'text') return false
+  return ASK_USER_QUESTION_INSTRUCTION_RE.test((m.blocks[0].text ?? '').trim())
+}
+
 export type SystemEvent = { kind: 'rename'; name: string } | { kind: 'interrupt' }
 
 /** Parse a user message into a SystemEvent if it consists solely of a

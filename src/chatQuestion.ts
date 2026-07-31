@@ -11,6 +11,75 @@
 
 import type { ChatQuestionItem, ChatQuestionRequest } from './types'
 
+/**
+ * 从 Claude transcript 里的 AskUserQuestion tool_use input 提取一个安全的
+ * 只读请求。历史记录中的 input 是 JSON 字符串，不能直接把它当成完整的
+ * ChatQuestionRequest 透传给组件：requestId 不在 input 里，且异常记录也可能
+ * 缺少 questions。
+ */
+export function parseQuestionRequest(
+  input: string,
+  requestId = 'history-question',
+): ChatQuestionRequest | null {
+  let raw: unknown
+  try {
+    raw = JSON.parse(input)
+  } catch {
+    return null
+  }
+  if (!raw || typeof raw !== 'object' || !Array.isArray((raw as { questions?: unknown }).questions)) {
+    return null
+  }
+
+  const questions = (raw as { questions: unknown[] }).questions
+    .map((item): ChatQuestionItem | null => {
+      if (!item || typeof item !== 'object') return null
+      const q = item as Record<string, unknown>
+      if (typeof q.question !== 'string' || !q.question.trim() || !Array.isArray(q.options)) {
+        return null
+      }
+      const options = q.options
+        .map((option): ChatQuestionItem['options'][number] | null => {
+          if (!option || typeof option !== 'object') return null
+          const o = option as Record<string, unknown>
+          if (typeof o.label !== 'string' || !o.label.trim()) return null
+          return {
+            label: o.label,
+            ...(typeof o.description === 'string' ? { description: o.description } : {}),
+            ...(typeof o.preview === 'string' ? { preview: o.preview } : {}),
+          }
+        })
+        .filter((option): option is ChatQuestionItem['options'][number] => option !== null)
+      if (!options.length) return null
+      return {
+        question: q.question,
+        ...(typeof q.header === 'string' ? { header: q.header } : {}),
+        ...(q.multiSelect === true ? { multiSelect: true } : {}),
+        ...(q.allowOther === false ? { allowOther: false } : {}),
+        options,
+      }
+    })
+    .filter((question): question is ChatQuestionItem => question !== null)
+
+  return questions.length ? { requestId, questions } : null
+}
+
+/**
+ * 解析 Claude 写入 tool_result 的简短答案回显，例如：
+ * `"Frameworks"="Vue,React", "Build tool"="Vite"`。
+ * 仅用于历史卡片标记已选项，解析失败时返回空对象，不影响消息展示。
+ */
+export function parseQuestionAnswers(text: string): Record<string, string> {
+  const answers: Record<string, string> = {}
+  const pairRe = /"((?:\\.|[^"\\])*)"\s*=\s*"((?:\\.|[^"\\])*)"/g
+  let match: RegExpExecArray | null
+  while ((match = pairRe.exec(text)) !== null) {
+    const unescape = (value: string) => value.replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+    answers[unescape(match[1])] = unescape(match[2])
+  }
+  return answers
+}
+
 /** 单条提问的用户选择：选中的结构化选项 label（单选 0–1 个、多选任意个）+ 可选的 Other 自填。 */
 export interface QuestionSelection {
   /** 选中的结构化选项 `label`。 */
