@@ -9,7 +9,7 @@ import { renderAllMermaid, resetMermaidForTheme } from '../mermaid'
 import { renderAllMath } from '../mathRender'
 import { highlightAllCodeBlocks, rehighlightAllCodeBlocks } from '../shikiHighlight'
 import { decorateCodeBlocks } from '../codeCopy'
-import { theme } from '../settings'
+import { theme, showToolCalls } from '../settings'
 import { t } from '../i18n'
 import ToolResult from '../components/ToolResult.vue'
 import CollapsibleBox from '../components/CollapsibleBox.vue'
@@ -39,6 +39,10 @@ import {
   IconArrowUp,
   IconArrowDown,
   IconChevronRight,
+  IconAtom,
+  IconTerminal,
+  IconInfo,
+  IconBell,
   IconPencil,
   IconCopy,
   IconCheck,
@@ -52,6 +56,7 @@ import {
   IconLocate,
   IconEyeOff,
   IconEye,
+  IconWrench,
   IconChat,
   IconReader,
   IconStop,
@@ -128,6 +133,91 @@ const runningElapsedSec = computed(() => {
   return Math.max(0, Math.floor((chatNow.value - s.turnStartedAt) / 1000))
 })
 const runningElapsedLabel = computed(() => formatElapsedSeconds(runningElapsedSec.value))
+type FinishedTurnFeedback = {
+  sessionUiId: number
+  outcome: 'completed' | 'cancelled' | 'failed'
+  elapsed: string
+  key: number
+}
+
+const finishedTurnFeedback = ref<FinishedTurnFeedback | null>(null)
+let finishedTurnTimer = 0
+
+function clearFinishedTurnFeedback() {
+  window.clearTimeout(finishedTurnTimer)
+  finishedTurnFeedback.value = null
+}
+
+/** 当前轮结束后保留一小段成功/失败/取消反馈，避免运行状态行瞬间消失。 */
+watch(
+  () => [props.liveSession?.uiId ?? null, props.liveSession?.turnState ?? 'idle'] as const,
+  ([uiId, state], [previousUiId, previousState]) => {
+    const session = props.liveSession
+    if (!session || uiId !== previousUiId) {
+      clearFinishedTurnFeedback()
+      return
+    }
+    if (state === 'running') {
+      clearFinishedTurnFeedback()
+      return
+    }
+    if (previousState !== 'running' || state !== 'idle') return
+    const outcome = session.lastTurnOutcome ?? 'completed'
+    finishedTurnFeedback.value = {
+      sessionUiId: session.uiId,
+      outcome,
+      elapsed: formatElapsedSeconds(Math.ceil(session.lastTurnMs / 1000)),
+      key: Date.now(),
+    }
+    window.clearTimeout(finishedTurnTimer)
+    finishedTurnTimer = window.setTimeout(() => {
+      finishedTurnFeedback.value = null
+    }, 1050)
+  },
+)
+
+const runningToolActivity = computed(() => {
+  const session = props.liveSession
+  if (!session || session.turnState !== 'running' || showToolCalls.value) return null
+  // 交互式确认卡片本身已经说明“需要用户操作”，不要用旧的工具名抢占状态行。
+  if (session.pendingPermissions.length || session.pendingQuestions.length) return null
+  return session.toolActivity
+})
+
+const runningToolLabel = computed(() => {
+  const activity = runningToolActivity.value
+  if (!activity) return ''
+  if (activity.phase === 'calling') return t('chat.running.toolCalling', { name: activity.toolName })
+  if (activity.phase === 'failed') return t('chat.running.toolFailed', { name: activity.toolName })
+  return t('chat.running.toolResult', { name: activity.toolName })
+})
+
+const runningToolKey = computed(() => {
+  const activity = runningToolActivity.value
+  return activity ? `${activity.phase}:${activity.toolId ?? activity.toolName}:${activity.updatedAt}` : ''
+})
+
+const runningFeedback = computed(() => {
+  const session = props.liveSession
+  if (!session) return null
+  if (session.turnState === 'running') return { kind: 'running' as const }
+  const finished = finishedTurnFeedback.value
+  if (finished?.sessionUiId !== session.uiId) return null
+  return {
+    kind: finished.outcome,
+    elapsed: finished.elapsed,
+    key: finished.key,
+  }
+})
+
+const finishedTurnLabel = computed(() => {
+  const feedback = runningFeedback.value
+  if (!feedback || feedback.kind === 'running') return ''
+  if (feedback.kind === 'failed') return t('chat.running.failed')
+  if (feedback.kind === 'cancelled') return t('chat.running.cancelled')
+  return t('chat.running.completed')
+})
+
 /** 进行中状态动词：网络重试时 → 「请求失败 · 重试中 (n/N)」；流式 thinking → 「思考中」；
  *  否则「处理中」（参考 Claude 客户端）。 */
 const runningVerb = computed(() => {
@@ -136,6 +226,9 @@ const runningVerb = computed(() => {
     return r.attempt && r.max
       ? t('chat.running.retryingN', { n: r.attempt, max: r.max })
       : t('chat.running.retrying')
+  }
+  if (props.liveSession?.pendingPermissions.length || props.liveSession?.pendingQuestions.length) {
+    return t('chat.running.waitingForInput')
   }
   return props.liveSession?.live?.kind === 'thinking' ? t('chat.running.thinking') : t('chat.running.working')
 })
@@ -152,6 +245,20 @@ function toggleTools() {
 const sessionArchived = computed(() => !!props.session.codexArchived)
 const canResumeHere = computed(
   () => !props.trashed && !sessionArchived.value && !!props.session.id && !!props.cwd,
+)
+
+// 只读页可临时覆盖全局「显示工具调用」设置。该值不落盘，切换到另一会话时也会复位，
+// 方便用户偶尔检查某一段工具过程而不打扰平时紧凑的阅读视图。
+const readToolCallsOverride = ref<boolean | null>(null)
+const readToolCallsVisible = computed(() =>
+  props.liveSession ? showToolCalls.value : readToolCallsOverride.value ?? showToolCalls.value,
+)
+function toggleReadToolCalls() {
+  readToolCallsOverride.value = !readToolCallsVisible.value
+}
+watch(
+  () => `${props.session.id}:${props.session.path}`,
+  () => { readToolCallsOverride.value = null },
 )
 
 function shortId(id: string): string {
@@ -180,8 +287,30 @@ function askUserQuestionRequest(b: Block): ChatQuestionRequest | null {
 
 function toolLabel(b: Block): string {
   if (b.kind === 'tool_use') return t('tool.call', { name: b.toolName ?? '' })
-  if (b.kind === 'thinking') return t('tool.thinking')
   return ''
+}
+
+/** thinking block 本身没有耗时字段。用其消息时间与前一条带时间戳的消息相减，
+ *  作为可解释的近似值；过短或过长的间隔不显示，避免把排队/离线时长误称为思考时间。 */
+function thinkingElapsedLabel(messageIndex: number): string | null {
+  const current = Date.parse(props.messages[messageIndex]?.timestamp ?? '')
+  if (!Number.isFinite(current)) return null
+
+  for (let i = messageIndex - 1; i >= 0; i -= 1) {
+    const previous = Date.parse(props.messages[i]?.timestamp ?? '')
+    if (!Number.isFinite(previous)) continue
+    const elapsedMs = current - previous
+    if (elapsedMs < 400 || elapsedMs > 5 * 60_000) return null
+    return formatElapsedSeconds(Math.max(1, Math.round(elapsedMs / 1000)))
+  }
+  return null
+}
+
+function thinkingLabel(messageIndex: number): string {
+  const elapsed = thinkingElapsedLabel(messageIndex)
+  return elapsed
+    ? t('tool.thinkingDone', { duration: elapsed })
+    : t('tool.thinkingDoneNoDuration')
 }
 
 function isCodexInlineCodeToolUse(b: Block): boolean {
@@ -315,11 +444,45 @@ function isAttachedResult(b: Block): boolean {
   return b.kind === 'tool_result' && !!b.toolId && attachedResultIds.value.has(b.toolId)
 }
 
+/** Codex apply_patch 的输入已经渲染成带路径和行级 diff 的文件变更卡。其成功回执通常只是
+ * “Done” 一类协议确认，继续放在卡片下方只会制造一个无信息量的 Tool result。失败回执仍要
+ * 保留，以免吞掉诊断信息；无法解析为 patch 的旧记录也保留原结果作为兜底。 */
+function shouldShowAttachedResult(b: Block): boolean {
+  const result = attachedResultFor(b)
+  if (!result) return false
+  return result.isError || !isCodexApplyPatchStructured(b)
+}
+
 function shouldHideToolResult(b: Block): boolean {
   if (b.kind !== 'tool_result' || !b.toolId) return false
   const sourceTool = toolUseById.value.get(b.toolId)
   if (sourceTool && isAskUserQuestion(sourceTool)) return true
   return !!sourceTool && isCodexInlineCodeToolUse(sourceTool)
+}
+
+/** 文件变更结果不受「显示工具调用」开关影响。除了自身的 structured diff / filePath 外，
+ * 也兜住 Write/Edit/apply_patch 等已知写文件工具返回的简短成功结果。 */
+function isAlwaysVisibleToolResult(b: Block): boolean {
+  if (b.kind !== 'tool_result') return false
+  const sourceTool = b.toolId ? toolUseById.value.get(b.toolId) : undefined
+  return isFileChangeResult(b) || !!sourceTool && shouldAttachToolResult(sourceTool, b)
+}
+
+/** 普通过程性工具默认隐藏；AskUserQuestion 是用户交互卡，始终可见。Codex apply_patch
+ * 的输入本身可能是唯一的结构化 patch，保留它作为文件变更内容的兜底展示。 */
+function shouldShowToolUse(b: Block): boolean {
+  if (b.kind !== 'tool_use') return false
+  if (isAskUserQuestion(b)) return true
+  if (readToolCallsVisible.value) return true
+  return isCodexInlineCodeToolUse(b)
+}
+
+/** 已内联或已挂到文件变更卡的结果不在原位置重复渲染。其余普通结果受开关控制，
+ * 文件结果则强制保留。 */
+function shouldShowToolResult(b: Block): boolean {
+  if (b.kind !== 'tool_result') return false
+  if (shouldHideToolResult(b) || isInlinedResult(b) || isAttachedResult(b)) return false
+  return readToolCallsVisible.value || isAlwaysVisibleToolResult(b)
 }
 
 function askUserQuestionResult(b: Block): Block | undefined {
@@ -333,8 +496,11 @@ function rowHasContent(m: Msg): boolean {
   // The actual AskUserQuestion card is rendered on Claude's side; the explicit
   // tool-test instruction is protocol scaffolding and would only duplicate it.
   if (isAskUserQuestionInstructionOnlyMsg(m)) return false
-  if (!isToolOnly(m)) return true
-  return m.blocks.some((b) => !isInlinedResult(b) && !isAttachedResult(b) && !shouldHideToolResult(b))
+  return m.blocks.some((b) => {
+    if (b.kind === 'text' || b.kind === 'thinking' || b.kind === 'file' || b.kind === 'image') return true
+    if (b.kind === 'tool_use') return shouldShowToolUse(b) || !!attachedResultFor(b)
+    return shouldShowToolResult(b)
+  })
 }
 
 // ---- 图片：缩略图浮在气泡上方（参考 Claude 客户端），不进灰底气泡 ----
@@ -598,6 +764,19 @@ function metaKindLabel(kind: string | undefined): string {
   if (!kind) return ''
   return t(META_KIND_KEY[kind] ?? 'chat.metaKind.system')
 }
+
+/** 命令输出和系统说明与 thinking 同属低优先级过程信息：沿用轻量折叠样式，
+ *  但以终端 / 信息 / 提醒图标明确区分来源。Task notification 与 Context Summary
+ *  同属系统过程信息，也保持这套无边框的轻量折叠样式。 */
+function usesLightweightMetaStyle(kind: string | undefined): boolean {
+  return kind === 'command-output' || kind === 'meta' || kind === 'compact' || kind === 'task-notification'
+}
+
+function lightweightMetaIcon(kind: string | undefined) {
+  if (kind === 'task-notification') return IconBell
+  return kind === 'command-output' ? IconTerminal : IconInfo
+}
+
 // 该消息的 metaKind 是否以等宽 <pre> 呈现（undefined-safe 包装，便于模板调用）。
 function metaIsPre(m: Msg): boolean {
   return !!m.metaKind && metaKindIsPre(m.metaKind)
@@ -1071,14 +1250,22 @@ function messageSegments(m: Msg): { scope: string; text: string }[] {
   const segs: { scope: string; text: string }[] = []
   for (const b of m.blocks) {
     if (b.kind === 'tool_use') {
-      const r = inlinedResultFor(b) ?? attachedResultFor(b)
+      const attached = attachedResultFor(b)
+      if (!shouldShowToolUse(b)) {
+        // 文件变更卡独立保留、tool_use 本身隐藏时，搜索仍应能找到文件路径和结果。
+        if (attached?.text) segs.push({ scope: 'tools-edit', text: attached.text })
+        if (attached?.filePath) segs.push({ scope: 'tools-edit', text: attached.filePath })
+        continue
+      }
+      const r = inlinedResultFor(b) ?? attached
       const s = r && isFileChangeResult(r) ? 'tools-edit' : toolUseScope(b)
       segs.push({ scope: s, text: `${b.toolName ?? ''} ${b.toolInput ?? ''}` })
       if (r?.text) segs.push({ scope: s, text: r.text })
+      if (r?.filePath) segs.push({ scope: s, text: r.filePath })
     } else if (b.kind === 'tool_result') {
       // AskUserQuestion 的协议回执已经并入 Claude 的提问卡；不再让隐藏的
       // user/tool_result 行单独制造一个搜索命中。
-      if (!shouldHideToolResult(b)) {
+      if (shouldShowToolResult(b)) {
         segs.push({ scope: isToolOnly(m) ? 'tools-edit' : rscope, text: b.text ?? '' })
       }
     } else if (b.text) {
@@ -1402,6 +1589,7 @@ watch(
 onUnmounted(() => {
   setSearchNavigator(null)
   window.clearTimeout(searchDebounce)
+  window.clearTimeout(finishedTurnTimer)
   unmarkAll()
   document.removeEventListener('click', onDocClick)
 })
@@ -1619,6 +1807,15 @@ function onDocClick(e: MouseEvent) {
       <component :is="showHidden ? IconEye : IconEyeOff" />
       <span class="hidden-badge">{{ hiddenCount }}</span>
     </button>
+    <button
+      v-if="!liveSession"
+      class="icon-btn tool-calls-toggle"
+      :class="{ active: readToolCallsVisible, 'is-hidden': !readToolCallsVisible }"
+      v-tooltip="readToolCallsVisible ? t('chat.action.hideToolCalls') : t('chat.action.showToolCalls')"
+      @click="toggleReadToolCalls"
+    >
+      <IconWrench />
+    </button>
     <span class="chat-head-sep" />
     <!-- 在窗口内 resume（TUI）：仅只读详情。live chat 里已在对话中，无需再开 TUI tab。 -->
     <button
@@ -1749,8 +1946,8 @@ function onDocClick(e: MouseEvent) {
 
         <!-- System-injected user records (compaction summary, skill injection,
              task notifications, command output). Not "Me" prose — render like an
-             assistant turn: a "✳ Claude" header + a collapsed, tool-call-style
-             card holding the body. Notification pseudo-XML → clean key/value rows. -->
+             assistant turn. Command output / system notes use the same lightweight
+             disclosure as thinking; other meta records retain their labeled card. -->
         <div v-else-if="m.metaKind" class="bubble meta-msg">
           <div class="role-tag">
             <span class="name">
@@ -1758,12 +1955,23 @@ function onDocClick(e: MouseEvent) {
               {{ assistantName }}
             </span>
           </div>
-          <details class="block-card" :open="isDetailOpen(vr.index, -1)" @toggle="onDetailToggle(vr.index, -1, $event)">
-            <summary class="block-summary">
-              <span class="chev"><IconChevronRight /></span>
-              <span class="label meta-summary-label">{{ metaKindLabel(m.metaKind) }}</span>
+          <details
+            :class="usesLightweightMetaStyle(m.metaKind) ? 'thinking-block meta-lightweight-block' : 'block-card'"
+            :open="isDetailOpen(vr.index, -1)"
+            @toggle="onDetailToggle(vr.index, -1, $event)"
+          >
+            <summary :class="usesLightweightMetaStyle(m.metaKind) ? 'thinking-summary' : 'block-summary'">
+              <template v-if="usesLightweightMetaStyle(m.metaKind)">
+                <component :is="lightweightMetaIcon(m.metaKind)" class="thinking-icon" aria-hidden="true" />
+                <span class="thinking-label">{{ metaKindLabel(m.metaKind) }}</span>
+                <span class="thinking-chev"><IconChevronRight /></span>
+              </template>
+              <template v-else>
+                <span class="chev"><IconChevronRight /></span>
+                <span class="label meta-summary-label">{{ metaKindLabel(m.metaKind) }}</span>
+              </template>
             </summary>
-            <div class="block-body">
+            <div :class="usesLightweightMetaStyle(m.metaKind) ? 'thinking-content' : 'block-body'">
               <template v-for="(b, bi) in m.blocks" :key="bi">
                 <template v-if="b.kind === 'text'">
                   <dl v-if="metaFieldsOf(b.text ?? '')" class="meta-fields">
@@ -1783,8 +1991,9 @@ function onDocClick(e: MouseEvent) {
         <div v-else-if="isToolOnly(m)" style="max-width: 86%; min-width: 0">
           <template v-for="(b, bi) in m.blocks" :key="bi">
             <ToolResult
-              v-if="!isInlinedResult(b) && !isAttachedResult(b) && !shouldHideToolResult(b)"
+              v-if="b.kind === 'tool_result' && shouldShowToolResult(b)"
               :block="b"
+              :cwd="cwd"
               :persist-open="isDetailOpen(vr.index, bi, 'r')"
               @toggle="v => onResultToggle(vr.index, bi, v)"
             />
@@ -1858,20 +2067,20 @@ function onDocClick(e: MouseEvent) {
 
               <details
                 v-else-if="b.kind === 'thinking'"
-                class="block-card"
-                :class="{ 'in-user': effectiveRole(m) === 'user' }"
+                class="thinking-block"
                 :open="isDetailOpen(vr.index, bi)"
                 @toggle="onDetailToggle(vr.index, bi, $event)"
               >
-                <summary class="block-summary">
-                  <span class="chev"><IconChevronRight /></span>
-                  <span class="label">{{ toolLabel(b) }}</span>
+                <summary class="thinking-summary">
+                  <IconAtom class="thinking-icon" aria-hidden="true" />
+                  <span class="thinking-label">{{ thinkingLabel(vr.index) }}</span>
+                  <span class="thinking-chev"><IconChevronRight /></span>
                 </summary>
-                <div class="block-body thinking-md" v-html="renderText(b.text ?? '')" />
+                <div class="thinking-content" v-html="renderText(b.text ?? '')" />
               </details>
 
               <div
-                v-else-if="isCodexInlineCodeToolUse(b)"
+                v-else-if="isCodexInlineCodeToolUse(b) && shouldShowToolUse(b)"
                 class="inline-tool-code inline-tool-code-flat"
                 :data-search-scope="toolUseScope(b)"
               >
@@ -1882,7 +2091,7 @@ function onDocClick(e: MouseEvent) {
               </div>
 
               <details
-                v-else-if="b.kind === 'tool_use'"
+                v-else-if="b.kind === 'tool_use' && shouldShowToolUse(b)"
                 class="block-card"
                 :class="{ 'in-user': effectiveRole(m) === 'user' }"
                 :data-search-scope="toolUseScope(b)"
@@ -1906,12 +2115,7 @@ function onDocClick(e: MouseEvent) {
               </details>
 
               <ToolResult
-                v-else-if="
-                  b.kind === 'tool_result' &&
-                  !isInlinedResult(b) &&
-                  !isAttachedResult(b) &&
-                  !shouldHideToolResult(b)
-                "
+                v-else-if="b.kind === 'tool_result' && shouldShowToolResult(b)"
                 :block="b"
                 :cwd="cwd"
                 :in-user="effectiveRole(m) === 'user'"
@@ -1926,7 +2130,7 @@ function onDocClick(e: MouseEvent) {
                与发起它的「Tool call · Edit」同属一条消息（diff 自成卡片便于一眼看改动）。 -->
           <template v-for="(b, bi) in m.blocks" :key="'fc' + bi">
             <div
-              v-if="b.kind === 'tool_use' && attachedResultFor(b)"
+              v-if="b.kind === 'tool_use' && shouldShowAttachedResult(b)"
               class="attached-result"
               data-search-scope="tools-edit"
             >
@@ -1982,25 +2186,50 @@ function onDocClick(e: MouseEvent) {
           <div class="text-run" v-html="streamingHtml" />
         </div>
       </div>
-      <!-- live 模式：本轮正在运行的状态行（参考 Claude 客户端：闪烁动词 + 计时 + 可中断） -->
-      <div
-        v-if="liveSession && liveSession.turnState === 'running'"
-        class="chat-running-row"
-        :class="{ retrying: liveSession.retry }"
-      >
-        <component :is="agentIcons[agent]" class="chat-running-star" :class="agent" />
-        <span class="chat-running-label" :data-text="runningVerb">{{ runningVerb }}</span>
-        <span class="chat-running-time">{{ runningElapsedLabel }}</span>
-        <button
-          class="chat-running-stop"
-          type="button"
-          v-tooltip="t('chat.composer.stop')"
-          @click="interruptChat(liveSession)"
+      <!-- live 模式：工具卡片隐藏时仍持续说明正在调用什么；整轮结束后短暂保留完成反馈。 -->
+      <Transition name="chat-running-feedback">
+        <div
+          v-if="runningFeedback"
+          class="chat-running-row"
+          :class="[
+            runningFeedback.kind === 'running' ? { retrying: liveSession?.retry } : `is-${runningFeedback.kind}`,
+            { 'is-finished': runningFeedback.kind !== 'running' },
+          ]"
         >
-          <IconStop />
-          <span>{{ t('chat.composer.stop') }}</span>
-        </button>
-      </div>
+          <template v-if="runningFeedback.kind === 'running'">
+            <component :is="agentIcons[agent]" class="chat-running-star" :class="agent" />
+            <span class="chat-running-label" :data-text="runningVerb">{{ runningVerb }}</span>
+            <span class="chat-running-time">{{ runningElapsedLabel }}</span>
+            <Transition name="chat-running-tool" mode="out-in">
+              <span
+                v-if="runningToolLabel"
+                :key="runningToolKey"
+                class="chat-running-tool"
+                :class="runningToolActivity?.phase"
+              >
+                <span class="chat-running-tool-dot" aria-hidden="true" />
+                {{ runningToolLabel }}
+              </span>
+            </Transition>
+            <button
+              v-if="liveSession"
+              class="chat-running-stop"
+              type="button"
+              v-tooltip="t('chat.composer.stop')"
+              @click="interruptChat(liveSession)"
+            >
+              <IconStop />
+              <span>{{ t('chat.composer.stop') }}</span>
+            </button>
+          </template>
+          <template v-else>
+            <IconCheck v-if="runningFeedback.kind === 'completed'" class="chat-running-finish-icon" />
+            <IconStop v-else class="chat-running-finish-icon" />
+            <span class="chat-running-finish-label">{{ finishedTurnLabel }}</span>
+            <span class="chat-running-time">{{ runningFeedback.elapsed }}</span>
+          </template>
+        </div>
+      </Transition>
 
       <!-- live 模式：交互式工具权限对话框（Claude `--permission-prompt-tool stdio`）。
            CLI 门控某个工具时入队一条，用户在此放行 / 拒绝；应答或本轮结束即出队。 -->

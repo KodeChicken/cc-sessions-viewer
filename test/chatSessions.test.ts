@@ -14,6 +14,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import {
   chatEffectiveEffortForTest,
+  chatOnMsgForTest,
   chatOnResultForTest,
   enqueuePrompt,
   interruptChat,
@@ -180,6 +181,60 @@ describe('chatSessions live tool result routing', () => {
     } as Msg
 
     expect(shouldDropDuplicatePatchOutputForTest(existing, incoming)).toBe(false)
+  })
+})
+
+describe('chatSessions compact live tool activity', () => {
+  beforeEach(() => {
+    invokeMock.mockReset()
+  })
+
+  it('tracks tool calling, result, and failure without retaining tool output', async () => {
+    invokeMock.mockResolvedValueOnce({ chatId: 81, processModel: 'longLivedStdin' })
+    const session = await startChat({ agent: 'claude', projectKey: 'p', cwd: '/tmp', title: 'C' })
+    session.turnState = 'running'
+
+    chatOnMsgForTest(session, {
+      role: 'assistant',
+      sidechain: false,
+      blocks: [{ kind: 'tool_use', toolName: 'Bash', toolId: 'bash-1', toolInput: '{"command":"pwd"}', isError: false }],
+    })
+    expect(session.toolActivity).toMatchObject({ toolName: 'Bash', toolId: 'bash-1', phase: 'calling' })
+
+    chatOnMsgForTest(session, {
+      role: 'user',
+      sidechain: false,
+      blocks: [{ kind: 'tool_result', toolId: 'bash-1', text: '/tmp', isError: false }],
+    })
+    expect(session.toolActivity).toMatchObject({ toolName: 'Bash', toolId: 'bash-1', phase: 'result' })
+
+    chatOnMsgForTest(session, {
+      role: 'user',
+      sidechain: false,
+      blocks: [{ kind: 'tool_result', toolId: 'bash-1', text: 'permission denied', isError: true }],
+    })
+    expect(session.toolActivity).toMatchObject({ toolName: 'Bash', toolId: 'bash-1', phase: 'failed' })
+  })
+
+  it('marks a completed turn so the UI can play its completion feedback', async () => {
+    invokeMock.mockResolvedValueOnce({ chatId: 82, processModel: 'longLivedStdin' })
+    const session = await startChat({ agent: 'claude', projectKey: 'p', cwd: '/tmp', title: 'C' })
+    session.turnState = 'running'
+
+    chatOnResultForTest(session, { chatId: 82, ok: true })
+
+    expect(session.lastTurnOutcome).toBe('completed')
+    expect(session.turnState).toBe('idle')
+  })
+
+  it('marks an unsuccessful result as failed rather than completed', async () => {
+    invokeMock.mockResolvedValueOnce({ chatId: 83, processModel: 'longLivedStdin' })
+    const session = await startChat({ agent: 'claude', projectKey: 'p', cwd: '/tmp', title: 'C' })
+    session.turnState = 'running'
+
+    chatOnResultForTest(session, { chatId: 83, ok: false })
+
+    expect(session.lastTurnOutcome).toBe('failed')
   })
 })
 

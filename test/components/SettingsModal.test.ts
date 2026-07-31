@@ -30,7 +30,16 @@ vi.mock('../../src/updateCheck', async (importOriginal) => {
 
 import SettingsModal from '../../src/components/SettingsModal.vue'
 import { vTooltip } from '../../src/tooltip'
-import { lang, setLang, setTheme, setUseReclaude, theme, useReclaude } from '../../src/settings'
+import {
+  lang,
+  setLang,
+  setShowToolCalls,
+  setTheme,
+  setUseReclaude,
+  showToolCalls,
+  theme,
+  useReclaude,
+} from '../../src/settings'
 import {
   turnHookStatus,
   turnHookStatusError,
@@ -160,6 +169,7 @@ beforeEach(() => {
   setDesktopPetEnabled(false)
   setDesktopPetCharacter('codex:codex')
   setDesktopPetSize(112)
+  setShowToolCalls(false)
   setUseReclaude(false)
   desktopPetCatalog.value = null
   desktopPetCatalogError.value = ''
@@ -167,6 +177,7 @@ beforeEach(() => {
 afterEach(() => {
   setLang('en')
   setTheme('system')
+  setShowToolCalls(false)
   setUseReclaude(false)
 })
 
@@ -223,6 +234,20 @@ describe('SettingsModal', () => {
     // find the Dracula option (last one)
     await items[items.length - 1].trigger('click')
     expect(theme.value).toBe('dracula')
+  })
+
+  it('keeps ordinary tool calls hidden by default and persists the Chat toggle', async () => {
+    expect(showToolCalls.value).toBe(false)
+    const wrapper = factory()
+    const row = wrapper
+      .findAll('.set-row')
+      .find((candidate) => candidate.find('.set-row-title').text() === 'Show tool calls')
+
+    expect(row).toBeDefined()
+    await row!.trigger('click')
+
+    expect(showToolCalls.value).toBe(true)
+    expect(localStorage.getItem('showToolCalls:v1')).toBe('1')
   })
 
   it('loads the app version on mount', async () => {

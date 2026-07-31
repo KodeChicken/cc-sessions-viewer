@@ -35,6 +35,8 @@ import {
   setQuickOpenTarget,
   useReclaude,
   setUseReclaude,
+  showToolCalls,
+  setShowToolCalls,
   type Lang,
   type Theme,
   type TerminalApp,
@@ -623,6 +625,22 @@ async function installTurnHooks() {
                 </div>
               </div>
               <span class="set-toggle-track set-row-control" :class="{ on: enabledAgents[a] }">
+                <span class="set-toggle-thumb" />
+              </span>
+            </label>
+          </div>
+
+          <!-- Chat 展示：过程性工具调用默认不占会话空间；文件改动和需要用户确认的卡片始终显示。 -->
+          <div class="set-group">
+            <div class="set-group-head">
+              <div class="set-group-title">{{ t('settings.section.chat') }}</div>
+            </div>
+            <label class="set-row set-row-clickable" @click.prevent="setShowToolCalls(!showToolCalls)">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.showToolCalls') }}</div>
+                <p class="set-row-desc">{{ t('settings.showToolCallsDesc') }}</p>
+              </div>
+              <span class="set-toggle-track set-row-control" :class="{ on: showToolCalls }">
                 <span class="set-toggle-thumb" />
               </span>
             </label>

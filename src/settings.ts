@@ -21,6 +21,7 @@ const FONT_FAMILY_KEY = 'fontFamily:v1'
 const ENABLED_AGENTS_KEY = 'enabledAgents:v1'
 const QUICK_OPEN_KEY = 'quickOpenTarget:v1'
 const USE_RECLAUDE_KEY = 'useReclaude:v1'
+const SHOW_TOOL_CALLS_KEY = 'showToolCalls:v1'
 
 /**
  * 根据浏览器/系统语言探测默认语言。
@@ -70,6 +71,14 @@ export const useReclaude = ref(localStorage.getItem(USE_RECLAUDE_KEY) === '1')
 export function setUseReclaude(v: boolean) {
   useReclaude.value = v
   localStorage.setItem(USE_RECLAUDE_KEY, v ? '1' : '0')
+}
+
+/** 是否渲染 Bash / Read / Grep 等过程性工具调用。默认关闭；文件改动和需要用户操作的
+ * 交互式工具（AskUserQuestion、权限确认、Codex request_user_input）始终可见。 */
+export const showToolCalls = ref(localStorage.getItem(SHOW_TOOL_CALLS_KEY) === '1')
+export function setShowToolCalls(v: boolean) {
+  showToolCalls.value = v
+  localStorage.setItem(SHOW_TOOL_CALLS_KEY, v ? '1' : '0')
 }
 
 // ---------- 双击 / 新建快捷键默认打开什么 ----------

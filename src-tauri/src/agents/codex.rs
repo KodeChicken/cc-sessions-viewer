@@ -27,8 +27,9 @@ use crate::stats::{
 };
 use crate::types::{Block, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary};
 use crate::util::{
-    append_jsonl_line, clean_title, format_iso8601_utc, home, is_jsonl, mtime_millis,
-    parse_iso8601_ms, simple_msg, text_block, validate_rename_name,
+    append_jsonl_line, clean_title, format_iso8601_utc, home, inline_at_file_path, is_jsonl,
+    mtime_millis, parse_iso8601_ms, simple_msg, strip_edge_references, text_block,
+    validate_rename_name,
 };
 
 pub struct CodexSource;
@@ -791,10 +792,27 @@ fn agent_message_phase(payload: &Value) -> Option<&str> {
 /// hi
 /// ```
 ///
-/// 去掉 `@"path"` 和 `@path` 引用（图片已从 response_item 捕获，避免 post_process 重复提取）。
-fn strip_at_paths(text: &str) -> String {
+/// 图片已从 response_item 捕获时，提示词首尾连续的 `@"path"` / `@path` 附件引用可提前
+/// 移除；中间引用必须完整保留给下方提示词，公共后处理会为它补文件 tag 并负责去重。
+fn strip_edge_at_paths(text: &str) -> String {
     let re = regex_lite::Regex::new(r#"@"[^"]+"|@\S+"#).expect("valid regex");
-    re.replace_all(text, "").trim().to_string()
+    let mut refs = Vec::new();
+    for whole in re.find_iter(text) {
+        let raw = &text[whole.start() + 1..whole.end()];
+        let reference_end = if raw
+            .strip_prefix('"')
+            .and_then(|quoted| quoted.strip_suffix('"'))
+            .is_some_and(|quoted| !quoted.is_empty())
+        {
+            Some(whole.end())
+        } else {
+            inline_at_file_path(raw, None).map(|path| whole.start() + 1 + path.len())
+        };
+        if let Some(reference_end) = reference_end {
+            refs.push((whole.start(), reference_end));
+        }
+    }
+    strip_edge_references(text, &refs).trim().to_string()
 }
 
 /// 把每个 `## <name>: <path>` 抽成 `file` 块（点击外部打开），正文换成 `## My request for
@@ -1108,10 +1126,10 @@ fn read_with_title_index(
                 let text = p.get("message").and_then(|x| x.as_str()).unwrap_or("");
                 let (file_blocks, body) = extract_codex_files(text);
                 let mut blocks: Vec<Block> = std::mem::take(&mut pending_user_images);
-                // 图片已由 response_item 捕获到 pending_user_images，body 里的 @"path"
-                // 引用会被 post_process 再次提取出图片导致重复——提前清掉。
+                // 图片已由 response_item 捕获到 pending_user_images。只去除首尾的附件
+                // 标记；行中文件引用仍要完整显示，post_process 会做附件 tag 去重。
                 let body = if !blocks.is_empty() {
-                    strip_at_paths(&body)
+                    strip_edge_at_paths(&body)
                 } else {
                     body
                 };
@@ -2371,6 +2389,22 @@ mod tests {
         let (files, body) = extract_codex_files("just a normal question\n");
         assert!(files.is_empty());
         assert_eq!(body, "just a normal question\n");
+    }
+
+    #[test]
+    fn strip_edge_at_paths_keeps_inline_prompt_reference() {
+        let text = "分析@scripts/release/appstore-release.sh的执行过程和调用命令";
+        assert_eq!(strip_edge_at_paths(text), text);
+    }
+
+    #[test]
+    fn strip_edge_at_paths_removes_edge_attachment_references() {
+        assert_eq!(
+            strip_edge_at_paths(
+                "@\"/tmp/image.png\" 分析@scripts/a.sh的执行过程 @\"/tmp/end.png\""
+            ),
+            "分析@scripts/a.sh的执行过程"
+        );
     }
 
     fn write_temp(name: &str, lines: &[&str]) -> std::path::PathBuf {

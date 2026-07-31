@@ -24,6 +24,7 @@ const diffHtml = computed(() => {
   if (!looksLikeDiff(txt)) return null
   return highlightDiff(txt)
 })
+const isTextDiff = computed(() => diffHtml.value !== null)
 const jsonHtml = computed(() => {
   const txt = props.block.text ?? ''
   if (!looksLikeJson(txt)) return null
@@ -36,22 +37,40 @@ function baseName(p?: string): string {
   return parts.length ? parts[parts.length - 1] : p
 }
 
+/** 从 `git diff` 的文件头中拿一个可读的目标路径。文本 diff 可能包含多文件，这里只取
+ * 第一项作为卡片标题，完整内容和统计仍保留在展开区。 */
+function firstTextDiffPath(text: string): string | undefined {
+  const gitHeader = /^diff --git a\/(.+?) b\/(.+)$/m.exec(text)
+  if (gitHeader?.[2]) return gitHeader[2]
+  const newFileHeader = /^\+\+\+ (?:b\/)?(.+)$/m.exec(text)
+  return newFileHeader?.[1] && newFileHeader[1] !== '/dev/null' ? newFileHeader[1] : undefined
+}
+
+const textDiffPath = computed(() => firstTextDiffPath(props.block.text ?? ''))
+
 const label = computed(() => {
-  if (props.block.diff || props.block.filePath)
-    return t('tool.resultDiff', { file: baseName(props.block.filePath) })
+  if (props.block.diff || props.block.filePath || isTextDiff.value) {
+    return t('tool.resultDiff', { file: baseName(props.block.filePath ?? textDiffPath.value) })
+  }
   return props.block.isError ? t('tool.resultError') : t('tool.result')
 })
 
 const diffStat = computed(() => {
-  if (!props.block.diff) return ''
   let add = 0
   let del = 0
-  for (const h of props.block.diff)
-    for (const l of h.lines) {
-      if (l.kind === 'add') add++
-      else if (l.kind === 'del') del++
+  if (props.block.diff) {
+    for (const h of props.block.diff)
+      for (const l of h.lines) {
+        if (l.kind === 'add') add++
+        else if (l.kind === 'del') del++
+      }
+  } else if (isTextDiff.value) {
+    for (const line of (props.block.text ?? '').split('\n')) {
+      if (line.startsWith('+') && !line.startsWith('+++')) add++
+      else if (line.startsWith('-') && !line.startsWith('---')) del++
     }
-  return `+${add} −${del}`
+  }
+  return add || del ? `+${add} −${del}` : ''
 })
 
 const hasRenderableText = computed(() => {
@@ -59,7 +78,7 @@ const hasRenderableText = computed(() => {
   return !!(props.block.text ?? '').trim()
 })
 
-const shouldAutoOpen = computed(() => !!props.block.diff || !!props.block.filePath)
+const shouldAutoOpen = computed(() => !!props.block.diff || !!props.block.filePath || isTextDiff.value)
 const fileChangeHtml = computed(() => {
   if (!props.block.filePath) return null
   return renderCodexFileChangeHtml(
@@ -80,7 +99,7 @@ const fileChangeHtml = computed(() => {
   <details
     v-else-if="hasRenderableText"
     class="block-card"
-    :class="{ 'in-user': inUser, 'auto-open': shouldAutoOpen }"
+    :class="{ 'in-user': inUser, 'auto-open': shouldAutoOpen, 'text-diff-result': isTextDiff }"
     :open="persistOpen ?? shouldAutoOpen"
     @toggle="emit('toggle', ($event.target as HTMLDetailsElement).open)"
   >

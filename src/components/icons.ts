@@ -20,6 +20,7 @@ import IconArrowLeftRaw from '~icons/lucide/arrow-left'
 import IconArrowUpRaw from '~icons/lucide/arrow-up'
 import IconArrowDownRaw from '~icons/lucide/arrow-down'
 import IconChevronRightRaw from '~icons/lucide/chevron-right'
+import IconAtomRaw from '~icons/lucide/atom'
 import IconEmptyBoxRaw from '~icons/lucide/package'
 import IconPointLeftRaw from '~icons/lucide/chevron-left'
 import IconSidebarRaw from '~icons/lucide/panel-left'
@@ -30,6 +31,8 @@ import IconMonitorRaw from '~icons/lucide/monitor'
 import IconLanguagesRaw from '~icons/lucide/languages'
 import IconDatabaseRaw from '~icons/lucide/database'
 import IconInfoRaw from '~icons/lucide/info'
+import IconBellRaw from '~icons/lucide/bell'
+import IconWrenchRaw from '~icons/lucide/wrench'
 import IconHelpCircleRaw from '~icons/lucide/circle-help'
 import IconPaletteRaw from '~icons/lucide/palette'
 import IconCheckRaw from '~icons/lucide/check'
@@ -106,6 +109,7 @@ export const IconArrowLeft = IconArrowLeftRaw
 export const IconArrowUp = IconArrowUpRaw
 export const IconArrowDown = IconArrowDownRaw
 export const IconChevronRight = IconChevronRightRaw
+export const IconAtom = IconAtomRaw
 export const IconEmptyBox = IconEmptyBoxRaw
 export const IconPointLeft = IconPointLeftRaw
 export const IconSidebar = IconSidebarRaw
@@ -117,6 +121,8 @@ export const IconMonitor = IconMonitorRaw
 export const IconLanguages = IconLanguagesRaw
 export const IconDatabase = IconDatabaseRaw
 export const IconInfo = IconInfoRaw
+export const IconBell = IconBellRaw
+export const IconWrench = IconWrenchRaw
 export const IconHelpCircle = IconHelpCircleRaw
 export const IconPalette = IconPaletteRaw
 export const IconCheck = IconCheckRaw

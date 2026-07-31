@@ -20,8 +20,8 @@ use crate::types::{
     Block, ChatDelta, DiffHunk, DiffLine, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary,
 };
 use crate::util::{
-    append_jsonl_line, clean_title, home, is_jsonl, mtime_millis, parse_iso8601_ms, text_block,
-    validate_rename_name,
+    append_jsonl_line, clean_title, home, inline_at_file_path, is_jsonl, mtime_millis,
+    parse_iso8601_ms, strip_edge_references, text_block, validate_rename_name,
 };
 
 pub struct ClaudeSource;
@@ -568,64 +568,50 @@ fn is_image_source_meta(v: &Value, blocks: &[Block]) -> bool {
 
 /// 解析用户文本里 Claude Code 的 `@文件` 引用：拖拽文件 / 用 `@` 选文件时，CC 会把形如
 /// `@"/abs/path with space.ext"`（带引号）或 `@/abs/path.ext`、`@dir/rel.ext`（不带引号、
-/// 不含空白）的标记写进 JSONL 原文。把每个引用抽成 `file` 块（前端渲染成可点击外部打开的
-/// 文件 chip），并从正文里剔除。返回 (file 块, 去掉引用后的干净文本)。
-fn extract_file_refs(text: &str) -> (Vec<Block>, String) {
+/// 不含空白）的标记写进 JSONL 原文。每个引用都会抽成 `file` 块（前端渲染成可点击外部打开的
+/// 文件 chip）；只有提示词首尾连续的附件区会从正文剔除。中间引用同时保留 tag 和完整原文，
+/// 避免「分析@file.sh的执行过程」被截断。返回 (file 块, 正文)。
+fn extract_file_refs(text: &str, cwd: Option<&Path>) -> (Vec<Block>, String) {
     use regex_lite::Regex;
     let re = Regex::new(r#"@"([^"]+)"|@(\S+)"#).expect("valid file-ref regex");
     let mut files = Vec::new();
-    let mut cleaned = String::new();
-    let mut last = 0usize;
+    let mut refs = Vec::new();
     for caps in re.captures_iter(text) {
         let whole = caps.get(0).unwrap();
-        let path = match (caps.get(1), caps.get(2)) {
-            (Some(q), _) => Some(q.as_str().to_string()),
-            (None, Some(u)) if looks_like_file_path(u.as_str()) => Some(u.as_str().to_string()),
-            _ => None,
+        let (path, reference_end) = match (caps.get(1), caps.get(2)) {
+            (Some(q), _) => (Some(q.as_str().to_string()), whole.end()),
+            (None, Some(u)) => {
+                let path = inline_at_file_path(u.as_str(), cwd);
+                let end = path
+                    .as_ref()
+                    .map(|path| whole.start() + 1 + path.len())
+                    .unwrap_or(whole.end());
+                (path, end)
+            }
+            _ => (None, whole.end()),
         };
         // path 为 None（普通 @提及，如 @某人）：不剔除，留给后续 cleaned 原样保留。
         if let Some(p) = path {
-            cleaned.push_str(&text[last..whole.start()]);
-            last = whole.end();
             // stat 一次区分文件 / 文件夹，让历史 chip 与实时回显一样显示对的图标 + 提示。
             // 仅确为目录才标 Some(true)；文件 / 解析不出（相对路径等）留 None → 文件图标。
-            let is_dir = std::path::Path::new(&p).is_dir().then_some(true);
+            let path_on_disk = if Path::new(&p).is_absolute() {
+                PathBuf::from(&p)
+            } else if let Some(cwd) = cwd {
+                cwd.join(&p)
+            } else {
+                PathBuf::from(&p)
+            };
+            let is_dir = path_on_disk.is_dir().then_some(true);
             files.push(Block {
                 kind: "file".to_string(),
                 file_path: Some(p),
                 is_dir,
                 ..Default::default()
             });
+            refs.push((whole.start(), reference_end));
         }
     }
-    cleaned.push_str(&text[last..]);
-    (files, tidy_after_strip(&cleaned))
-}
-
-/// 不带引号的 `@token` 只有看起来像文件路径时才当文件引用，避免把 `@某人` 这类普通提及
-/// 误判：绝对路径 / `~` / `./` / `../` / 含 `/` / Windows 盘符 `X:`，或没有目录前缀但形如
-/// `name.ext` 的仓库根文件（`@package.json`、`@main_driver.dart`——Claude `@` 选文件的常见形态）。
-fn looks_like_file_path(s: &str) -> bool {
-    s.starts_with('/')
-        || s.starts_with('~')
-        || s.starts_with("./")
-        || s.starts_with("../")
-        || s.contains('/')
-        || s.as_bytes().get(1) == Some(&b':')
-        || has_file_extension(s)
-}
-
-/// token 末段是否像 `name.ext`（扩展名 1-8 位字母数字）。用于识别没有目录前缀的相对文件引用，
-/// 同时把 `@teammate` 这类无扩展名的普通提及排除在外。
-fn has_file_extension(s: &str) -> bool {
-    match s.rsplit_once('.') {
-        Some((stem, ext)) => {
-            !stem.is_empty()
-                && (1..=8).contains(&ext.len())
-                && ext.chars().all(|c| c.is_ascii_alphanumeric())
-        }
-        None => false,
-    }
+    (files, tidy_after_strip(&strip_edge_references(text, &refs)))
 }
 
 /// 删掉引用后收尾：逐行去行尾空白、3+ 连续换行收敛成 2、整体 trim。文件引用多半独占一行，
@@ -652,14 +638,14 @@ fn tidy_after_strip(s: &str) -> String {
     out.trim().to_string()
 }
 
-/// 把一条用户消息里所有 text 块中的 `@文件` 引用抬升成独立 file 块（排在正文之前），正文
-/// 删掉引用；某个 text 块删完后为空就丢弃。只对真实用户消息（非 meta/系统注入）调用。
-fn lift_file_refs(blocks: Vec<Block>) -> Vec<Block> {
+/// 把一条用户消息里所有 text 块中的 `@文件` 引用抬升成独立 file 块（排在正文之前）。开头附件
+/// 引用从正文移除；中间引用则保留原文。只对真实用户消息（非 meta/系统注入）调用。
+fn lift_file_refs(blocks: Vec<Block>, cwd: Option<&Path>) -> Vec<Block> {
     let mut out = Vec::with_capacity(blocks.len());
     for b in blocks {
         if b.kind == "text" {
             if let Some(t) = b.text.as_deref() {
-                let (files, cleaned) = extract_file_refs(t);
+                let (files, cleaned) = extract_file_refs(t, cwd);
                 if !files.is_empty() {
                     out.extend(files);
                     if !cleaned.is_empty() {
@@ -1142,7 +1128,8 @@ fn scan_uncached(fp: &Path, size: u64, modified: u64) -> SessionMeta {
                             // 否则 /dm-watch 这类会话的侧栏标题会变成注入正文。
                             if need_title && !is_injected_user(&v) {
                                 if let Some(txt) = user_text(&v) {
-                                    let (_, body) = extract_file_refs(&txt);
+                                    let cwd = v.get("cwd").and_then(|x| x.as_str()).map(Path::new);
+                                    let (_, body) = extract_file_refs(&txt, cwd);
                                     let clean = clean_title(&body);
                                     if !clean.is_empty() {
                                         first_user_title = clean;
@@ -1427,7 +1414,8 @@ pub(crate) fn record_to_msg(v: &Value) -> Option<Msg> {
     // 真实用户消息：把正文里的 `@文件` 引用抬升成 file 块（点击外部打开），系统/meta
     // 注入的伪 user 记录不动（它们的 `@...` 多是说明文字，不该当成附件）。
     if t == "user" && meta_kind.is_none() {
-        blocks = lift_file_refs(blocks);
+        let cwd = v.get("cwd").and_then(|x| x.as_str()).map(Path::new);
+        blocks = lift_file_refs(blocks, cwd);
     }
     Some(Msg {
         uuid,
@@ -2275,7 +2263,7 @@ mod tests {
     #[test]
     fn file_ref_quoted_path_becomes_file_block() {
         let (files, body) =
-            extract_file_refs("@\"/Users/wuchao/Downloads/仓库管理列表20260409163454.xlsx\"\nhi");
+            extract_file_refs("@\"/Users/wuchao/Downloads/仓库管理列表20260409163454.xlsx\"\nhi", None);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].kind, "file");
         assert_eq!(
@@ -2291,7 +2279,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let dir = dir.to_string_lossy();
         let dir = dir.trim_end_matches('/');
-        let (files, _) = extract_file_refs(&format!("@\"{dir}\" hi"));
+        let (files, _) = extract_file_refs(&format!("@\"{dir}\" hi"), None);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].is_dir, Some(true));
     }
@@ -2299,7 +2287,7 @@ mod tests {
     #[test]
     fn file_ref_nonexistent_path_not_marked_dir() {
         // 不存在的路径 → is_dir 留 None（退化成文件图标，不臆测）。
-        let (files, _) = extract_file_refs("@\"/no/such/path/here.xyz\" hi");
+        let (files, _) = extract_file_refs("@\"/no/such/path/here.xyz\" hi", None);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].is_dir, None);
     }
@@ -2307,7 +2295,7 @@ mod tests {
     #[test]
     fn file_ref_unquoted_absolute_path() {
         let (files, body) =
-            extract_file_refs("@/Users/wuchao/Downloads/仓库管理列表20260409163454.xlsx\nhi");
+            extract_file_refs("@/Users/wuchao/Downloads/仓库管理列表20260409163454.xlsx\nhi", None);
         assert_eq!(files.len(), 1);
         assert_eq!(
             files[0].file_path.as_deref(),
@@ -2318,7 +2306,7 @@ mod tests {
 
     #[test]
     fn file_ref_multiple_files_one_message() {
-        let (files, body) = extract_file_refs("@/a/one.txt @/b/two.md please review");
+        let (files, body) = extract_file_refs("@/a/one.txt @/b/two.md please review", None);
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].file_path.as_deref(), Some("/a/one.txt"));
         assert_eq!(files[1].file_path.as_deref(), Some("/b/two.md"));
@@ -2329,7 +2317,7 @@ mod tests {
     fn file_ref_relative_repo_files() {
         // Claude `@` 选仓库文件的常见形态：无目录前缀的 `name.ext`，也要抽成 file 块。
         let (files, body) =
-            extract_file_refs("@main_driver.dart @package.json @analysis_options.yaml hi");
+            extract_file_refs("@main_driver.dart @package.json @analysis_options.yaml hi", None);
         assert_eq!(files.len(), 3);
         assert_eq!(files[0].file_path.as_deref(), Some("main_driver.dart"));
         assert_eq!(files[1].file_path.as_deref(), Some("package.json"));
@@ -2340,9 +2328,29 @@ mod tests {
     #[test]
     fn file_ref_skips_plain_at_mention() {
         // 不像路径的 `@token`（无 `/`、非绝对路径）当普通文字，不抽成文件。
-        let (files, body) = extract_file_refs("ping @teammate to review");
+        let (files, body) = extract_file_refs("ping @teammate to review", None);
         assert!(files.is_empty());
         assert_eq!(body, "ping @teammate to review");
+    }
+
+    #[test]
+    fn file_ref_in_mid_prompt_keeps_full_text_and_adds_tag() {
+        let text = "分析@scripts/release/appstore-release.sh的执行过程和调用命令";
+        let (files, body) = extract_file_refs(text, None);
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].file_path.as_deref(),
+            Some("scripts/release/appstore-release.sh")
+        );
+        assert_eq!(body, text);
+    }
+
+    #[test]
+    fn file_ref_at_prompt_end_becomes_tag_without_text_duplication() {
+        let text = "我加了几个附件，回答我即可 @\"/tmp/one.xlsx\" @\"docs/two.md\"";
+        let (files, body) = extract_file_refs(text, None);
+        assert_eq!(files.len(), 2);
+        assert_eq!(body, "我加了几个附件，回答我即可");
     }
 
     #[test]
@@ -2357,6 +2365,24 @@ mod tests {
         assert_eq!(msg.blocks[0].file_path.as_deref(), Some("/tmp/report.xlsx"));
         assert_eq!(msg.blocks[1].kind, "text");
         assert_eq!(msg.blocks[1].text.as_deref(), Some("看看这个"));
+    }
+
+    #[test]
+    fn record_mid_prompt_file_ref_has_tag_and_full_prompt() {
+        let text = "分析@scripts/release/appstore-release.sh的执行过程和调用命令";
+        let v = json!({
+            "type": "user",
+            "cwd": "/tmp",
+            "message": { "content": text },
+        });
+        let msg = record_to_msg(&v).expect("user msg");
+        assert_eq!(msg.blocks.len(), 2);
+        assert_eq!(msg.blocks[0].kind, "file");
+        assert_eq!(
+            msg.blocks[0].file_path.as_deref(),
+            Some("scripts/release/appstore-release.sh")
+        );
+        assert_eq!(msg.blocks[1].text.as_deref(), Some(text));
     }
 
     #[test]

@@ -28,6 +28,23 @@ describe('ToolResult', () => {
     expect(wrapper.find('.label').classes()).toContain('error')
   })
 
+  it('renders a Bash textual unified diff as an expanded file-change card', () => {
+    const wrapper = mount(ToolResult, {
+      props: {
+        block: blk({
+          kind: 'tool_result',
+          text: 'diff --git a/lib/routes/example.dart b/lib/routes/example.dart\nindex abc..def 100644\n--- a/lib/routes/example.dart\n+++ b/lib/routes/example.dart\n@@ -1 +1,2 @@\n old\n+new',
+        }),
+      },
+    })
+
+    expect(wrapper.find('.label').text()).toBe('File change · example.dart')
+    expect(wrapper.find('details').attributes('open')).toBeDefined()
+    expect(wrapper.find('details').classes()).toContain('text-diff-result')
+    expect(wrapper.find('.diff-stat').text()).toBe('+1 −0')
+    expect(wrapper.find('.diff-add').text()).toBe('+new')
+  })
+
   it('renders a diff result as a codex patch card', () => {
     const wrapper = mount(ToolResult, {
       props: {

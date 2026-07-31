@@ -2,7 +2,7 @@
 // 这里只放"agent 无关"的逻辑——目录定位、时间戳、JSONL 文件写入、标题清洗等。
 // agent-specific 的解析逻辑请放到对应的 `agents/<name>.rs` 文件里。
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -858,12 +858,23 @@ pub fn post_process_session_msgs(msgs: &mut [Msg]) {
         if msg.role != "user" {
             continue;
         }
+        // Claude / Codex 的专属解析器有时已先生成文件 tag。后处理仍要保留原始
+        // 提示词中的行内 @引用，但不能因此再渲染一份相同附件。
+        let mut attachment_keys: HashSet<String> =
+            msg.blocks.iter().filter_map(attachment_key).collect();
         let mut new_blocks = Vec::new();
         for block in std::mem::take(&mut msg.blocks) {
             if block.kind == "text" {
                 if let Some(text) = &block.text {
                     let (lifted, remaining_text) = lift_paths_from_text(text);
-                    new_blocks.extend(lifted);
+                    for lifted_block in lifted {
+                        if let Some(key) = attachment_key(&lifted_block) {
+                            if !attachment_keys.insert(key) {
+                                continue;
+                            }
+                        }
+                        new_blocks.push(lifted_block);
+                    }
                     if !remaining_text.trim().is_empty() {
                         new_blocks.push(Block {
                             kind: "text".to_string(),
@@ -880,43 +891,95 @@ pub fn post_process_session_msgs(msgs: &mut [Msg]) {
     }
 }
 
+fn attachment_key(block: &Block) -> Option<String> {
+    match block.kind.as_str() {
+        "file" => block.file_path.as_ref().map(|path| format!("file:{path}")),
+        "image" => block.image_src.as_ref().map(|src| format!("image:{src}")),
+        _ => None,
+    }
+}
+
+/// 移除提示词**开头或末尾连续**的文件引用，保留中间引用的完整原文。`refs` 必须按文本
+/// 顺序且互不重叠；它们通常来自同一条正则扫描。这样 `@a.md 正文 @b.md @c.md` 会变为
+/// `正文`，而 `正文 @a.md 的差异` 则完全不动。
+pub fn strip_edge_references(text: &str, refs: &[(usize, usize)]) -> String {
+    if refs.is_empty() {
+        return text.to_string();
+    }
+    let mut remove = vec![false; refs.len()];
+
+    let mut cursor = 0;
+    for (idx, (start, end)) in refs.iter().copied().enumerate() {
+        if text[cursor..start].trim().is_empty() {
+            remove[idx] = true;
+            cursor = end;
+        } else {
+            break;
+        }
+    }
+
+    let mut cursor = text.len();
+    for idx in (0..refs.len()).rev() {
+        let (start, end) = refs[idx];
+        if text[end..cursor].trim().is_empty() {
+            remove[idx] = true;
+            cursor = start;
+        } else {
+            break;
+        }
+    }
+
+    let mut cleaned = String::new();
+    let mut last = 0;
+    for ((start, end), should_remove) in refs.iter().copied().zip(remove) {
+        if should_remove {
+            cleaned.push_str(&text[last..start]);
+            last = end;
+        }
+    }
+    cleaned.push_str(&text[last..]);
+    cleaned
+}
+
 fn lift_paths_from_text(text: &str) -> (Vec<Block>, String) {
     let mut lifted = Vec::new();
     let mut cleaned_text = text.to_string();
 
-    // 1. 先用正则提取 @[path] 形式的行内文件/图片提及
+    // 1. `@[path]` 无论在提示词何处都生成附件 tag；首尾连续的附件从正文移除，
+    //    中间引用需完整保留，例如「分析@[src/a.sh]的执行过程」。
     let re_bracket = regex_lite::Regex::new(r"@\[([^\]]+)\]").expect("valid regex");
-    let mut temp = String::new();
-    let mut last = 0;
+    let mut refs = Vec::new();
     for caps in re_bracket.captures_iter(&cleaned_text) {
         let whole = caps.get(0).unwrap();
         let path = caps.get(1).unwrap().as_str().trim().to_string();
-        temp.push_str(&cleaned_text[last..whole.start()]);
-        last = whole.end();
         lift_path_block(&path, &mut lifted);
+        refs.push((whole.start(), whole.end()));
     }
-    temp.push_str(&cleaned_text[last..]);
-    cleaned_text = temp;
+    cleaned_text = strip_edge_references(&cleaned_text, &refs);
 
-    // 2. 提取 @path 或 @"path" 形式的提及
+    // 2. `@path` / `@"path"` 同样始终生成 tag，但中间位置保留完整原文。
     let re_at = regex_lite::Regex::new(r#"@"([^"]+)"|@(\S+)"#).expect("valid regex");
-    let mut temp = String::new();
-    let mut last = 0;
+    let mut refs = Vec::new();
     for caps in re_at.captures_iter(&cleaned_text) {
         let whole = caps.get(0).unwrap();
-        let path = match (caps.get(1), caps.get(2)) {
-            (Some(q), _) => Some(q.as_str().to_string()),
-            (None, Some(u)) if looks_like_file_path(u.as_str()) => Some(u.as_str().to_string()),
-            _ => None,
+        let (path, reference_end) = match (caps.get(1), caps.get(2)) {
+            (Some(q), _) => (Some(q.as_str().to_string()), whole.end()),
+            (None, Some(u)) => {
+                let path = inline_at_file_path(u.as_str(), None);
+                let end = path
+                    .as_ref()
+                    .map(|path| whole.start() + 1 + path.len())
+                    .unwrap_or(whole.end());
+                (path, end)
+            }
+            _ => (None, whole.end()),
         };
         if let Some(p) = path {
-            temp.push_str(&cleaned_text[last..whole.start()]);
-            last = whole.end();
             lift_path_block(&p, &mut lifted);
+            refs.push((whole.start(), reference_end));
         }
     }
-    temp.push_str(&cleaned_text[last..]);
-    cleaned_text = temp;
+    cleaned_text = strip_edge_references(&cleaned_text, &refs);
 
     // 2b. 提取 [name](path/) 形式的文件夹/文件 markdown 链接（Codex 文件夹引用格式）
     let re_mdlink = regex_lite::Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").expect("valid regex");
@@ -946,6 +1009,13 @@ fn lift_paths_from_text(text: &str) -> (Vec<Block>, String) {
     temp.push_str(&cleaned_text[last..]);
     cleaned_text = temp;
 
+    // 用户粘贴的 Xcode 构建日志里会出现临时 result bundle、Pods.xcodeproj 等路径。
+    // 它们是错误文案的一部分，不是用户附加的文件；若抬成 tag 会把整段诊断的阅读节奏打断。
+    // 显式的 @文件引用已在前两步处理，仍不受这个保护影响。
+    if is_xcode_build_log(&cleaned_text) {
+        return (lifted, cleaned_text.trim().to_string());
+    }
+
     // 3. 提取行内绝对路径 / 家目录路径（支持中文粘连，如 "前缀/var/path.png"）
     // 排除 URL 中的路径段（`://` 后面不是文件路径）
     let re_abs = regex_lite::Regex::new(
@@ -969,6 +1039,10 @@ fn lift_paths_from_text(text: &str) -> (Vec<Block>, String) {
 
         let capture = caps.get(1).unwrap();
         let capture_start = capture.start();
+        // 行内 `@/path` 已在步骤 2 识别；正文必须保留其原文，不能被这里再次剥走。
+        if capture_start > 0 && cleaned_text.as_bytes()[capture_start - 1] == b'@' {
+            continue;
+        }
         if is_rust_diagnostic_location(&cleaned_text, capture_start) {
             continue;
         }
@@ -1000,6 +1074,12 @@ fn lift_paths_from_text(text: &str) -> (Vec<Block>, String) {
     remaining_text = remaining_text.trim().to_string();
 
     (lifted, remaining_text)
+}
+
+fn is_xcode_build_log(text: &str) -> bool {
+    text.contains("Error output from Xcode build:")
+        || text.contains("Xcode's output:")
+        || text.contains("** BUILD FAILED **")
 }
 
 fn is_rust_diagnostic_location(text: &str, path_start: usize) -> bool {
@@ -1112,6 +1192,80 @@ fn looks_like_file_path(s: &str) -> bool {
         || has_file_extension(s)
 }
 
+/// 解析不带引号的 `@path` token。Claude Code 允许把文件引用贴在中文文案中，例如
+/// `@scripts/release/appstore-release.sh的执行过程`。先借助会话 cwd 找最长真实路径；
+/// 找不到时，仍会在「ASCII 扩展名 + 中文/标点后缀」处分界，避免后缀被吞进文件名。
+pub fn inline_at_file_path(token: &str, cwd: Option<&Path>) -> Option<String> {
+    if token.is_empty() || token.contains("://") {
+        return None;
+    }
+
+    if let Some(prefix) = longest_existing_path_prefix(token, cwd) {
+        return Some(prefix.to_string());
+    }
+
+    let candidate = trim_inline_path_suffix(token);
+    looks_like_file_path(candidate).then(|| candidate.to_string())
+}
+
+fn longest_existing_path_prefix<'a>(token: &'a str, cwd: Option<&Path>) -> Option<&'a str> {
+    let mut boundaries: Vec<usize> = token.char_indices().map(|(idx, _)| idx).collect();
+    boundaries.push(token.len());
+    for end in boundaries.into_iter().rev() {
+        if end == 0 {
+            continue;
+        }
+        let candidate = &token[..end];
+        if !looks_like_file_path(candidate) {
+            continue;
+        }
+        let path = expand_home(candidate);
+        let exists = if path.is_absolute() {
+            path.exists()
+        } else if let Some(cwd) = cwd {
+            cwd.join(&path).exists()
+        } else {
+            path.exists()
+        };
+        // 仅用「真实文件」来裁掉粘在路径后的文案。若允许任意已存在父目录，
+        // `@/a/one.txt` 这类不存在路径会被错误缩成根目录 `/`。目录引用只在
+        // token 本身恰好就是该目录时接受。
+        let is_file = if path.is_absolute() {
+            path.is_file()
+        } else if let Some(cwd) = cwd {
+            cwd.join(&path).is_file()
+        } else {
+            path.is_file()
+        };
+        if exists && (is_file || candidate == token) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn trim_inline_path_suffix(token: &str) -> &str {
+    let bytes = token.as_bytes();
+    for (dot, byte) in bytes.iter().enumerate().rev() {
+        if *byte != b'.' {
+            continue;
+        }
+        let mut end = dot + 1;
+        while end < bytes.len() && bytes[end].is_ascii_alphanumeric() {
+            end += 1;
+        }
+        let ext_len = end - (dot + 1);
+        if !(1..=8).contains(&ext_len) || end == bytes.len() {
+            continue;
+        }
+        let next = token[end..].chars().next().expect("suffix is non-empty");
+        if !next.is_ascii_alphanumeric() && !matches!(next, '/' | '\\' | '.' | '_' | '-') {
+            return &token[..end];
+        }
+    }
+    token
+}
+
 fn has_file_extension(s: &str) -> bool {
     match s.rsplit_once('.') {
         Some((stem, ext)) => {
@@ -1194,6 +1348,77 @@ mod path_lifting_tests {
         assert_eq!(blocks[0].kind, "file");
         assert_eq!(blocks[0].file_path.as_deref().unwrap(), "src/App.vue");
         assert_eq!(remaining, "这个文件很大，有什么规划？");
+    }
+
+    #[test]
+    fn test_lift_mid_prompt_at_file_reference_keeps_text_and_adds_file() {
+        let text = "分析@scripts/release/appstore-release.sh的执行过程和调用命令";
+        let (blocks, remaining) = lift_paths_from_text(text);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[0].file_path.as_deref(),
+            Some("scripts/release/appstore-release.sh")
+        );
+        assert_eq!(remaining, text);
+    }
+
+    #[test]
+    fn test_lift_keeps_xcode_build_log_paths_in_text() {
+        let text = "运行报错：Error output from Xcode build:\n↳\n    ** BUILD FAILED **\n\nXcode's output:\n↳\n    Writing result bundle at path:\n        /var/folders/a/T/flutter_tools.3xroe7/flutter_ios_build_temp_dir/temporary_xcresult_bundle\n    /Users/wuchao/develop/flutter/sales-api-app-test/ios/Pods/Pods.xcodeproj: warning";
+        let (blocks, remaining) = lift_paths_from_text(text);
+        assert!(blocks.is_empty());
+        assert_eq!(remaining, text);
+    }
+
+    #[test]
+    fn test_post_process_deduplicates_existing_mid_prompt_file_tag() {
+        let text = "分析@scripts/release/appstore-release.sh的执行过程和调用命令";
+        let mut msgs = vec![Msg {
+            role: "user".to_string(),
+            blocks: vec![
+                Block {
+                    kind: "file".to_string(),
+                    file_path: Some("scripts/release/appstore-release.sh".to_string()),
+                    ..Default::default()
+                },
+                text_block("text", text),
+            ],
+            ..Default::default()
+        }];
+        post_process_session_msgs(&mut msgs);
+        assert_eq!(msgs[0].blocks.len(), 2);
+        assert_eq!(msgs[0].blocks[1].text.as_deref(), Some(text));
+    }
+
+    #[test]
+    fn test_lift_leading_at_file_reference_but_keeps_prompt_body() {
+        let text = "@scripts/release/appstore-release.sh 分析执行过程和调用命令";
+        let (blocks, remaining) = lift_paths_from_text(text);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].kind, "file");
+        assert_eq!(
+            blocks[0].file_path.as_deref(),
+            Some("scripts/release/appstore-release.sh")
+        );
+        assert_eq!(remaining, "分析执行过程和调用命令");
+    }
+
+    #[test]
+    fn test_lift_trailing_at_file_references_are_not_repeated_in_prompt() {
+        let text = "我加了几个附件，回答我即可 @\"/tmp/one.xlsx\" @\"docs/two.md\" @\".vscode/launch.json\"";
+        let (blocks, remaining) = lift_paths_from_text(text);
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(remaining, "我加了几个附件，回答我即可");
+    }
+
+    #[test]
+    fn test_lift_multiple_leading_at_file_references() {
+        let text = "@\"src/a.ts\" @\"src/b.ts\" 比较两个文件";
+        let (blocks, remaining) = lift_paths_from_text(text);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].file_path.as_deref(), Some("src/a.ts"));
+        assert_eq!(blocks[1].file_path.as_deref(), Some("src/b.ts"));
+        assert_eq!(remaining, "比较两个文件");
     }
 
     #[test]

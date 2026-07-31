@@ -69,6 +69,16 @@ export interface QueuedMessage {
   files: ChatFileAttachment[]
 }
 
+/** 最近一次工具事件的紧凑状态。用于工具卡片隐藏时的实时状态行，不保存工具输入或输出。 */
+export interface LiveToolActivity {
+  toolName: string
+  toolId?: string
+  phase: 'calling' | 'result' | 'failed'
+  updatedAt: number
+}
+
+export type ChatTurnOutcome = 'completed' | 'cancelled' | 'failed'
+
 export interface ChatSession {
   /** 本地稳定 id（v-for / 选中用），与后端 chatId 是两套号。 */
   uiId: number
@@ -115,6 +125,10 @@ export interface ChatSession {
    * mermaid/高亮重算（见 §10.6 perf 注）。权威 assistant 记录到达即清空（onMsg）。
    */
   live?: { kind: string; text: string } | null
+  /** 当前/最近一次工具调用的轻量活动信息；只供运行状态行展示。 */
+  toolActivity: LiveToolActivity | null
+  /** 本轮结束原因，供 UI 在状态行消失前播放一次完成/失败/取消反馈。 */
+  lastTurnOutcome: ChatTurnOutcome | null
   // ---- §10.2/10.3/10.4 切换器：当前选择（底栏 picker 改它，懒生效）----
   /** 权限模式：Claude 默认 bypassPermissions；Codex 默认 fullAccess。 */
   permissionMode: string
@@ -299,6 +313,7 @@ function onMsg(s: ChatSession, msg: Msg) {
   // 是已下架的模型（如 gpt-5.3-codex），回放时若原样写进 lastModel 会把选择器带到幽灵模型上。
   // 注意只 sanitize lastModel，不动 msg.model —— 气泡徽标要保留"这条历史消息真实用的模型"。
   if (msg.model && msg.model !== SYNTHETIC_MODEL) s.lastModel = sanitizeModel(s.agent, msg.model)
+  updateToolActivity(s, msg)
   // 权威记录到达 → 当前块定稿，清掉流式预览（避免预览与真气泡并存）。
   s.live = null
   s.retry = null // 有权威输出 = 网络恢复，撤掉「重试中」。
@@ -308,6 +323,56 @@ function onMsg(s: ChatSession, msg: Msg) {
   // **重建数组**（而非 push）：ChatView 的 mermaid / 代码高亮 watcher 按引用比较
   // `props.messages`，只有引用变化才会重跑 —— 与只读模式 reassign chatMsgs 一致。
   s.msgs = [...s.msgs, msg]
+}
+
+/** 仅供单测驱动真实消息归并和紧凑工具状态的入口。 */
+export function chatOnMsgForTest(s: ChatSession, msg: Msg) {
+  onMsg(s, msg)
+}
+
+function toolNameForResult(s: ChatSession, msg: Msg, toolId?: string): string {
+  if (toolId) {
+    for (let bi = msg.blocks.length - 1; bi >= 0; bi -= 1) {
+      const b = msg.blocks[bi]
+      if (b.kind === 'tool_use' && b.toolId === toolId && b.toolName) return b.toolName
+    }
+    for (let mi = s.msgs.length - 1; mi >= 0; mi -= 1) {
+      const prior = s.msgs[mi]
+      for (let bi = prior.blocks.length - 1; bi >= 0; bi -= 1) {
+        const b = prior.blocks[bi]
+        if (b.kind === 'tool_use' && b.toolId === toolId && b.toolName) return b.toolName
+      }
+    }
+  }
+  return 'Tool'
+}
+
+/** 记录最新一条 tool_use / tool_result，让 GUI 在隐藏工具卡片后仍能说明正在执行什么。
+ *  不尝试伪造命令内部百分比：协议能可靠提供的只有 calling / result / failed 三种阶段。 */
+function updateToolActivity(s: ChatSession, msg: Msg) {
+  for (let i = msg.blocks.length - 1; i >= 0; i -= 1) {
+    const b = msg.blocks[i]
+    if (b.kind === 'tool_use') {
+      s.toolActivity = {
+        toolName: b.toolName || 'Tool',
+        ...(b.toolId ? { toolId: b.toolId } : {}),
+        phase: 'calling',
+        updatedAt: Date.now(),
+      }
+      return
+    }
+    if (b.kind === 'tool_result') {
+      s.toolActivity = {
+        toolName: b.toolName || toolNameForResult(s, msg, b.toolId),
+        ...(b.toolId ? { toolId: b.toolId } : {}),
+        phase: b.isError ? 'failed' : 'result',
+        updatedAt: Date.now(),
+      }
+      return
+    }
+  }
+  // 模型重新开始输出 prose / thinking 后，不再把旧工具名留在运行状态行。
+  if (msg.blocks.some((b) => b.kind === 'text' || b.kind === 'thinking')) s.toolActivity = null
 }
 
 function messageText(msg: Msg): string {
@@ -427,6 +492,7 @@ function onDelta(s: ChatSession, d: ChatDelta) {
   if (d.phase === 'start') {
     // 仅文本块起预览；thinking / tool_use 不预览（authoritative 记录会补）。
     s.live = d.kind === 'text' ? { kind: 'text', text: '' } : null
+    if (d.kind === 'text') s.toolActivity = null
   } else if (d.phase === 'delta') {
     if (d.kind === 'text' && d.text) {
       const prev = s.live ?? { kind: 'text', text: '' }
@@ -458,6 +524,7 @@ function onInit(s: ChatSession, p: ChatInitPayload) {
 function onResult(s: ChatSession, p: ChatResultPayload) {
   if (p.usage) s.usage = p.usage
   s.live = null // 一轮结束，兜底清掉残留预览。
+  s.lastTurnOutcome = p.ok === false ? 'failed' : 'completed'
   endTurn(s)
   // 一轮结束 → 账号 5h/周额度刚被这次对话消耗、值会变 → 事件驱动强制刷新（慢轮询之外的实时补位）。
   bumpUsage()
@@ -476,6 +543,7 @@ function onExit(s: ChatSession, p: ChatExitPayload) {
     return
   }
   s.live = null
+  s.lastTurnOutcome = p.code === 0 ? 'completed' : 'failed'
   endTurn(s)
   if (p.code !== 0 && !s.errorMessage) {
     s.errorMessage = s.stderrTail.slice(-3).join('\n') || `exited (${p.code})`
@@ -582,6 +650,8 @@ function startTurn(s: ChatSession) {
   s.turnState = 'running'
   s.turnStartedAt = Date.now()
   s.retry = null // 新一轮重置重试态。
+  s.toolActivity = null
+  s.lastTurnOutcome = null
   s.pendingPermissions = [] // 新一轮不带上一轮残留的权限请求。
   s.pendingQuestions = [] // 同理，残留的提问也清掉。
   now.value = Date.now()
@@ -794,6 +864,8 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
     stderrTail: [],
     retry: null,
     live: null,
+    toolActivity: null,
+    lastTurnOutcome: null,
     pendingPermissions: [],
     pendingQuestions: [],
     permissionMode: initialPermissionMode,
@@ -969,6 +1041,7 @@ export async function sendPrompt(
       textElements,
     )
   } catch (err) {
+    session.lastTurnOutcome = 'failed'
     endTurn(session)
     session.status = 'error'
     session.errorMessage = String(err)
@@ -1038,6 +1111,7 @@ export async function stopChat(session: ChatSession): Promise<void> {
       /* 幂等 */
     }
   }
+  session.lastTurnOutcome = 'cancelled'
   endTurn(session)
   if (session.status !== 'error') session.status = 'exited'
 }
@@ -1077,6 +1151,7 @@ export async function interruptChat(session: ChatSession): Promise<void> {
           effort: eff,
         }
         registerChat(info.chatId, session)
+        session.lastTurnOutcome = 'cancelled'
         endTurn(session)
         session.live = null
         session.status = 'running'
@@ -1085,12 +1160,14 @@ export async function interruptChat(session: ChatSession): Promise<void> {
       } catch (err) {
         session.suppressNextExit = false
         session.errorMessage = String(err)
+        session.lastTurnOutcome = 'failed'
         endTurn(session)
         // autoRestart in onExit will recover
         return
       }
     }
     await api.agentChatInterrupt(session.chatId)
+    session.lastTurnOutcome = 'cancelled'
     endTurn(session)
     session.live = null
     if (session.status === 'spawning') session.status = 'running'
@@ -1098,6 +1175,7 @@ export async function interruptChat(session: ChatSession): Promise<void> {
   } catch (err) {
     session.status = 'error'
     session.errorMessage = String(err)
+    session.lastTurnOutcome = 'failed'
     endTurn(session)
   } finally {
     interrupting.delete(session)
@@ -1114,6 +1192,8 @@ export async function clearChat(session: ChatSession): Promise<void> {
   // 立即视觉清屏 —— 无论后续 restart 成败，界面与上下文角标都应清零。
   session.msgs = []
   session.live = null
+  session.toolActivity = null
+  session.lastTurnOutcome = null
   session.usage = undefined
   session.retry = null
   clearQueue(session) // 清屏 = 重置上下文 → 待发队列也清空。
@@ -1149,12 +1229,14 @@ export async function clearChat(session: ChatSession): Promise<void> {
     }
     session.sessionId = '' // 新进程的 init 会回填全新 session id
     registerChat(info.chatId, session)
+    session.lastTurnOutcome = 'cancelled'
     endTurn(session)
     session.status = 'running'
   } catch (err) {
     session.suppressNextExit = false
     session.status = 'error'
     session.errorMessage = String(err)
+    session.lastTurnOutcome = 'failed'
     endTurn(session)
   }
 }
@@ -1312,6 +1394,8 @@ export async function reconnectChats(): Promise<ChatSession[]> {
       stderrTail: [],
       retry: null,
       live: null,
+      toolActivity: null,
+      lastTurnOutcome: null,
       pendingPermissions: [],
       pendingQuestions: [],
       permissionMode: info.permissionMode,
