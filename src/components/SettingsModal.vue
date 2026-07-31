@@ -48,6 +48,7 @@ import {
   IconRefresh,
   IconExternalLink,
   IconCheck,
+  IconTrash,
   IconChevronDown,
   IconSettings,
   IconSliders,
@@ -90,6 +91,7 @@ import {
   desktopPetSize,
   DESKTOP_PET_MAX_SIZE,
   DESKTOP_PET_MIN_SIZE,
+  deleteCustomDesktopPet,
   loadDesktopPetCatalog,
   notifyDesktopPetCharacter,
   notifyDesktopPetSize,
@@ -235,6 +237,13 @@ const codexDesktopPets = computed(() =>
 const customDesktopPets = computed(() =>
   desktopPetCatalog.value?.pets.filter((pet) => pet.source === 'custom') ?? [],
 )
+type DesktopPetCatalogTab = 'codex' | 'custom'
+const desktopPetCatalogTab = ref<DesktopPetCatalogTab>(
+  desktopPetCharacter.value.startsWith('custom:') ? 'custom' : 'codex',
+)
+const visibleDesktopPets = computed(() =>
+  desktopPetCatalogTab.value === 'codex' ? codexDesktopPets.value : customDesktopPets.value,
+)
 
 const desktopPetUrl = (pet: DesktopPetDefinition) => convertFileSrc(pet.spritesheetPath)
 
@@ -267,11 +276,41 @@ function onDesktopPetSizeInput(event: Event) {
 
 async function chooseDesktopPet(character: DesktopPetCharacter) {
   desktopPetError.value = ''
+  desktopPetCatalogTab.value = character.startsWith('custom:') ? 'custom' : 'codex'
   try {
     await notifyDesktopPetCharacter(character)
   } catch (error) {
     desktopPetError.value = t('settings.desktopPet.actionFail', { e: String(error) })
   }
+}
+
+async function deleteCustomPet(pet: DesktopPetDefinition) {
+  if (!window.confirm(t('settings.desktopPet.deleteConfirm', { name: pet.displayName }))) return
+
+  desktopPetError.value = ''
+  const deletedActivePet = desktopPetCharacter.value === pet.key
+  try {
+    await deleteCustomDesktopPet(pet.id)
+    const catalog = await loadDesktopPetCatalog()
+    if (deletedActivePet) {
+      const fallback = catalog.pets.find((candidate) => candidate.source === 'codex') ?? catalog.pets[0]
+      if (fallback) {
+        desktopPetCatalogTab.value = fallback.source === 'custom' ? 'custom' : 'codex'
+        await notifyDesktopPetCharacter(fallback.key)
+      }
+    }
+  } catch (error) {
+    desktopPetError.value = t('settings.desktopPet.deleteFail', {
+      name: pet.displayName,
+      e: String(error),
+    })
+  }
+}
+
+function openMoreDesktopPets() {
+  void api.openUrl('https://petdex.dev/').catch((error) => {
+    desktopPetError.value = t('settings.desktopPet.actionFail', { e: String(error) })
+  })
 }
 
 async function openDesktopPetDirectory() {
@@ -1008,80 +1047,112 @@ async function installTurnHooks() {
             <div v-if="desktopPetCatalogLoading" class="set-desktop-pet-empty">
               {{ t('settings.desktopPet.loadingPets') }}
             </div>
-            <div v-else class="set-desktop-pet-groups">
-              <div class="set-desktop-pet-group-head">
-                <span>{{ t('settings.desktopPet.codexPets') }}</span>
-                <span>{{ codexDesktopPets.length }}</span>
-              </div>
-              <div class="set-desktop-pet-list">
+            <div v-else class="set-desktop-pet-picker">
+              <div class="set-desktop-pet-tabs" role="tablist" :aria-label="t('settings.desktopPet.appearance')">
                 <button
-                  v-for="pet in codexDesktopPets"
-                  :key="pet.key"
+                  id="desktop-pet-codex-tab"
                   type="button"
-                  class="set-desktop-pet-character"
-                  :class="{ active: desktopPetCharacter === pet.key }"
-                  :aria-label="pet.displayName"
-                  :aria-pressed="desktopPetCharacter === pet.key"
-                  @click="chooseDesktopPet(pet.key)"
+                  role="tab"
+                  data-desktop-pet-tab="codex"
+                  :class="{ active: desktopPetCatalogTab === 'codex' }"
+                  :aria-selected="desktopPetCatalogTab === 'codex'"
+                  aria-controls="desktop-pet-catalog-panel"
+                  @click="desktopPetCatalogTab = 'codex'"
                 >
-                  <PetAtlasPlayer
-                    class="set-desktop-pet-character-art"
-                    :src="desktopPetUrl(pet)"
-                    state="idle"
-                    :sprite-version-number="pet.spriteVersionNumber"
-                    :label="pet.displayName"
-                    paused
-                  />
-                  <span class="set-desktop-pet-character-copy">
-                    <strong>{{ pet.displayName }}</strong>
-                    <small v-if="pet.description">{{ pet.description }}</small>
-                  </span>
-                  <IconCheck v-if="desktopPetCharacter === pet.key" />
+                  <span>{{ t('settings.desktopPet.codexPets') }}</span>
+                  <small>{{ codexDesktopPets.length }}</small>
+                </button>
+                <button
+                  id="desktop-pet-custom-tab"
+                  type="button"
+                  role="tab"
+                  data-desktop-pet-tab="custom"
+                  :class="{ active: desktopPetCatalogTab === 'custom' }"
+                  :aria-selected="desktopPetCatalogTab === 'custom'"
+                  aria-controls="desktop-pet-catalog-panel"
+                  @click="desktopPetCatalogTab = 'custom'"
+                >
+                  <span>{{ t('settings.desktopPet.customPets') }}</span>
+                  <small>{{ customDesktopPets.length }}</small>
                 </button>
               </div>
-              <p v-if="!codexDesktopPets.length" class="set-desktop-pet-empty">
-                {{ t('settings.desktopPet.codexMissing') }}
-              </p>
 
-              <div class="set-desktop-pet-group-head custom">
-                <span>{{ t('settings.desktopPet.customPets') }}</span>
-                <button type="button" class="set-desktop-pet-tool" @click="openDesktopPetDirectory">
-                  <IconExternalLink />
-                  {{ t('settings.desktopPet.openDirectory') }}
-                </button>
-              </div>
-              <div class="set-desktop-pet-list">
-                <button
-                  v-for="pet in customDesktopPets"
-                  :key="pet.key"
-                  type="button"
-                  class="set-desktop-pet-character"
-                  :class="{ active: desktopPetCharacter === pet.key }"
-                  :aria-label="pet.displayName"
-                  :aria-pressed="desktopPetCharacter === pet.key"
-                  @click="chooseDesktopPet(pet.key)"
+              <div
+                id="desktop-pet-catalog-panel"
+                class="set-desktop-pet-tabpanel"
+                role="tabpanel"
+                :aria-labelledby="`desktop-pet-${desktopPetCatalogTab}-tab`"
+              >
+                <div v-if="desktopPetCatalogTab === 'custom'" class="set-desktop-pet-panel-tools">
+                  <button type="button" class="set-desktop-pet-tool" @click="openMoreDesktopPets">
+                    <IconExternalLink />
+                    {{ t('settings.desktopPet.downloadMore') }}
+                  </button>
+                  <button type="button" class="set-desktop-pet-tool" @click="openDesktopPetDirectory">
+                    <IconExternalLink />
+                    {{ t('settings.desktopPet.openDirectory') }}
+                  </button>
+                </div>
+
+                <div v-if="visibleDesktopPets.length" class="set-desktop-pet-list">
+                  <div
+                    v-for="pet in visibleDesktopPets"
+                    :key="pet.key"
+                    class="set-desktop-pet-character"
+                    :class="{ active: desktopPetCharacter === pet.key }"
+                  >
+                    <button
+                      type="button"
+                      class="set-desktop-pet-character-select"
+                      :aria-label="pet.displayName"
+                      :aria-pressed="desktopPetCharacter === pet.key"
+                      @click="chooseDesktopPet(pet.key)"
+                    >
+                      <PetAtlasPlayer
+                        class="set-desktop-pet-character-art"
+                        :src="desktopPetUrl(pet)"
+                        state="idle"
+                        :sprite-version-number="pet.spriteVersionNumber"
+                        :label="pet.displayName"
+                        paused
+                      />
+                      <span
+                        class="set-desktop-pet-character-copy"
+                        v-tooltip:bottom="pet.description ?? ''"
+                      >
+                        <strong>{{ pet.displayName }}</strong>
+                        <small v-if="pet.description">{{ pet.description }}</small>
+                      </span>
+                      <IconCheck
+                        v-if="desktopPetCharacter === pet.key"
+                        class="set-desktop-pet-character-check"
+                      />
+                    </button>
+                    <button
+                      v-if="desktopPetCatalogTab === 'custom'"
+                      type="button"
+                      class="set-desktop-pet-character-delete"
+                      :aria-label="t('settings.desktopPet.delete', { name: pet.displayName })"
+                      :title="t('settings.desktopPet.delete', { name: pet.displayName })"
+                      @click="deleteCustomPet(pet)"
+                    >
+                      <IconTrash />
+                    </button>
+                  </div>
+                </div>
+
+                <p v-else class="set-desktop-pet-empty">
+                  {{ desktopPetCatalogTab === 'codex'
+                    ? t('settings.desktopPet.codexMissing')
+                    : t('settings.desktopPet.customEmpty') }}
+                </p>
+                <code
+                  v-if="desktopPetCatalogTab === 'custom' && desktopPetCatalog?.customDirectory"
+                  class="set-desktop-pet-path"
                 >
-                  <PetAtlasPlayer
-                    class="set-desktop-pet-character-art"
-                    :src="desktopPetUrl(pet)"
-                    state="idle"
-                    :sprite-version-number="pet.spriteVersionNumber"
-                    :label="pet.displayName"
-                    paused
-                  />
-                  <span class="set-desktop-pet-character-copy">
-                    <strong>{{ pet.displayName }}</strong>
-                    <small v-if="pet.description">{{ pet.description }}</small>
-                  </span>
-                  <IconCheck v-if="desktopPetCharacter === pet.key" />
-                </button>
+                  {{ desktopPetCatalog.customDirectory }}
+                </code>
               </div>
-              <p v-if="!customDesktopPets.length" class="set-desktop-pet-empty custom">
-                {{ t('settings.desktopPet.customEmpty') }}
-              </p>
-              <code v-if="desktopPetCatalog?.customDirectory" class="set-desktop-pet-path">
-                {{ desktopPetCatalog.customDirectory }}
-              </code>
             </div>
             <p v-if="desktopPetError || desktopPetCatalogError" class="set-desktop-pet-error">
               {{ desktopPetError || desktopPetCatalogError }}

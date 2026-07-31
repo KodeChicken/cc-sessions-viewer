@@ -147,6 +147,9 @@ export async function loadDesktopPetCatalog() {
   }
 }
 
+export const deleteCustomDesktopPet = (petId: string) =>
+  invoke<void>('delete_custom_desktop_pet', { petId })
+
 export const updateDesktopPetWindow = (enabled: boolean) =>
   invoke<void>('set_desktop_pet_enabled', { enabled })
 

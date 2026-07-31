@@ -2259,6 +2259,7 @@ pub fn run() {
             acknowledge_desktop_pet_task,
             resolve_desktop_pet_session,
             desktop_pet_assets::desktop_pet_catalog,
+            desktop_pet_assets::delete_custom_desktop_pet,
             set_desktop_pet_enabled,
             focus_desktop_pet_main,
             open_desktop_pet_session,

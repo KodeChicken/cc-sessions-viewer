@@ -6,6 +6,27 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.3.11]
+
+### Features
+
+- **Inline file reference preservation** — `@file` references embedded within prompt text (e.g., "analyze @scripts/release.sh execution") now preserve the full prompt context instead of being stripped out. File attachment tags are still generated, but the original reference stays readable in the message body. Only leading and trailing file references are removed from the displayed text.
+- **Tool call visibility control** — added a "Show tool calls" toggle in Settings → Chat that hides process tools like Bash, Read, and Grep by default. File changes and interactive prompts (permissions, questions) remain visible regardless of the setting. Each read-only session can override the global setting with a toolbar toggle.
+- **Live tool activity tracking** — the GUI now tracks the current tool being executed and displays real-time status (calling/completed/failed) in the running state line, even when tool cards are hidden.
+- **Turn outcome feedback** — completed, cancelled, and failed turn states are now tracked and briefly displayed in the status line after each turn finishes.
+- **Text-based diff rendering** — tool results containing plain-text `git diff` output are now automatically detected and rendered with syntax highlighting, diff statistics, and the same visual treatment as structured file changes.
+- **Historical AskUserQuestion display** — read-only transcripts now render past `AskUserQuestion` prompts with their original questions and user answers, including localized status labels for answered/skipped states.
+
+### Bug Fixes
+
+- **Xcode build log path protection** — paths in Xcode build error logs (result bundles, Pods.xcodeproj references) are no longer extracted as file attachments, preventing diagnostic text from being fragmented.
+- **File reference deduplication** — when agent-specific parsers (Claude, Codex) have already created file tags for inline references, the generic post-processor now skips duplicate attachment extraction.
+- **Relative path resolution** — file references like `@package.json` and `@scripts/release.sh` are now resolved relative to the session's `cwd` when available, improving attachment accuracy for repository-relative paths.
+
+### Tests
+
+- Added 11 new tests covering inline reference preservation, edge-only stripping, text diff detection, Xcode log protection, file reference deduplication, turn outcome tracking, and tool activity state transitions.
+
 ## [v0.3.10]
 
 ### Features

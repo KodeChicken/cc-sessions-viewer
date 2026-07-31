@@ -19,6 +19,7 @@ vi.mock('@tauri-apps/api/event', () => ({ emitTo: emitToMock }))
 vi.mock('../../src/api', () => ({
   appVersion: appVersionMock,
   installTurnHooks: installTurnHooksMock,
+  openUrl: (url: string) => tauriInvokeMock('open_url', { url }),
   openPathExternal: openPathExternalMock,
   reclaudeInfo: reclaudeInfoMock,
   turnHookStatus: turnHookStatusMock,
@@ -334,7 +335,7 @@ describe('SettingsModal', () => {
     expect(tauriInvokeMock).toHaveBeenCalledWith('set_desktop_pet_enabled', { enabled: true })
     expect(desktopPetEnabled.value).toBe(true)
 
-    await wrapper.findAll('.set-desktop-pet-character')[1].trigger('click')
+    await wrapper.findAll('.set-desktop-pet-character-select')[1].trigger('click')
     await flushPromises()
     expect(desktopPetCharacter.value).toBe('codex:bsod')
     expect(emitToMock).toHaveBeenCalledWith(
@@ -358,7 +359,7 @@ describe('SettingsModal', () => {
     const wrapper = factory({ initialTab: 'pet' })
     await flushPromises()
 
-    expect(wrapper.findAll('.set-desktop-pet-character')).toHaveLength(3)
+    expect(wrapper.findAll('.set-desktop-pet-character')).toHaveLength(2)
     expect(wrapper.text()).toContain('Codex Desktop pets')
     expect(wrapper.text()).toContain('Custom pets')
 
@@ -366,9 +367,31 @@ describe('SettingsModal', () => {
     await flushPromises()
     expect(tauriInvokeMock).toHaveBeenCalledWith('desktop_pet_catalog')
 
-    await wrapper.find('.set-desktop-pet-group-head.custom .set-desktop-pet-tool').trigger('click')
+    await wrapper.get('[data-desktop-pet-tab="custom"]').trigger('click')
+    expect(wrapper.findAll('.set-desktop-pet-character')).toHaveLength(1)
+
+    await wrapper.findAll('.set-desktop-pet-panel-tools .set-desktop-pet-tool')[0].trigger('click')
+    expect(tauriInvokeMock).toHaveBeenCalledWith('open_url', { url: 'https://petdex.dev/' })
+
+    await wrapper.findAll('.set-desktop-pet-panel-tools .set-desktop-pet-tool')[1].trigger('click')
     await flushPromises()
     expect(openPathExternalMock).toHaveBeenCalledWith('C:/Users/test/.codex/pets')
+  })
+
+  it('deletes a confirmed custom pet and refreshes the catalog', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = factory({ initialTab: 'pet' })
+    await flushPromises()
+    await wrapper.get('[data-desktop-pet-tab="custom"]').trigger('click')
+
+    await wrapper.get('.set-desktop-pet-character-delete').trigger('click')
+    await flushPromises()
+
+    expect(confirm).toHaveBeenCalledWith(
+      'Delete “Pixel”? Its folder and spritesheet will be permanently removed.',
+    )
+    expect(tauriInvokeMock).toHaveBeenCalledWith('delete_custom_desktop_pet', { petId: 'pixel' })
+    expect(tauriInvokeMock).toHaveBeenCalledWith('desktop_pet_catalog')
   })
 
   it('shows a fallback pet preview when the sprite catalog is empty', async () => {

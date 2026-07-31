@@ -28,7 +28,8 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "**/*"
+          "**/*",
+          "$HOME/.codex/pets/**/*"
         ]
       }
     },

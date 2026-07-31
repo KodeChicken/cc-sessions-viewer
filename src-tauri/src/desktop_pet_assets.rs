@@ -135,10 +135,7 @@ pub fn desktop_pet_catalog(app: tauri::AppHandle) -> Result<DesktopPetCatalog, S
     }
     install_bundled_codex_pets(&imported_directory)?;
 
-    let custom_directory = dirs::home_dir()
-        .ok_or_else(|| "Home directory is unavailable".to_string())?
-        .join(".codex")
-        .join("pets");
+    let custom_directory = custom_pets_directory()?;
     fs::create_dir_all(&custom_directory).map_err(|error| error.to_string())?;
 
     let mut pets = collect_imported_codex_pets(&imported_directory);
@@ -149,6 +146,65 @@ pub fn desktop_pet_catalog(app: tauri::AppHandle) -> Result<DesktopPetCatalog, S
         custom_directory: custom_directory.to_string_lossy().into_owned(),
         codex_installed: codex_asar.is_some(),
     })
+}
+
+#[tauri::command]
+pub fn delete_custom_desktop_pet(pet_id: String) -> Result<(), String> {
+    let custom_directory = custom_pets_directory()?;
+    let pet_directory = find_custom_pet_directory(&custom_directory, &pet_id)?;
+    fs::remove_dir_all(pet_directory).map_err(|error| error.to_string())
+}
+
+fn custom_pets_directory() -> Result<PathBuf, String> {
+    Ok(dirs::home_dir()
+        .ok_or_else(|| "Home directory is unavailable".to_string())?
+        .join(".codex")
+        .join("pets"))
+}
+
+fn find_custom_pet_directory(directory: &Path, pet_id: &str) -> Result<PathBuf, String> {
+    let pet_id = pet_id.trim();
+    if pet_id.is_empty() {
+        return Err("Custom pet id is missing".to_string());
+    }
+
+    let root = fs::canonicalize(directory).map_err(|error| error.to_string())?;
+    let entries = fs::read_dir(&root).map_err(|error| error.to_string())?;
+    let mut matched = None;
+
+    for entry in entries.flatten() {
+        let pet_directory = entry.path();
+        if !pet_directory.is_dir() {
+            continue;
+        }
+        let Ok(canonical_directory) = fs::canonicalize(&pet_directory) else {
+            continue;
+        };
+        // A custom pet is always a direct child of ~/.codex/pets. This blocks
+        // symlinked folders from redirecting deletion outside the custom-pet root.
+        if canonical_directory.parent() != Some(root.as_path()) {
+            continue;
+        }
+
+        let Some(folder_id) = pet_directory.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Ok(manifest_bytes) = fs::read(pet_directory.join("pet.json")) else {
+            continue;
+        };
+        let Ok(manifest) = serde_json::from_slice::<CustomPetManifest>(&manifest_bytes) else {
+            continue;
+        };
+        let manifest_id = manifest
+            .id
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| folder_id.to_string());
+        if manifest_id == pet_id {
+            matched = Some(canonical_directory);
+        }
+    }
+
+    matched.ok_or_else(|| "Custom pet was not found".to_string())
 }
 
 fn install_bundled_codex_pets(output_directory: &Path) -> Result<(), String> {
@@ -590,6 +646,37 @@ mod tests {
             let installed = fs::read(directory.join(id).join("spritesheet.webp")).unwrap();
             assert_eq!(installed, *bundled_spritesheet);
         }
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn deletes_only_the_matching_direct_custom_pet_directory() {
+        let directory = std::env::temp_dir().join(format!(
+            "cc-sessions-viewer-custom-pet-delete-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(directory.join("porter")).unwrap();
+        fs::create_dir_all(directory.join("keep-me")).unwrap();
+        fs::write(
+            directory.join("porter").join("pet.json"),
+            r#"{"id":"porter","spritesheetPath":"spritesheet.webp"}"#,
+        )
+        .unwrap();
+        fs::write(
+            directory.join("keep-me").join("pet.json"),
+            r#"{"id":"keep-me","spritesheetPath":"spritesheet.webp"}"#,
+        )
+        .unwrap();
+
+        let target = find_custom_pet_directory(&directory, "porter").unwrap();
+        assert_eq!(target.file_name().and_then(|name| name.to_str()), Some("porter"));
+        assert!(find_custom_pet_directory(&directory, "../keep-me").is_err());
+
+        fs::remove_dir_all(target).unwrap();
+        assert!(!directory.join("porter").exists());
+        assert!(directory.join("keep-me").exists());
 
         let _ = fs::remove_dir_all(directory);
     }
