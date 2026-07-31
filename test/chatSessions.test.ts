@@ -457,6 +457,7 @@ describe('reconnectChats — restored live messages', () => {
 describe('parseRetryLine — network-retry detection from CLI stderr', () => {
   it('extracts attempt/max from "(N/M)" form', () => {
     expect(parseRetryLine('Request failed · retrying (4/10) · 24s')).toEqual({ attempt: 4, max: 10 })
+    expect(parseRetryLine('Reconnecting... 3/5 (7m 27s · esc to interrupt)')).toEqual({ attempt: 3, max: 5 })
   })
 
   it('extracts attempt/max from "N of M" form', () => {
@@ -467,6 +468,8 @@ describe('parseRetryLine — network-retry detection from CLI stderr', () => {
     expect(parseRetryLine('Overloaded, backing off')).toEqual({})
     expect(parseRetryLine('fetch failed: ECONNRESET')).toEqual({})
     expect(parseRetryLine('socket hang up')).toEqual({})
+    expect(parseRetryLine('Reconnecting...')).toEqual({})
+    expect(parseRetryLine('Service Unavailable: Service temporarily unavailable')).toEqual({})
   })
 
   it('is case-insensitive', () => {

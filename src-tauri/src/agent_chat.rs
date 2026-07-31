@@ -2719,26 +2719,44 @@ fn codex_app_server_reader(
                 }
             }
             "error" => {
-                let message = params
-                    .get("message")
+                let will_retry = params
+                    .get("willRetry")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let error_obj = params.get("error");
+                let message = error_obj
+                    .and_then(|e| e.get("message"))
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("Codex app-server error");
-                let msg = crate::util::simple_msg(
-                    "assistant",
-                    None,
-                    crate::util::text_block("system_event", message),
-                );
-                remember_msg(&meta, &msg);
-                let _ = app.emit("agent-chat://event", EventPayload { chat_id: id, msg });
-                let _ = app.emit(
-                    "agent-chat://result",
-                    ResultPayload {
-                        chat_id: id,
-                        ok: false,
-                        usage: None,
-                    },
-                );
-                mark_turn_finished(&meta);
+
+                if will_retry {
+                    // 重试中：发送 stderr 以触发前端的重试状态识别
+                    let _ = app.emit(
+                        "agent-chat://stderr",
+                        StderrPayload {
+                            chat_id: id,
+                            line: format!("Request failed: {} (retrying...)", message),
+                        },
+                    );
+                } else {
+                    // 最终失败：显示错误并结束轮次
+                    let msg = crate::util::simple_msg(
+                        "assistant",
+                        None,
+                        crate::util::text_block("system_event", message),
+                    );
+                    remember_msg(&meta, &msg);
+                    let _ = app.emit("agent-chat://event", EventPayload { chat_id: id, msg });
+                    let _ = app.emit(
+                        "agent-chat://result",
+                        ResultPayload {
+                            chat_id: id,
+                            ok: false,
+                            usage: None,
+                        },
+                    );
+                    mark_turn_finished(&meta);
+                }
             }
             _ => {}
         }

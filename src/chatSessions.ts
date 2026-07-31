@@ -254,7 +254,7 @@ const STDERR_TAIL_MAX = 50
 // 网络重试/瞬时错误信号（来自 CLI stderr）。命中 → 状态行显示「重试中」。宽松匹配以兼容
 // 各 agent / 版本的措辞差异；只在 running 期间生效，且任何「有进展」事件都会清掉。
 const RETRY_RE =
-  /\b(retry(?:ing)?|overloaded|rate.?limit|request failed|api error|connection (?:error|reset|timed?\s?out)|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed)\b/i
+  /\b(retry(?:ing)?|reconnect(?:ing)?|overloaded|rate.?limit|request failed|api error|service unavailable|connection (?:error|reset|timed?\s?out)|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed)\b/i
 // 重试次数：兼容「(4/10)」与「4 of 10」两种写法；抓不到则只显示通用「重试中」。
 const RETRY_COUNT_RE = /\b(\d+)\s*(?:\/|of)\s*(\d+)\b/i
 
