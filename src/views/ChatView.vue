@@ -2255,7 +2255,7 @@ function onDocClick(e: MouseEvent) {
                 :class="[runningToolActivity?.phase, { stale: runningToolStale }]"
               >
                 <span class="chat-running-tool-dot" aria-hidden="true" />
-                {{ runningToolLabel }}
+                <span class="chat-running-tool-text">{{ runningToolLabel }}</span>
               </span>
             </Transition>
             <button

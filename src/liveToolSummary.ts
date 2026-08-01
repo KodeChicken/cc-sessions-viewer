@@ -17,7 +17,6 @@ export interface ToolSummary {
 }
 
 const MAX_TARGET_LENGTH = 56
-const MAX_COMMAND_LENGTH = 120
 const SHELL_TOOLS = new Set(['bash', 'shell', 'command', 'commandexecution', 'exec'])
 const SEARCH_TOOLS = new Set(['glob', 'grep', 'rg', 'search', 'file_search'])
 const READ_TOOLS = new Set(['read', 'read_file', 'cat', 'sed'])
@@ -124,9 +123,7 @@ function shellSummary(command: string): ToolSummary {
     return {
       kind,
       ...(target ? { target } : {}),
-      command: normalized.length <= MAX_COMMAND_LENGTH
-        ? normalized
-        : `${normalized.slice(0, MAX_COMMAND_LENGTH - 1)}…`,
+      command: normalized,
     }
   }
   return { kind, ...(target ? { target } : {}) }

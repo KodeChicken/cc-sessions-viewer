@@ -3529,6 +3529,9 @@ details[open] > .thinking-summary .thinking-chev {
 .chat-running-row {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
+  min-width: 0;
+  max-width: 100%;
   gap: 8px;
   padding: 4px 4px 10px;
   color: var(--text-dim);
@@ -3629,6 +3632,7 @@ details[open] > .thinking-summary .thinking-chev {
   align-items: center;
   gap: 5px;
   min-width: 0;
+  max-width: 100%;
   padding: 2px 8px;
   border: 1px solid color-mix(in srgb, var(--brand) 30%, var(--border));
   border-radius: 999px;
@@ -3637,7 +3641,20 @@ details[open] > .thinking-summary .thinking-chev {
   font-size: 12px;
   font-weight: 500;
   line-height: 1.25;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.chat-running-tool-text {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
 }
 .chat-running-tool-dot {
   width: 6px;
