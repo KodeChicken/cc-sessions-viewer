@@ -134,14 +134,59 @@ describe('ChatComposer', () => {
     const wrapper = mount(ChatComposer, {
       props: { session },
       global: { directives: { tooltip: vTooltip } },
+      attachTo: document.body,
     })
 
-    await wrapper.find('textarea').trigger('keydown', { key: 'Escape' })
+    const input = wrapper.find('textarea')
+    ;(input.element as HTMLTextAreaElement).focus()
+    await input.trigger('keydown', { key: 'Escape' })
     await flushPromises()
 
     expect(agentChatInterruptMock).toHaveBeenCalledWith(42)
     expect(session.turnState).toBe('idle')
     expect(session.live).toBeNull()
+  })
+
+  it('does not interrupt a running turn with Escape unless the input is focused', async () => {
+    const session = baseSession({
+      chatId: 42,
+      turnState: 'running',
+      processModel: 'oneShotResume',
+      live: { kind: 'text', text: 'working' },
+    })
+    const wrapper = mount(ChatComposer, {
+      props: { session },
+      global: { directives: { tooltip: vTooltip } },
+      attachTo: document.body,
+    })
+    await wrapper.vm.$nextTick()
+    const input = wrapper.find('textarea')
+    ;(input.element as HTMLTextAreaElement).blur()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+
+    expect(agentChatInterruptMock).not.toHaveBeenCalled()
+    expect(session.turnState).toBe('running')
+    expect(session.live).toEqual({ kind: 'text', text: 'working' })
+  })
+
+  it('keeps input focus after sending', async () => {
+    const wrapper = mount(ChatComposer, {
+      props: { session: baseSession({ processModel: 'oneShotResume' }) },
+      global: { directives: { tooltip: vTooltip } },
+      attachTo: document.body,
+    })
+    await wrapper.vm.$nextTick()
+    const input = wrapper.find('textarea')
+    const el = input.element as HTMLTextAreaElement
+    el.focus()
+    el.value = 'hello'
+    el.selectionStart = el.selectionEnd = el.value.length
+    await input.trigger('input')
+    await input.trigger('keydown', { key: 'Enter' })
+
+    expect(document.activeElement).toBe(el)
   })
 
   it('keeps the effort slider for Claude subscription sessions', () => {

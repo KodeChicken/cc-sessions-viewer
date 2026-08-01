@@ -126,6 +126,25 @@ defineEmits<{
   /** 头部星标：把当前会话收藏 / 取消收藏到「Views」历史。 */
 }>()
 
+// GUI live chat 的全局停止快捷键：监听 ChatView 本身，避免依赖输入框是否实际收到 keydown。
+// 与底部停止按钮共用 interruptChat，非 GUI/read-only 视图不会生效。
+function onGuiEscape(e: KeyboardEvent) {
+  const session = props.liveSession
+  const target = e.target
+  if (
+    e.key !== 'Escape' ||
+    e.repeat ||
+    e.isComposing ||
+    !(target instanceof HTMLTextAreaElement) ||
+    !target.classList.contains('cc-textarea') ||
+    !session ||
+    session.turnState !== 'running'
+  ) return
+  e.preventDefault()
+  e.stopPropagation()
+  void interruptChat(session)
+}
+
 /** live 模式当前轮已运行秒数（由 chatSessions 的模块时钟驱动）。 */
 const runningElapsedSec = computed(() => {
   const s = props.liveSession
@@ -1156,6 +1175,7 @@ function onContentClick(e: MouseEvent) {
   })
 }
 onMounted(() => {
+  document.addEventListener('keydown', onGuiEscape, true)
   scrollEl.value?.addEventListener('scroll', onScroll, { passive: true })
   scrollEl.value?.addEventListener('mouseover', onCmdOver)
   scrollEl.value?.addEventListener('mouseleave', onCmdLeave)
@@ -1164,6 +1184,7 @@ onMounted(() => {
   requestAnimationFrame(updateEdges)
 })
 onUnmounted(() => {
+  document.removeEventListener('keydown', onGuiEscape, true)
   scrollEl.value?.removeEventListener('scroll', onScroll)
   scrollEl.value?.removeEventListener('mouseover', onCmdOver)
   scrollEl.value?.removeEventListener('mouseleave', onCmdLeave)

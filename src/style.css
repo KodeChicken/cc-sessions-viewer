@@ -327,12 +327,11 @@ button {
   padding-right: 6px;
 }
 .app.sidebar-open .topbar-sidebar-zone {
-  /* sidebar 本体 248px + 旁边 resizer 1px = 分割线在 249px 处。
-     box-sizing: border-box 下 width 包含 border，所以这里要 +1px
-     才能让 topbar 的竖线和下方 resizer 对齐。
+  /* box-sizing: border-box 下 width 包含 sidebar 自身的 border，
+     让顶栏竖线和下方 sidebar 的 border 对齐。
      height +1px 让竖线向下延伸覆盖 .app-topbar 的 border-bottom 区域，
      避免底部出现 1px 断层。 */
-  width: calc(var(--sidebar-w) + 1px);
+  width: var(--sidebar-w);
   height: calc(100% + 1px);
   justify-content: space-between;
   border-right: 1px solid var(--border);
@@ -712,13 +711,15 @@ button {
   width: var(--sidebar-w);
   flex-shrink: 0;
   background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
 }
 .sidebar-resizer {
   width: 1px;
   flex: 0 0 1px;
-  background: var(--border);
+  background: transparent;
+  margin-left: -1px;
   cursor: col-resize;
   position: relative;
   z-index: 5;
@@ -728,10 +729,6 @@ button {
   content: '';
   position: absolute;
   inset: 0 -4px;
-}
-.sidebar-resizer:hover,
-.app.sidebar-resizing .sidebar-resizer {
-  background: var(--border-strong);
 }
 body.is-sidebar-resizing {
   cursor: col-resize;

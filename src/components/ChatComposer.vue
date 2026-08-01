@@ -1121,6 +1121,7 @@ function onKeydown(e: KeyboardEvent) {
   }
   if (
     e.key === 'Escape' &&
+    e.target === taEl.value &&
     !e.repeat &&
     !e.shiftKey &&
     !e.metaKey &&
