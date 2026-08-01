@@ -216,7 +216,11 @@ const runningToolStale = computed(() => {
 const runningToolLabel = computed(() => {
   const activity = runningToolActivity.value
   if (!activity) return ''
-  const target = activity.summary.target ? ` ${activity.summary.target}` : ''
+  const target = activity.summary.command
+    ? `: ${activity.summary.command}`
+    : activity.summary.target
+      ? ` ${activity.summary.target}`
+      : ''
   if (activity.summary.kind === 'callTool') {
     const name = activity.summary.target || activity.toolName
     if (runningToolStale.value) return t('chat.running.toolLastAction', { name })
@@ -234,7 +238,7 @@ const runningToolLabel = computed(() => {
 const runningToolKey = computed(() => {
   const activity = runningToolActivity.value
   return activity
-    ? `${activity.phase}:${runningToolStale.value ? 'stale' : 'fresh'}:${activity.toolId ?? activity.toolName}:${activity.summary.kind}:${activity.summary.target ?? ''}:${activity.updatedAt}`
+    ? `${activity.phase}:${runningToolStale.value ? 'stale' : 'fresh'}:${activity.toolId ?? activity.toolName}:${activity.summary.kind}:${activity.summary.target ?? ''}:${activity.summary.command ?? ''}:${activity.updatedAt}`
     : ''
 })
 

@@ -12,9 +12,12 @@ export type ToolSummaryKind =
 export interface ToolSummary {
   kind: ToolSummaryKind
   target?: string
+  /** Shell 工具为运行状态行保留的完整命令（仅展示用）。 */
+  command?: string
 }
 
 const MAX_TARGET_LENGTH = 56
+const MAX_COMMAND_LENGTH = 120
 const SHELL_TOOLS = new Set(['bash', 'shell', 'command', 'commandexecution', 'exec'])
 const SEARCH_TOOLS = new Set(['glob', 'grep', 'rg', 'search', 'file_search'])
 const READ_TOOLS = new Set(['read', 'read_file', 'cat', 'sed'])
@@ -115,7 +118,18 @@ function shellSummary(command: string): ToolSummary {
     kind = 'editFile'
   }
 
-  return { kind, target: commandTarget(command, kind) }
+  const target = commandTarget(command, kind)
+  if (command.trim()) {
+    const normalized = command.trim()
+    return {
+      kind,
+      ...(target ? { target } : {}),
+      command: normalized.length <= MAX_COMMAND_LENGTH
+        ? normalized
+        : `${normalized.slice(0, MAX_COMMAND_LENGTH - 1)}…`,
+    }
+  }
+  return { kind, ...(target ? { target } : {}) }
 }
 
 function toolNameKey(toolName: string): string {
