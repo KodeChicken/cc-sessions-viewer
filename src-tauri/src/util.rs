@@ -217,6 +217,21 @@ pub fn text_block(kind: &str, s: &str) -> Block {
     }
 }
 
+/// GUI 的 Codex `turn/steer` 需要一段不可见的延后约束，防止原生 steer 抢占当前任务。
+/// Codex 会把该输入原样写进 rollout；渲染时只应露出 `<follow-up>` 内的用户原文。
+/// 只接受完整精确前后缀，普通用户消息不会被误处理。
+pub fn visible_deferred_follow_up(text: &str) -> &str {
+    const PREFIX: &str = "[Deferred follow-up from the user]\n\
+Continue and fully complete the original task already in progress first.\n\
+Do not interrupt it, change its direction, or begin the follow-up below yet.\n\
+Only after the original task is complete, process this follow-up in the order received:\n\
+<follow-up>\n";
+    const SUFFIX: &str = "\n</follow-up>";
+    text.strip_prefix(PREFIX)
+        .and_then(|body| body.strip_suffix(SUFFIX))
+        .unwrap_or(text)
+}
+
 pub fn simple_msg(role: &str, ts: Option<String>, block: Block) -> Msg {
     Msg {
         uuid: None,
@@ -1305,6 +1320,17 @@ fn is_image_ext_str(ext: &str) -> bool {
 #[cfg(test)]
 mod path_lifting_tests {
     use super::*;
+
+    #[test]
+    fn visible_deferred_follow_up_strips_only_the_exact_control_wrapper() {
+        let wrapped = "[Deferred follow-up from the user]\n\
+Continue and fully complete the original task already in progress first.\n\
+Do not interrupt it, change its direction, or begin the follow-up below yet.\n\
+Only after the original task is complete, process this follow-up in the order received:\n\
+<follow-up>\n当前时间\n</follow-up>";
+        assert_eq!(visible_deferred_follow_up(wrapped), "当前时间");
+        assert_eq!(visible_deferred_follow_up("<follow-up>普通文本</follow-up>"), "<follow-up>普通文本</follow-up>");
+    }
 
     #[test]
     fn test_parse_line_as_path() {

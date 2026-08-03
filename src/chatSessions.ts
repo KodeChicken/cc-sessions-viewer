@@ -164,11 +164,15 @@ export interface ChatSession {
    * 发出前可移除；带完整图片 / 文件附件。三种进程模型（长驻 / one-shot）通吃。
    */
   queue: QueuedMessage[]
+  /** 已通过 `turn/steer` 提交给当前 Codex turn 的队列项。当前 turn 结束后自动清空。 */
+  submittedQueue: QueuedMessage[]
   /**
    * drainQueue 正在发起一条发送（含 restart-with-resume 的异步窗口，此间 turnState 仍 idle）——
    * 守护并发出队，避免同一轮起两条。仅 drainQueue 内部读写，不参与渲染。
    */
   pendingSend?: boolean
+  /** 正在等待 app-server 确认的引导项。每项独立，不阻塞用户继续引导其他待发消息。 */
+  pendingSteerIds: number[]
 }
 
 function claudeApiKeyDisablesEffort(s: Pick<ChatSession, 'agent' | 'apiKeySource'>): boolean {
@@ -712,6 +716,8 @@ function endTurn(s: ChatSession) {
     const kept = s.pendingQuestions.filter((q) => q.keepAfterTurn)
     if (kept.length !== s.pendingQuestions.length) s.pendingQuestions = kept
   }
+  // 已引导的消息属于当前 turn；无论完成、失败还是中断，turn 结束后都不再显示为“已提交”。
+  if (s.submittedQueue.length) s.submittedQueue = []
 }
 
 // ============================ 消息队列 ============================
@@ -767,9 +773,85 @@ export function removeQueued(session: ChatSession, id: number): void {
   }
 }
 
+/** 当前会话是否能把一条待发消息追加给正在运行的 Codex app-server turn。 */
+export function canSteerQueued(session: ChatSession, id?: number): boolean {
+  return (
+    canSteerCurrentTurn(session) &&
+    session.queue.length > 0 &&
+    (id === undefined || !session.pendingSteerIds.includes(id))
+  )
+}
+
+/** `steerQueued` 已占用提交锁后，用此检查确认当前 turn 在异步准备附件期间仍可接收引导。 */
+function canSteerCurrentTurn(session: ChatSession): boolean {
+  return (
+    session.agent === 'codex' &&
+    session.processModel === 'codexAppServer' &&
+    session.turnState === 'running' &&
+    session.status === 'running' &&
+    session.chatId !== null &&
+    session.pendingPermissions.length === 0 &&
+    session.pendingQuestions.length === 0 &&
+    !settingsChanged(session)
+  )
+}
+
+const DEFERRED_STEER_PREFIX = [
+  '[Deferred follow-up from the user]',
+  'Continue and fully complete the original task already in progress first.',
+  'Do not interrupt it, change its direction, or begin the follow-up below yet.',
+  'Only after the original task is complete, process this follow-up in the order received:',
+  '<follow-up>',
+].join('\n') + '\n'
+const DEFERRED_STEER_SUFFIX = '\n</follow-up>'
+
+/** `turn/steer` 原生语义会立刻重定向模型；将队列项标为延后 follow-up，保留当前任务优先级。 */
+function deferredSteerPayload(payload: { sendText: string; textElements: ChatTextElement[] }) {
+  const offset = new TextEncoder().encode(DEFERRED_STEER_PREFIX).length
+  return {
+    text: DEFERRED_STEER_PREFIX + payload.sendText + DEFERRED_STEER_SUFFIX,
+    textElements: payload.textElements.map((element) => ({
+      ...element,
+      byteRange: {
+        start: element.byteRange.start + offset,
+        end: element.byteRange.end + offset,
+      },
+    })),
+  }
+}
+
+/**
+ * 把指定待发项主动引导至当前 Codex turn。app-server 接受前绝不移除队列项，因此请求失败后
+ * 它仍会按原顺序等待本轮结束。传给 `turn/steer` 的是延后 follow-up，不会抢占当前任务。
+ */
+export async function steerQueued(session: ChatSession, id: number): Promise<void> {
+  if (!canSteerQueued(session, id)) return
+  const queued = session.queue.find((q) => q.id === id)
+  if (!queued) return
+
+  session.pendingSteerIds = [...session.pendingSteerIds, id]
+  try {
+    const payload = await preparePromptPayload(session, queued.text, queued.images, queued.files)
+    // 图片临时落盘期间当前 turn 可能已结束；让队列留在原处，等待正常 FIFO 路径处理。
+    if (!canSteerCurrentTurn(session) || !session.queue.some((q) => q.id === id)) return
+    const steer = deferredSteerPayload(payload)
+    await api.agentChatSteer(session.chatId!, steer.text, steer.textElements)
+
+    session.queue = session.queue.filter((q) => q.id !== id)
+    session.submittedQueue = [...session.submittedQueue, queued]
+    appendLocalUserMessage(session, queued.text, queued.images, queued.files)
+  } catch {
+    // 仅 app-server 明确接受后才迁移队列项；失败时保持原队列，交给本轮完成后的 FIFO 处理。
+  } finally {
+    session.pendingSteerIds = session.pendingSteerIds.filter((pendingId) => pendingId !== id)
+  }
+}
+
 /** 清空待发队列（中断 / 清屏 / 停止 / 进程退出时调用 —— 「停就是停」，可预测）。 */
 function clearQueue(session: ChatSession): void {
   if (session.queue.length) session.queue = []
+  if (session.submittedQueue.length) session.submittedQueue = []
+  if (session.pendingSteerIds.length) session.pendingSteerIds = []
 }
 
 // ============================ 查找 ============================
@@ -902,6 +984,8 @@ export async function startChat(opts: StartChatOptions): Promise<ChatSession> {
     lastTurnMs: 0,
     status: 'spawning',
     queue: [],
+    submittedQueue: [],
+    pendingSteerIds: [],
     stderrTail: [],
     retry: null,
     live: null,
@@ -981,6 +1065,47 @@ export async function sendPrompt(
     return
   }
 
+  const { sendImages, sendText, textElements } = await preparePromptPayload(session, text, images, files)
+
+  appendLocalUserMessage(session, text, images, files)
+
+  // 长驻进程 / Codex app-server：模型/effort/权限在当前进程或 thread 上有粘性，若用户改了
+  // 就先 restart-with-resume 换新实例再发；one-shot 才能靠本轮 agentChatSend 直接生效。
+  if (requiresRestartForSettings(session) && settingsChanged(session)) {
+    const ok = await restartChat(session)
+    if (!ok) return // restart 失败：status 已置 error
+  }
+
+  const chatId = session.chatId
+  if (chatId === null) return // restart 兜底：进程没起来就别发
+
+  startTurn(session)
+  try {
+    await api.agentChatSend(
+      chatId,
+      sendText,
+      sendImages.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+      session.model,
+      sessionEffectiveEffort(session),
+      session.permissionMode,
+      textElements,
+    )
+  } catch (err) {
+    session.lastTurnOutcome = 'failed'
+    endTurn(session)
+    session.status = 'error'
+    session.errorMessage = String(err)
+  }
+}
+
+/** 按当前 agent 的输入协议生成发送/引导共用的 app-server payload。 */
+async function preparePromptPayload(
+  session: ChatSession,
+  text: string,
+  images: ChatImageAttachment[],
+  files: ChatFileAttachment[],
+): Promise<{ sendImages: ChatImageAttachment[]; sendText: string; textElements: ChatTextElement[] }> {
+  const trimmed = text.trim()
   const isStdinAgent = session.processModel === 'longLivedStdin'
   const isCodexAppServer = session.processModel === 'codexAppServer'
   let sendImages: ChatImageAttachment[] = images
@@ -1011,15 +1136,12 @@ export async function sendPrompt(
     }
 
     // 图片：有 sourcePath 直接用；粘贴板截图存临时文件取路径。
-    const imagePaths: string[] = []
     for (const img of images) {
       if (img.sourcePath) {
-        imagePaths.push(img.sourcePath)
         mentionedFiles.push({ name: img.name || img.sourcePath.split('/').pop() || 'image', path: img.sourcePath })
       } else {
         try {
           const saved = await api.saveTempImage(img.data, img.mediaType)
-          imagePaths.push(saved)
           mentionedFiles.push({ name: saved.split('/').pop() || 'image', path: saved })
         } catch { /* 存盘失败 */ }
       }
@@ -1044,7 +1166,17 @@ export async function sendPrompt(
     sendImages = []
   }
 
-  // 本地回显（与离线回看同形：image 块 + file 块 + text 块）。
+  return { sendImages, sendText, textElements }
+}
+
+/** 本地立即回显一条已提交的用户消息（普通发送与引导共用）。 */
+function appendLocalUserMessage(
+  session: ChatSession,
+  text: string,
+  images: ChatImageAttachment[],
+  files: ChatFileAttachment[],
+): void {
+  const trimmed = text.trim()
   const blocks: Block[] = []
   for (const img of images) {
     blocks.push({ kind: 'image', imageSrc: img.dataUrl, isError: false })
@@ -1060,34 +1192,6 @@ export async function sendPrompt(
     ...session.msgs,
     { role: 'user', sidechain: false, blocks, timestamp: new Date().toISOString() },
   ]
-
-  // 长驻进程 / Codex app-server：模型/effort/权限在当前进程或 thread 上有粘性，若用户改了
-  // 就先 restart-with-resume 换新实例再发；one-shot 才能靠本轮 agentChatSend 直接生效。
-  if (requiresRestartForSettings(session) && settingsChanged(session)) {
-    const ok = await restartChat(session)
-    if (!ok) return // restart 失败：status 已置 error
-  }
-
-  const chatId = session.chatId
-  if (chatId === null) return // restart 兜底：进程没起来就别发
-
-  startTurn(session)
-  try {
-    await api.agentChatSend(
-      chatId,
-      sendText,
-      sendImages.map((i) => ({ mediaType: i.mediaType, data: i.data })),
-      session.model,
-      sessionEffectiveEffort(session),
-      session.permissionMode,
-      textElements,
-    )
-  } catch (err) {
-    session.lastTurnOutcome = 'failed'
-    endTurn(session)
-    session.status = 'error'
-    session.errorMessage = String(err)
-  }
 }
 
 /** 运行中的进程/thread 实际生效的设置，与当前选择是否已不一致（需 restart 才能换）。 */
@@ -1434,6 +1538,8 @@ export async function reconnectChats(): Promise<ChatSession[]> {
       lastTurnMs: 0,
       status: 'running',
       queue: [],
+      submittedQueue: [],
+      pendingSteerIds: [],
       stderrTail: [],
       retry: null,
       live: null,

@@ -420,6 +420,18 @@ export const agentChatSend = (
     textElements: textElements ?? [],
   })
 
+/** 把一条 follow-up 追加到当前运行的 Codex turn；成功时不会创建新 turn 或中断当前执行。 */
+export const agentChatSteer = (
+  id: number,
+  text: string,
+  textElements: ChatTextElement[] = [],
+) =>
+  invoke<void>('agent_chat_steer', {
+    id,
+    text,
+    textElements,
+  })
+
 /** 读取本地图片文件为 base64（系统选择器只给路径，这里取字节做缩略图 + 视觉块）。 */
 export const readFileBase64 = (path: string) =>
   invoke<ChatImageInput>('read_file_base64', { path })

@@ -998,6 +998,16 @@ fn agent_chat_send(
     )
 }
 
+/// 将一条已排队消息追加给当前运行的 Codex app-server turn，不创建新 turn、也不中断当前执行。
+#[tauri::command]
+fn agent_chat_steer(
+    id: u64,
+    text: String,
+    text_elements: Option<Vec<serde_json::Value>>,
+) -> Result<(), String> {
+    agent_chat::steer(id, &text, &text_elements.unwrap_or_default())
+}
+
 /// 结束一个 chat 子进程（kill + 回收）。幂等。
 #[tauri::command]
 fn agent_chat_stop(id: u64) -> Result<(), String> {
@@ -2298,6 +2308,7 @@ pub fn run() {
             agent_chat_start,
             agent_chat_list_running,
             agent_chat_send,
+            agent_chat_steer,
             agent_chat_stop,
             agent_chat_set_title,
             agent_chat_interrupt,

@@ -16,6 +16,7 @@ import {
   chatEffectiveEffortForTest,
   chatOnMsgForTest,
   chatOnResultForTest,
+  canSteerQueued,
   enqueuePrompt,
   interruptChat,
   parseRetryLine,
@@ -24,6 +25,7 @@ import {
   respondPermission,
   respondQuestion,
   startChat,
+  steerQueued,
   shouldDropDuplicatePatchOutputForTest,
 } from '../src/chatSessions'
 import { rememberChatGuiPreference } from '../src/chatGuiPreferences'
@@ -100,6 +102,8 @@ describe('chatSessions Claude API-key compatibility', () => {
       lastTurnMs: 0,
       msgs: [],
       queue: [],
+      submittedQueue: [],
+      pendingSteerIds: [],
       live: { kind: 'text', text: 'hello' },
       pendingPermissions: [],
       pendingQuestions: [],
@@ -831,6 +835,7 @@ describe('chatSessions message queue (type-while-running)', () => {
     await Promise.resolve()
     await Promise.resolve()
     await Promise.resolve()
+    await Promise.resolve()
 
     expect(invokeMock).toHaveBeenCalledWith('agent_chat_stop', { id: 2 })
     expect(invokeMock).toHaveBeenCalledWith(
@@ -900,6 +905,111 @@ describe('chatSessions message queue (type-while-running)', () => {
     enqueuePrompt(s, 'b')
     removeQueued(s, s.queue[0].id)
     expect(s.queue.map((q) => q.text)).toEqual(['b'])
+  })
+
+  it('does not guide queued messages for non-Codex sessions', async () => {
+    const s = await startClaude()
+    s.turnState = 'running'
+    enqueuePrompt(s, 'wait for this')
+
+    expect(canSteerQueued(s)).toBe(false)
+    await steerQueued(s, s.queue[0].id)
+
+    expect(s.queue.map((q) => q.text)).toEqual(['wait for this'])
+    expect(s.submittedQueue).toEqual([])
+    expect(invokeMock).not.toHaveBeenCalledWith('agent_chat_steer', expect.anything())
+  })
+
+  it('guides exactly one Codex app-server queue item into the active turn', async () => {
+    const s = await startCodex()
+    s.turnState = 'running'
+    enqueuePrompt(s, 'first')
+    enqueuePrompt(s, 'second')
+
+    expect(canSteerQueued(s)).toBe(true)
+    await steerQueued(s, s.queue[1].id)
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      'agent_chat_steer',
+      expect.objectContaining({
+        id: 2,
+        text: expect.stringContaining('second'),
+        textElements: [],
+      }),
+    )
+    expect(invokeMock).toHaveBeenCalledWith(
+      'agent_chat_steer',
+      expect.objectContaining({ text: expect.stringContaining('fully complete the original task') }),
+    )
+    expect(s.queue.map((q) => q.text)).toEqual(['first'])
+    expect(s.submittedQueue.map((q) => q.text)).toEqual(['second'])
+    expect(s.turnState).toBe('running')
+    expect(s.msgs[s.msgs.length - 1]?.blocks).toMatchObject([
+      { kind: 'text', text: 'second' },
+    ])
+  })
+
+  it('allows several queued messages to be guided while earlier steer requests await confirmation', async () => {
+    const s = await startCodex()
+    s.turnState = 'running'
+    enqueuePrompt(s, 'first guide')
+    enqueuePrompt(s, 'second guide')
+    const firstId = s.queue[0].id
+    const secondId = s.queue[1].id
+    const resolveSteers: Array<() => void> = []
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'agent_chat_steer') {
+        return new Promise<void>((resolve) => resolveSteers.push(resolve))
+      }
+      return Promise.resolve(undefined)
+    })
+
+    const first = steerQueued(s, firstId)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(canSteerQueued(s, secondId)).toBe(true)
+    const second = steerQueued(s, secondId)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(invokeMock).toHaveBeenCalledTimes(2)
+    resolveSteers.forEach((resolve) => resolve())
+    await Promise.all([first, second])
+
+    expect(s.queue).toEqual([])
+    expect(s.submittedQueue.map((q) => q.text)).toEqual(['first guide', 'second guide'])
+  })
+
+  it('keeps a Codex queue item pending when app-server steering fails', async () => {
+    const s = await startCodex()
+    s.turnState = 'running'
+    enqueuePrompt(s, 'keep this queued')
+    invokeMock.mockRejectedValueOnce(new Error('active turn is gone'))
+
+    await steerQueued(s, s.queue[0].id)
+
+    expect(s.queue.map((q) => q.text)).toEqual(['keep this queued'])
+    expect(s.submittedQueue).toEqual([])
+    expect(s.msgs).toEqual([])
+  })
+
+  it('clears submitted queue items when the active turn completes, then drains FIFO normally', async () => {
+    const s = await startCodex()
+    s.turnState = 'running'
+    enqueuePrompt(s, 'steer this')
+    enqueuePrompt(s, 'send next')
+    await steerQueued(s, s.queue[0].id)
+    invokeMock.mockClear()
+
+    chatOnResultForTest(s, { chatId: 2, ok: true })
+    await Promise.resolve()
+
+    expect(s.submittedQueue).toEqual([])
+    expect(s.queue).toEqual([])
+    expect(invokeMock).toHaveBeenCalledWith(
+      'agent_chat_send',
+      expect.objectContaining({ id: 2, text: 'send next' }),
+    )
   })
 
   it('ignores empty messages (no text / images / files)', async () => {

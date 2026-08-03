@@ -775,6 +775,25 @@ fn codex_turn_params(
     serde_json::Value::Object(params)
 }
 
+/// `turn/steer` 只能把输入附加到当前运行中的 turn。它不接受模型、权限或 cwd 等
+/// turn 级覆写，因此刻意不复用 `codex_turn_params`。
+fn codex_steer_params(
+    thread_id: &str,
+    turn_id: &str,
+    text: &str,
+    text_elements: &[serde_json::Value],
+) -> serde_json::Value {
+    serde_json::json!({
+        "threadId": thread_id,
+        "input": [{
+            "type": "text",
+            "text": text,
+            "textElements": text_elements,
+        }],
+        "expectedTurnId": turn_id,
+    })
+}
+
 fn codex_thread_params(
     cwd: &str,
     permission_mode: &str,
@@ -829,7 +848,8 @@ fn codex_thread_fork_params(
 mod codex_side_tests {
     use super::{
         codex_item_to_msg, codex_plan_updated_to_msg, codex_thread_fork_params,
-        codex_thread_params, codex_turn_params, codex_user_input_request, codex_user_input_result,
+        codex_steer_params, codex_thread_params, codex_turn_params, codex_user_input_request,
+        codex_user_input_result,
     };
 
     #[test]
@@ -857,6 +877,23 @@ mod codex_side_tests {
         assert_eq!(params["cwd"], "/workspace/app");
         assert_eq!(params["ephemeral"], true);
         assert_eq!(params["sandbox"], "danger-full-access");
+    }
+
+    #[test]
+    fn steer_params_target_the_current_turn_without_turn_overrides() {
+        let params = codex_steer_params(
+            "thread-1",
+            "turn-1",
+            "Focus on the failing test.",
+            &[serde_json::json!({ "type": "mention", "name": "Computer" })],
+        );
+
+        assert_eq!(params["threadId"], "thread-1");
+        assert_eq!(params["expectedTurnId"], "turn-1");
+        assert_eq!(params["input"][0]["text"], "Focus on the failing test.");
+        assert_eq!(params["input"][0]["textElements"][0]["name"], "Computer");
+        assert!(params.get("model").is_none());
+        assert!(params.get("sandboxPolicy").is_none());
     }
 
     #[test]
@@ -2990,6 +3027,53 @@ pub fn send(
             )
         }
     }
+}
+
+/// 向正在运行的 Codex app-server turn 追加一条用户输入，而不创建新 turn 或中断当前执行。
+/// 仅在 app-server 明确接受 `turn/steer` 后返回成功，调用方据此安全地把消息从待发队列迁走。
+pub fn steer(id: u64, text: &str, text_elements: &[serde_json::Value]) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("cannot steer an empty message".to_string());
+    }
+    let (arc, meta) = {
+        let m = map().lock().map_err(|e| e.to_string())?;
+        m.get(&id)
+            .map(|(h, meta)| (h.clone(), meta.clone()))
+            .ok_or_else(|| "chat not found".to_string())?
+    };
+    let ChatHandle::CodexAppServer { shared, .. } = &*arc else {
+        return Err("turn steering is only supported for Codex app-server chats".to_string());
+    };
+    let thread_id = shared
+        .thread_id
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .ok_or_else(|| "codex app-server thread not initialized".to_string())?;
+    let turn_id = shared
+        .current_turn_id
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .ok_or_else(|| "codex app-server has no active turn".to_string())?;
+    let rpc_id = codex_next_rpc_id(shared);
+    codex_write_rpc(
+        shared,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "method": "turn/steer",
+            "params": codex_steer_params(&thread_id, &turn_id, text, text_elements),
+        }),
+    )?;
+    let result = codex_wait_response(shared, &rpc_id, Duration::from_secs(5))?;
+    if result.get("turnId").and_then(serde_json::Value::as_str) != Some(turn_id.as_str()) {
+        return Err("codex app-server accepted steering for an unexpected turn".to_string());
+    }
+    // 与普通发送一致，让页面刷新后的 running-chat 恢复仍保有本条用户输入；延后约束
+    // 只是 Codex 控制文本，GUI 应仅显示 `<follow-up>` 内的真实用户提示。
+    remember_user_input(&meta, crate::util::visible_deferred_follow_up(text), &[]);
+    Ok(())
 }
 
 fn spawn_oneshot_turn(id: u64, arc: Arc<ChatHandle>, spec: OneShotTurnSpec) -> Result<(), String> {

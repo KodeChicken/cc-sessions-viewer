@@ -7,7 +7,17 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { t } from '../i18n'
 import * as api from '../api'
-import { enqueuePrompt, removeQueued, interruptChat, clearChat, now, type ChatSession, type QueuedMessage } from '../chatSessions'
+import {
+  canSteerQueued,
+  clearChat,
+  enqueuePrompt,
+  interruptChat,
+  now,
+  removeQueued,
+  steerQueued,
+  type ChatSession,
+  type QueuedMessage,
+} from '../chatSessions'
 import { buildChatHistory, type ChatHistoryEntry } from '../chatInputHistory'
 import { parseChatSlashAction } from '../chatSlashActions'
 import { systemSlashCommands } from '../chatSystemCommands'
@@ -22,7 +32,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
   IconPlus, IconSend, IconStop, IconClose, IconFolder, IconPaperclip, IconSlashSquare, IconSkill,
-  IconChevronRight, IconZap, IconGitBranch, IconCornerDownLeft,
+  IconArrowUp, IconChevronRight, IconZap, IconGitBranch, IconCornerDownLeft,
   fileIconFor,
 } from './icons'
 import ChatModeMenu from './ChatModeMenu.vue'
@@ -1442,8 +1452,21 @@ function queuedLabel(q: QueuedMessage): string {
       </div>
     </Teleport>
 
-    <!-- 待发队列：一轮进行中时回车把消息入队，按 result 顺序逐条发出；× 可在发出前移除 -->
-    <div v-if="session.queue.length" class="cc-queue" role="list">
+    <!-- 待发队列：Codex app-server 运行中可将指定项引导到当前 turn，其余仍按 result FIFO 发出。 -->
+    <div v-if="session.queue.length || session.submittedQueue.length" class="cc-queue" role="list">
+      <div
+        v-for="q in session.submittedQueue"
+        :key="q.id"
+        class="cc-queue-item cc-queue-item-submitted"
+        role="listitem"
+        v-tooltip="t('chat.composer.queue.submittedHint')"
+      >
+        <IconArrowUp class="cc-queue-ic" />
+        <span class="cc-queue-text">{{ queuedLabel(q) }}</span>
+        <span v-if="q.text.trim() && (q.images.length || q.files.length)" class="cc-queue-attach">
+          <IconPaperclip />{{ q.images.length + q.files.length }}
+        </span>
+      </div>
       <div
         v-for="q in session.queue"
         :key="q.id"
@@ -1457,10 +1480,21 @@ function queuedLabel(q: QueuedMessage): string {
           <IconPaperclip />{{ q.images.length + q.files.length }}
         </span>
         <button
+          v-if="canSteerQueued(session, q.id)"
+          type="button"
+          class="cc-queue-steer"
+          :aria-label="t('chat.composer.queue.steer')"
+          v-tooltip="t('chat.composer.queue.steerHint')"
+          @click.stop="steerQueued(session, q.id)"
+        >
+          <IconArrowUp />
+        </button>
+        <button
           type="button"
           class="cc-queue-x"
+          :disabled="session.pendingSteerIds.includes(q.id)"
           v-tooltip="t('chat.composer.queue.remove')"
-          @click="removeQueued(session, q.id)"
+          @click.stop="removeQueued(session, q.id)"
         >
           <IconClose />
         </button>
@@ -1880,6 +1914,10 @@ function queuedLabel(q: QueuedMessage): string {
   color: var(--text-mute);
   font-size: 13px;
 }
+.cc-queue-item-submitted {
+  border-style: dashed;
+  opacity: 0.68;
+}
 .cc-queue-ic {
   flex: none;
   width: 13px;
@@ -1920,9 +1958,35 @@ function queuedLabel(q: QueuedMessage): string {
   justify-content: center;
   cursor: pointer;
 }
+.cc-queue-steer {
+  flex: none;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-mute);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.cc-queue-steer:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.cc-queue-steer :deep(svg) {
+  width: 12px;
+  height: 12px;
+}
 .cc-queue-x:hover {
   background: var(--surface-hover);
   color: var(--text);
+}
+.cc-queue-x:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 .cc-queue-x :deep(svg) {
   width: 12px;

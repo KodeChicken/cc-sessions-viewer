@@ -1124,7 +1124,10 @@ fn read_with_title_index(
             }
             ("event_msg", "user_message") => {
                 let text = p.get("message").and_then(|x| x.as_str()).unwrap_or("");
-                let (file_blocks, body) = extract_codex_files(text);
+                // `turn/steer` 的延后约束是模型控制面，不属于用户气泡；先剥离它，才能
+                // 继续正确识别其内的 Codex 文件头。
+                let visible_text = crate::util::visible_deferred_follow_up(text);
+                let (file_blocks, body) = extract_codex_files(visible_text);
                 let mut blocks: Vec<Block> = std::mem::take(&mut pending_user_images);
                 // 图片已由 response_item 捕获到 pending_user_images。只去除首尾的附件
                 // 标记；行中文件引用仍要完整显示，post_process 会做附件 tag 去重。
@@ -2389,6 +2392,27 @@ mod tests {
         let (files, body) = extract_codex_files("just a normal question\n");
         assert!(files.is_empty());
         assert_eq!(body, "just a normal question\n");
+    }
+
+    #[test]
+    fn read_session_hides_deferred_steer_control_text() {
+        let deferred = "[Deferred follow-up from the user]\n\
+Continue and fully complete the original task already in progress first.\n\
+Do not interrupt it, change its direction, or begin the follow-up below yet.\n\
+Only after the original task is complete, process this follow-up in the order received:\n\
+<follow-up>\n当前时间\n</follow-up>";
+        let line = serde_json::json!({
+            "timestamp": "2026-08-03T03:00:00.000Z",
+            "type": "event_msg",
+            "payload": { "type": "user_message", "message": deferred },
+        })
+        .to_string();
+        let path = write_temp("codex-deferred-steer.jsonl", &[&line]);
+        let msgs = read_with_title_index(path.to_string_lossy().as_ref(), &HashMap::new())
+            .expect("read deferred steer session");
+
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].blocks[0].text.as_deref(), Some("当前时间"));
     }
 
     #[test]

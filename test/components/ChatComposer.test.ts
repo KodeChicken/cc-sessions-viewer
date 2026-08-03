@@ -11,17 +11,20 @@ const {
   openSideChatMock,
   openCodexSideChatMock,
   agentChatInterruptMock,
+  agentChatSteerMock,
 } = vi.hoisted(() => ({
   claudeRuntimeInfoMock: vi.fn().mockResolvedValue({ hasCustomBaseUrl: false }),
   listProjectFilesMock: vi.fn().mockResolvedValue([]),
   openSideChatMock: vi.fn().mockResolvedValue(null),
   openCodexSideChatMock: vi.fn().mockResolvedValue(null),
   agentChatInterruptMock: vi.fn().mockResolvedValue(undefined),
+  agentChatSteerMock: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('../../src/api', () => ({
   agentChatSlashCommands: vi.fn().mockResolvedValue([]),
   agentChatInterrupt: agentChatInterruptMock,
+  agentChatSteer: agentChatSteerMock,
   claudeRuntimeInfo: claudeRuntimeInfoMock,
   codexRuntimeInfo: vi.fn().mockResolvedValue({ usesApiKey: false }),
   listProjectFiles: listProjectFilesMock,
@@ -70,6 +73,8 @@ const baseSession = (over: Partial<ChatSession> = {}): ChatSession =>
     lastTurnMs: 0,
     status: 'running',
     queue: [],
+    submittedQueue: [],
+    pendingSteerIds: [],
     usage: undefined,
     lastModel: undefined,
     apiKeySource: 'none',
@@ -89,6 +94,7 @@ const baseSession = (over: Partial<ChatSession> = {}): ChatSession =>
 describe('ChatComposer', () => {
   beforeEach(() => {
     agentChatInterruptMock.mockClear()
+    agentChatSteerMock.mockClear()
   })
 
   it('hides the effort slider for Claude API-key sessions', () => {
@@ -169,6 +175,32 @@ describe('ChatComposer', () => {
     expect(agentChatInterruptMock).not.toHaveBeenCalled()
     expect(session.turnState).toBe('running')
     expect(session.live).toEqual({ kind: 'text', text: 'working' })
+  })
+
+  it('shows Guide for queued messages in a running Codex app-server turn', async () => {
+    const session = baseSession({
+      agent: 'codex',
+      processModel: 'codexAppServer',
+      turnState: 'running',
+      queue: [{ id: 1, text: 'Focus on the failing test.', images: [], files: [] }],
+    })
+    const wrapper = mount(ChatComposer, {
+      props: { session },
+      global: { directives: { tooltip: vTooltip } },
+    })
+
+    const guide = wrapper.find('.cc-queue-steer')
+    expect(guide.exists()).toBe(true)
+    await guide.trigger('click')
+    await flushPromises()
+
+    expect(agentChatSteerMock).toHaveBeenCalledWith(
+      1,
+      expect.stringContaining('Focus on the failing test.'),
+      [],
+    )
+    expect(session.queue).toEqual([])
+    expect(session.submittedQueue.map((q) => q.text)).toEqual(['Focus on the failing test.'])
   })
 
   it('keeps input focus after sending', async () => {
