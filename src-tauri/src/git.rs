@@ -41,6 +41,20 @@ fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// `git diff --no-index` 用退出码 1 表示「文件不同」，这是未跟踪文件生成 diff 的正常结果。
+fn run_git_diff(cwd: &str, args: &[&str]) -> Result<String, String> {
+    let output = silent_command("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() && output.status.code() != Some(1) {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 pub fn git_has_repo(cwd: &str) -> bool {
     silent_command("git")
         .arg("-C")
@@ -212,18 +226,45 @@ fn parse_numstat_output(text: &str) -> Vec<GitDiffFile> {
 
 pub fn git_diff_files(cwd: &str, git_ref: &str) -> Result<Vec<GitDiffFile>, String> {
     let root = repo_root(cwd)?;
-    let out = if git_ref == "working" {
-        run_git(&root, &["diff", "HEAD", "--numstat"])?
+    let mut files = if git_ref == "working" {
+        let out = run_git(&root, &["diff", "HEAD", "--numstat"])?;
+        let mut files = parse_numstat_output(&out);
+        for status in git_status(&root)?
+            .into_iter()
+            .filter(|file| file.status == "?")
+        {
+            let out = run_git_diff(
+                &root,
+                &[
+                    "diff",
+                    "--no-index",
+                    "--numstat",
+                    "--",
+                    "/dev/null",
+                    &status.path,
+                ],
+            )?;
+            let stats = parse_numstat_output(&out).into_iter().next();
+            files.push(GitDiffFile {
+                path: status.path,
+                additions: stats.as_ref().map_or(0, |file| file.additions),
+                deletions: 0,
+                status: "A".to_string(),
+            });
+        }
+        files
     } else {
         if !valid_hash(git_ref) {
             return Err("Invalid commit hash".to_string());
         }
-        run_git(
+        let out = run_git(
             &root,
             &["diff-tree", "-r", "--numstat", "--no-commit-id", git_ref],
-        )?
+        )?;
+        parse_numstat_output(&out)
     };
-    Ok(parse_numstat_output(&out))
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
 }
 
 pub fn git_diff_file(cwd: &str, git_ref: &str, path: &str) -> Result<Vec<DiffHunk>, String> {
@@ -232,7 +273,14 @@ pub fn git_diff_file(cwd: &str, git_ref: &str, path: &str) -> Result<Vec<DiffHun
     }
     let root = repo_root(cwd)?;
     let out = if git_ref == "working" {
-        run_git(&root, &["diff", "HEAD", "--", path])?
+        if git_status(&root)?
+            .iter()
+            .any(|file| file.status == "?" && file.path == path)
+        {
+            run_git_diff(&root, &["diff", "--no-index", "--", "/dev/null", path])?
+        } else {
+            run_git(&root, &["diff", "HEAD", "--", path])?
+        }
     } else {
         if !valid_hash(git_ref) {
             return Err("Invalid commit hash".to_string());
@@ -344,6 +392,41 @@ mod tests {
         git_switch_branch(cwd, &initial_branch).unwrap();
         let after_delete = git_delete_branch(cwd, "feature/branch-menu").unwrap();
         assert!(!after_delete.branches.iter().any(|branch| branch == "feature/branch-menu"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn git_diff_includes_untracked_working_files() {
+        let dir =
+            std::env::temp_dir().join(format!("cssv_git_untracked_diff_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = dir.to_str().unwrap();
+
+        run_git(cwd, &["init"]).unwrap();
+        run_git(cwd, &["config", "user.email", "test@example.com"]).unwrap();
+        run_git(cwd, &["config", "user.name", "Test User"]).unwrap();
+        std::fs::write(dir.join("README.md"), "initial\n").unwrap();
+        run_git(cwd, &["add", "README.md"]).unwrap();
+        run_git(cwd, &["commit", "-m", "initial"]).unwrap();
+
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("docs/new.md"), "first line\nsecond line\n").unwrap();
+
+        let files = git_diff_files(cwd, "working").unwrap();
+        let file = files
+            .iter()
+            .find(|file| file.path == "docs/new.md")
+            .unwrap();
+        assert_eq!(file.status, "A");
+        assert_eq!(file.additions, 2);
+        assert_eq!(file.deletions, 0);
+
+        let hunks = git_diff_file(cwd, "working", "docs/new.md").unwrap();
+        assert!(hunks[0]
+            .lines
+            .iter()
+            .any(|line| line.kind == "add" && line.text == "first line"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

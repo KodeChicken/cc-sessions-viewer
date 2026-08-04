@@ -148,6 +148,16 @@ async function loadWorkingCount() {
   }
 }
 
+function fileToLoad(): string | null {
+  if (selectedFile.value && files.value.some((file) => file.path === selectedFile.value)) {
+    return selectedFile.value
+  }
+  if (props.selectedPath && files.value.some((file) => file.path === props.selectedPath)) {
+    return props.selectedPath
+  }
+  return files.value.length === 1 ? files.value[0].path : null
+}
+
 function selectRef(ref: string) {
   dropdownOpen.value = false
   emit('refChange', ref)
@@ -155,9 +165,8 @@ function selectRef(ref: string) {
 
 async function refresh() {
   await loadFiles()
-  if (selectedFile.value && files.value.find((f) => f.path === selectedFile.value)) {
-    await loadDiff(selectedFile.value)
-  }
+  const path = fileToLoad()
+  if (path) await loadDiff(path)
   if (currentRef.value === 'working') await loadWorkingCount()
 }
 
@@ -178,11 +187,7 @@ watch(workingChangesRevision, () => {
 onMounted(async () => {
   document.addEventListener('click', onDocClick, true)
   loadCommits()
-  loadWorkingCount()
-  await loadFiles()
-  if (props.selectedPath && files.value.find(f => f.path === props.selectedPath)) {
-    loadDiff(props.selectedPath)
-  }
+  await refresh()
 })
 
 onUnmounted(() => {
