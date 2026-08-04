@@ -69,7 +69,7 @@ enum ChatHandle {
         approved_command_prefixes: Mutex<Vec<String>>,
         use_reclaude: bool,
     },
-    /// Codex rich-client protocol (`codex app-server --stdio`). This is the path that can
+    /// Codex rich-client protocol (`codex app-server`). This is the path that can
     /// surface real approval requests instead of headless `codex exec` failures.
     CodexAppServer { shared: Arc<CodexAppServerShared> },
 }
@@ -1441,7 +1441,7 @@ fn start_codex_app_server(
     ephemeral: bool,
 ) -> Result<Arc<ChatHandle>, String> {
     ensure_codex_cli_available(&cwd)?;
-    let command = AgentCommand::new("codex").arg("app-server").arg("--stdio");
+    let command = AgentCommand::new("codex").arg("app-server");
     let mut cmd = build_piped_command(&cwd, &command, false);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())

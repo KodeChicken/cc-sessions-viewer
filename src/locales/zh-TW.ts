@@ -657,6 +657,9 @@ export default {
   'settings.showToolCalls': '顯示工具呼叫',
   'settings.showToolCallsDesc':
     '顯示 Bash、Read、Grep 等過程性工具呼叫；檔案變更和需要你確認的互動一律顯示。',
+  'settings.chatSpacing': '資訊間距',
+  'settings.chatSpacingDesc': '調整訊息、思考和工具區塊之間的垂直間距。',
+  'settings.chatSpacingCompact': '緊湊',
   'settings.section.data': '資料',
   'settings.section.about': '關於',
   'settings.lang.en': 'English',

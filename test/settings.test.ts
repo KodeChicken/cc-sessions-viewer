@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
-import { applyTheme, clearAppCache, lang, setLang, setTheme, theme } from '../src/settings'
+import {
+  applyTheme,
+  chatSpacing,
+  clearAppCache,
+  lang,
+  setChatSpacing,
+  setLang,
+  setTheme,
+  theme,
+} from '../src/settings'
 
 const DARK = 'theme-dark'
 
@@ -24,6 +33,7 @@ function stubMatchMedia(matches: boolean) {
 afterEach(() => {
   vi.unstubAllGlobals()
   document.documentElement.classList.remove(DARK)
+  setChatSpacing(100)
   setLang('en')
   setTheme('system')
 })
@@ -41,6 +51,37 @@ describe('setTheme', () => {
     setTheme('dark')
     expect(theme.value).toBe('dark')
     expect(localStorage.getItem('theme')).toBe('dark')
+  })
+})
+
+describe('chat spacing', () => {
+  async function freshChatSpacing(stored?: string) {
+    localStorage.clear()
+    if (stored !== undefined) localStorage.setItem('chatSpacing:v1', stored)
+    vi.resetModules()
+    return import('../src/settings')
+  }
+
+  it('defaults to the current 100% spacing when no preference is stored', async () => {
+    const mod = await freshChatSpacing()
+    expect(mod.chatSpacing.value).toBe(100)
+    expect(document.documentElement.style.getPropertyValue('--chat-spacing-scale')).toBe('1')
+  })
+
+  it('restores only supported persisted steps', async () => {
+    const restored = await freshChatSpacing('150')
+    expect(restored.chatSpacing.value).toBe(150)
+    expect(document.documentElement.style.getPropertyValue('--chat-spacing-scale')).toBe('1.5')
+
+    const fallback = await freshChatSpacing('151')
+    expect(fallback.chatSpacing.value).toBe(100)
+  })
+
+  it('persists and applies a new spacing immediately', () => {
+    setChatSpacing(70)
+    expect(chatSpacing.value).toBe(70)
+    expect(localStorage.getItem('chatSpacing:v1')).toBe('70')
+    expect(document.documentElement.style.getPropertyValue('--chat-spacing-scale')).toBe('0.7')
   })
 })
 

@@ -663,6 +663,9 @@ export default {
   'settings.showToolCalls': 'Show tool calls',
   'settings.showToolCallsDesc':
     'Show process tools such as Bash, Read, and Grep. File changes and prompts that need your input are always shown.',
+  'settings.chatSpacing': 'Information spacing',
+  'settings.chatSpacingDesc': 'Adjust vertical spacing between messages, thinking, and tool blocks.',
+  'settings.chatSpacingCompact': 'Compact',
   'settings.section.data': 'Data',
   'settings.section.about': 'About',
   'settings.lang.en': 'English',

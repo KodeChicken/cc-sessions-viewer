@@ -69,6 +69,7 @@
   --traffic-lights-w: 0px;
   --font-ui-size: 14px;
   --font-code-size: 12px;
+  --chat-spacing-scale: 1;
   --diff-added: #00a240;
   --diff-removed: #e02e2a;
   --skill: #751ed9;
@@ -2286,20 +2287,20 @@ mark.locate-hl {
 .msg-row {
   display: flex;
   flex-direction: column;
-  margin-bottom: 22px;
+  margin-bottom: calc(22px * var(--chat-spacing-scale));
 }
 /* 气泡 + 悬停操作行竖排：操作行行内排在气泡正下方，故按列对齐（用户右、AI 左）。 */
 .msg-row.user,
 .msg-row.assistant,
 .msg-row.tool-only {
-  margin-bottom: 14px;
+  margin-bottom: calc(14px * var(--chat-spacing-scale));
 }
 /* 文件改动型结果挂在 assistant tool_use 行内：气泡下方、时间行上方，宽度与独立
    tool-only 结果行一致（86%），上方留一点间距与「Tool call」卡分开。 */
 .attached-result {
   max-width: 86%;
   min-width: 0;
-  margin-top: 8px;
+  margin-top: calc(8px * var(--chat-spacing-scale));
 }
 .msg-row.user {
   align-items: flex-end;
@@ -2313,7 +2314,7 @@ mark.locate-hl {
    调用挨太紧且 hover 不出时间，按用户要求改为统一节奏。 */
 .msg-row.system {
   align-items: center;
-  margin-bottom: 16px;
+  margin-bottom: calc(16px * var(--chat-spacing-scale));
 }
 /* System-injected user records (compaction summary, skill injection, task
    notifications, command output): rendered like an assistant turn — a labeled
@@ -2480,7 +2481,7 @@ mark.locate-hl {
 .role-tag {
   font-size: 11px;
   color: var(--text-mute);
-  margin-bottom: 6px;
+  margin-bottom: calc(6px * var(--chat-spacing-scale));
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2604,8 +2605,8 @@ mark.locate-hl {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end; /* 不同高度的缩略图底部对齐 */
-  gap: 8px;
-  margin-bottom: 6px;
+  gap: calc(8px * var(--chat-spacing-scale));
+  margin-bottom: calc(6px * var(--chat-spacing-scale));
   max-width: 86%;
 }
 .msg-row.user .msg-images {
@@ -2641,8 +2642,8 @@ mark.locate-hl {
 .msg-files {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 6px;
+  gap: calc(8px * var(--chat-spacing-scale));
+  margin-bottom: calc(6px * var(--chat-spacing-scale));
   max-width: 86%;
 }
 .msg-row.user .msg-files {
@@ -3074,7 +3075,7 @@ del { text-decoration: line-through; opacity: 0.7; }
 
 /* ---------- Thinking / tool blocks ---------- */
 .block-card {
-  margin: 8px 0;
+  margin: calc(8px * var(--chat-spacing-scale)) 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -3167,7 +3168,7 @@ details[open] > .block-summary > .chev {
 /* Thinking 是助手过程信息，不是工具调用：用轻量的可折叠文本和引导线，
    不继承 .block-card 的边框/底色，避免和工具结果抢视觉层级。 */
 .thinking-block {
-  margin: 10px 0 14px;
+  margin: calc(10px * var(--chat-spacing-scale)) 0 calc(14px * var(--chat-spacing-scale));
   color: var(--text-dim);
 }
 .thinking-summary {
@@ -3307,7 +3308,7 @@ details[open] > .thinking-summary .thinking-chev {
   overflow: auto;
 }
 .inline-tool-code-flat {
-  margin: 8px 0 12px;
+  margin: calc(8px * var(--chat-spacing-scale)) 0 calc(12px * var(--chat-spacing-scale));
 }
 .inline-tool-code .block-body .codex-apply-patch {
   display: flex;
@@ -5568,6 +5569,11 @@ body.is-tab-reordering * {
   min-width: 32px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+.set-slider-endpoint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
 }
 .set-slider {
   -webkit-appearance: none;

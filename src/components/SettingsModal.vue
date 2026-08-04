@@ -37,6 +37,8 @@ import {
   setUseReclaude,
   showToolCalls,
   setShowToolCalls,
+  chatSpacing,
+  setChatSpacing,
   type Lang,
   type Theme,
   type TerminalApp,
@@ -446,6 +448,10 @@ function onFontSlider(e: Event) {
   setFontScale(Number((e.target as HTMLInputElement).value))
 }
 
+function onChatSpacingSlider(e: Event) {
+  setChatSpacing(Number((e.target as HTMLInputElement).value))
+}
+
 function onFontFamilyInput(e: Event) {
   setFontFamily((e.target as HTMLInputElement).value.trim())
 }
@@ -683,6 +689,24 @@ async function installTurnHooks() {
                 <span class="set-toggle-thumb" />
               </span>
             </label>
+            <div class="set-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.chatSpacing') }}</div>
+                <p class="set-row-desc">{{ t('settings.chatSpacingDesc') }}</p>
+              </div>
+              <div class="set-font-slider set-row-control">
+                <span class="set-slider-endpoint">{{ t('settings.chatSpacingCompact') }}</span>
+                <input
+                  data-chat-spacing-slider
+                  type="range" min="30" max="150" step="2"
+                  :value="chatSpacing"
+                  :aria-label="t('settings.chatSpacing')"
+                  @input="onChatSpacingSlider"
+                  class="set-slider"
+                >
+                <span class="set-font-value">{{ chatSpacing }}%</span>
+              </div>
+            </div>
           </div>
 
           <!-- 数据 -->

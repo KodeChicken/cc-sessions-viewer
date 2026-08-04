@@ -299,7 +299,7 @@ fn app_server_response(
 fn query_codex_app_thread_list() -> CodexAppListSnapshot {
     let result = (|| -> Result<CodexAppListSnapshot, String> {
         let mut child = crate::util::silent_command(codex_cli_path())
-            .args(["app-server", "--stdio"])
+            .arg("app-server")
             .env("PATH", augmented_path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

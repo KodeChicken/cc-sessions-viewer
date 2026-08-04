@@ -660,6 +660,9 @@ export default {
   'settings.showToolCalls': 'ツール呼び出しを表示',
   'settings.showToolCallsDesc':
     'Bash、Read、Grep などの処理用ツール呼び出しを表示します。ファイル変更と確認が必要な操作は常に表示されます。',
+  'settings.chatSpacing': '情報の間隔',
+  'settings.chatSpacingDesc': 'メッセージ、思考、ツールブロック間の縦方向の間隔を調整します。',
+  'settings.chatSpacingCompact': 'コンパクト',
   'settings.section.data': 'データ',
   'settings.section.about': 'バージョン情報',
   'settings.lang.en': 'English',

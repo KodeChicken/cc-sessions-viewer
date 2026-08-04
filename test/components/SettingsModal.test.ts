@@ -33,6 +33,8 @@ import SettingsModal from '../../src/components/SettingsModal.vue'
 import { vTooltip } from '../../src/tooltip'
 import {
   lang,
+  chatSpacing,
+  setChatSpacing,
   setLang,
   setShowToolCalls,
   setTheme,
@@ -171,6 +173,7 @@ beforeEach(() => {
   setDesktopPetCharacter('codex:codex')
   setDesktopPetSize(112)
   setShowToolCalls(false)
+  setChatSpacing(100)
   setUseReclaude(false)
   desktopPetCatalog.value = null
   desktopPetCatalogError.value = ''
@@ -179,6 +182,7 @@ afterEach(() => {
   setLang('en')
   setTheme('system')
   setShowToolCalls(false)
+  setChatSpacing(100)
   setUseReclaude(false)
 })
 
@@ -249,6 +253,19 @@ describe('SettingsModal', () => {
 
     expect(showToolCalls.value).toBe(true)
     expect(localStorage.getItem('showToolCalls:v1')).toBe('1')
+  })
+
+  it('updates information spacing from the Chat slider', async () => {
+    const wrapper = factory()
+    const slider = wrapper.get('[data-chat-spacing-slider]')
+    expect(slider.attributes('min')).toBe('30')
+    expect(slider.attributes('max')).toBe('150')
+    expect(slider.attributes('step')).toBe('2')
+    await slider.setValue('30')
+
+    expect(chatSpacing.value).toBe(30)
+    expect(localStorage.getItem('chatSpacing:v1')).toBe('30')
+    expect(document.documentElement.style.getPropertyValue('--chat-spacing-scale')).toBe('0.3')
   })
 
   it('loads the app version on mount', async () => {

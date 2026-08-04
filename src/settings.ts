@@ -22,6 +22,7 @@ const ENABLED_AGENTS_KEY = 'enabledAgents:v1'
 const QUICK_OPEN_KEY = 'quickOpenTarget:v1'
 const USE_RECLAUDE_KEY = 'useReclaude:v1'
 const SHOW_TOOL_CALLS_KEY = 'showToolCalls:v1'
+const CHAT_SPACING_KEY = 'chatSpacing:v1'
 
 /**
  * 根据浏览器/系统语言探测默认语言。
@@ -80,6 +81,44 @@ export function setShowToolCalls(v: boolean) {
   showToolCalls.value = v
   localStorage.setItem(SHOW_TOOL_CALLS_KEY, v ? '1' : '0')
 }
+
+export type ChatSpacing = number
+
+const CHAT_SPACING_DEFAULT = 100
+const CHAT_SPACING_MIN = 30
+const CHAT_SPACING_MAX = 150
+const CHAT_SPACING_STEP = 2
+
+function isChatSpacing(value: number): value is ChatSpacing {
+  return Number.isInteger(value)
+    && value >= CHAT_SPACING_MIN
+    && value <= CHAT_SPACING_MAX
+    && (value - CHAT_SPACING_MIN) % CHAT_SPACING_STEP === 0
+}
+
+function readChatSpacing(): ChatSpacing {
+  const value = Number(localStorage.getItem(CHAT_SPACING_KEY))
+  return isChatSpacing(value) ? value : CHAT_SPACING_DEFAULT
+}
+
+export const chatSpacing = ref<ChatSpacing>(readChatSpacing())
+
+function doApplyChatSpacing(value: ChatSpacing) {
+  document.documentElement.style.setProperty('--chat-spacing-scale', String(value / 100))
+}
+
+export function setChatSpacing(value: ChatSpacing) {
+  const next = isChatSpacing(value) ? value : CHAT_SPACING_DEFAULT
+  chatSpacing.value = next
+  localStorage.setItem(CHAT_SPACING_KEY, String(next))
+  doApplyChatSpacing(next)
+}
+
+export function applyChatSpacing() {
+  doApplyChatSpacing(chatSpacing.value)
+}
+
+doApplyChatSpacing(chatSpacing.value)
 
 // ---------- 双击 / 新建快捷键默认打开什么 ----------
 // 双击 tab 条空白处、⌘N / ⌘T 默认都开「会话(session)」。这里让用户改成开
