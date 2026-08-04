@@ -23,7 +23,6 @@ import { parseChatSlashAction } from '../chatSlashActions'
 import { systemSlashCommands } from '../chatSystemCommands'
 import { openSideChat } from '../sideChat'
 import { openCodexSideChat } from '../codexSideChat'
-import { useGitBranch } from '../gitBranch'
 import { formatElapsedSeconds } from '../format'
 import { showTooltipFor, hideTooltip } from '../tooltip'
 import type { ChatImageAttachment, ChatFileAttachment, SlashCommand, ProjectFileEntry } from '../types'
@@ -32,12 +31,13 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
   IconPlus, IconSend, IconStop, IconClose, IconFolder, IconPaperclip, IconSlashSquare, IconSkill,
-  IconArrowUp, IconChevronRight, IconZap, IconGitBranch, IconCornerDownLeft,
+  IconArrowUp, IconChevronRight, IconZap, IconCornerDownLeft,
   fileIconFor,
 } from './icons'
 import ChatModeMenu from './ChatModeMenu.vue'
 import ChatModelMenu from './ChatModelMenu.vue'
 import ChatEffortSlider from './ChatEffortSlider.vue'
+import GitBranchControl from './GitBranchControl.vue'
 import AutoModeConfirmModal from './AutoModeConfirmModal.vue'
 import {
   hasModelChoice,
@@ -255,8 +255,6 @@ const retryLabel = computed(() => {
 // 语言 / session 选择响应式刷新。
 const agent = computed(() => props.session.agent)
 const slashInsertChar = computed(() => agent.value === 'codex' ? '$' : '/')
-// 底栏当前 git 分支（与 ChatView 头部共用 useGitBranch）：非 git 仓库 → null 不渲染。
-const gitBranch = useGitBranch(() => props.session.cwd)
 // 拖拽投放区配色：用 agent 自己的品牌色 token（--brand-claude / -codex），
 // 而非随窗口失焦变灰的 --brand。从 Finder 拖文件进来时本窗口处于 .is-blurred（--brand
 // 被降级成 --text-mute 灰），用 raw token 才能始终保持橘/绿/蓝，不会先灰后橘地闪。
@@ -1707,11 +1705,11 @@ function queuedLabel(q: QueuedMessage): string {
         >
           <IconZap />
         </button>
-        <!-- 当前 git 分支：非 git 仓库时不渲染（与头部分支块共用 useGitBranch）。 -->
-        <span v-if="gitBranch" class="git-branch" v-tooltip="t('chat.branch') + ': ' + gitBranch">
-          <IconGitBranch class="git-branch-ic" />
-          <span class="git-branch-name">{{ gitBranch }}</span>
-        </span>
+        <GitBranchControl
+          :cwd="session.cwd"
+          :disabled="session.turnState !== 'idle'"
+          menu-placement="above"
+        />
       </div>
       <div class="cc-footer-right">
         <!-- 顺序：context → 5h → 周（用户要求）。context 占用 ≥70% 紫、≥90% 红。 -->

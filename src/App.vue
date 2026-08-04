@@ -3118,18 +3118,17 @@ function nextGitDiffNumber(projectKey: string): number {
   return n
 }
 
-async function openGitChangesTab() {
-  const proj = activeProject.value
-  if (!proj) return
-  const cwd = proj.displayPath
-  const has = await api.gitHasRepo(cwd).catch(() => false)
+async function openGitChangesTab(cwd?: string) {
+  const repositoryCwd = cwd || activeProject.value?.displayPath
+  if (!repositoryCwd) return
+  const has = await api.gitHasRepo(repositoryCwd).catch(() => false)
   if (!has) return
   createViewTab({
     type: 'git',
     agent: agent.value,
     projectKey: activeDir.value ?? '',
     title: `Git Diff ${nextGitDiffNumber(activeDir.value ?? '')}`,
-    gitCwd: cwd,
+    gitCwd: repositoryCwd,
     gitRef: 'working',
   })
 }

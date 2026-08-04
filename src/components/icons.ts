@@ -47,6 +47,7 @@ import IconMinimizeRaw from '~icons/lucide/minus'
 import IconDownloadRaw from '~icons/lucide/download'
 import IconMarkdownRaw from '~icons/lucide/file-text'
 import IconFileRaw from '~icons/lucide/file'
+import IconFileDiffRaw from '~icons/lucide/file-diff'
 import IconHtmlRaw from '~icons/lucide/file-code'
 import IconJsonRaw from '~icons/lucide/braces'
 // 文件附件 chip 的分类型图标（统一 lucide 单色，靠形状区分，不破坏中性配色）。
@@ -137,6 +138,7 @@ export const IconMinimize = IconMinimizeRaw
 export const IconDownload = IconDownloadRaw
 export const IconMarkdown = IconMarkdownRaw
 export const IconFile = IconFileRaw
+export const IconFileDiff = IconFileDiffRaw
 export const IconHtml = IconHtmlRaw
 export const IconJson = IconJsonRaw
 export const IconSort = IconSortRaw

@@ -2,8 +2,8 @@
 // `cwd` 决定仓库位置；`hash` / `path` 是用户可控输入，经 stdin/参数拼进 shell 之外的
 // `Command::args`（无 shell 解释），但仍需白名单校验防止路径穿越或参数注入（如 `--upload-pack`）。
 
-use crate::types::{DiffHunk, GitCommit, GitDiffFile, GitFileStatus};
-use crate::util::{parse_unified_diff, silent_command};
+use crate::types::{DiffHunk, GitCommit, GitDiffFile, GitFileStatus, GitRepositoryState};
+use crate::util::{git_current_branch, parse_unified_diff, silent_command};
 
 fn valid_hash(s: &str) -> bool {
     (7..=40).contains(&s.len())
@@ -100,6 +100,88 @@ fn parse_status_output(text: &str) -> Vec<GitFileStatus> {
 pub fn git_status(cwd: &str) -> Result<Vec<GitFileStatus>, String> {
     let out = run_git(cwd, &["status", "--porcelain", "-uall"])?;
     Ok(parse_status_output(&out))
+}
+
+fn parse_branch_output(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn local_branches(cwd: &str) -> Result<Vec<String>, String> {
+    let out = run_git(
+        cwd,
+        &["for-each-ref", "--format=%(refname:short)", "--sort=refname", "refs/heads"],
+    )?;
+    Ok(parse_branch_output(&out))
+}
+
+pub fn git_repository_state(cwd: &str) -> Result<GitRepositoryState, String> {
+    if !git_has_repo(cwd) {
+        return Ok(GitRepositoryState {
+            branch: None,
+            branches: vec![],
+            change_count: 0,
+        });
+    }
+    Ok(GitRepositoryState {
+        branch: git_current_branch(cwd),
+        branches: local_branches(cwd)?,
+        change_count: git_status(cwd)?.len(),
+    })
+}
+
+/// 切换仅限已存在的本地分支。若 working tree 不干净则拒绝，避免把未提交改动带到新分支。
+pub fn git_switch_branch(cwd: &str, branch: &str) -> Result<GitRepositoryState, String> {
+    if !git_has_repo(cwd) {
+        return Err("Not a git repository".to_string());
+    }
+    let branches = local_branches(cwd)?;
+    if !branches.iter().any(|candidate| candidate == branch) {
+        return Err("Branch does not exist locally".to_string());
+    }
+    let changes = git_status(cwd)?;
+    if !changes.is_empty() {
+        return Err(format!(
+            "Cannot switch branches with {} uncommitted change(s)",
+            changes.len()
+        ));
+    }
+    run_git(cwd, &["switch", "--", branch])?;
+    git_repository_state(cwd)
+}
+
+/// 只删除已合并的非当前本地分支。`git branch -d` 的非强制语义会保护未合并提交。
+pub fn git_delete_branch(cwd: &str, branch: &str) -> Result<GitRepositoryState, String> {
+    if !git_has_repo(cwd) {
+        return Err("Not a git repository".to_string());
+    }
+    let branches = local_branches(cwd)?;
+    if !branches.iter().any(|candidate| candidate == branch) {
+        return Err("Branch does not exist locally".to_string());
+    }
+    if git_current_branch(cwd).as_deref() == Some(branch) {
+        return Err("Cannot delete the current branch".to_string());
+    }
+    run_git(cwd, &["branch", "-d", "--", branch])?;
+    git_repository_state(cwd)
+}
+
+/// 从当前 HEAD 创建一个本地分支，但不切换工作目录。分支名由 Git 原生校验。
+pub fn git_create_branch(cwd: &str, branch: &str) -> Result<GitRepositoryState, String> {
+    if !git_has_repo(cwd) {
+        return Err("Not a git repository".to_string());
+    }
+    if branch.trim().is_empty() {
+        return Err("Branch name cannot be empty".to_string());
+    }
+    if local_branches(cwd)?.iter().any(|candidate| candidate == branch) {
+        return Err("Branch already exists locally".to_string());
+    }
+    run_git(cwd, &["branch", "--", branch])?;
+    git_repository_state(cwd)
 }
 
 fn parse_numstat_output(text: &str) -> Vec<GitDiffFile> {
@@ -216,6 +298,53 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].status, "R");
         assert_eq!(files[0].path, "new.rs");
+    }
+
+    #[test]
+    fn parse_branch_output_ignores_blank_lines() {
+        assert_eq!(
+            parse_branch_output("develop\n\nfeature/chat\nmain\n"),
+            vec!["develop", "feature/chat", "main"]
+        );
+    }
+
+    #[test]
+    fn git_switch_branch_requires_a_clean_worktree() {
+        let dir = std::env::temp_dir().join(format!("cssv_git_switch_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = dir.to_str().unwrap();
+
+        run_git(cwd, &["init"]).unwrap();
+        run_git(cwd, &["config", "user.email", "test@example.com"]).unwrap();
+        run_git(cwd, &["config", "user.name", "Test User"]).unwrap();
+        std::fs::write(dir.join("README.md"), "initial\n").unwrap();
+        run_git(cwd, &["add", "README.md"]).unwrap();
+        run_git(cwd, &["commit", "-m", "initial"]).unwrap();
+        let initial_branch = git_current_branch(cwd).unwrap();
+        git_create_branch(cwd, "feature/branch-menu").unwrap();
+        assert!(local_branches(cwd)
+            .unwrap()
+            .iter()
+            .any(|branch| branch == "feature/branch-menu"));
+        run_git(cwd, &["switch", "feature/branch-menu"]).unwrap();
+        run_git(cwd, &["switch", &initial_branch]).unwrap();
+
+        let switched = git_switch_branch(cwd, "feature/branch-menu").unwrap();
+        assert_eq!(switched.branch.as_deref(), Some("feature/branch-menu"));
+
+        std::fs::write(dir.join("dirty.txt"), "uncommitted\n").unwrap();
+        let error = match git_switch_branch(cwd, &initial_branch) {
+            Ok(_) => panic!("a dirty worktree must not switch branches"),
+            Err(error) => error,
+        };
+        assert!(error.contains("uncommitted change"));
+
+        std::fs::remove_file(dir.join("dirty.txt")).unwrap();
+        git_switch_branch(cwd, &initial_branch).unwrap();
+        let after_delete = git_delete_branch(cwd, "feature/branch-menu").unwrap();
+        assert!(!after_delete.branches.iter().any(|branch| branch == "feature/branch-menu"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

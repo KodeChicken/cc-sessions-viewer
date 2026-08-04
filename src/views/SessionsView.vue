@@ -39,6 +39,7 @@ import {
 } from '../components/icons'
 import CreationSortIcon from '../components/CreationSortIcon.vue'
 import NewMenu from '../components/NewMenu.vue'
+import GitBranchControl from '../components/GitBranchControl.vue'
 import { PaneActionsKey } from '../paneActions'
 import { chatSupported } from '../chatComposerOptions'
 
@@ -700,6 +701,16 @@ defineExpose({ scrollEl })
         </button>
       </template>
       <template v-else>
+        <GitBranchControl
+          v-if="project.exists && hasGit"
+          class="list-head-branch"
+          :cwd="project.displayPath"
+        />
+        <span
+          v-if="project.exists && hasGit"
+          class="list-head-branch-divider"
+          aria-hidden="true"
+        />
         <!-- 进入批量模式 —— 原本住在 SessionsTopbar 的 .ct-actions 里，
              跟下方 new/refresh/delete 隔一行 topbar 视觉冲突，挪到这里集中显示。 -->
         <button

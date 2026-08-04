@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import type { GitCommit, GitDiffFile, DiffHunk } from '../types'
 import { gitLog, gitDiffFiles, gitDiffFile, gitStatus } from '../api'
 import { t } from '../i18n'
+import { gitWorkingChangesRefreshVersion } from '../gitWorkingChanges'
 import DiffBlock from '../components/DiffBlock.vue'
 import { IconRefresh, IconGitBranch } from '../components/icons'
 import { highlightAllCodeBlocks } from '../shikiHighlight'
@@ -28,6 +29,7 @@ const dropdownOpen = ref(false)
 const workingCount = ref(0)
 
 const currentRef = computed(() => props.gitRef || 'working')
+const workingChangesRevision = computed(() => gitWorkingChangesRefreshVersion(props.cwd))
 const currentLabel = computed(() => {
   if (currentRef.value === 'working') return t('git.working')
   const c = commits.value.find((c) => c.hash === currentRef.value)
@@ -167,6 +169,10 @@ function onDocClick(e: MouseEvent) {
 
 watch(() => props.gitRef, () => {
   void refresh()
+})
+
+watch(workingChangesRevision, () => {
+  if (currentRef.value === 'working') void refresh()
 })
 
 onMounted(async () => {

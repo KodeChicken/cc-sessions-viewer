@@ -256,6 +256,14 @@ pub struct GitFileStatus {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct GitRepositoryState {
+    pub branch: Option<String>,
+    pub branches: Vec<String>,
+    pub change_count: usize,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct GitDiffFile {
     pub path: String,
     pub additions: u32,

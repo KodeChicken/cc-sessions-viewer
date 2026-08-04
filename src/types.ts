@@ -62,6 +62,12 @@ export interface GitFileStatus {
   status: string
 }
 
+export interface GitRepositoryState {
+  branch: string | null
+  branches: string[]
+  changeCount: number
+}
+
 export interface GitDiffFile {
   path: string
   additions: number

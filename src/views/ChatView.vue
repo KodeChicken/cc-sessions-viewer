@@ -60,7 +60,6 @@ import {
   IconChat,
   IconReader,
   IconStop,
-  IconGitBranch,
   fileIconFor,
   agentIcons,
 } from '../components/icons'
@@ -79,9 +78,9 @@ import type { QuestionSelection } from '../chatQuestion'
 import { parseQuestionRequest } from '../chatQuestion'
 import { openPathExternal, agentChatSlashCommands } from '../api'
 import { convertFileSrc } from '@tauri-apps/api/core'
-import { useGitBranch } from '../gitBranch'
 import { showTooltipFor, hideTooltip } from '../tooltip'
 import { chatSupported } from '../chatComposerOptions'
+import GitBranchControl from '../components/GitBranchControl.vue'
 
 const props = defineProps<{
   agent: Agent
@@ -277,10 +276,6 @@ const runningVerb = computed(() => {
   }
   return props.liveSession?.live?.kind === 'thinking' ? t('chat.running.thinking') : t('chat.running.working')
 })
-
-// 头部分支展示：会话 cwd 所在仓库的当前 git 分支（共用 useGitBranch，与 ChatComposer 底栏一致）。
-// cwd 取 props.cwd（resume 用的工作目录）兜 session.cwd（解析出的会话工作目录）。
-const gitBranch = useGitBranch(() => props.cwd || props.session.cwd)
 
 function toggleTools() {
   toolsCollapsed.value = !toolsCollapsed.value
@@ -1778,10 +1773,10 @@ function onDocClick(e: MouseEvent) {
             <IconCopy />
           </button>
         </span>
-        <span v-if="gitBranch" class="git-branch" v-tooltip="t('chat.branch') + ': ' + gitBranch">
-          <IconGitBranch class="git-branch-ic" />
-          <span class="git-branch-name">{{ gitBranch }}</span>
-        </span>
+        <GitBranchControl
+          :cwd="cwd || session.cwd"
+          :disabled="!!liveSession && liveSession.turnState !== 'idle'"
+        />
       </div>
     </div>
     <!-- 会话统计 + 折叠 Tool calls：原本住在 ChatTopbar.ct-actions 里，

@@ -1930,6 +1930,35 @@ fn git_current_branch(cwd: String) -> Option<String> {
 }
 
 #[tauri::command]
+fn git_repository_state(cwd: String) -> Result<crate::types::GitRepositoryState, String> {
+    git::git_repository_state(&cwd)
+}
+
+#[tauri::command]
+fn git_switch_branch(
+    cwd: String,
+    branch: String,
+) -> Result<crate::types::GitRepositoryState, String> {
+    git::git_switch_branch(&cwd, &branch)
+}
+
+#[tauri::command]
+fn git_delete_branch(
+    cwd: String,
+    branch: String,
+) -> Result<crate::types::GitRepositoryState, String> {
+    git::git_delete_branch(&cwd, &branch)
+}
+
+#[tauri::command]
+fn git_create_branch(
+    cwd: String,
+    branch: String,
+) -> Result<crate::types::GitRepositoryState, String> {
+    git::git_create_branch(&cwd, &branch)
+}
+
+#[tauri::command]
 fn git_has_repo(cwd: String) -> bool {
     git::git_has_repo(&cwd)
 }
@@ -2325,6 +2354,10 @@ pub fn run() {
             save_clipboard_image,
             path_is_dir,
             git_current_branch,
+            git_repository_state,
+            git_switch_branch,
+            git_delete_branch,
+            git_create_branch,
             git_has_repo,
             git_log,
             git_status,

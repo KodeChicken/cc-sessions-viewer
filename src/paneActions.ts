@@ -66,7 +66,8 @@ export interface PaneActions {
   exitPane: (paneId: number) => void
   splitH: () => void
   splitV: () => void
-  openGitChanges: () => void
+  /** 打开仓库的工作区变更；传 cwd 时优先查看会话所属仓库。 */
+  openGitChanges: (cwd?: string) => void
   loadMore: () => void
   onListScroll: (scrollTop: number) => void
   batchDeleteSessions: () => void

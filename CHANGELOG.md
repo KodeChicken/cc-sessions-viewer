@@ -6,6 +6,40 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.3.13]
+
+### Features
+
+- **Codex GUI guided follow-ups** — queued Codex messages can now be guided into the active turn without interrupting it. Guided messages are delivered in order after the current response completes, while the internal control payload remains hidden from both live and restored chat history.
+- **Local Git branch controls** — Git repositories now expose the current branch in GUI chat, the composer, and the session-list header. The compact menu can refresh repository state, switch clean working trees between local branches, create a local branch without switching to it, and safely delete merged, non-current local branches.
+- **Working-tree change indicator** — repositories with local modifications show an uncommitted-file count. Selecting it opens the project's Git Diff tab on the working tree; refreshing branch state also refreshes any open working-tree diff views.
+- **Configurable GUI chat spacing** — Settings now includes a persisted spacing slider for message, thinking, and tool blocks, with the existing layout retained as the default and an adjustable range from 30% to 150% in 2% increments.
+
+### Bug Fixes
+
+- **Codex app-server startup** — Codex GUI now starts the app-server with its default stdio transport, restoring reliable startup behavior.
+- **Running tool-label overflow** — long live tool labels, including shell commands, now wrap and clamp within the chat layout instead of overflowing the conversation pane.
+
+### Tests
+
+- Added focused coverage for guided-message ordering and transcript filtering, the chat-spacing setting, local branch operations, uncommitted-change refresh notifications, and session-list branch controls.
+
+## [v0.3.12]
+
+### Features
+
+- **Semantic live tool activity** — GUI chats now summarize running tools by intent, including file reads and edits, searches, Git commands, builds, and tests. Parallel activity is tracked independently, and recently completed work remains visible briefly for continuity.
+
+### Bug Fixes
+
+- **Visible shell commands during execution** — live Bash activity now shows the bounded command text alongside its semantic summary, making the command currently being run directly inspectable.
+- **GUI Escape interruption and focus** — Escape handling now routes to the active GUI-chat interruption flow, while sending a message preserves composer focus for continued input.
+- **Reconnect and service-unavailable retries** — retry-state detection now recognizes reconnecting progress and service-unavailable responses, including attempt counters reported by Codex.
+
+### Tests
+
+- Added coverage for semantic tool summaries, parallel tool activity, shell command display, GUI Escape/focus handling, and reconnect retry-state parsing.
+
 ## [v0.3.11]
 
 ### Features

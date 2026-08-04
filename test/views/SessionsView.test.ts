@@ -5,9 +5,11 @@ import { setLang } from '../../src/settings'
 
 // 关键词搜索走后端：mock 掉，让规格用例驱动返回值。
 // cancelSearch 在每次新输入时调一次，桩成 no-op 即可。
-const { searchMock, cancelMock, usageMock } = vi.hoisted(() => ({
+const { searchMock, cancelMock, usageMock, gitHasRepoMock, gitRepositoryStateMock } = vi.hoisted(() => ({
   searchMock: vi.fn(),
   cancelMock: vi.fn().mockResolvedValue(undefined),
+  gitHasRepoMock: vi.fn(),
+  gitRepositoryStateMock: vi.fn(),
   // SessionsView wires sessionUsage to an IntersectionObserver — our jsdom stub
   // never reports visibility, so the mock is mostly unused but must exist.
   usageMock: vi.fn().mockResolvedValue({
@@ -26,7 +28,11 @@ vi.mock('../../src/api', () => ({
   cancelSearch: cancelMock,
   nextSearchRequestId: () => ++_id,
   sessionUsage: usageMock,
-  gitHasRepo: vi.fn().mockResolvedValue(true),
+  gitHasRepo: gitHasRepoMock,
+  gitRepositoryState: gitRepositoryStateMock,
+  gitSwitchBranch: vi.fn(),
+  gitDeleteBranch: vi.fn(),
+  gitCreateBranch: vi.fn(),
 }))
 
 import SessionsView from '../../src/views/SessionsView.vue'
@@ -53,6 +59,12 @@ beforeEach(() => {
   searchMock.mockReset()
   cancelMock.mockClear()
   cancelMock.mockResolvedValue(undefined)
+  gitHasRepoMock.mockReset()
+  gitHasRepoMock.mockResolvedValue(true)
+  gitRepositoryStateMock.mockReset()
+  gitRepositoryStateMock.mockResolvedValue({
+    branch: 'main', branches: ['main'], changeCount: 0,
+  })
   _id = 0
 })
 
@@ -109,6 +121,14 @@ const factory = (sessions: SessionMeta[] = [session()]) =>
   })
 
 describe('SessionsView', () => {
+  it('shows the project Git branch in the header action area', async () => {
+    const wrapper = factory()
+    await flushPromises()
+
+    expect(wrapper.find('.list-head-branch .git-branch-name').text()).toBe('main')
+    expect(wrapper.find('.list-head-branch-divider').exists()).toBe(true)
+  })
+
   it('emits "open" when a session card is clicked', async () => {
     const wrapper = factory()
     await wrapper.find('.session-card').trigger('click')

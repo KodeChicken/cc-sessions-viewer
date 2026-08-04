@@ -25,6 +25,7 @@ import type {
   GitCommit,
   GitFileStatus,
   GitDiffFile,
+  GitRepositoryState,
 } from './types'
 
 export interface CodexVisibilityOptions {
@@ -445,6 +446,22 @@ export const pathIsDir = (path: string) => invoke<boolean>('path_is_dir', { path
 /** 会话 cwd 所在仓库的当前 git 分支名；无仓库 / 读不到时为 null（chat 头部展示用）。 */
 export const gitCurrentBranch = (cwd: string) =>
   invoke<string | null>('git_current_branch', { cwd })
+
+/** 分支选择器用的仓库状态：当前分支、本地可切换分支和未提交文件数。 */
+export const gitRepositoryState = (cwd: string) =>
+  invoke<GitRepositoryState>('git_repository_state', { cwd })
+
+/** 切换到已存在的本地分支；后端会拒绝未提交改动，避免误带 working changes。 */
+export const gitSwitchBranch = (cwd: string, branch: string) =>
+  invoke<GitRepositoryState>('git_switch_branch', { cwd, branch })
+
+/** 删除已合并的非当前本地分支；后端采用非强制 git branch -d。 */
+export const gitDeleteBranch = (cwd: string, branch: string) =>
+  invoke<GitRepositoryState>('git_delete_branch', { cwd, branch })
+
+/** 基于当前 HEAD 创建一个本地分支，不会切换当前工作目录。 */
+export const gitCreateBranch = (cwd: string, branch: string) =>
+  invoke<GitRepositoryState>('git_create_branch', { cwd, branch })
 
 /** cwd 是否是一个 git 仓库；前端据此决定是否显示 Git Changes 入口。 */
 export const gitHasRepo = (cwd: string) => invoke<boolean>('git_has_repo', { cwd })
