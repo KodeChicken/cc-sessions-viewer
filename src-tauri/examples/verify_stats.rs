@@ -31,7 +31,9 @@ fn parse_range(range: &str) -> (Option<u64>, Option<u64>) {
             (Some(to_ms(m)), None)
         }
         "months6" => (
-            Some(to_ms(today_midnight.checked_sub_months(Months::new(6)).unwrap())),
+            Some(to_ms(
+                today_midnight.checked_sub_months(Months::new(6)).unwrap(),
+            )),
             None,
         ),
         _ => panic!("unknown range {range}"),
@@ -54,7 +56,9 @@ fn in_window(mtime: u64, lo: Option<u64>, hi: Option<u64>) -> bool {
 
 fn main() {
     let agent_arg = std::env::args().nth(1).unwrap_or_else(|| "all".to_string());
-    let range = std::env::args().nth(2).unwrap_or_else(|| "today".to_string());
+    let range = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "today".to_string());
     let agents_to_scan: Vec<&'static str> = match agent_arg.as_str() {
         "all" => vec!["claude", "codex"],
         "claude" => vec!["claude"],

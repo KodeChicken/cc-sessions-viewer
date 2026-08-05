@@ -314,17 +314,32 @@ fn parse_range(range: &str) -> Result<(Option<u64>, Option<u64>), String> {
     // 滚动 24h 会把昨晚 23:50 的长会话错算进今天。
     let now_local = Local::now();
     let today_midnight = Local
-        .with_ymd_and_hms(now_local.year(), now_local.month(), now_local.day(), 0, 0, 0)
+        .with_ymd_and_hms(
+            now_local.year(),
+            now_local.month(),
+            now_local.day(),
+            0,
+            0,
+            0,
+        )
         .single()
         .ok_or_else(|| "failed to resolve local midnight".to_string())?;
     let to_ms = |t: chrono::DateTime<Local>| -> u64 {
         let ts = t.timestamp_millis();
-        if ts < 0 { 0 } else { ts as u64 }
+        if ts < 0 {
+            0
+        } else {
+            ts as u64
+        }
     };
     if let Some(rest) = range.strip_prefix("custom:") {
         let mut parts = rest.split(':');
-        let start_s = parts.next().ok_or_else(|| "missing custom range start".to_string())?;
-        let end_s = parts.next().ok_or_else(|| "missing custom range end".to_string())?;
+        let start_s = parts
+            .next()
+            .ok_or_else(|| "missing custom range start".to_string())?;
+        let end_s = parts
+            .next()
+            .ok_or_else(|| "missing custom range end".to_string())?;
         if parts.next().is_some() {
             return Err("invalid custom stats range".to_string());
         }
@@ -523,7 +538,11 @@ mod tests {
             .unwrap()
             .timestamp_millis() as u64;
         let (lo, hi) = parse_range("today").unwrap();
-        assert_eq!(lo, Some(expected_midnight), "today.lo must be local midnight");
+        assert_eq!(
+            lo,
+            Some(expected_midnight),
+            "today.lo must be local midnight"
+        );
         assert!(hi.is_none(), "today.hi must be open-ended (= now)");
 
         // 滚动 24h 的 lo 永远 ≤ 本地午夜（除非你恰好在午夜调用）；只要不重合，
@@ -551,8 +570,14 @@ mod tests {
             .unwrap();
         let (lo7, _) = parse_range("days7").unwrap();
         let (lo30, _) = parse_range("days30").unwrap();
-        assert_eq!(lo7, Some((midnight - Duration::days(6)).timestamp_millis() as u64));
-        assert_eq!(lo30, Some((midnight - Duration::days(29)).timestamp_millis() as u64));
+        assert_eq!(
+            lo7,
+            Some((midnight - Duration::days(6)).timestamp_millis() as u64)
+        );
+        assert_eq!(
+            lo30,
+            Some((midnight - Duration::days(29)).timestamp_millis() as u64)
+        );
     }
 
     /// `month` = 本月 1 号 00:00 起 —— **不是** "过去 30 天滚动"。月初的时候

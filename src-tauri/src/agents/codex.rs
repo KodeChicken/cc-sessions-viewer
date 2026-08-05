@@ -774,7 +774,9 @@ fn patch_changes_match_input(input: &str, changes: &Value) -> bool {
         return false;
     }
     let paths = apply_patch_section_order(input);
-    changes.keys().all(|path| paths.iter().any(|known| known == path))
+    changes
+        .keys()
+        .all(|path| paths.iter().any(|known| known == path))
 }
 
 fn agent_message_phase(payload: &Value) -> Option<&str> {
@@ -1359,9 +1361,7 @@ fn read_with_title_index(
                     continue;
                 };
                 let original = block.tool_input.clone().unwrap_or_default();
-                if let Some(next_input) =
-                    augment_apply_patch_input(&original, changes)
-                {
+                if let Some(next_input) = augment_apply_patch_input(&original, changes) {
                     block.tool_input = Some(next_input);
                 }
             }
@@ -1890,9 +1890,23 @@ impl SessionSource for CodexSource {
 
         // 项目级 skills: .codex/skills/ 和 .agents/skills/
         let proj_codex = Path::new(cwd).join(".codex").join("skills");
-        super::claude::scan_skills_dir(&proj_codex, "project", proj_name.as_deref(), None, &mut out, &mut seen);
+        super::claude::scan_skills_dir(
+            &proj_codex,
+            "project",
+            proj_name.as_deref(),
+            None,
+            &mut out,
+            &mut seen,
+        );
         let proj_agents = Path::new(cwd).join(".agents").join("skills");
-        super::claude::scan_skills_dir(&proj_agents, "project", proj_name.as_deref(), None, &mut out, &mut seen);
+        super::claude::scan_skills_dir(
+            &proj_agents,
+            "project",
+            proj_name.as_deref(),
+            None,
+            &mut out,
+            &mut seen,
+        );
 
         // 用户级 skills: ~/.codex/skills/ 和 ~/.agents/skills/
         let user_codex = home().join(".codex").join("skills");
@@ -3123,7 +3137,10 @@ const result = await tools.apply_patch(patch);"#;
             .to_string(),
         ];
         let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-        let p = write_temp("codex-read-session-failed-exec-apply-patch.jsonl", &line_refs);
+        let p = write_temp(
+            "codex-read-session-failed-exec-apply-patch.jsonl",
+            &line_refs,
+        );
 
         let msgs = read_with_title_index(p.to_string_lossy().as_ref(), &HashMap::new())
             .expect("session should parse");
@@ -3185,11 +3202,11 @@ const result = await tools.apply_patch(patch);"#;
         );
     }
 }
-    #[test]
-    fn gui_chat_uses_codex_app_server_process_model() {
-        assert_eq!(
-            <CodexSource as crate::agents::SessionSource>::chat_process_model(&CodexSource),
-            ChatProcessModel::CodexAppServer
-        );
-        assert_eq!(ChatProcessModel::CodexAppServer.as_str(), "codexAppServer");
-    }
+#[test]
+fn gui_chat_uses_codex_app_server_process_model() {
+    assert_eq!(
+        <CodexSource as crate::agents::SessionSource>::chat_process_model(&CodexSource),
+        ChatProcessModel::CodexAppServer
+    );
+    assert_eq!(ChatProcessModel::CodexAppServer.as_str(), "codexAppServer");
+}

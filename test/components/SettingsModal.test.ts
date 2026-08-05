@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
-const { appVersionMock, checkAppUpdateMock, emitToMock, installTurnHooksMock, openPathExternalMock, reclaudeInfoMock, tauriInvokeMock, turnHookStatusMock } = vi.hoisted(() => ({
+const { appVersionMock, backgroundMediaDirectoryMock, checkAppUpdateMock, deleteBackgroundMediaMock, emitToMock, importBackgroundMediaMock, installTurnHooksMock, listBackgroundMediaMock, openDialogMock, openPathExternalMock, reclaudeInfoMock, tauriInvokeMock, turnHookStatusMock } = vi.hoisted(() => ({
   appVersionMock: vi.fn(),
+  backgroundMediaDirectoryMock: vi.fn(),
   checkAppUpdateMock: vi.fn(),
+  deleteBackgroundMediaMock: vi.fn(),
   emitToMock: vi.fn(),
+  importBackgroundMediaMock: vi.fn(),
   installTurnHooksMock: vi.fn(),
+  listBackgroundMediaMock: vi.fn(),
+  openDialogMock: vi.fn(),
   openPathExternalMock: vi.fn(),
   reclaudeInfoMock: vi.fn(),
   tauriInvokeMock: vi.fn(),
@@ -16,9 +21,14 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: tauriInvokeMock,
 }))
 vi.mock('@tauri-apps/api/event', () => ({ emitTo: emitToMock }))
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: openDialogMock }))
 vi.mock('../../src/api', () => ({
   appVersion: appVersionMock,
+  backgroundMediaDirectory: backgroundMediaDirectoryMock,
+  deleteBackgroundMedia: deleteBackgroundMediaMock,
+  importBackgroundMedia: importBackgroundMediaMock,
   installTurnHooks: installTurnHooksMock,
+  listBackgroundMedia: listBackgroundMediaMock,
   openUrl: (url: string) => tauriInvokeMock('open_url', { url }),
   openPathExternal: openPathExternalMock,
   reclaudeInfo: reclaudeInfoMock,
@@ -33,7 +43,13 @@ import SettingsModal from '../../src/components/SettingsModal.vue'
 import { vTooltip } from '../../src/tooltip'
 import {
   lang,
+  backgroundBorderOpacity,
+  backgroundImageOpacity,
+  backgroundImagePath,
   chatSpacing,
+  setBackgroundBorderOpacity,
+  setBackgroundImageOpacity,
+  setBackgroundImagePath,
   setChatSpacing,
   setLang,
   setShowToolCalls,
@@ -152,6 +168,7 @@ beforeEach(() => {
   setLang('en')
   setTheme('system')
   appVersionMock.mockReset().mockResolvedValue('9.9.9')
+  backgroundMediaDirectoryMock.mockReset().mockResolvedValue('/app-data/background-media')
   checkAppUpdateMock.mockReset()
   installTurnHooksMock.mockReset().mockResolvedValue({})
   openPathExternalMock.mockReset().mockResolvedValue(undefined)
@@ -175,6 +192,14 @@ beforeEach(() => {
   setShowToolCalls(false)
   setChatSpacing(100)
   setUseReclaude(false)
+  setBackgroundImagePath(null)
+  setBackgroundImageOpacity(40)
+  setBackgroundBorderOpacity(26)
+  localStorage.removeItem('settingsActiveTab:v1')
+  openDialogMock.mockReset()
+  listBackgroundMediaMock.mockReset().mockResolvedValue([])
+  importBackgroundMediaMock.mockReset()
+  deleteBackgroundMediaMock.mockReset().mockResolvedValue(undefined)
   desktopPetCatalog.value = null
   desktopPetCatalogError.value = ''
 })
@@ -184,6 +209,10 @@ afterEach(() => {
   setShowToolCalls(false)
   setChatSpacing(100)
   setUseReclaude(false)
+  setBackgroundImagePath(null)
+  setBackgroundImageOpacity(40)
+  setBackgroundBorderOpacity(26)
+  localStorage.removeItem('settingsActiveTab:v1')
 })
 
 type Props = InstanceType<typeof SettingsModal>['$props']
@@ -214,11 +243,21 @@ describe('SettingsModal', () => {
   })
 
   it('emits close only from the X button, not the overlay backdrop', async () => {
-    const wrapper = factory()
+    const wrapper = factory({ initialTab: 'theme' })
     await wrapper.find('.overlay').trigger('click')
     expect(wrapper.emitted('close')).toBeUndefined()
     await wrapper.find('.modal-close').trigger('click')
     expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+
+  it('restores the last tab selected in Settings', async () => {
+    const wrapper = factory()
+    await wrapper.findAll('.set-nav-item')[1].trigger('click')
+    expect(localStorage.getItem('settingsActiveTab:v1')).toBe('theme')
+    wrapper.unmount()
+
+    const restored = factory()
+    expect(restored.find('.set-nav-item.active').text()).toContain('Appearance')
   })
 
   it('switches language via the custom dropdown', async () => {
@@ -232,9 +271,9 @@ describe('SettingsModal', () => {
   })
 
   it('switches theme via the custom dropdown', async () => {
-    const wrapper = factory()
+    const wrapper = factory({ initialTab: 'theme' })
     const dropdowns = wrapper.findAll('.set-dropdown-btn')
-    await dropdowns[1].trigger('click')
+    await dropdowns[0].trigger('click')
     const items = wrapper.findAll('.set-dropdown-item')
     // find the Dracula option (last one)
     await items[items.length - 1].trigger('click')
@@ -266,6 +305,97 @@ describe('SettingsModal', () => {
     expect(chatSpacing.value).toBe(30)
     expect(localStorage.getItem('chatSpacing:v1')).toBe('30')
     expect(document.documentElement.style.getPropertyValue('--chat-spacing-scale')).toBe('0.3')
+  })
+
+  it('selects, previews, adjusts, and removes a background image', async () => {
+    openDialogMock.mockResolvedValue('/Users/test/Pictures/dream-skin.webp')
+    importBackgroundMediaMock.mockResolvedValue({
+      id: 'a0f7d0e7-97dd-4bbd-bceb-b840787163d1',
+      name: 'dream-skin.webp',
+      path: '/app-data/background-media/a0f7d0e7-97dd-4bbd-bceb-b840787163d1--dream-skin.webp',
+    })
+    const wrapper = factory({ initialTab: 'theme' })
+
+    await wrapper.get('[data-background-image-choose]').trigger('click')
+    await flushPromises()
+
+    expect(openDialogMock).toHaveBeenCalledWith({
+      multiple: false,
+      filters: [{ name: 'Images and videos', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'mp4'] }],
+    })
+    expect(importBackgroundMediaMock).toHaveBeenCalledWith('/Users/test/Pictures/dream-skin.webp')
+    expect(backgroundImagePath.value).toBe('/app-data/background-media/a0f7d0e7-97dd-4bbd-bceb-b840787163d1--dream-skin.webp')
+    expect(wrapper.get('.set-background-thumb').attributes('src')).toBe('asset:///app-data/background-media/a0f7d0e7-97dd-4bbd-bceb-b840787163d1--dream-skin.webp')
+    expect(wrapper.get('.set-background-name').text()).toBe('dream-skin.webp')
+
+    const slider = wrapper.get('[data-background-opacity-slider]')
+    await slider.setValue('72')
+    expect(backgroundImageOpacity.value).toBe(72)
+    expect(localStorage.getItem('backgroundImageOpacity:v1')).toBe('72')
+
+    const borderSlider = wrapper.get('[data-background-border-opacity-slider]')
+    expect(borderSlider.attributes('min')).toBe('0')
+    expect(borderSlider.attributes('max')).toBe('80')
+    await borderSlider.setValue('42')
+    expect(backgroundBorderOpacity.value).toBe(42)
+    expect(localStorage.getItem('backgroundBorderOpacity:v1')).toBe('42')
+
+    await wrapper.get('.set-background-remove').trigger('click')
+    expect(backgroundImagePath.value).toBeNull()
+    expect(wrapper.find('[data-background-opacity-slider]').exists()).toBe(false)
+    expect(wrapper.find('[data-background-border-opacity-slider]').exists()).toBe(false)
+  })
+
+  it('shows a playable preview for an MP4 background', async () => {
+    setBackgroundImagePath('/Users/test/Movies/dream-skin.mp4')
+    const wrapper = factory({ initialTab: 'theme' })
+
+    const preview = wrapper.get('video.set-background-thumb')
+    expect(preview.attributes('src')).toBe('asset:///Users/test/Movies/dream-skin.mp4')
+    expect((preview.element as HTMLVideoElement).loop).toBe(true)
+    expect((preview.element as HTMLVideoElement).muted).toBe(true)
+  })
+
+  it('shows cached backgrounds and switches immediately when one is clicked', async () => {
+    listBackgroundMediaMock.mockResolvedValue([
+      { id: 'b', name: 'forest.jpg', path: '/app-data/background-media/b--forest.jpg' },
+      { id: 'c', name: 'rain.mp4', path: '/app-data/background-media/c--rain.mp4' },
+    ])
+    const wrapper = factory({ initialTab: 'theme' })
+    await flushPromises()
+
+    const choices = wrapper.findAll('[data-background-media-select]')
+    expect(choices).toHaveLength(2)
+    expect(wrapper.findAll('video.set-background-thumb')).toHaveLength(0)
+    expect(wrapper.findAll('.set-background-media-select video')).toHaveLength(1)
+
+    await choices[1].trigger('click')
+    expect(backgroundImagePath.value).toBe('/app-data/background-media/c--rain.mp4')
+  })
+
+  it('opens the saved backgrounds folder', async () => {
+    const wrapper = factory({ initialTab: 'theme' })
+
+    await wrapper.get('[data-background-media-open-folder]').trigger('click')
+    await flushPromises()
+
+    expect(backgroundMediaDirectoryMock).toHaveBeenCalledOnce()
+    expect(openPathExternalMock).toHaveBeenCalledWith('/app-data/background-media')
+  })
+
+  it('reuses an imported background returned from the cache without duplicating it in the library', async () => {
+    const media = { id: 'b', name: 'forest.jpg', path: '/app-data/background-media/b--forest.jpg' }
+    listBackgroundMediaMock.mockResolvedValue([media])
+    openDialogMock.mockResolvedValue('/Users/test/Pictures/forest-copy.jpg')
+    importBackgroundMediaMock.mockResolvedValue(media)
+    const wrapper = factory({ initialTab: 'theme' })
+    await flushPromises()
+
+    await wrapper.get('[data-background-image-choose]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-background-media-select]')).toHaveLength(1)
+    expect(backgroundImagePath.value).toBe(media.path)
   })
 
   it('loads the app version on mount', async () => {

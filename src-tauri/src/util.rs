@@ -1329,7 +1329,10 @@ Do not interrupt it, change its direction, or begin the follow-up below yet.\n\
 Only after the original task is complete, process this follow-up in the order received:\n\
 <follow-up>\n当前时间\n</follow-up>";
         assert_eq!(visible_deferred_follow_up(wrapped), "当前时间");
-        assert_eq!(visible_deferred_follow_up("<follow-up>普通文本</follow-up>"), "<follow-up>普通文本</follow-up>");
+        assert_eq!(
+            visible_deferred_follow_up("<follow-up>普通文本</follow-up>"),
+            "<follow-up>普通文本</follow-up>"
+        );
     }
 
     #[test]

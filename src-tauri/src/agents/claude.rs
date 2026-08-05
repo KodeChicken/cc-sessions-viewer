@@ -15,7 +15,10 @@ use serde_json::Value;
 
 use super::{ChatEvent, SessionSource};
 use crate::agent_command::AgentCommand;
-use crate::stats::{pricing, shell as shell_util, types::{CallRecord, Turn}};
+use crate::stats::{
+    pricing, shell as shell_util,
+    types::{CallRecord, Turn},
+};
 use crate::types::{
     Block, ChatDelta, DiffHunk, DiffLine, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary,
 };
@@ -115,7 +118,8 @@ impl SessionSource for ClaudeSource {
     ) -> Result<SessionPage, String> {
         let pdir = projects_dir().join(project_key);
         let mut files: Vec<(PathBuf, u64)> = Vec::new();
-        let entries = fs::read_dir(&pdir).map_err(|e| format!("Failed to read session directory: {e}"))?;
+        let entries =
+            fs::read_dir(&pdir).map_err(|e| format!("Failed to read session directory: {e}"))?;
         for f in entries.flatten() {
             let fp = f.path();
             if is_jsonl(&fp) {
@@ -128,7 +132,12 @@ impl SessionSource for ClaudeSource {
         // 本页要扫的文件可能各自几十 MB，串行 scan 一个大项目要 ~10s。scan 是纯 CPU（读+切分），
         // 用 rayon 铺到多核并行；scan 内部的缓存锁只在 get/insert 时短暂持有，不会成为瓶颈。
         // par_iter().collect() 保序，列表顺序不变。
-        let window: Vec<&PathBuf> = files.iter().skip(offset).take(limit).map(|(p, _)| p).collect();
+        let window: Vec<&PathBuf> = files
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .map(|(p, _)| p)
+            .collect();
         let sessions: Vec<SessionMeta> = window.par_iter().map(|p| scan(p)).collect();
         Ok(SessionPage { total, sessions })
     }
@@ -142,7 +151,8 @@ impl SessionSource for ClaudeSource {
     fn discover_stats_sessions(&self, project_key: &str) -> Result<Vec<SessionMeta>, String> {
         let pdir = projects_dir().join(project_key);
         let mut out: Vec<SessionMeta> = Vec::new();
-        let entries = fs::read_dir(&pdir).map_err(|e| format!("Failed to read session directory: {e}"))?;
+        let entries =
+            fs::read_dir(&pdir).map_err(|e| format!("Failed to read session directory: {e}"))?;
         for f in entries.flatten() {
             let path = f.path();
             if is_jsonl(&path) {
@@ -216,7 +226,12 @@ impl SessionSource for ClaudeSource {
         Ok(())
     }
 
-    fn fork_session(&self, project_key: &str, source_id: &str, title: &str) -> Result<String, String> {
+    fn fork_session(
+        &self,
+        project_key: &str,
+        source_id: &str,
+        title: &str,
+    ) -> Result<String, String> {
         fork_session(project_key, source_id, title)
     }
 
@@ -318,18 +333,29 @@ fn last_user_text(fp: &Path) -> Option<String> {
     let raw = fs::read(fp).ok()?;
     // 反向逐行扫描
     for line in raw.rsplit(|&b| b == b'\n') {
-        if line.is_empty() { continue; }
-        let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
-        if v.get("type").and_then(Value::as_str) != Some("user") { continue; }
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
         let content = v.get("message").and_then(|m| m.get("content"));
         let text = content
             .and_then(Value::as_array)
-            .and_then(|arr| arr.iter().find(|c| c.get("type").and_then(Value::as_str) == Some("text")))
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|c| c.get("type").and_then(Value::as_str) == Some("text"))
+            })
             .and_then(|c| c.get("text").and_then(Value::as_str))
             .or_else(|| content.and_then(Value::as_str));
         if let Some(t) = text {
             let clean = crate::util::truncate_subtitle(t);
-            if !clean.is_empty() { return Some(clean); }
+            if !clean.is_empty() {
+                return Some(clean);
+            }
         }
     }
     None
@@ -422,7 +448,9 @@ fn best_project_root(dir_name: &str, cwd: &str) -> String {
     loop {
         let encoded = format!(
             "-{}",
-            path.to_string_lossy().trim_start_matches('/').replace('/', "-")
+            path.to_string_lossy()
+                .trim_start_matches('/')
+                .replace('/', "-")
         );
         if encoded == dir_name {
             return path.to_string_lossy().into_owned();
@@ -543,10 +571,7 @@ fn image_src(el: &Value) -> Option<String> {
 /// 一条 user 记录可能携带多张图（content 数组里多个 text block），只要全是这类
 /// 元引用就整体跳过。
 fn is_image_source_meta(v: &Value, blocks: &[Block]) -> bool {
-    let is_meta = v
-        .get("isMeta")
-        .and_then(|x| x.as_bool())
-        .unwrap_or(false);
+    let is_meta = v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false);
     if !is_meta {
         return false;
     }
@@ -673,7 +698,10 @@ fn lift_file_refs(blocks: Vec<Block>, cwd: Option<&Path>) -> Vec<Block> {
 /// 返回 `None` 表示这是真正的用户消息。`blocks` 是已抽取好的块，用来嗅内容前缀。
 /// 注意：调用点已先行丢弃 `[Image: source:]` 这类 isMeta 图片引用，不会进到这里。
 fn classify_meta_kind(v: &Value, blocks: &[Block]) -> Option<String> {
-    if v.get("isCompactSummary").and_then(Value::as_bool).unwrap_or(false) {
+    if v.get("isCompactSummary")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         return Some("compact".to_string());
     }
     if v.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
@@ -684,7 +712,10 @@ fn classify_meta_kind(v: &Value, blocks: &[Block]) -> Option<String> {
     if v.get("sourceToolUseID").is_some_and(|x| x.is_string()) {
         return Some("meta".to_string());
     }
-    let origin_kind = v.get("origin").and_then(|o| o.get("kind")).and_then(Value::as_str);
+    let origin_kind = v
+        .get("origin")
+        .and_then(|o| o.get("kind"))
+        .and_then(Value::as_str);
     if origin_kind == Some("task-notification") {
         return Some("task-notification".to_string());
     }
@@ -733,7 +764,9 @@ fn classify_meta_kind(v: &Value, blocks: &[Block]) -> Option<String> {
         return Some("meta".to_string());
     }
     // 多 agent 协作：对方会话发来的消息被注入成 user 记录（无 flag，只能看正文）。
-    if head.starts_with("Another Claude session sent a message:") || head.contains("<teammate-message") {
+    if head.starts_with("Another Claude session sent a message:")
+        || head.contains("<teammate-message")
+    {
         return Some("teammate-message".to_string());
     }
     None
@@ -743,7 +776,10 @@ fn classify_meta_kind(v: &Value, blocks: &[Block]) -> Option<String> {
 /// 同源，但只看原始 `v`（不依赖已抽取的 blocks），给 `scan()` 选标题时过滤用。
 /// 返回 true 的记录不该被当成「首条用户消息」拿去当会话标题。
 fn is_injected_user(v: &Value) -> bool {
-    if v.get("isCompactSummary").and_then(Value::as_bool).unwrap_or(false) {
+    if v.get("isCompactSummary")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         return true;
     }
     if v.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
@@ -752,7 +788,9 @@ fn is_injected_user(v: &Value) -> bool {
     if v.get("sourceToolUseID").is_some_and(|x| x.is_string()) {
         return true;
     }
-    if v.get("origin").and_then(|o| o.get("kind")).and_then(Value::as_str)
+    if v.get("origin")
+        .and_then(|o| o.get("kind"))
+        .and_then(Value::as_str)
         == Some("task-notification")
     {
         return true;
@@ -974,7 +1012,10 @@ fn json_str_field_prefix(prefix: &[u8], field: &str) -> Option<String> {
     needle.push(b'"');
     needle.extend_from_slice(field.as_bytes());
     needle.push(b'"');
-    let mut i = prefix.windows(needle.len()).position(|w| w == needle.as_slice())? + needle.len();
+    let mut i = prefix
+        .windows(needle.len())
+        .position(|w| w == needle.as_slice())?
+        + needle.len();
     while i < prefix.len() && (prefix[i] == b' ' || prefix[i] == b'\t') {
         i += 1;
     }
@@ -1197,7 +1238,9 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
     // 直接按文件顺序渲染会让「摘要结果」跑到用户的 `/compact` 消息上方（很反直觉）。
     // 仅当存在压缩摘要、且每条消息都带 timestamp 时，按 timestamp **稳定**排序把摘要归位 ——
     // 其余消息本就按时间写入，稳定排序不会扰动它们（ISO-8601 + `Z`，字典序即时间序）。
-    if msgs.iter().any(|m| m.meta_kind.as_deref() == Some("compact"))
+    if msgs
+        .iter()
+        .any(|m| m.meta_kind.as_deref() == Some("compact"))
         && msgs.iter().all(|m| m.timestamp.is_some())
     {
         msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
@@ -1223,7 +1266,10 @@ pub(crate) fn record_to_msg(v: &Value) -> Option<Msg> {
         // 任务通知（commandMode == "task-notification" → 系统块）。
         let meta_kind = classify_meta_kind(v, &blocks);
         return Some(Msg {
-            uuid: v.get("uuid").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            uuid: v
+                .get("uuid")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
             role: "user".to_string(),
             timestamp: v
                 .get("timestamp")
@@ -1254,7 +1300,10 @@ pub(crate) fn record_to_msg(v: &Value) -> Option<Msg> {
         let blocks = vec![text_block("text", content)];
         let meta_kind = classify_meta_kind(v, &blocks);
         return Some(Msg {
-            uuid: v.get("uuid").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            uuid: v
+                .get("uuid")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
             role: "user".to_string(),
             timestamp: v
                 .get("timestamp")
@@ -1323,10 +1372,7 @@ pub(crate) fn record_to_msg(v: &Value) -> Option<Msg> {
                             let input = el
                                 .get("input")
                                 .map(|i| serde_json::to_string_pretty(i).unwrap_or_default());
-                            let id = el
-                                .get("id")
-                                .and_then(|x| x.as_str())
-                                .map(|s| s.to_string());
+                            let id = el.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
                             blocks.push(Block {
                                 kind: "tool_use".to_string(),
                                 tool_name: Some(name),
@@ -1448,24 +1494,83 @@ pub(crate) fn chat_slash_commands(cwd: &str) -> Vec<crate::types::SlashCommand> 
     // 项目 / 用户命令无命名空间（namespace=None）；插件命令必须带 `<plugin>:` 前缀（如 `/codex:review`）
     // 才是 CLI 认的真实调用名 —— 用插件名作 namespace，展示角标仍用美化名。
     let proj_cmds = Path::new(cwd).join(".claude").join("commands");
-    scan_commands_dir(&proj_cmds, &proj_cmds, "project", proj_name.as_deref(), None, &mut out, &mut seen_cmd);
+    scan_commands_dir(
+        &proj_cmds,
+        &proj_cmds,
+        "project",
+        proj_name.as_deref(),
+        None,
+        &mut out,
+        &mut seen_cmd,
+    );
     let user_cmds = home().join(".claude").join("commands");
-    scan_commands_dir(&user_cmds, &user_cmds, "user", None, None, &mut out, &mut seen_cmd);
+    scan_commands_dir(
+        &user_cmds,
+        &user_cmds,
+        "user",
+        None,
+        None,
+        &mut out,
+        &mut seen_cmd,
+    );
     for (plugin, install) in &plugins {
         let dir = install.join("commands");
         let badge = prettify_name(plugin);
-        scan_commands_dir(&dir, &dir, "plugin", Some(&badge), Some(plugin), &mut out, &mut seen_cmd);
+        scan_commands_dir(
+            &dir,
+            &dir,
+            "plugin",
+            Some(&badge),
+            Some(plugin),
+            &mut out,
+            &mut seen_cmd,
+        );
     }
 
     // ---- 技能 ----
     let proj_skills = Path::new(cwd).join(".claude").join("skills");
-    scan_skills_dir(&proj_skills, "project", proj_name.as_deref(), None, &mut out, &mut seen_skill);
-    scan_skills_dir(&Path::new(cwd).join(".agents").join("skills"), "project", proj_name.as_deref(), None, &mut out, &mut seen_skill);
-    scan_skills_dir(&home().join(".claude").join("skills"), "user", None, None, &mut out, &mut seen_skill);
-    scan_skills_dir(&home().join(".agents").join("skills"), "user", None, None, &mut out, &mut seen_skill);
+    scan_skills_dir(
+        &proj_skills,
+        "project",
+        proj_name.as_deref(),
+        None,
+        &mut out,
+        &mut seen_skill,
+    );
+    scan_skills_dir(
+        &Path::new(cwd).join(".agents").join("skills"),
+        "project",
+        proj_name.as_deref(),
+        None,
+        &mut out,
+        &mut seen_skill,
+    );
+    scan_skills_dir(
+        &home().join(".claude").join("skills"),
+        "user",
+        None,
+        None,
+        &mut out,
+        &mut seen_skill,
+    );
+    scan_skills_dir(
+        &home().join(".agents").join("skills"),
+        "user",
+        None,
+        None,
+        &mut out,
+        &mut seen_skill,
+    );
     for (plugin, install) in &plugins {
         let badge = prettify_name(plugin);
-        scan_skills_dir(&install.join("skills"), "plugin", Some(&badge), Some(plugin), &mut out, &mut seen_skill);
+        scan_skills_dir(
+            &install.join("skills"),
+            "plugin",
+            Some(&badge),
+            Some(plugin),
+            &mut out,
+            &mut seen_skill,
+        );
     }
 
     // 排序：先按 kind（命令在前、技能在后），同 kind 内**按来源聚拢**（项目 > 用户 > 插件，
@@ -1482,7 +1587,11 @@ pub(crate) fn chat_slash_commands(cwd: &str) -> Vec<crate::types::SlashCommand> 
 
 /// 分组排序权重：命令在前(0)，技能在后(1)。
 fn kind_rank(kind: &str) -> u8 {
-    if kind == "command" { 0 } else { 1 }
+    if kind == "command" {
+        0
+    } else {
+        1
+    }
 }
 
 /// 同 kind 内的来源聚拢顺序：项目(0) > 用户(1) > 插件(2)（与去重优先级一致）。
@@ -1543,7 +1652,9 @@ fn enabled_plugins(cwd: &str) -> Vec<(String, PathBuf)> {
 
     let mut out = Vec::new();
     for (key, records) in map {
-        let Some(recs) = records.as_array() else { continue };
+        let Some(recs) = records.as_array() else {
+            continue;
+        };
         let globally_enabled = enabled_map
             .and_then(|m| m.get(key))
             .and_then(Value::as_bool)
@@ -1578,7 +1689,9 @@ fn scan_commands_dir(
     out: &mut Vec<crate::types::SlashCommand>,
     seen: &mut std::collections::HashSet<String>,
 ) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -1588,7 +1701,9 @@ fn scan_commands_dir(
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
-        let Ok(rel) = path.strip_prefix(root) else { continue };
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
         let base = rel
             .with_extension("")
             .to_string_lossy()
@@ -1632,7 +1747,9 @@ pub(crate) fn scan_skills_dir(
     out: &mut Vec<crate::types::SlashCommand>,
     seen: &mut std::collections::HashSet<String>,
 ) {
-    let Ok(entries) = fs::read_dir(skills_dir) else { return };
+    let Ok(entries) = fs::read_dir(skills_dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let dir = entry.path();
         if !dir.is_dir() {
@@ -1727,7 +1844,9 @@ fn parse_frontmatter(content: &str) -> std::collections::HashMap<String, String>
         if line.trim() == "---" {
             break;
         }
-        let Some((k, v)) = line.split_once(':') else { continue };
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
         let key = k.trim();
         if key.is_empty() || key.starts_with('#') {
             continue;
@@ -1747,7 +1866,13 @@ fn parse_frontmatter(content: &str) -> std::collections::HashMap<String, String>
                     break; // 顶格的下一个键 → 块结束
                 }
             }
-            map.insert(key.to_string(), buf.join(" ").split_whitespace().collect::<Vec<_>>().join(" "));
+            map.insert(
+                key.to_string(),
+                buf.join(" ")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
         } else {
             let val = vt.trim_matches(['"', '\'']).trim();
             map.insert(key.to_string(), val.to_string());
@@ -1762,7 +1887,9 @@ fn strip_frontmatter(content: &str) -> &str {
     if !trimmed.starts_with("---") {
         return content;
     }
-    let Some(first_nl) = trimmed.find('\n') else { return "" };
+    let Some(first_nl) = trimmed.find('\n') else {
+        return "";
+    };
     let after_open = &trimmed[first_nl + 1..];
     let mut pos = 0;
     for line in after_open.split_inclusive('\n') {
@@ -1808,8 +1935,7 @@ pub(crate) fn parse_chat_line(line: &str) -> ChatEvent {
         }
         "result" => {
             let is_error = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
-            let ok =
-                !is_error && v.get("subtype").and_then(|x| x.as_str()) == Some("success");
+            let ok = !is_error && v.get("subtype").and_then(|x| x.as_str()) == Some("success");
             let usage = v.get("usage").map(parse_stream_usage);
             ChatEvent::Result { ok, usage }
         }
@@ -1832,10 +1958,7 @@ fn parse_can_use_tool(v: &Value) -> ChatEvent {
     if req.and_then(|r| r.get("subtype")).and_then(Value::as_str) != Some("can_use_tool") {
         return ChatEvent::Ignore;
     }
-    let (Some(request_id), Some(req)) = (
-        v.get("request_id").and_then(Value::as_str),
-        req,
-    ) else {
+    let (Some(request_id), Some(req)) = (v.get("request_id").and_then(Value::as_str), req) else {
         return ChatEvent::Ignore;
     };
     let Some(tool_name) = req.get("tool_name").and_then(Value::as_str) else {
@@ -1900,7 +2023,9 @@ fn parse_stream_event(event: Option<&Value>) -> ChatEvent {
                 ),
                 "thinking_delta" => (
                     "thinking",
-                    delta.and_then(|d| d.get("thinking")).and_then(Value::as_str),
+                    delta
+                        .and_then(|d| d.get("thinking"))
+                        .and_then(Value::as_str),
                 ),
                 _ => ("", None),
             };
@@ -2065,7 +2190,11 @@ fn read_turns(fp: &Path) -> Vec<Turn> {
                 if el.get("type").and_then(|x| x.as_str()) != Some("tool_use") {
                     continue;
                 }
-                let name = el.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let name = el
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if name.is_empty() {
                     continue;
                 }
@@ -2090,7 +2219,11 @@ fn read_turns(fp: &Path) -> Vec<Turn> {
                 tools.push(name);
             }
         }
-        let cost = if usage.total == 0 { 0.0 } else { pricing::cost_usd(&model, &usage) };
+        let cost = if usage.total == 0 {
+            0.0
+        } else {
+            pricing::cost_usd(&model, &usage)
+        };
         let call = CallRecord {
             model,
             message_id,
@@ -2116,9 +2249,11 @@ fn read_turns(fp: &Path) -> Vec<Turn> {
             // entry has the real token counts. Coalesce by replacing the earlier
             // (0-usage) entry so the aggregator's cross-file dedup keeps the real one.
             if let Some(ref id) = call.message_id {
-                if let Some(existing) = turn.calls.iter_mut().find(|c| {
-                    c.message_id.as_deref() == Some(id)
-                }) {
+                if let Some(existing) = turn
+                    .calls
+                    .iter_mut()
+                    .find(|c| c.message_id.as_deref() == Some(id))
+                {
                     // Merge: keep whichever side has more data.
                     if call.usage.total >= existing.usage.total {
                         existing.usage = call.usage;
@@ -2262,8 +2397,10 @@ mod tests {
 
     #[test]
     fn file_ref_quoted_path_becomes_file_block() {
-        let (files, body) =
-            extract_file_refs("@\"/Users/wuchao/Downloads/仓库管理列表20260409163454.xlsx\"\nhi", None);
+        let (files, body) = extract_file_refs(
+            "@\"/Users/wuchao/Downloads/仓库管理列表20260409163454.xlsx\"\nhi",
+            None,
+        );
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].kind, "file");
         assert_eq!(
@@ -2294,8 +2431,10 @@ mod tests {
 
     #[test]
     fn file_ref_unquoted_absolute_path() {
-        let (files, body) =
-            extract_file_refs("@/Users/wuchao/Downloads/仓库管理列表20260409163454.xlsx\nhi", None);
+        let (files, body) = extract_file_refs(
+            "@/Users/wuchao/Downloads/仓库管理列表20260409163454.xlsx\nhi",
+            None,
+        );
         assert_eq!(files.len(), 1);
         assert_eq!(
             files[0].file_path.as_deref(),
@@ -2316,8 +2455,10 @@ mod tests {
     #[test]
     fn file_ref_relative_repo_files() {
         // Claude `@` 选仓库文件的常见形态：无目录前缀的 `name.ext`，也要抽成 file 块。
-        let (files, body) =
-            extract_file_refs("@main_driver.dart @package.json @analysis_options.yaml hi", None);
+        let (files, body) = extract_file_refs(
+            "@main_driver.dart @package.json @analysis_options.yaml hi",
+            None,
+        );
         assert_eq!(files.len(), 3);
         assert_eq!(files[0].file_path.as_deref(), Some("main_driver.dart"));
         assert_eq!(files[1].file_path.as_deref(), Some("package.json"));
@@ -2487,9 +2628,12 @@ mod tests {
         let cmd = msgs
             .iter()
             .position(|m| {
-                m.blocks
-                    .iter()
-                    .any(|b| b.text.as_deref().unwrap_or("").contains("<command-name>/compact"))
+                m.blocks.iter().any(|b| {
+                    b.text
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("<command-name>/compact")
+                })
             })
             .expect("/compact command record");
         let summary = msgs
@@ -2520,25 +2664,33 @@ mod tests {
         let cmd = msgs
             .iter()
             .position(|m| {
-                m.blocks
-                    .iter()
-                    .any(|b| b.text.as_deref().unwrap_or("").contains("<command-name>/context"))
+                m.blocks.iter().any(|b| {
+                    b.text
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("<command-name>/context")
+                })
             })
             .expect("/context command record");
         let card = msgs
             .iter()
             .position(|m| {
-                m.blocks.iter().any(|b| {
-                    b.text.as_deref().unwrap_or("").contains("## Context Usage")
-                })
+                m.blocks
+                    .iter()
+                    .any(|b| b.text.as_deref().unwrap_or("").contains("## Context Usage"))
             })
             .expect("revived /context breakdown record");
         // command-output 折叠块（user 角色 + meta_kind），正文保留 <local-command-stdout> 外壳
         // （前端 cleanMetaText 去壳后再渲染 / 升级成卡片）。绝不能是 model=<synthetic> 的 assistant。
         assert_eq!(msgs[card].role, "user");
         assert_eq!(msgs[card].meta_kind.as_deref(), Some("command-output"));
-        assert!(msgs.iter().all(|m| m.model.as_deref() != Some("<synthetic>")));
-        assert!(cmd < card, "卡片块 (idx {card}) 应排在 /context 命令 (idx {cmd}) 之后");
+        assert!(msgs
+            .iter()
+            .all(|m| m.model.as_deref() != Some("<synthetic>")));
+        assert!(
+            cmd < card,
+            "卡片块 (idx {card}) 应排在 /context 命令 (idx {cmd}) 之后"
+        );
         // 「No response requested.」占位被丢弃，不残留任何气泡。
         assert!(
             !msgs.iter().any(|m| {
@@ -2612,7 +2764,8 @@ mod tests {
                 "prompt": "<task-notification>\n<task-id>bz2lxppsz</task-id>\n<status>completed</status>\n</task-notification>",
             },
         });
-        let blocks = text_blocks("<task-notification>\n<task-id>bz2lxppsz</task-id>\n</task-notification>");
+        let blocks =
+            text_blocks("<task-notification>\n<task-id>bz2lxppsz</task-id>\n</task-notification>");
         assert_eq!(
             classify_meta_kind(&v, &blocks).as_deref(),
             Some("task-notification"),
@@ -2642,14 +2795,22 @@ mod tests {
             "promptSource": "typed",
             "origin": { "kind": "human" },
         });
-        assert_eq!(classify_meta_kind(&typed, &text_blocks("pull了；继续")), None);
+        assert_eq!(
+            classify_meta_kind(&typed, &text_blocks("pull了；继续")),
+            None
+        );
 
         let no_markers = json!({ "type": "user" });
-        assert_eq!(classify_meta_kind(&no_markers, &text_blocks("hello there")), None);
+        assert_eq!(
+            classify_meta_kind(&no_markers, &text_blocks("hello there")),
+            None
+        );
 
         // slash 命令调用是用户主动行为，保持 Me。
         let slash = json!({ "type": "user" });
-        let blocks = text_blocks("<command-message>dm-watch</command-message>\n<command-name>/dm-watch</command-name>");
+        let blocks = text_blocks(
+            "<command-message>dm-watch</command-message>\n<command-name>/dm-watch</command-name>",
+        );
         assert_eq!(classify_meta_kind(&slash, &blocks), None);
 
         // 用户 `!git push` 的输入侧（输出侧才算 command-output）。
@@ -2696,11 +2857,14 @@ mod tests {
 
     #[test]
     fn usage_sums_input_output_cache_across_assistant_messages() {
-        let p = write_temp("sum.jsonl", &[
-            r#"{"type":"user","message":{"content":"hi"}}"#,
-            r#"{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}}"#,
-            r#"{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":100}}}"#,
-        ]);
+        let p = write_temp(
+            "sum.jsonl",
+            &[
+                r#"{"type":"user","message":{"content":"hi"}}"#,
+                r#"{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}}"#,
+                r#"{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":100}}}"#,
+            ],
+        );
         let u = usage_summary(&p).unwrap();
         assert_eq!(u.input_tokens, 13);
         assert_eq!(u.output_tokens, 12);
@@ -2712,19 +2876,25 @@ mod tests {
 
     #[test]
     fn usage_ignores_lines_without_usage() {
-        let p = write_temp("no-usage.jsonl", &[
-            r#"{"type":"user","message":{"content":"hi"}}"#,
-            r#"{"type":"system","content":"x"}"#,
-        ]);
+        let p = write_temp(
+            "no-usage.jsonl",
+            &[
+                r#"{"type":"user","message":{"content":"hi"}}"#,
+                r#"{"type":"system","content":"x"}"#,
+            ],
+        );
         assert_eq!(usage_summary(&p).unwrap(), UsageSummary::default());
     }
 
     #[test]
     fn usage_handles_missing_subfields_as_zero() {
-        let p = write_temp("partial.jsonl", &[
-            // 只有 output_tokens，其他字段缺失 —— 不应该挂
-            r#"{"type":"assistant","message":{"usage":{"output_tokens":42}}}"#,
-        ]);
+        let p = write_temp(
+            "partial.jsonl",
+            &[
+                // 只有 output_tokens，其他字段缺失 —— 不应该挂
+                r#"{"type":"assistant","message":{"usage":{"output_tokens":42}}}"#,
+            ],
+        );
         let u = usage_summary(&p).unwrap();
         assert_eq!(u.output_tokens, 42);
         assert_eq!(u.total, 42);
@@ -2738,12 +2908,15 @@ mod tests {
 
     #[test]
     fn scan_uses_last_cwd_after_cd() {
-        let p = write_temp("cwd-moved.jsonl", &[
-            r#"{"type":"user","cwd":"C:\\Users\\BLL","message":{"content":"start"},"timestamp":"2025-01-01T00:00:00.000Z"}"#,
-            r#"{"type":"assistant","cwd":"C:\\Users\\BLL","message":{"content":[{"type":"text","text":"Already in C:\\Users\\BLL."}]}}"#,
-            r#"{"type":"user","cwd":"D:\\ZLSYSproject","message":{"content":"/cd D:\\ZLSYSproject"},"timestamp":"2025-01-01T00:00:01.000Z"}"#,
-            r#"{"type":"assistant","cwd":"D:\\ZLSYSproject","message":{"content":[{"type":"text","text":"Moved to D:\\ZLSYSproject"}]}}"#,
-        ]);
+        let p = write_temp(
+            "cwd-moved.jsonl",
+            &[
+                r#"{"type":"user","cwd":"C:\\Users\\BLL","message":{"content":"start"},"timestamp":"2025-01-01T00:00:00.000Z"}"#,
+                r#"{"type":"assistant","cwd":"C:\\Users\\BLL","message":{"content":[{"type":"text","text":"Already in C:\\Users\\BLL."}]}}"#,
+                r#"{"type":"user","cwd":"D:\\ZLSYSproject","message":{"content":"/cd D:\\ZLSYSproject"},"timestamp":"2025-01-01T00:00:01.000Z"}"#,
+                r#"{"type":"assistant","cwd":"D:\\ZLSYSproject","message":{"content":[{"type":"text","text":"Moved to D:\\ZLSYSproject"}]}}"#,
+            ],
+        );
         let meta = scan(&p);
         assert_eq!(meta.cwd.as_deref(), Some(r#"D:\ZLSYSproject"#));
     }
@@ -2753,7 +2926,10 @@ mod tests {
         let line = br#"{"parentUuid":"x","userType":"external","cwd":"C:\\Users\\BLL","type":"user","message":{"content":"hi"}}"#;
         assert_eq!(json_str_field_prefix(line, "type").as_deref(), Some("user"));
         // 转义还原 + 不被 "userType" 误命中
-        assert_eq!(json_str_field_prefix(line, "cwd").as_deref(), Some(r#"C:\Users\BLL"#));
+        assert_eq!(
+            json_str_field_prefix(line, "cwd").as_deref(),
+            Some(r#"C:\Users\BLL"#)
+        );
         // 字段不存在
         assert_eq!(json_str_field_prefix(line, "nope"), None);
         // 字段值落在前缀窗口之外（被截断）→ None，调用方回退整行解析
@@ -2811,13 +2987,33 @@ mod tests {
         eprintln!("sessions: {}", snap.session_count);
         eprintln!("calls: {}", snap.call_count);
         eprintln!("cost: ${:.2}", snap.cost_usd);
-        eprintln!("input: {} ({:.1}M)", snap.usage.input_tokens, snap.usage.input_tokens as f64 / 1e6);
-        eprintln!("output: {} ({:.1}M)", snap.usage.output_tokens, snap.usage.output_tokens as f64 / 1e6);
-        eprintln!("cache_read: {} ({:.1}M)", snap.usage.cache_read_input_tokens, snap.usage.cache_read_input_tokens as f64 / 1e6);
-        eprintln!("cache_write: {} ({:.1}M)", snap.usage.cache_creation_input_tokens, snap.usage.cache_creation_input_tokens as f64 / 1e6);
+        eprintln!(
+            "input: {} ({:.1}M)",
+            snap.usage.input_tokens,
+            snap.usage.input_tokens as f64 / 1e6
+        );
+        eprintln!(
+            "output: {} ({:.1}M)",
+            snap.usage.output_tokens,
+            snap.usage.output_tokens as f64 / 1e6
+        );
+        eprintln!(
+            "cache_read: {} ({:.1}M)",
+            snap.usage.cache_read_input_tokens,
+            snap.usage.cache_read_input_tokens as f64 / 1e6
+        );
+        eprintln!(
+            "cache_write: {} ({:.1}M)",
+            snap.usage.cache_creation_input_tokens,
+            snap.usage.cache_creation_input_tokens as f64 / 1e6
+        );
         eprintln!("\ndaily activity (top 15 by cost):");
         let mut daily = snap.daily_activity.clone();
-        daily.sort_by(|a, b| b.cost_usd.partial_cmp(&a.cost_usd).unwrap_or(std::cmp::Ordering::Equal));
+        daily.sort_by(|a, b| {
+            b.cost_usd
+                .partial_cmp(&a.cost_usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         for d in daily.iter().take(15) {
             eprintln!("  {}  ${:>7.2}  calls={}", d.date, d.cost_usd, d.call_count);
         }
@@ -2826,7 +3022,9 @@ mod tests {
     #[test]
     #[ignore = "manual; set CLAUDE_DEDUP_FIXTURE=<path>.jsonl to run"]
     fn dedup_verify_real_file() {
-        let Ok(path) = std::env::var("CLAUDE_DEDUP_FIXTURE") else { return };
+        let Ok(path) = std::env::var("CLAUDE_DEDUP_FIXTURE") else {
+            return;
+        };
         let turns = read_turns(std::path::Path::new(&path));
         let total: usize = turns.iter().map(|t| t.calls.len()).sum();
         let uniq: std::collections::HashSet<&String> = turns
@@ -2835,7 +3033,12 @@ mod tests {
             .filter_map(|c| c.message_id.as_ref())
             .collect();
         eprintln!("\nfile: {path}");
-        eprintln!("  turns: {} calls(pre-dedup): {} unique msg-ids: {}", turns.len(), total, uniq.len());
+        eprintln!(
+            "  turns: {} calls(pre-dedup): {} unique msg-ids: {}",
+            turns.len(),
+            total,
+            uniq.len()
+        );
         let mut agg = crate::stats::aggregate::Aggregator::new();
         agg.feed_session(&crate::stats::aggregate::SessionFeed {
             agent: "claude",
@@ -2849,9 +3052,14 @@ mod tests {
             turns: &turns,
         });
         let s = agg.snapshot("test");
-        eprintln!("aggregator: call_count={} cost=${:.2} input={} output={} cache_read={}",
-            s.call_count, s.cost_usd,
-            s.usage.input_tokens, s.usage.output_tokens, s.usage.cache_read_input_tokens);
+        eprintln!(
+            "aggregator: call_count={} cost=${:.2} input={} output={} cache_read={}",
+            s.call_count,
+            s.cost_usd,
+            s.usage.input_tokens,
+            s.usage.output_tokens,
+            s.usage.cache_read_input_tokens
+        );
     }
 
     // ---- subagent fold --------------------------------------------------
@@ -2867,7 +3075,10 @@ mod tests {
         );
         assert!(is_subagent_path(&p));
         let meta = scan(&p);
-        assert_eq!(meta.id, "abc123-uuid", "subagent session id should be parent uuid");
+        assert_eq!(
+            meta.id, "abc123-uuid",
+            "subagent session id should be parent uuid"
+        );
     }
 
     #[test]
@@ -2890,13 +3101,23 @@ mod tests {
         std::fs::write(&p, lines.join("\n")).unwrap();
         let turns = read_turns(&p);
         assert_eq!(turns.len(), 1, "one user message = one turn");
-        assert_eq!(turns[0].calls.len(), 1, "same message_id must coalesce into 1 call");
+        assert_eq!(
+            turns[0].calls.len(),
+            1,
+            "same message_id must coalesce into 1 call"
+        );
         let call = &turns[0].calls[0];
         assert_eq!(call.usage.input_tokens, 500);
         assert_eq!(call.usage.output_tokens, 200);
         assert_eq!(call.usage.cache_read_input_tokens, 10000);
-        assert!(call.usage.total > 0, "total must be non-zero after coalescing");
-        assert!(call.tools.contains(&"Bash".to_string()), "tools from later entry must be merged");
+        assert!(
+            call.usage.total > 0,
+            "total must be non-zero after coalescing"
+        );
+        assert!(
+            call.tools.contains(&"Bash".to_string()),
+            "tools from later entry must be merged"
+        );
     }
 
     #[test]
@@ -2959,9 +3180,7 @@ mod tests {
 
     #[test]
     fn scan_keeps_top_level_session_id_unchanged() {
-        let p = std::path::PathBuf::from(
-            "/x/.claude/projects/-Users-x-app/abc123-uuid.jsonl",
-        );
+        let p = std::path::PathBuf::from("/x/.claude/projects/-Users-x-app/abc123-uuid.jsonl");
         assert!(!is_subagent_path(&p));
         let meta = scan(&p);
         assert_eq!(meta.id, "abc123-uuid");
@@ -3104,11 +3323,15 @@ mod tests {
     fn stream_signature_and_input_json_deltas_are_ignored() {
         // 签名 / 工具入参增量对打字机无用 —— 不产 Delta（权威 assistant 记录会定稿）。
         assert!(matches!(
-            parse_chat_line(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Eq=="}}}"#),
+            parse_chat_line(
+                r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Eq=="}}}"#
+            ),
             ChatEvent::Ignore
         ));
         assert!(matches!(
-            parse_chat_line(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"a\":"}}}"#),
+            parse_chat_line(
+                r#"{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"a\":"}}}"#
+            ),
             ChatEvent::Ignore
         ));
     }
@@ -3166,9 +3389,15 @@ mod tests {
             ChatEvent::Permission(p) => {
                 assert_eq!(p.request_id, "req-7");
                 assert_eq!(p.tool_name, "Bash");
-                assert_eq!(p.input.get("command").and_then(|c| c.as_str()), Some("rm -rf build"));
+                assert_eq!(
+                    p.input.get("command").and_then(|c| c.as_str()),
+                    Some("rm -rf build")
+                );
                 assert_eq!(p.description.as_deref(), Some("Delete build dir"));
-                assert!(p.permission_suggestions.as_ref().is_some_and(|s| s.is_array()));
+                assert!(p
+                    .permission_suggestions
+                    .as_ref()
+                    .is_some_and(|s| s.is_array()));
             }
             _ => panic!("expected Permission"),
         }
@@ -3178,12 +3407,16 @@ mod tests {
     fn parse_chat_line_other_control_request_subtypes_ignored() {
         // 无 MCP/hook 时只有 can_use_tool 会出现；其它 control_request（如 initialize）不弹框。
         assert!(matches!(
-            parse_chat_line(r#"{"type":"control_request","request_id":"i","request":{"subtype":"initialize"}}"#),
+            parse_chat_line(
+                r#"{"type":"control_request","request_id":"i","request":{"subtype":"initialize"}}"#
+            ),
             ChatEvent::Ignore
         ));
         // 缺 tool_name 的畸形 can_use_tool 也安全降级为 Ignore（不构造半成品请求）。
         assert!(matches!(
-            parse_chat_line(r#"{"type":"control_request","request_id":"i","request":{"subtype":"can_use_tool","input":{}}}"#),
+            parse_chat_line(
+                r#"{"type":"control_request","request_id":"i","request":{"subtype":"can_use_tool","input":{}}}"#
+            ),
             ChatEvent::Ignore
         ));
     }
@@ -3193,7 +3426,10 @@ mod tests {
     #[test]
     fn parse_frontmatter_extracts_scalars_and_strips_quotes() {
         let fm = parse_frontmatter("---\ndescription: \"Do a thing\"\nname: foo\n---\nbody\n");
-        assert_eq!(fm.get("description").map(String::as_str), Some("Do a thing"));
+        assert_eq!(
+            fm.get("description").map(String::as_str),
+            Some("Do a thing")
+        );
         assert_eq!(fm.get("name").map(String::as_str), Some("foo"));
     }
 
@@ -3204,7 +3440,10 @@ mod tests {
 
     #[test]
     fn strip_frontmatter_returns_body_after_close() {
-        assert_eq!(strip_frontmatter("---\na: b\n---\nhello\nworld\n").trim(), "hello\nworld");
+        assert_eq!(
+            strip_frontmatter("---\na: b\n---\nhello\nworld\n").trim(),
+            "hello\nworld"
+        );
         assert_eq!(strip_frontmatter("plain body").trim(), "plain body");
     }
 
@@ -3213,7 +3452,11 @@ mod tests {
         let dir = std::env::temp_dir().join("csv-claude-slash-desc");
         let _ = fs::create_dir_all(&dir);
         let a = dir.join("a.md");
-        fs::write(&a, "---\ndescription: From frontmatter\n---\n# Heading\nbody").unwrap();
+        fs::write(
+            &a,
+            "---\ndescription: From frontmatter\n---\n# Heading\nbody",
+        )
+        .unwrap();
         assert_eq!(md_description(&a).as_deref(), Some("From frontmatter"));
 
         let b = dir.join("b.md");
@@ -3236,11 +3479,22 @@ mod tests {
 
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        scan_commands_dir(&root, &root, "project", Some("my-proj"), None, &mut out, &mut seen);
+        scan_commands_dir(
+            &root,
+            &root,
+            "project",
+            Some("my-proj"),
+            None,
+            &mut out,
+            &mut seen,
+        );
 
         let names: std::collections::HashSet<_> = out.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains("review"), "{names:?}");
-        assert!(names.contains("git:commit"), "nested namespaced with ':': {names:?}");
+        assert!(
+            names.contains("git:commit"),
+            "nested namespaced with ':': {names:?}"
+        );
         assert!(!names.iter().any(|n| n.contains("notes")), "non-md ignored");
         let review = out.iter().find(|c| c.name == "review").unwrap();
         assert_eq!(review.description, "Review code");
@@ -3249,7 +3503,10 @@ mod tests {
         assert_eq!(review.origin, "project");
         assert_eq!(review.origin_name.as_deref(), Some("my-proj"));
         // frontmatter argument-hint 去引号后原样带出（选中命令后作 ghost 占位）。
-        assert_eq!(review.argument_hint.as_deref(), Some("[--wait|--background] [--base <ref>]"));
+        assert_eq!(
+            review.argument_hint.as_deref(),
+            Some("[--wait|--background] [--base <ref>]")
+        );
         // 无 frontmatter 的命令没有 hint。
         let commit = out.iter().find(|c| c.name == "git:commit").unwrap();
         assert_eq!(commit.argument_hint, None);
@@ -3263,10 +3520,24 @@ mod tests {
         // （= CLI 认的真实命令，不能是裸 `/review`）；角标显示美化名，不参与命名空间。
         let mut pout = Vec::new();
         let mut pseen = std::collections::HashSet::new();
-        scan_commands_dir(&root, &root, "plugin", Some("Codex"), Some("codex"), &mut pout, &mut pseen);
+        scan_commands_dir(
+            &root,
+            &root,
+            "plugin",
+            Some("Codex"),
+            Some("codex"),
+            &mut pout,
+            &mut pseen,
+        );
         let pnames: std::collections::HashSet<_> = pout.iter().map(|c| c.name.as_str()).collect();
-        assert!(pnames.contains("codex:review"), "插件命令需 codex: 前缀: {pnames:?}");
-        assert!(pnames.contains("codex:git:commit"), "嵌套插件命令: {pnames:?}");
+        assert!(
+            pnames.contains("codex:review"),
+            "插件命令需 codex: 前缀: {pnames:?}"
+        );
+        assert!(
+            pnames.contains("codex:git:commit"),
+            "嵌套插件命令: {pnames:?}"
+        );
         assert!(!pnames.contains("review"), "插件命令不应是裸名");
         let preview = pout.iter().find(|c| c.name == "codex:review").unwrap();
         assert_eq!(preview.title, "/codex:review");
@@ -3285,7 +3556,11 @@ mod tests {
         )
         .unwrap();
         fs::create_dir_all(root.join("create-promo-video")).unwrap();
-        fs::write(root.join("create-promo-video").join("SKILL.md"), "no frontmatter body line").unwrap();
+        fs::write(
+            root.join("create-promo-video").join("SKILL.md"),
+            "no frontmatter body line",
+        )
+        .unwrap();
         // 没有 SKILL.md 的目录应被忽略。
         fs::create_dir_all(root.join("empty")).unwrap();
 
@@ -3303,16 +3578,29 @@ mod tests {
         // 无 frontmatter name → 回退目录名；展示名美化为 Title Case。
         let promo = out.iter().find(|c| c.name == "create-promo-video").unwrap();
         assert_eq!(promo.title, "Create Promo Video");
-        assert!(!out.iter().any(|c| c.name == "empty"), "无 SKILL.md 的目录忽略");
+        assert!(
+            !out.iter().any(|c| c.name == "empty"),
+            "无 SKILL.md 的目录忽略"
+        );
 
         // 插件技能同样带 `<plugin>:` 命名空间：调用名 = `codex:animejs`，展示名（title）仍是美化基础名。
         let mut pout = Vec::new();
         let mut pseen = std::collections::HashSet::new();
-        scan_skills_dir(&root, "plugin", Some("Codex"), Some("codex"), &mut pout, &mut pseen);
+        scan_skills_dir(
+            &root,
+            "plugin",
+            Some("Codex"),
+            Some("codex"),
+            &mut pout,
+            &mut pseen,
+        );
         let panime = pout.iter().find(|c| c.name == "codex:animejs").unwrap();
         assert_eq!(panime.title, "Animejs", "title 美化基础名，不含命名空间");
         assert_eq!(panime.origin_name.as_deref(), Some("Codex"));
-        assert!(!pout.iter().any(|c| c.name == "animejs"), "插件技能不应是裸名");
+        assert!(
+            !pout.iter().any(|c| c.name == "animejs"),
+            "插件技能不应是裸名"
+        );
     }
 
     #[test]
@@ -3321,7 +3609,10 @@ mod tests {
             "---\nname: humanizer\ndescription: |\n  Remove signs of AI writing\n  from a draft.\nallowed-tools: \"Read\"\n---\nbody",
         );
         assert_eq!(fm.get("name").map(String::as_str), Some("humanizer"));
-        assert_eq!(fm.get("description").map(String::as_str), Some("Remove signs of AI writing from a draft."));
+        assert_eq!(
+            fm.get("description").map(String::as_str),
+            Some("Remove signs of AI writing from a draft.")
+        );
         // 块标量后顶格的下一个键照常解析。
         assert_eq!(fm.get("allowed-tools").map(String::as_str), Some("Read"));
     }
@@ -3332,5 +3623,4 @@ mod tests {
         assert_eq!(prettify_name("create-promo-video"), "Create Promo Video");
         assert_eq!(prettify_name("planning_with-files"), "Planning With Files");
     }
-
 }

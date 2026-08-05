@@ -147,15 +147,15 @@ fn fallback_costs() -> Option<ModelCosts> {
 /// 别名表 —— 把 CLI 里多写的"花式"名映射到上游 canonical key。
 /// 上游都是 dash 形式 (`claude-opus-4-7`)，CLI 偶尔写 dot 形式或加 mode 后缀。
 const ALIASES: &[(&str, &str)] = &[
-    ("claude-opus-4.8",   "claude-opus-4-8"),
-    ("claude-opus-4.7",   "claude-opus-4-7"),
-    ("claude-opus-4.6",   "claude-opus-4-6"),
-    ("claude-opus-4.5",   "claude-opus-4-5"),
+    ("claude-opus-4.8", "claude-opus-4-8"),
+    ("claude-opus-4.7", "claude-opus-4-7"),
+    ("claude-opus-4.6", "claude-opus-4-6"),
+    ("claude-opus-4.5", "claude-opus-4-5"),
     ("claude-sonnet-4.6", "claude-sonnet-4-6"),
     ("claude-sonnet-4.5", "claude-sonnet-4-5"),
-    ("claude-haiku-4.5",  "claude-haiku-4-5"),
-    ("gpt-5-fast",        "gpt-5"),
-    ("gpt-5.2-low",       "gpt-5"),
+    ("claude-haiku-4.5", "claude-haiku-4-5"),
+    ("gpt-5-fast", "gpt-5"),
+    ("gpt-5.2-low", "gpt-5"),
 ];
 
 /// 去掉 `@xxx` pin、`-YYYYMMDD` 日期段、provider/ 前缀。
@@ -566,7 +566,12 @@ fn save_to_cache(table: &HashMap<String, ModelCosts>) {
 pub(crate) fn parse_models_dev_json(body: &str) -> Option<HashMap<String, ModelCosts>> {
     const NATIVE_PROVIDERS: &[&str] = &["anthropic", "openai", "google"];
     const OPENCODE_DIRECT: &[&str] = &[
-        "deepseek", "kimi-for-coding", "minimax", "zhipuai", "xiaomi", "xai",
+        "deepseek",
+        "kimi-for-coding",
+        "minimax",
+        "zhipuai",
+        "xiaomi",
+        "xai",
         "alibaba-cn",
     ];
     // opencode 文档列出的非 claude/gpt/gemini 模型（合并 go + zen 两份文档去重）。
@@ -697,16 +702,16 @@ fn parse_models_dev_entry(v: &serde_json::Value) -> Option<ModelCosts> {
 const SHORT_OVERRIDE: &[(&str, &str)] = &[
     ("claude-3-7-sonnet", "Sonnet 3.7"),
     ("claude-3-5-sonnet", "Sonnet 3.5"),
-    ("claude-3-5-haiku",  "Haiku 3.5"),
-    ("claude-3-opus",     "Opus 3"),
+    ("claude-3-5-haiku", "Haiku 3.5"),
+    ("claude-3-opus", "Opus 3"),
     ("codex-mini-latest", "Codex Mini"),
-    ("o4-mini",           "o4-mini"),
-    ("o3-mini",           "o3-mini"),
-    ("o3-pro",            "o3-pro"),
-    ("o3",                "o3"),
-    ("o1-mini",           "o1-mini"),
-    ("o1-pro",            "o1-pro"),
-    ("o1",                "o1"),
+    ("o4-mini", "o4-mini"),
+    ("o3-mini", "o3-mini"),
+    ("o3-pro", "o3-pro"),
+    ("o3", "o3"),
+    ("o1-mini", "o1-mini"),
+    ("o1-pro", "o1-pro"),
+    ("o1", "o1"),
 ];
 
 /// 模型友好展示名 —— "Opus 4.7" / "Sonnet 4.6" / "GPT-5.3 Codex" 等。
@@ -739,7 +744,11 @@ fn derive_name(canon: &str) -> Option<String> {
             _ => return None,
         };
         let ver = &segs[1..];
-        if ver.is_empty() || !ver.iter().all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())) {
+        if ver.is_empty()
+            || !ver
+                .iter()
+                .all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        {
             return None;
         }
         return Some(format!("{family} {}", ver.join(".")));
@@ -788,18 +797,36 @@ pub fn seed_test_prices() {
 
 #[cfg(test)]
 const TEST_DEFAULT_PRICES: &[(&str, ModelCosts)] = &[
-    ("claude-opus-4-7", ModelCosts {
-        input: 0.000005, output: 0.000025,
-        cache_write: 0.00000625, cache_read: 0.0000005, context: 0,
-    }),
-    ("claude-sonnet-4-6", ModelCosts {
-        input: 0.000003, output: 0.000015,
-        cache_write: 0.00000375, cache_read: 0.0000003, context: 0,
-    }),
-    ("gpt-5", ModelCosts {
-        input: 0.00000125, output: 0.00001,
-        cache_write: 0.0000015625, cache_read: 0.000000125, context: 0,
-    }),
+    (
+        "claude-opus-4-7",
+        ModelCosts {
+            input: 0.000005,
+            output: 0.000025,
+            cache_write: 0.00000625,
+            cache_read: 0.0000005,
+            context: 0,
+        },
+    ),
+    (
+        "claude-sonnet-4-6",
+        ModelCosts {
+            input: 0.000003,
+            output: 0.000015,
+            cache_write: 0.00000375,
+            cache_read: 0.0000003,
+            context: 0,
+        },
+    ),
+    (
+        "gpt-5",
+        ModelCosts {
+            input: 0.00000125,
+            output: 0.00001,
+            cache_write: 0.0000015625,
+            cache_read: 0.000000125,
+            context: 0,
+        },
+    ),
 ];
 
 #[cfg(test)]
@@ -858,9 +885,15 @@ mod tests {
 
     #[test]
     fn canonical_strips_pin_date_and_provider_prefix() {
-        assert_eq!(canonical("anthropic/claude-opus-4-6@20250929"), "claude-opus-4-6");
+        assert_eq!(
+            canonical("anthropic/claude-opus-4-6@20250929"),
+            "claude-opus-4-6"
+        );
         assert_eq!(canonical("claude-sonnet-4-20250514"), "claude-sonnet-4");
-        assert_eq!(canonical("openrouter/anthropic/claude-opus-4-6"), "anthropic/claude-opus-4-6");
+        assert_eq!(
+            canonical("openrouter/anthropic/claude-opus-4-6"),
+            "anthropic/claude-opus-4-6"
+        );
         // 注意：canonical 只剥第一段 provider；remote_lookup 会再用整名查一次
     }
 
@@ -877,7 +910,10 @@ mod tests {
         seed_test_prices();
         let big = u(1_000_000, 1_000_000, 1_000_000, 1_000_000);
         let c = cost_usd("ollama/llama-3", &big);
-        assert!(c > 0.0, "unknown model should use Claude 4.6-4.8 average as fallback");
+        assert!(
+            c > 0.0,
+            "unknown model should use Claude 4.6-4.8 average as fallback"
+        );
     }
 
     #[test]
@@ -917,7 +953,10 @@ mod tests {
             let c_5m = cost_usd("cw-tier-test", &pure_5m);
             let c_1h = cost_usd("cw-tier-test", &pure_1h);
             assert!((c_5m - 10.0).abs() < 1e-9);
-            assert!((c_1h - 16.0).abs() < 1e-9, "1h tier must cost 1.6× the 5min tier, got ${c_1h}");
+            assert!(
+                (c_1h - 16.0).abs() < 1e-9,
+                "1h tier must cost 1.6× the 5min tier, got ${c_1h}"
+            );
         });
     }
 
@@ -955,8 +994,14 @@ mod tests {
             };
             let c_reason = cost_usd("reasoning-billing-test", &pure_reasoning);
             let c_output = cost_usd("reasoning-billing-test", &pure_output);
-            assert!((c_reason - 100.0).abs() < 1e-9, "expected $100, got ${c_reason}");
-            assert!((c_reason - c_output).abs() < 1e-9, "reasoning must cost the same as output");
+            assert!(
+                (c_reason - 100.0).abs() < 1e-9,
+                "expected $100, got ${c_reason}"
+            );
+            assert!(
+                (c_reason - c_output).abs() < 1e-9,
+                "reasoning must cost the same as output"
+            );
         });
     }
 
@@ -1022,7 +1067,11 @@ mod tests {
         };
         with_remote(&[("xyz-base", base), ("xyz-base-special", sub)], || {
             let unknown = lookup("xyz-base-special-99").expect("longest prefix");
-            assert!((unknown.input - 1e-6).abs() < 1e-15, "got {}", unknown.input);
+            assert!(
+                (unknown.input - 1e-6).abs() < 1e-15,
+                "got {}",
+                unknown.input
+            );
         });
     }
 
@@ -1075,11 +1124,17 @@ mod tests {
         assert_eq!(full.context, 1_000_000);
 
         let no_cw = table.get("gpt-no-cw").expect("no-cw");
-        assert!((no_cw.cache_write - 2.5e-6).abs() < 1e-15, "input×1.25 fallback");
+        assert!(
+            (no_cw.cache_write - 2.5e-6).abs() < 1e-15,
+            "input×1.25 fallback"
+        );
         assert_eq!(no_cw.context, 0, "缺 limit → context 0");
 
         let no_cr = table.get("gpt-no-cr").expect("no-cr");
-        assert!((no_cr.cache_read - 4e-7).abs() < 1e-15, "input×0.1 fallback");
+        assert!(
+            (no_cr.cache_read - 4e-7).abs() < 1e-15,
+            "input×0.1 fallback"
+        );
         assert_eq!(no_cr.context, 400_000);
 
         assert!(!table.contains_key("gpt-image-x"), "无 cost entry 跳过");
@@ -1093,11 +1148,17 @@ mod tests {
 
     #[test]
     fn status_reports_loaded_count_when_remote_has_entries() {
-        with_remote(&[("status-test-1", opus_4_7_costs()), ("status-test-2", opus_4_7_costs())], || {
-            let s = status();
-            assert!(s.loaded);
-            assert!(s.model_count >= 2);
-        });
+        with_remote(
+            &[
+                ("status-test-1", opus_4_7_costs()),
+                ("status-test-2", opus_4_7_costs()),
+            ],
+            || {
+                let s = status();
+                assert!(s.loaded);
+                assert!(s.model_count >= 2);
+            },
+        );
     }
 
     #[test]
@@ -1145,7 +1206,13 @@ mod tests {
     /// `claude-opus-4-8` 前面 —— 但 4.8 > 4.5 才是用户在意的"新"。
     #[test]
     fn list_for_ui_sorts_newest_version_first() {
-        let z = ModelCosts { input: 1e-6, output: 1e-6, cache_write: 0.0, cache_read: 0.0, context: 0 };
+        let z = ModelCosts {
+            input: 1e-6,
+            output: 1e-6,
+            cache_write: 0.0,
+            cache_read: 0.0,
+            context: 0,
+        };
         let rows = [
             ("claude-opus-4-8", z),
             ("claude-opus-4-7", z),
@@ -1156,7 +1223,7 @@ mod tests {
             ("claude-3-7-sonnet", z),
             ("claude-3-5-haiku-20241022", z),
             ("claude-3-5-haiku", z),
-            ("claude-3-haiku-20240307", z),  // 日期 pin 容易被误当成超大版本号
+            ("claude-3-haiku-20240307", z), // 日期 pin 容易被误当成超大版本号
             ("claude-3-haiku", z),
         ];
         with_remote(&rows, || {
@@ -1165,23 +1232,50 @@ mod tests {
             // 仅校验相对顺序，避免和其它并行测试塞进表里的 entry 冲突。
             let idx = |n: &str| names.iter().position(|x| x == n).expect(n);
             // 主排序：版本号倒序
-            assert!(idx("claude-opus-4-8") < idx("claude-opus-4-7"), "4-8 before 4-7: {names:?}");
-            assert!(idx("claude-opus-4-7") < idx("claude-opus-4"), "4-7 before naked 4: {names:?}");
+            assert!(
+                idx("claude-opus-4-8") < idx("claude-opus-4-7"),
+                "4-8 before 4-7: {names:?}"
+            );
+            assert!(
+                idx("claude-opus-4-7") < idx("claude-opus-4"),
+                "4-7 before naked 4: {names:?}"
+            );
             // 关键回归：opus-4-8 必须在 sonnet-4-5 / haiku-4-5 之前（版本号 4.8 > 4.5），
             // 不能被 tier 名字典序影响。
-            assert!(idx("claude-opus-4-8") < idx("claude-sonnet-4-5"), "opus-4-8 before sonnet-4-5: {names:?}");
-            assert!(idx("claude-opus-4-8") < idx("claude-haiku-4-5"), "opus-4-8 before haiku-4-5: {names:?}");
+            assert!(
+                idx("claude-opus-4-8") < idx("claude-sonnet-4-5"),
+                "opus-4-8 before sonnet-4-5: {names:?}"
+            );
+            assert!(
+                idx("claude-opus-4-8") < idx("claude-haiku-4-5"),
+                "opus-4-8 before haiku-4-5: {names:?}"
+            );
             // 同 4.5 代次 tier 名同代：tier 名差异不算"新"，按字典升序 deterministic
             // —— 'h' < 's' 所以 haiku 在前。约定写死，便于回归。
-            assert!(idx("claude-haiku-4-5") < idx("claude-sonnet-4-5"), "haiku-4-5 before sonnet-4-5 (lex asc): {names:?}");
+            assert!(
+                idx("claude-haiku-4-5") < idx("claude-sonnet-4-5"),
+                "haiku-4-5 before sonnet-4-5 (lex asc): {names:?}"
+            );
             // 跨代次：4.x 系列都在 3.x 之前
-            assert!(idx("claude-haiku-4-5") < idx("claude-3-7-sonnet"), "haiku-4-5 before 3-7-sonnet: {names:?}");
+            assert!(
+                idx("claude-haiku-4-5") < idx("claude-3-7-sonnet"),
+                "haiku-4-5 before 3-7-sonnet: {names:?}"
+            );
             // tiebreak：naked > 日期 pin（同版本元组，naked 是 latest alias）
-            assert!(idx("claude-3-5-haiku") < idx("claude-3-5-haiku-20241022"), "naked before dated: {names:?}");
+            assert!(
+                idx("claude-3-5-haiku") < idx("claude-3-5-haiku-20241022"),
+                "naked before dated: {names:?}"
+            );
             // 日期不能被当成超大版本号：claude-3-haiku-20240307 必须留在 3-haiku 后边，
             // 而不是因为 "20240307" 大就跑到所有 3.x 前。
-            assert!(idx("claude-3-7-sonnet") < idx("claude-3-haiku"), "3-7 before 3-haiku: {names:?}");
-            assert!(idx("claude-3-haiku") < idx("claude-3-haiku-20240307"), "naked 3-haiku before dated: {names:?}");
+            assert!(
+                idx("claude-3-7-sonnet") < idx("claude-3-haiku"),
+                "3-7 before 3-haiku: {names:?}"
+            );
+            assert!(
+                idx("claude-3-haiku") < idx("claude-3-haiku-20240307"),
+                "naked 3-haiku before dated: {names:?}"
+            );
         });
     }
 
@@ -1192,21 +1286,27 @@ mod tests {
     /// —— Codex CLI 用户不会跑这些。
     #[test]
     fn list_for_ui_drops_gpt_noise_and_keeps_5x_above_4x() {
-        let z = ModelCosts { input: 1e-6, output: 1e-6, cache_write: 0.0, cache_read: 0.0, context: 0 };
+        let z = ModelCosts {
+            input: 1e-6,
+            output: 1e-6,
+            cache_write: 0.0,
+            cache_read: 0.0,
+            context: 0,
+        };
         let rows = [
             ("gpt-5", z),
             ("gpt-5-mini", z),
             ("gpt-5.2-pro", z),
             ("gpt-4.1", z),
             ("gpt-4o-2024-11-20", z),
-            ("gpt-oss-120b", z),       // 噪声：120 不是版本号是参数量
+            ("gpt-oss-120b", z), // 噪声：120 不是版本号是参数量
             ("gpt-oss:20b-cloud", z),
             ("gpt-image-2", z),
             ("gpt-audio", z),
             ("gpt-realtime-2", z),
             ("gpt-4o-transcribe", z),
             ("gpt-4o-search-preview", z),
-            ("gpt-35-turbo", z),       // Azure 命名，跟 gpt-3.5 重复
+            ("gpt-35-turbo", z), // Azure 命名，跟 gpt-3.5 重复
             ("o1", z),
             ("codex-mini-latest", z),
         ];
@@ -1214,15 +1314,32 @@ mod tests {
             let list = list_for_ui();
             let names: Vec<String> = list.iter().map(|e| e.name.clone()).collect();
             // 噪声项必须被过滤
-            for noise in ["gpt-oss-120b", "gpt-oss:20b-cloud", "gpt-image-2", "gpt-audio",
-                          "gpt-realtime-2", "gpt-4o-transcribe", "gpt-4o-search-preview", "gpt-35-turbo"] {
-                assert!(!names.iter().any(|n| n == noise), "noise {noise} should be filtered: {names:?}");
+            for noise in [
+                "gpt-oss-120b",
+                "gpt-oss:20b-cloud",
+                "gpt-image-2",
+                "gpt-audio",
+                "gpt-realtime-2",
+                "gpt-4o-transcribe",
+                "gpt-4o-search-preview",
+                "gpt-35-turbo",
+            ] {
+                assert!(
+                    !names.iter().any(|n| n == noise),
+                    "noise {noise} should be filtered: {names:?}"
+                );
             }
             let idx = |n: &str| names.iter().position(|x| x == n).expect(n);
             // 用户的关键诉求：5.x 全部在 4.x 之前
-            assert!(idx("gpt-5.2-pro") < idx("gpt-5"), "5.2-pro before 5: {names:?}");
+            assert!(
+                idx("gpt-5.2-pro") < idx("gpt-5"),
+                "5.2-pro before 5: {names:?}"
+            );
             assert!(idx("gpt-5") < idx("gpt-4.1"), "5 before 4.1: {names:?}");
-            assert!(idx("gpt-5-mini") < idx("gpt-4o-2024-11-20"), "5-mini before 4o-2024: {names:?}");
+            assert!(
+                idx("gpt-5-mini") < idx("gpt-4o-2024-11-20"),
+                "5-mini before 4o-2024: {names:?}"
+            );
             assert!(idx("gpt-4.1") < idx("o1"), "4.1 before o1: {names:?}");
         });
     }

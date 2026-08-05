@@ -458,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "cc-sessions-viewer"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -474,6 +474,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

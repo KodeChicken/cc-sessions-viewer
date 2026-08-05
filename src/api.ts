@@ -28,6 +28,12 @@ import type {
   GitRepositoryState,
 } from './types'
 
+export interface BackgroundMedia {
+  id: string
+  name: string
+  path: string
+}
+
 export interface CodexVisibilityOptions {
   includeCodexInternal?: boolean
   includeCodexArchived?: boolean
@@ -49,6 +55,14 @@ export const setTitlebarTheme = (theme: 'dark' | 'light' | null) =>
 
 export const windowHideToTray = () => invoke<void>('window_hide_to_tray')
 export const windowExitApp = () => invoke<void>('window_exit_app')
+
+/** 已导入应用数据目录的图片 / MP4 背景素材。 */
+export const backgroundMediaDirectory = () => invoke<string>('background_media_directory')
+export const listBackgroundMedia = () => invoke<BackgroundMedia[]>('list_background_media')
+export const importBackgroundMedia = (sourcePath: string) =>
+  invoke<BackgroundMedia>('import_background_media', { sourcePath })
+export const deleteBackgroundMedia = (id: string) =>
+  invoke<void>('delete_background_media', { id })
 
 export const addBookmark = (agent: Agent, path: string) =>
   invoke<void>('add_bookmark', { agent, path })

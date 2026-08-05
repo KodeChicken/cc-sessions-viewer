@@ -127,7 +127,12 @@ fn parse_branch_output(text: &str) -> Vec<String> {
 fn local_branches(cwd: &str) -> Result<Vec<String>, String> {
     let out = run_git(
         cwd,
-        &["for-each-ref", "--format=%(refname:short)", "--sort=refname", "refs/heads"],
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "--sort=refname",
+            "refs/heads",
+        ],
     )?;
     Ok(parse_branch_output(&out))
 }
@@ -191,7 +196,10 @@ pub fn git_create_branch(cwd: &str, branch: &str) -> Result<GitRepositoryState, 
     if branch.trim().is_empty() {
         return Err("Branch name cannot be empty".to_string());
     }
-    if local_branches(cwd)?.iter().any(|candidate| candidate == branch) {
+    if local_branches(cwd)?
+        .iter()
+        .any(|candidate| candidate == branch)
+    {
         return Err("Branch already exists locally".to_string());
     }
     run_git(cwd, &["branch", "--", branch])?;
@@ -391,7 +399,10 @@ mod tests {
         std::fs::remove_file(dir.join("dirty.txt")).unwrap();
         git_switch_branch(cwd, &initial_branch).unwrap();
         let after_delete = git_delete_branch(cwd, "feature/branch-menu").unwrap();
-        assert!(!after_delete.branches.iter().any(|branch| branch == "feature/branch-menu"));
+        assert!(!after_delete
+            .branches
+            .iter()
+            .any(|branch| branch == "feature/branch-menu"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

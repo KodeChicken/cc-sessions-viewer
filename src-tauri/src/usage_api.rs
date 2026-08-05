@@ -76,7 +76,12 @@ impl From<ApiUsage> for AccountUsage {
 /// 从 macOS 钥匙串读取 Claude Code 的 OAuth access token。
 fn oauth_access_token() -> Result<String, String> {
     let out = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
         .output()
         .map_err(|e| format!("read keychain: {e}"))?;
     if !out.status.success() {
@@ -192,13 +197,14 @@ fn fetch_blocking() -> Result<AccountUsage, String> {
         .wait_with_output()
         .map_err(|e| format!("curl wait: {e}"))?;
     if !out.status.success() {
-        return Err(format!("curl: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(format!(
+            "curl: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     // 末行是 write-out 追加的 HTTP 状态码，前面是响应体。
-    let (json, code) = stdout
-        .rsplit_once('\n')
-        .ok_or("empty curl output")?;
+    let (json, code) = stdout.rsplit_once('\n').ok_or("empty curl output")?;
     let code = code.trim();
     if code != "200" {
         return Err(format!("usage api status {code}"));

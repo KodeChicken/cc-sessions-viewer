@@ -847,9 +847,8 @@ fn codex_thread_fork_params(
 #[cfg(test)]
 mod codex_side_tests {
     use super::{
-        codex_item_to_msg, codex_plan_updated_to_msg, codex_thread_fork_params,
-        codex_steer_params, codex_thread_params, codex_turn_params, codex_user_input_request,
-        codex_user_input_result,
+        codex_item_to_msg, codex_plan_updated_to_msg, codex_steer_params, codex_thread_fork_params,
+        codex_thread_params, codex_turn_params, codex_user_input_request, codex_user_input_result,
     };
 
     #[test]
@@ -955,13 +954,8 @@ mod codex_side_tests {
 
     #[test]
     fn non_plan_thread_params_clear_collaboration_mode_to_default() {
-        let thread = codex_thread_params(
-            "/workspace/app",
-            "fullAccess",
-            Some("gpt-5.5"),
-            None,
-            false,
-        );
+        let thread =
+            codex_thread_params("/workspace/app", "fullAccess", Some("gpt-5.5"), None, false);
         assert_eq!(thread["sandbox"], "danger-full-access");
         assert_eq!(
             thread["collaborationMode"],
@@ -1785,9 +1779,7 @@ fn codex_plan_item_id(item: &serde_json::Value) -> Option<String> {
 
 fn codex_plan_item_text(item: &serde_json::Value) -> Option<&str> {
     if !matches!(
-        item
-        .get("type")
-            .and_then(serde_json::Value::as_str),
+        item.get("type").and_then(serde_json::Value::as_str),
         Some("plan" | "Plan")
     ) {
         return None;
@@ -2151,14 +2143,12 @@ fn codex_value_has_file_change_fields(value: &serde_json::Value) -> bool {
         "absolutePath",
         "relativePath",
     ]
-        .iter()
-        .any(|key| obj.get(*key).and_then(serde_json::Value::as_str).is_some());
+    .iter()
+    .any(|key| obj.get(*key).and_then(serde_json::Value::as_str).is_some());
     let has_diff = ["unified_diff", "unifiedDiff", "diff", "patch"]
         .iter()
         .any(|key| obj.get(*key).and_then(serde_json::Value::as_str).is_some());
-    let has_generated_diff = obj
-        .keys()
-        .any(|key| codex_is_file_change_content_key(key))
+    let has_generated_diff = obj.keys().any(|key| codex_is_file_change_content_key(key))
         && obj
             .get("type")
             .or_else(|| obj.get("operation"))
@@ -2249,10 +2239,7 @@ fn codex_generated_file_change_diff(change: &serde_json::Value) -> Option<String
     Some(lines.join("\n"))
 }
 
-fn codex_file_change_content<'a>(
-    change: &'a serde_json::Value,
-    op: &str,
-) -> Option<&'a str> {
+fn codex_file_change_content<'a>(change: &'a serde_json::Value, op: &str) -> Option<&'a str> {
     let keys: &[&str] = match op {
         "add" | "added" | "create" | "created" | "new" => &[
             "content",

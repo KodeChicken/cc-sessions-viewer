@@ -27,7 +27,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { Agent, SessionMeta } from './types'
-import { theme, launchArgs, useReclaude } from './settings'
+import { backgroundImagePath, theme, launchArgs, useReclaude } from './settings'
 import { t } from './i18n'
 import { panes, focusPane, ensureLayout, activeUiId } from './panes'
 import * as api from './api'
@@ -462,9 +462,13 @@ export function clearAllTabs() {
 // ============================ 主题 ============================
 
 function xtermTheme(isDark: boolean) {
+  // xterm 的画布默认会用 theme.background 填满。启用自定义壁纸时改成
+  // 透明，让终端 / Codex TUI 的空白区域能显示图片或视频；ANSI 显式设置
+  // 背景色的内容仍维持原样，保证交互界面的信息层级。
+  const background = backgroundImagePath.value ? 'rgba(0, 0, 0, 0)' : undefined
   if (theme.value === 'dracula') {
     return {
-      background: '#282a36',
+      background: background ?? '#282a36',
       foreground: '#f8f8f2',
       cursor: '#f8f8f2',
       cursorAccent: '#282a36',
@@ -489,7 +493,7 @@ function xtermTheme(isDark: boolean) {
   }
   return isDark
     ? {
-        background: '#0a0a0a',
+        background: background ?? '#0a0a0a',
         foreground: '#ededed',
         cursor: '#ededed',
         cursorAccent: '#0a0a0a',
@@ -512,7 +516,7 @@ function xtermTheme(isDark: boolean) {
         brightWhite: '#fafafa',
       }
     : {
-        background: '#ffffff',
+        background: background ?? '#ffffff',
         foreground: '#171717',
         cursor: '#171717',
         cursorAccent: '#ffffff',
@@ -841,7 +845,7 @@ export function refreshAllTerminalThemes() {
   }
 }
 
-watch(theme, refreshAllTerminalThemes)
+watch([theme, backgroundImagePath], refreshAllTerminalThemes)
 watch(
   () => tabs.value.map((tab) => `${tab.uiId}:${tab.turnState}`).join('|'),
   () => {

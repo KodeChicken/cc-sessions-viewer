@@ -28,7 +28,11 @@ fn compute_boundaries() -> Result<Boundaries, String> {
         .ok_or_else(|| "failed to resolve local midnight".to_string())?;
     let to_ms = |t: chrono::DateTime<Local>| -> u64 {
         let ts = t.timestamp_millis();
-        if ts < 0 { 0 } else { ts as u64 }
+        if ts < 0 {
+            0
+        } else {
+            ts as u64
+        }
     };
     // 30d = 过去 30 个日历日（含今天），和 Statistics 页面的 days30 口径一致
     Ok(Boundaries {

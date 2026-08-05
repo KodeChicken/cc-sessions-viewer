@@ -15,6 +15,7 @@
 mod agent_chat;
 mod agent_command;
 pub mod agents;
+mod background_media;
 mod bookmarks;
 mod claude_config;
 mod cli_env;
@@ -2366,6 +2367,10 @@ pub fn run() {
             list_project_files,
             write_file,
             write_binary_file,
+            background_media::background_media_directory,
+            background_media::list_background_media,
+            background_media::import_background_media,
+            background_media::delete_background_media,
             set_titlebar_theme,
             add_bookmark,
             remove_bookmark,

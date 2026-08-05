@@ -1,4 +1,5 @@
 import { ref, computed, watch, watchEffect } from 'vue'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { Agent, StatsRange, StatsScope } from './types'
 
@@ -8,6 +9,7 @@ export type Theme = 'light' | 'dark' | 'system' | 'codex' | 'dracula'
 const LANG_KEY = 'lang'
 const THEME_KEY = 'theme'
 const PREFS_KEY = 'projPrefs:v1'
+const PROJECT_ORDER_KEY = 'projectOrder:v1'
 const STATS_SCOPE_KEY = 'statsScope:v1'
 const STATS_RANGE_KEY = 'statsRange:v1'
 const EXTERNAL_TERMINAL_KEY = 'useExternalTerminal:v1'
@@ -23,6 +25,9 @@ const QUICK_OPEN_KEY = 'quickOpenTarget:v1'
 const USE_RECLAUDE_KEY = 'useReclaude:v1'
 const SHOW_TOOL_CALLS_KEY = 'showToolCalls:v1'
 const CHAT_SPACING_KEY = 'chatSpacing:v1'
+const BACKGROUND_IMAGE_PATH_KEY = 'backgroundImagePath:v1'
+const BACKGROUND_IMAGE_OPACITY_KEY = 'backgroundImageOpacity:v1'
+const BACKGROUND_BORDER_OPACITY_KEY = 'backgroundBorderOpacity:v1'
 
 /**
  * 根据浏览器/系统语言探测默认语言。
@@ -119,6 +124,109 @@ export function applyChatSpacing() {
 }
 
 doApplyChatSpacing(chatSpacing.value)
+
+// ---------- 自定义背景 ----------
+// 只持久化用户选择的文件路径。Tauri asset protocol 已授权本地资源路径，
+// convertFileSrc 会为各平台生成可由 WebView 加载的安全 URL。
+export type BackgroundImageOpacity = number
+export type BackgroundBorderOpacity = number
+
+const BACKGROUND_IMAGE_OPACITY_DEFAULT = 40
+const BACKGROUND_IMAGE_OPACITY_MIN = 0
+const BACKGROUND_IMAGE_OPACITY_MAX = 100
+/* border-strong 会在此值基础上额外增加 18%，故上限保留余量。 */
+const BACKGROUND_BORDER_OPACITY_DEFAULT = 26
+const BACKGROUND_BORDER_OPACITY_MIN = 0
+const BACKGROUND_BORDER_OPACITY_MAX = 80
+
+function readBackgroundImagePath(): string | null {
+  const path = localStorage.getItem(BACKGROUND_IMAGE_PATH_KEY)?.trim()
+  return path || null
+}
+
+function isBackgroundImageOpacity(value: number): value is BackgroundImageOpacity {
+  return Number.isInteger(value)
+    && value >= BACKGROUND_IMAGE_OPACITY_MIN
+    && value <= BACKGROUND_IMAGE_OPACITY_MAX
+}
+
+function readBackgroundImageOpacity(): BackgroundImageOpacity {
+  const stored = localStorage.getItem(BACKGROUND_IMAGE_OPACITY_KEY)
+  if (stored === null) return BACKGROUND_IMAGE_OPACITY_DEFAULT
+  const value = Number(stored)
+  return isBackgroundImageOpacity(value) ? value : BACKGROUND_IMAGE_OPACITY_DEFAULT
+}
+
+function isBackgroundBorderOpacity(value: number): value is BackgroundBorderOpacity {
+  return Number.isInteger(value)
+    && value >= BACKGROUND_BORDER_OPACITY_MIN
+    && value <= BACKGROUND_BORDER_OPACITY_MAX
+}
+
+function readBackgroundBorderOpacity(): BackgroundBorderOpacity {
+  const stored = localStorage.getItem(BACKGROUND_BORDER_OPACITY_KEY)
+  if (stored === null) return BACKGROUND_BORDER_OPACITY_DEFAULT
+  const value = Number(stored)
+  return isBackgroundBorderOpacity(value) ? value : BACKGROUND_BORDER_OPACITY_DEFAULT
+}
+
+export const backgroundImagePath = ref<string | null>(readBackgroundImagePath())
+export const backgroundImageOpacity = ref<BackgroundImageOpacity>(readBackgroundImageOpacity())
+export const backgroundBorderOpacity = ref<BackgroundBorderOpacity>(readBackgroundBorderOpacity())
+export const backgroundIsVideo = computed(() =>
+  backgroundImagePath.value?.toLowerCase().endsWith('.mp4') ?? false,
+)
+
+function doApplyBackgroundImage(path: string | null, opacity: BackgroundImageOpacity) {
+  const root = document.documentElement
+  const enabled = Boolean(path)
+  const isVideo = path?.toLowerCase().endsWith('.mp4') ?? false
+  root.classList.toggle('has-custom-background', enabled)
+  root.classList.toggle('has-custom-image-background', enabled && !isVideo)
+  root.classList.toggle('has-custom-video-background', enabled && isVideo)
+  root.style.setProperty('--custom-background-opacity', `${opacity}%`)
+  if (path && !isVideo) {
+    root.style.setProperty('--custom-background-image', `url(${JSON.stringify(convertFileSrc(path))})`)
+  } else {
+    root.style.removeProperty('--custom-background-image')
+  }
+}
+
+export function setBackgroundImagePath(path: string | null) {
+  const next = path?.trim() || null
+  backgroundImagePath.value = next
+  if (next) {
+    localStorage.setItem(BACKGROUND_IMAGE_PATH_KEY, next)
+  } else {
+    localStorage.removeItem(BACKGROUND_IMAGE_PATH_KEY)
+  }
+  doApplyBackgroundImage(next, backgroundImageOpacity.value)
+}
+
+export function setBackgroundImageOpacity(value: BackgroundImageOpacity) {
+  const next = isBackgroundImageOpacity(value) ? value : BACKGROUND_IMAGE_OPACITY_DEFAULT
+  backgroundImageOpacity.value = next
+  localStorage.setItem(BACKGROUND_IMAGE_OPACITY_KEY, String(next))
+  doApplyBackgroundImage(backgroundImagePath.value, next)
+}
+
+function doApplyBackgroundBorderOpacity(value: BackgroundBorderOpacity) {
+  document.documentElement.style.setProperty('--custom-background-border-opacity', `${value}%`)
+}
+
+export function setBackgroundBorderOpacity(value: BackgroundBorderOpacity) {
+  const next = isBackgroundBorderOpacity(value) ? value : BACKGROUND_BORDER_OPACITY_DEFAULT
+  backgroundBorderOpacity.value = next
+  localStorage.setItem(BACKGROUND_BORDER_OPACITY_KEY, String(next))
+  doApplyBackgroundBorderOpacity(next)
+}
+
+export function applyBackgroundImage() {
+  doApplyBackgroundImage(backgroundImagePath.value, backgroundImageOpacity.value)
+}
+
+doApplyBackgroundImage(backgroundImagePath.value, backgroundImageOpacity.value)
+doApplyBackgroundBorderOpacity(backgroundBorderOpacity.value)
 
 // ---------- 双击 / 新建快捷键默认打开什么 ----------
 // 双击 tab 条空白处、⌘N / ⌘T 默认都开「会话(session)」。这里让用户改成开
@@ -335,9 +443,10 @@ window
     if (theme.value === 'system') applyTheme()
   })
 
-/** 清除应用级缓存（目前只有项目置顶/沉底偏好；会话 rename 直接写 JSONL，不走 cache） */
+/** 清除应用级缓存（项目置顶/沉底、手动排序和终端偏好；会话 rename 直接写 JSONL，不走 cache） */
 export function clearAppCache() {
   localStorage.removeItem(PREFS_KEY)
+  localStorage.removeItem(PROJECT_ORDER_KEY)
   localStorage.removeItem(TERMINAL_APP_KEY)
   localStorage.removeItem(EXTERNAL_TERMINAL_KEY)
   localStorage.removeItem(LAUNCH_ARGS_KEY)

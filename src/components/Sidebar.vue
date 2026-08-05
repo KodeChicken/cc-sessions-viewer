@@ -15,6 +15,7 @@ const props = defineProps<{
   activeDir: string | null
   showTrash: boolean
   projPrefs: Record<string, ProjState>
+  projectOrder?: string[]
   refreshing?: boolean
 }>()
 
@@ -26,6 +27,7 @@ const emit = defineEmits<{
   (e: 'refresh'): void
   (e: 'add-bookmark'): void
   (e: 'batch-delete', dirs: string[]): void
+  (e: 'reorder-projects', dirNames: string[]): void
 }>()
 
 const agentLabel = (a: Agent) =>
@@ -41,10 +43,25 @@ function projStateOf(p: ProjectInfo): ProjState | undefined {
   return props.projPrefs[prefKey(p)]
 }
 
+function projectRank(p: ProjectInfo) {
+  return projStateOf(p) === 'pinned' ? 0 : p.bookmarked && !p.sessionCount ? 1 : projStateOf(p) === 'sunk' ? 3 : 2
+}
+
+function orderKey(p: ProjectInfo) {
+  return p.parentDirName ?? p.dirName
+}
+
 const sortedProjects = computed(() => {
-  const rank = (p: ProjectInfo) =>
-    projStateOf(p) === 'pinned' ? 0 : p.bookmarked && !p.sessionCount ? 1 : projStateOf(p) === 'sunk' ? 3 : 2
-  return [...props.projects].sort((a, b) => rank(a) - rank(b))
+  const inputIndex = new Map(props.projects.map((project, index) => [project.dirName, index]))
+  const orderIndex = new Map((props.projectOrder ?? []).map((dirName, index) => [dirName, index]))
+  const indexOf = (project: ProjectInfo) => orderIndex.get(orderKey(project)) ?? Number.MAX_SAFE_INTEGER
+  return [...props.projects].sort((a, b) => {
+    const rankDiff = projectRank(a) - projectRank(b)
+    if (rankDiff) return rankDiff
+    const orderDiff = indexOf(a) - indexOf(b)
+    if (orderDiff) return orderDiff
+    return (inputIndex.get(a.dirName) ?? 0) - (inputIndex.get(b.dirName) ?? 0)
+  })
 })
 
 type SidebarEntry =
@@ -202,6 +219,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   clearModHintTimer()
+  clearProjectDragState()
   window.removeEventListener('keydown', onShortcutKeydown, true)
   window.removeEventListener('keyup', onShortcutKeyup, true)
   window.removeEventListener('blur', onShortcutBlur)
@@ -216,6 +234,7 @@ function toggleSelectAll() {
 }
 
 function onProjClick(p: ProjectInfo) {
+  if (suppressProjectClick) return
   if (selecting.value) {
     toggleSelect(p.dirName)
     return
@@ -232,6 +251,109 @@ function doBatchDelete() {
   const dirs = [...selectedDirs.value]
   if (!dirs.length) return
   emit('batch-delete', dirs)
+}
+
+const draggingProject = ref<string | null>(null)
+const dropTarget = ref<{ dirName: string; after: boolean } | null>(null)
+const hoveredProject = ref<string | null>(null)
+let pendingProjectDrag: { source: string; startX: number; startY: number; active: boolean } | null = null
+let suppressProjectClick = false
+
+function canDragProject(entry: SidebarEntry) {
+  return !selecting.value && entry.kind !== 'child'
+}
+
+function clearProjectDragState() {
+  pendingProjectDrag = null
+  draggingProject.value = null
+  dropTarget.value = null
+  document.body.classList.remove('is-project-reordering')
+  window.removeEventListener('pointermove', onProjectPointerMove)
+  window.removeEventListener('pointerup', onProjectPointerUp)
+  window.removeEventListener('pointercancel', onProjectPointerCancel)
+}
+
+function onProjectPointerDown(event: PointerEvent, entry: SidebarEntry) {
+  if (event.button !== 0 || !canDragProject(entry)) return
+  event.preventDefault()
+  pendingProjectDrag = {
+    source: entry.project.dirName,
+    startX: event.clientX,
+    startY: event.clientY,
+    active: false,
+  }
+  window.addEventListener('pointermove', onProjectPointerMove)
+  window.addEventListener('pointerup', onProjectPointerUp)
+  window.addEventListener('pointercancel', onProjectPointerCancel)
+}
+
+function updateProjectDropTargetFromPoint(x: number, y: number) {
+  const source = pendingProjectDrag?.source
+  const row = document.elementFromPoint(x, y)?.closest<HTMLElement>('.proj-item[data-project-dir]')
+  const targetDir = row?.dataset.projectDir
+  const dragged = source ? props.projects.find((project) => project.dirName === source) : undefined
+  const target = targetDir ? props.projects.find((project) => project.dirName === targetDir) : undefined
+  if (!row || !source || !targetDir || !target || source === targetDir || row.dataset.projectDraggable !== 'true'
+    || !dragged || projectRank(dragged) !== projectRank(target)) {
+    dropTarget.value = null
+    return
+  }
+  const bounds = row.getBoundingClientRect()
+  dropTarget.value = {
+    dirName: targetDir,
+    after: y >= bounds.top + bounds.height / 2,
+  }
+}
+
+function moveProject(source: string, target: { dirName: string; after: boolean }) {
+  if (source === target.dirName) return false
+
+  const roots = groupedEntries.value
+    .filter((item) => item.kind !== 'child')
+    .map((item) => item.project)
+  const sourceIndex = roots.findIndex((project) => project.dirName === source)
+  const targetIndex = roots.findIndex((project) => project.dirName === target.dirName)
+  if (sourceIndex < 0 || targetIndex < 0) return false
+
+  const [dragged] = roots.splice(sourceIndex, 1)
+  const adjustedTargetIndex = roots.findIndex((project) => project.dirName === target.dirName)
+  roots.splice(adjustedTargetIndex + (target.after ? 1 : 0), 0, dragged)
+  const order = roots.map((project) => project.dirName)
+  const previous = groupedEntries.value
+    .filter((item) => item.kind !== 'child')
+    .map((item) => item.project.dirName)
+  if (order.every((dirName, index) => dirName === previous[index])) return false
+  emit('reorder-projects', order)
+  return true
+}
+
+function onProjectPointerMove(event: PointerEvent) {
+  const drag = pendingProjectDrag
+  if (!drag) return
+  if (!drag.active) {
+    if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) return
+    drag.active = true
+    draggingProject.value = drag.source
+    document.body.classList.add('is-project-reordering')
+  }
+  event.preventDefault()
+  updateProjectDropTargetFromPoint(event.clientX, event.clientY)
+}
+
+function onProjectPointerUp(event: PointerEvent) {
+  const drag = pendingProjectDrag
+  const wasDragging = drag?.active
+  if (drag?.active && dropTarget.value) moveProject(drag.source, dropTarget.value)
+  clearProjectDragState()
+  if (wasDragging) {
+    event.preventDefault()
+    suppressProjectClick = true
+    window.setTimeout(() => { suppressProjectClick = false }, 0)
+  }
+}
+
+function onProjectPointerCancel() {
+  clearProjectDragState()
 }
 
 defineExpose({ exitSelect })
@@ -335,12 +457,29 @@ defineExpose({ exitSelect })
             sunk: projStateOf(entry.project) === 'sunk',
             selected: selecting && selectedDirs.has(entry.project.dirName),
             'wt-child': entry.kind === 'child',
+            dragging: draggingProject === entry.project.dirName,
+            'drop-before': dropTarget?.dirName === entry.project.dirName && !dropTarget.after,
+            'drop-after': dropTarget?.dirName === entry.project.dirName && dropTarget.after,
           }"
           :data-path="entry.project.displayPath"
+          :data-project-dir="entry.project.dirName"
+          :data-project-draggable="canDragProject(entry)"
           v-tooltip:right="entry.project.exists ? entry.project.displayPath : entry.project.displayPath + t('proj.missing')"
           @click="onProjClick(entry.project)"
           @contextmenu="onProjContextMenu($event, entry.project)"
+          @pointerenter="hoveredProject = entry.project.dirName"
+          @pointerleave="hoveredProject = null"
         >
+          <span
+            v-if="canDragProject(entry) && (hoveredProject === entry.project.dirName || draggingProject === entry.project.dirName)"
+            class="proj-drag-handle"
+            aria-hidden="true"
+            @pointerdown="onProjectPointerDown($event, entry)"
+          >
+            <svg viewBox="0 0 24 24">
+              <path d="M8 5a1 1 0 1 0 2 0a1 1 0 1 0-2 0m0 7a1 1 0 1 0 2 0a1 1 0 1 0-2 0m0 7a1 1 0 1 0 2 0a1 1 0 1 0-2 0m6-14a1 1 0 1 0 2 0a1 1 0 1 0-2 0m0 7a1 1 0 1 0 2 0a1 1 0 1 0-2 0m0 7a1 1 0 1 0 2 0a1 1 0 1 0-2 0" />
+            </svg>
+          </span>
           <span v-if="selecting" class="proj-check" :class="{ checked: selectedDirs.has(entry.project.dirName) }">
             <IconCheck v-if="selectedDirs.has(entry.project.dirName)" />
           </span>

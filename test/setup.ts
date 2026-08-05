@@ -64,6 +64,15 @@ if (!Element.prototype.animate) {
   })) as unknown as typeof Element.prototype.animate
 }
 
+// jsdom 的 getContext() 会打印「Not implemented」后返回 null。xterm 在导入期只
+// 用它探测 canvas 是否可用，因此明确返回 null 既符合 jsdom 的能力，也避免测试
+// 通过时仍留下三条无意义的 stderr 提示。
+Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
+  configurable: true,
+  writable: true,
+  value: () => null,
+})
+
 // Keep localStorage clean between tests so persisted lang/theme/prefs from
 // one test never leak into the next.
 afterEach(() => {

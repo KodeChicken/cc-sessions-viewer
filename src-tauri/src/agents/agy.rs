@@ -31,12 +31,10 @@ use serde_json::Value;
 use super::SessionSource;
 use crate::agent_command::AgentCommand;
 use crate::stats::types::{CallRecord, Turn};
-use crate::types::{
-    Block, DiffHunk, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary,
-};
+use crate::types::{Block, DiffHunk, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary};
 use crate::util::{
-    append_jsonl_line, clean_title, home, mtime_millis, parse_iso8601_ms,
-    parse_unified_diff, text_block, validate_rename_name,
+    append_jsonl_line, clean_title, home, mtime_millis, parse_iso8601_ms, parse_unified_diff,
+    text_block, validate_rename_name,
 };
 
 pub struct AgySource;
@@ -57,10 +55,7 @@ fn history_path() -> PathBuf {
 
 fn is_uuid_dir(name: &str) -> bool {
     // 标准 UUID：8-4-4-4-12，全小写 hex + dash
-    name.len() == 36
-        && name
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() || c == '-')
+    name.len() == 36 && name.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
 /// 返回所有 brain 目录（CLI + IDE）中合法 UUID 会话及其 transcript 路径。
@@ -69,10 +64,7 @@ fn is_uuid_dir(name: &str) -> bool {
 fn all_conversations() -> Vec<(String, PathBuf, bool)> {
     let cli_brain = cli_data_dir().join("brain");
     let ide_brain = ide_data_dir().join("brain");
-    let sources: Vec<(PathBuf, bool)> = vec![
-        (cli_brain, false),
-        (ide_brain, true),
-    ];
+    let sources: Vec<(PathBuf, bool)> = vec![(cli_brain, false), (ide_brain, true)];
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for (bd, from_ide) in sources {
@@ -172,7 +164,10 @@ fn infer_workspace_from_transcript(path: &Path) -> Option<String> {
             if let Some(content) = v.get("content").and_then(Value::as_str) {
                 if let Some(pos) = content.find("file:///") {
                     let rest = &content[pos + 7..];
-                    let end = rest.find('`').or_else(|| rest.find('\n')).unwrap_or(rest.len());
+                    let end = rest
+                        .find('`')
+                        .or_else(|| rest.find('\n'))
+                        .unwrap_or(rest.len());
                     let file_path = &rest[..end];
                     if let Some(parent) = Path::new(file_path).parent() {
                         let dir = parent.to_string_lossy().to_string();
@@ -246,17 +241,17 @@ fn repair_truncated_content(text: &str) -> String {
 
 fn is_partial_lang(s: &str) -> bool {
     let known_suffixes = [
-        "pescript", "ript", "script",  // typescript/javascript
-        "ython", "thon",               // python
-        "ust",                         // rust
-        "tml", "html",                 // html
-        "css", "son", "json",          // css/json
-        "ell", "shell",                // shell
-        "ash", "bash",                 // bash
-        "aml", "yaml",                 // yaml
-        "oml", "toml",                 // toml
-        "vue",                         // vue
-        "sx", "tsx", "jsx",            // tsx/jsx
+        "pescript", "ript", "script", // typescript/javascript
+        "ython", "thon", // python
+        "ust",  // rust
+        "tml", "html", // html
+        "css", "son", "json", // css/json
+        "ell", "shell", // shell
+        "ash", "bash", // bash
+        "aml", "yaml", // yaml
+        "oml", "toml", // toml
+        "vue",  // vue
+        "sx", "tsx", "jsx", // tsx/jsx
     ];
     if s.is_empty() || s.len() > 12 || s.contains(' ') {
         return false;
@@ -446,7 +441,7 @@ fn recover_early_lines(transcript_dir: &Path, first_step: u64) -> Vec<String> {
     }
     // transcript_dir = .../logs/ (parent of the .jsonl file)
     let conv_dir = transcript_dir
-        .parent()  // .system_generated/
+        .parent() // .system_generated/
         .and_then(|p| p.parent()); // <uuid>/
     let Some(conv_dir) = conv_dir else {
         return Vec::new();
@@ -477,11 +472,15 @@ fn recover_early_lines(transcript_dir: &Path, first_step: u64) -> Vec<String> {
             .current_dir(conv_dir)
             .output();
         let Ok(show) = show else { return false };
-        if !show.status.success() { return false; }
+        if !show.status.success() {
+            return false;
+        }
         let stdout = std::str::from_utf8(&show.stdout).unwrap_or("");
-        stdout.lines().next().and_then(|line| {
-            serde_json::from_str::<Value>(line).ok()
-        }).and_then(|v| v.get("step_index").and_then(Value::as_u64))
+        stdout
+            .lines()
+            .next()
+            .and_then(|line| serde_json::from_str::<Value>(line).ok())
+            .and_then(|v| v.get("step_index").and_then(Value::as_u64))
             == Some(0)
     };
 
@@ -533,11 +532,9 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
         .map_err(|e| format!("Cannot open {}: {e}", read_path.display()))?;
 
     // 检查第一行的 step_index，如果 > 0 说明有被截断的早期消息
-    let all_lines: Vec<String> = BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .collect();
-    let first_step = all_lines.first()
+    let all_lines: Vec<String> = BufReader::new(file).lines().map_while(Result::ok).collect();
+    let first_step = all_lines
+        .first()
         .and_then(|line| serde_json::from_str::<Value>(line).ok())
         .and_then(|v| v.get("step_index").and_then(Value::as_u64))
         .unwrap_or(0);
@@ -608,7 +605,9 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
                             .and_then(Value::as_str)
                             .unwrap_or("unknown");
                         let args = call.get("args").cloned().unwrap_or(Value::Null);
-                        let input = if args.is_null() || args.as_object().map(|m| m.is_empty()).unwrap_or(false) {
+                        let input = if args.is_null()
+                            || args.as_object().map(|m| m.is_empty()).unwrap_or(false)
+                        {
                             None
                         } else {
                             Some(serde_json::to_string_pretty(&args).unwrap_or_default())
@@ -726,9 +725,15 @@ fn read(path: &str) -> Result<Vec<Msg>, String> {
 fn last_user_text(fp: &Path) -> Option<String> {
     let raw = fs::read(fp).ok()?;
     for line in raw.rsplit(|&b| b == b'\n') {
-        if line.is_empty() { continue; }
-        let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
-        if v.get("type").and_then(Value::as_str) != Some("USER_INPUT") { continue; }
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(Value::as_str) != Some("USER_INPUT") {
+            continue;
+        }
         let content = v.get("content").and_then(Value::as_str)?;
         // 提取 <USER_REQUEST>...</USER_REQUEST> 中的文本
         let text = if let Some(start) = content.find("<USER_REQUEST>") {
@@ -742,7 +747,9 @@ fn last_user_text(fp: &Path) -> Option<String> {
             content.trim()
         };
         let clean = crate::util::truncate_subtitle(text);
-        if !clean.is_empty() { return Some(clean); }
+        if !clean.is_empty() {
+            return Some(clean);
+        }
     }
     None
 }
@@ -871,7 +878,9 @@ impl SessionSource for AgySource {
             let mut workspace = ws_map
                 .get(&conv_id)
                 .cloned()
-                .or_else(|| infer_workspace_from_transcript(&preferred_transcript(&transcript_path)))
+                .or_else(|| {
+                    infer_workspace_from_transcript(&preferred_transcript(&transcript_path))
+                })
                 .unwrap_or_else(|| "outside-of-project".to_string());
             if workspace == home_str {
                 workspace = "outside-of-project".to_string();
@@ -926,7 +935,9 @@ impl SessionSource for AgySource {
             let mut workspace = ws_map
                 .get(&conv_id)
                 .cloned()
-                .or_else(|| infer_workspace_from_transcript(&preferred_transcript(&transcript_path)))
+                .or_else(|| {
+                    infer_workspace_from_transcript(&preferred_transcript(&transcript_path))
+                })
                 .unwrap_or_else(|| "outside-of-project".to_string());
             if workspace == home_str {
                 workspace = "outside-of-project".to_string();
@@ -1011,7 +1022,9 @@ impl SessionSource for AgySource {
     }
 
     fn resume_command(&self, session_id: &str, _path: &str) -> AgentCommand {
-        AgentCommand::new("agy").arg("--conversation").arg(session_id)
+        AgentCommand::new("agy")
+            .arg("--conversation")
+            .arg(session_id)
     }
 
     fn new_session_command(&self) -> AgentCommand {
@@ -1076,14 +1089,8 @@ mod tests {
 
     #[test]
     fn parse_hunk_header_basic() {
-        assert_eq!(
-            parse_hunk_header("@@ -46,7 +46,7 @@"),
-            Some((46, 46))
-        );
-        assert_eq!(
-            parse_hunk_header("@@ -1 +1,3 @@"),
-            Some((1, 1))
-        );
+        assert_eq!(parse_hunk_header("@@ -46,7 +46,7 @@"), Some((46, 46)));
+        assert_eq!(parse_hunk_header("@@ -1 +1,3 @@"), Some((1, 1)));
     }
 
     #[test]
@@ -1188,10 +1195,7 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].blocks[0].kind, "tool_result");
         assert_eq!(msgs[0].blocks[0].tool_name.as_deref(), Some("Edit"));
-        assert_eq!(
-            msgs[0].blocks[0].file_path.as_deref(),
-            Some("/tmp/foo.ts")
-        );
+        assert_eq!(msgs[0].blocks[0].file_path.as_deref(), Some("/tmp/foo.ts"));
         assert!(msgs[0].blocks[0].diff.is_some());
         let hunks = msgs[0].blocks[0].diff.as_ref().unwrap();
         assert_eq!(hunks.len(), 1);
@@ -1249,7 +1253,8 @@ more text
                 "status": "DONE",
                 "created_at": "2026-07-05T01:00:00Z",
                 "content": checkpoint_content,
-            })).unwrap(),
+            }))
+            .unwrap(),
             serde_json::to_string(&serde_json::json!({
                 "step_index": 13,
                 "source": "USER_EXPLICIT",
@@ -1257,7 +1262,8 @@ more text
                 "status": "DONE",
                 "created_at": "2026-07-05T01:01:00Z",
                 "content": "<USER_REQUEST>\nhello\n</USER_REQUEST>",
-            })).unwrap(),
+            }))
+            .unwrap(),
             serde_json::to_string(&serde_json::json!({
                 "step_index": 14,
                 "source": "MODEL",
@@ -1265,7 +1271,8 @@ more text
                 "status": "DONE",
                 "created_at": "2026-07-05T01:01:01Z",
                 "content": "Hi there!",
-            })).unwrap(),
+            }))
+            .unwrap(),
         ];
         fs::write(&path, lines.join("\n")).unwrap();
 
@@ -1282,8 +1289,14 @@ more text
     fn repair_truncated_restores_code_fence() {
         let input = "table row\n<truncated 115 bytes>\npescript\n// code\nimport foo\n```\nafter";
         let out = repair_truncated_content(input);
-        assert!(out.contains("```typescript\n// code"), "should restore code fence, got: {out}");
-        assert!(!out.contains("\npescript\n"), "partial lang line should be consumed");
+        assert!(
+            out.contains("```typescript\n// code"),
+            "should restore code fence, got: {out}"
+        );
+        assert!(
+            !out.contains("\npescript\n"),
+            "partial lang line should be consumed"
+        );
     }
 
     #[test]

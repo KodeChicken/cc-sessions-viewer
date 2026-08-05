@@ -28,14 +28,14 @@ type ActionCallback = Box<dyn Fn(&str) + Send + Sync>;
 static ACTION_CB: Mutex<Option<ActionCallback>> = Mutex::new(None);
 
 /// ObjC 方法：菜单项点击时调用，读取 representedObject 里的 action ID 执行回调。
-unsafe extern "C" fn handle_menu_action(
-    _this: *mut AnyObject,
-    _sel: Sel,
-    sender: *mut AnyObject,
-) {
-    if sender.is_null() { return; }
+unsafe extern "C" fn handle_menu_action(_this: *mut AnyObject, _sel: Sel, sender: *mut AnyObject) {
+    if sender.is_null() {
+        return;
+    }
     let rep: *const AnyObject = msg_send![sender, representedObject];
-    if rep.is_null() { return; }
+    if rep.is_null() {
+        return;
+    }
     let ns_str: &NSString = &*(rep as *const NSString);
     let action_id = ns_str.to_string();
     if let Some(cb) = ACTION_CB.lock().unwrap().as_ref() {
@@ -44,22 +44,14 @@ unsafe extern "C" fn handle_menu_action(
 }
 
 /// ObjC 方法：Refresh 按钮点击（view-based item，不关闭菜单）。
-unsafe extern "C" fn handle_refresh(
-    _this: *mut AnyObject,
-    _sel: Sel,
-    _sender: *mut AnyObject,
-) {
+unsafe extern "C" fn handle_refresh(_this: *mut AnyObject, _sel: Sel, _sender: *mut AnyObject) {
     if let Some(cb) = ACTION_CB.lock().unwrap().as_ref() {
         cb("tray-refresh");
     }
 }
 
 /// NSMenuDelegate: 菜单打开时自动触发一次刷新。
-unsafe extern "C" fn menu_will_open(
-    _this: *mut AnyObject,
-    _sel: Sel,
-    _menu: *mut AnyObject,
-) {
+unsafe extern "C" fn menu_will_open(_this: *mut AnyObject, _sel: Sel, _menu: *mut AnyObject) {
     if let Some(cb) = ACTION_CB.lock().unwrap().as_ref() {
         cb("tray-refresh");
     }
@@ -95,19 +87,23 @@ unsafe extern "C" fn mouse_entered(this: *mut AnyObject, _sel: Sel, _event: *mut
     // 添加一个圆角高亮子 layer（带左右 margin，匹配原生菜单项高亮样式）
     remove_highlight_layer(this);
     let layer: *mut AnyObject = msg_send![this, layer];
-    if layer.is_null() { return; }
+    if layer.is_null() {
+        return;
+    }
     let bounds: objc2_foundation::NSRect = msg_send![this, bounds];
     let margin = 5.0_f64;
     let hl: Retained<AnyObject> = msg_send![objc2::class!(CALayer), layer];
     let frame = objc2_foundation::NSRect {
         origin: objc2_foundation::NSPoint { x: margin, y: 1.0 },
-        size: objc2_foundation::NSSize { width: bounds.size.width - margin * 2.0, height: bounds.size.height - 2.0 },
+        size: objc2_foundation::NSSize {
+            width: bounds.size.width - margin * 2.0,
+            height: bounds.size.height - 2.0,
+        },
     };
     let _: () = msg_send![&hl, setFrame: frame];
     let _: () = msg_send![&hl, setCornerRadius: 6.0_f64];
-    let base_color: Retained<AnyObject> = msg_send![
-        objc2::class!(NSColor), selectedContentBackgroundColor
-    ];
+    let base_color: Retained<AnyObject> =
+        msg_send![objc2::class!(NSColor), selectedContentBackgroundColor];
     let color: Retained<AnyObject> = msg_send![
         &base_color, colorWithAlphaComponent: 0.6_f64
     ];
@@ -123,9 +119,13 @@ unsafe extern "C" fn mouse_exited(this: *mut AnyObject, _sel: Sel, _event: *mut 
 
 unsafe fn remove_highlight_layer(view: *mut AnyObject) {
     let layer: *mut AnyObject = msg_send![view, layer];
-    if layer.is_null() { return; }
+    if layer.is_null() {
+        return;
+    }
     let sublayers: *mut AnyObject = msg_send![layer, sublayers];
-    if sublayers.is_null() { return; }
+    if sublayers.is_null() {
+        return;
+    }
     let count: usize = msg_send![sublayers, count];
     let target_name = NSString::from_str("_hl");
     for i in (0..count).rev() {
@@ -179,7 +179,6 @@ fn ensure_handler_class() -> &'static AnyClass {
     unsafe { CLS.unwrap() }
 }
 
-
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let mtm = objc2::MainThreadMarker::new().expect("must run on main thread");
 
@@ -206,10 +205,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             let _ = win.show();
             let _ = win.set_focus();
         }
-        let _ = app_for_cb.emit(
-            "menu://action",
-            serde_json::json!({ "id": action_id }),
-        );
+        let _ = app_for_cb.emit("menu://action", serde_json::json!({ "id": action_id }));
     }));
 
     // 创建 ObjC handler 实例
@@ -219,10 +215,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     unsafe {
         // NSStatusItem
-        let bar: Retained<AnyObject> =
-            msg_send![objc2::class!(NSStatusBar), systemStatusBar];
-        let item: Retained<AnyObject> =
-            msg_send![&bar, statusItemWithLength: -1.0_f64];
+        let bar: Retained<AnyObject> = msg_send![objc2::class!(NSStatusBar), systemStatusBar];
+        let item: Retained<AnyObject> = msg_send![&bar, statusItemWithLength: -1.0_f64];
 
         // Icon
         let icon_data = include_bytes!("../icons/tray-template.png");
@@ -279,7 +273,9 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 /// 原地替换菜单里的 stats 区域，不关闭菜单。NSMenu 会实时刷新。
 fn update_stats_in_place(mtm: objc2::MainThreadMarker, stats: Option<&TrayStats>) {
     let menu_ptr = *MENU_PTR.lock().unwrap();
-    if menu_ptr == 0 { return; }
+    if menu_ptr == 0 {
+        return;
+    }
     let menu: &NSMenu = unsafe { &*(menu_ptr as *const NSMenu) };
 
     // 移除旧的 stats items（从头部开始，数量记在 STATS_ITEM_COUNT 里）
@@ -304,7 +300,8 @@ fn update_stats_in_place(mtm: objc2::MainThreadMarker, stats: Option<&TrayStats>
     if let Some(stats) = stats {
         for agent in &stats.agents {
             insert_menu_item(menu, mtm, make_agent_card(mtm, agent), insert_idx, false);
-            insert_idx += 1; new_count += 1;
+            insert_idx += 1;
+            new_count += 1;
         }
     }
 
@@ -319,9 +316,13 @@ fn insert_menu_item(
     _enabled: bool,
 ) {
     let item = NSMenuItem::new(mtm);
-    unsafe { let _: () = msg_send![&item, setView: &*view]; }
+    unsafe {
+        let _: () = msg_send![&item, setView: &*view];
+    }
     item.setEnabled(false);
-    unsafe { let _: () = msg_send![menu, insertItem: &*item, atIndex: index]; }
+    unsafe {
+        let _: () = msg_send![menu, insertItem: &*item, atIndex: index];
+    }
 }
 
 fn build_menu(mtm: objc2::MainThreadMarker, stats: Option<&TrayStats>) -> Retained<NSMenu> {
@@ -415,7 +416,10 @@ fn add_refresh_button(menu: &NSMenu, mtm: objc2::MainThreadMarker) {
         let _: () = msg_send![&container, addTrackingArea: &*tracking];
         let frame = objc2_foundation::NSRect {
             origin: objc2_foundation::NSPoint { x: 14.0, y: 2.0 },
-            size: objc2_foundation::NSSize { width: 292.0, height: 24.0 },
+            size: objc2_foundation::NSSize {
+                width: 292.0,
+                height: 24.0,
+            },
         };
         let _: () = msg_send![&btn, setFrame: frame];
         let _: () = msg_send![&container, addSubview: &*btn];
@@ -433,8 +437,12 @@ static REFRESH_ITEM_PTR: Mutex<usize> = Mutex::new(0);
 
 fn set_refresh_loading(loading: bool) {
     let item_ptr = *REFRESH_ITEM_PTR.lock().unwrap();
-    if item_ptr == 0 { return; }
-    let Some(mtm) = objc2::MainThreadMarker::new() else { return; };
+    if item_ptr == 0 {
+        return;
+    }
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return;
+    };
     unsafe {
         let item = item_ptr as *mut AnyObject;
         if loading {
@@ -446,7 +454,10 @@ fn set_refresh_loading(loading: bool) {
             let spinner: Retained<AnyObject> = msg_send![objc2::class!(NSProgressIndicator), new];
             let spinner_frame = objc2_foundation::NSRect {
                 origin: objc2_foundation::NSPoint { x: 18.0, y: 6.0 },
-                size: objc2_foundation::NSSize { width: 16.0, height: 16.0 },
+                size: objc2_foundation::NSSize {
+                    width: 16.0,
+                    height: 16.0,
+                },
             };
             let _: () = msg_send![&spinner, setFrame: spinner_frame];
             let _: () = msg_send![&spinner, setStyle: 1_isize]; // NSProgressIndicatorStyleSpinning
@@ -460,7 +471,10 @@ fn set_refresh_loading(loading: bool) {
             let tf = make_tf(mtm, "Refreshing stats…", 13.0, false, false);
             let tf_frame = objc2_foundation::NSRect {
                 origin: objc2_foundation::NSPoint { x: 40.0, y: 4.0 },
-                size: objc2_foundation::NSSize { width: 200.0, height: 20.0 },
+                size: objc2_foundation::NSSize {
+                    width: 200.0,
+                    height: 20.0,
+                },
             };
             let _: () = msg_send![&tf, setFrame: tf_frame];
             let _: () = msg_send![&container, addSubview: &*tf];
@@ -530,7 +544,10 @@ fn make_refresh_view(_mtm: objc2::MainThreadMarker) -> Retained<AnyObject> {
 
         let frame = objc2_foundation::NSRect {
             origin: objc2_foundation::NSPoint { x: 14.0, y: 2.0 },
-            size: objc2_foundation::NSSize { width: 292.0, height: 24.0 },
+            size: objc2_foundation::NSSize {
+                width: 292.0,
+                height: 24.0,
+            },
         };
         let _: () = msg_send![&btn, setFrame: frame];
         let _: () = msg_send![&container, addSubview: &*btn];
@@ -569,11 +586,11 @@ fn add_view_item(menu: &NSMenu, mtm: objc2::MainThreadMarker, view: Retained<Any
 
 fn brand_color(agent: &str) -> (f64, f64, f64) {
     match agent {
-        "claude"   => (204.0 / 255.0, 124.0 / 255.0,  94.0 / 255.0),
-        "codex"    => ( 73.0 / 255.0, 163.0 / 255.0, 176.0 / 255.0),
-        "agy"      => (139.0 / 255.0,  92.0 / 255.0, 246.0 / 255.0),
+        "claude" => (204.0 / 255.0, 124.0 / 255.0, 94.0 / 255.0),
+        "codex" => (73.0 / 255.0, 163.0 / 255.0, 176.0 / 255.0),
+        "agy" => (139.0 / 255.0, 92.0 / 255.0, 246.0 / 255.0),
         "opencode" => (113.0 / 255.0, 113.0 / 255.0, 122.0 / 255.0),
-        _          => (0.5, 0.5, 0.5),
+        _ => (0.5, 0.5, 0.5),
     }
 }
 
@@ -582,11 +599,11 @@ fn make_agent_card(
     a: &crate::types::TrayAgentSummary,
 ) -> Retained<AnyObject> {
     let name = match a.agent.as_str() {
-        "claude"   => "Claude Code",
-        "codex"    => "Codex CLI",
-        "agy"      => "Antigravity CLI",
+        "claude" => "Claude Code",
+        "codex" => "Codex CLI",
+        "agy" => "Antigravity CLI",
         "opencode" => "opencode",
-        _          => &a.agent,
+        _ => &a.agent,
     };
     let (br, bg, bb) = brand_color(&a.agent);
     let card_w: f64 = 380.0;
@@ -603,7 +620,10 @@ fn make_agent_card(
         let panel: Retained<AnyObject> = msg_send![objc2::class!(NSView), new];
         let panel_rect = objc2_foundation::NSRect {
             origin: objc2_foundation::NSPoint { x: margin, y: 4.0 },
-            size: objc2_foundation::NSSize { width: inner_w, height: inner_h },
+            size: objc2_foundation::NSSize {
+                width: inner_w,
+                height: inner_h,
+            },
         };
         let _: () = msg_send![&panel, setFrame: panel_rect];
         let _: () = msg_send![&panel, setWantsLayer: true];
@@ -628,7 +648,10 @@ fn make_agent_card(
         let accent: Retained<AnyObject> = msg_send![objc2::class!(NSView), new];
         let accent_rect = objc2_foundation::NSRect {
             origin: objc2_foundation::NSPoint { x: margin, y: 4.0 },
-            size: objc2_foundation::NSSize { width: 3.5, height: inner_h },
+            size: objc2_foundation::NSSize {
+                width: 3.5,
+                height: inner_h,
+            },
         };
         let _: () = msg_send![&accent, setFrame: accent_rect];
         let _: () = msg_send![&accent, setWantsLayer: true];
@@ -646,7 +669,10 @@ fn make_agent_card(
         let dot: Retained<AnyObject> = msg_send![objc2::class!(NSView), new];
         let dot_rect = objc2_foundation::NSRect {
             origin: objc2_foundation::NSPoint { x: 24.0, y: 94.0 },
-            size: objc2_foundation::NSSize { width: 8.0, height: 8.0 },
+            size: objc2_foundation::NSSize {
+                width: 8.0,
+                height: 8.0,
+            },
         };
         let _: () = msg_send![&dot, setFrame: dot_rect];
         let _: () = msg_send![&dot, setWantsLayer: true];
@@ -665,7 +691,19 @@ fn make_agent_card(
 
         macro_rules! tf {
             ($text:expr, $sz:expr, $bold:expr, $color:expr, $x:expr, $y:expr, $w:expr) => {
-                place_tf(mtm, $text, $sz, $bold, &TfPlacement { parent: &card, color: $color, x: $x, y: $y, w: $w })
+                place_tf(
+                    mtm,
+                    $text,
+                    $sz,
+                    $bold,
+                    &TfPlacement {
+                        parent: &card,
+                        color: $color,
+                        x: $x,
+                        y: $y,
+                        w: $w,
+                    },
+                )
             };
         }
 
@@ -679,17 +717,65 @@ fn make_agent_card(
         let col2_x = col1_x + col_w;
         let col3_x = col2_x + col_w;
 
-        tf!("Today",                    10.0, false, &secondary, col1_x, 64.0, col_w);
-        tf!(&fmt_cost(a.today_cost),     18.0, true,  &primary,   col1_x, 42.0, col_w);
-        tf!(&fmt_tokens(a.today_tokens), 10.0, false, &secondary, col1_x, 26.0, col_w);
+        tf!("Today", 10.0, false, &secondary, col1_x, 64.0, col_w);
+        tf!(
+            &fmt_cost(a.today_cost),
+            18.0,
+            true,
+            &primary,
+            col1_x,
+            42.0,
+            col_w
+        );
+        tf!(
+            &fmt_tokens(a.today_tokens),
+            10.0,
+            false,
+            &secondary,
+            col1_x,
+            26.0,
+            col_w
+        );
 
-        tf!("7 Days",                   10.0, false, &secondary, col2_x, 64.0, col_w);
-        tf!(&fmt_cost(a.week_cost),      18.0, true,  &primary,   col2_x, 42.0, col_w);
-        tf!(&fmt_tokens(a.week_tokens),  10.0, false, &secondary, col2_x, 26.0, col_w);
+        tf!("7 Days", 10.0, false, &secondary, col2_x, 64.0, col_w);
+        tf!(
+            &fmt_cost(a.week_cost),
+            18.0,
+            true,
+            &primary,
+            col2_x,
+            42.0,
+            col_w
+        );
+        tf!(
+            &fmt_tokens(a.week_tokens),
+            10.0,
+            false,
+            &secondary,
+            col2_x,
+            26.0,
+            col_w
+        );
 
-        tf!("30 Days",                  10.0, false, &secondary, col3_x, 64.0, col_w);
-        tf!(&fmt_cost(a.month_cost),     18.0, true,  &primary,   col3_x, 42.0, col_w);
-        tf!(&fmt_tokens(a.month_tokens), 10.0, false, &secondary, col3_x, 26.0, col_w);
+        tf!("30 Days", 10.0, false, &secondary, col3_x, 64.0, col_w);
+        tf!(
+            &fmt_cost(a.month_cost),
+            18.0,
+            true,
+            &primary,
+            col3_x,
+            42.0,
+            col_w
+        );
+        tf!(
+            &fmt_tokens(a.month_tokens),
+            10.0,
+            false,
+            &secondary,
+            col3_x,
+            26.0,
+            col_w
+        );
 
         // Bottom: total tokens
         let total_text = format!("{} total tokens", fmt_num(a.month_tokens));
@@ -707,7 +793,13 @@ struct TfPlacement<'a> {
     w: f64,
 }
 
-unsafe fn place_tf(mtm: objc2::MainThreadMarker, text: &str, size: f64, bold: bool, p: &TfPlacement) {
+unsafe fn place_tf(
+    mtm: objc2::MainThreadMarker,
+    text: &str,
+    size: f64,
+    bold: bool,
+    p: &TfPlacement,
+) {
     let tf = make_tf(mtm, text, size, bold, false);
     let _: () = msg_send![&tf, setTextColor: p.color];
     let frame = objc2_foundation::NSRect {
@@ -739,8 +831,7 @@ fn make_tf(
         };
         let _: () = msg_send![&tf, setFont: &*font];
         if dimmed {
-            let color: Retained<AnyObject> =
-                msg_send![objc2::class!(NSColor), secondaryLabelColor];
+            let color: Retained<AnyObject> = msg_send![objc2::class!(NSColor), secondaryLabelColor];
             let _: () = msg_send![&tf, setTextColor: &*color];
         }
         let _: () = msg_send![&tf, setDrawsBackground: false];

@@ -1,10 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
+
+vi.mock('@tauri-apps/api/core', () => ({
+  convertFileSrc: (path: string) => `asset://${path}`,
+}))
+
 import {
   applyTheme,
+  backgroundBorderOpacity,
+  backgroundImageOpacity,
+  backgroundImagePath,
+  backgroundIsVideo,
   chatSpacing,
   clearAppCache,
   lang,
+  setBackgroundBorderOpacity,
+  setBackgroundImageOpacity,
+  setBackgroundImagePath,
   setChatSpacing,
   setLang,
   setTheme,
@@ -33,6 +45,9 @@ function stubMatchMedia(matches: boolean) {
 afterEach(() => {
   vi.unstubAllGlobals()
   document.documentElement.classList.remove(DARK)
+  setBackgroundImagePath(null)
+  setBackgroundImageOpacity(40)
+  setBackgroundBorderOpacity(26)
   setChatSpacing(100)
   setLang('en')
   setTheme('system')
@@ -85,6 +100,58 @@ describe('chat spacing', () => {
   })
 })
 
+describe('custom background', () => {
+  it('uses the intended opacity defaults when no wallpaper preferences are stored', async () => {
+    localStorage.removeItem('backgroundImageOpacity:v1')
+    localStorage.removeItem('backgroundBorderOpacity:v1')
+    vi.resetModules()
+    const settings = await import('../src/settings')
+
+    expect(settings.backgroundImageOpacity.value).toBe(40)
+    expect(settings.backgroundBorderOpacity.value).toBe(26)
+  })
+
+  it('persists the selected image and applies it to the app shell', () => {
+    setBackgroundImagePath('/Users/test/Pictures/aurora.webp')
+    setBackgroundImageOpacity(65)
+
+    expect(backgroundImagePath.value).toBe('/Users/test/Pictures/aurora.webp')
+    expect(backgroundImageOpacity.value).toBe(65)
+    expect(localStorage.getItem('backgroundImagePath:v1')).toBe('/Users/test/Pictures/aurora.webp')
+    expect(localStorage.getItem('backgroundImageOpacity:v1')).toBe('65')
+    expect(document.documentElement.classList.contains('has-custom-background')).toBe(true)
+    expect(document.documentElement.style.getPropertyValue('--custom-background-image')).toContain('aurora.webp')
+    expect(document.documentElement.style.getPropertyValue('--custom-background-opacity')).toBe('65%')
+  })
+
+  it('persists border opacity and applies the wallpaper-only border token', () => {
+    setBackgroundBorderOpacity(42)
+
+    expect(backgroundBorderOpacity.value).toBe(42)
+    expect(localStorage.getItem('backgroundBorderOpacity:v1')).toBe('42')
+    expect(document.documentElement.style.getPropertyValue('--custom-background-border-opacity')).toBe('42%')
+  })
+
+  it('removes the image and restores the normal shell state', () => {
+    setBackgroundImagePath('/Users/test/Pictures/aurora.webp')
+    setBackgroundImagePath(null)
+
+    expect(backgroundImagePath.value).toBeNull()
+    expect(localStorage.getItem('backgroundImagePath:v1')).toBeNull()
+    expect(document.documentElement.classList.contains('has-custom-background')).toBe(false)
+    expect(document.documentElement.style.getPropertyValue('--custom-background-image')).toBe('')
+  })
+
+  it('identifies MP4 backgrounds so the app can render a video layer', () => {
+    setBackgroundImagePath('/Users/test/Movies/aurora.mp4')
+
+    expect(backgroundIsVideo.value).toBe(true)
+    expect(document.documentElement.classList.contains('has-custom-video-background')).toBe(true)
+    expect(document.documentElement.classList.contains('has-custom-image-background')).toBe(false)
+    expect(document.documentElement.style.getPropertyValue('--custom-background-image')).toBe('')
+  })
+})
+
 describe('applyTheme', () => {
   it('adds the dark class when the theme is dark', () => {
     setTheme('dark')
@@ -122,10 +189,12 @@ describe('applyTheme', () => {
 })
 
 describe('clearAppCache', () => {
-  it('removes the project-prefs cache key', () => {
+  it('removes project display preferences', () => {
     localStorage.setItem('projPrefs:v1', '{"pinned":[]}')
+    localStorage.setItem('projectOrder:v1', '{"claude":["demo"]}')
     clearAppCache()
     expect(localStorage.getItem('projPrefs:v1')).toBeNull()
+    expect(localStorage.getItem('projectOrder:v1')).toBeNull()
   })
 })
 

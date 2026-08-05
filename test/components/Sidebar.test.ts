@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import Sidebar from '../../src/components/Sidebar.vue'
 import { vTooltip } from '../../src/tooltip'
@@ -83,6 +83,86 @@ describe('Sidebar', () => {
     })
     const names = wrapper.findAll('.proj-name').map((n) => n.text())
     expect(names).toEqual(['pinned', 'normal', 'sunk'])
+  })
+
+  it('uses a persisted drag order within each pin group', () => {
+    const wrapper = factory({
+      projects: [
+        project({ dirName: 'first' }),
+        project({ dirName: 'second' }),
+        project({ dirName: 'pinned' }),
+      ],
+      projPrefs: { 'claude::pinned': 'pinned' },
+      projectOrder: ['second', 'first', 'pinned'],
+    })
+    expect(wrapper.findAll('.proj-name').map((node) => node.text())).toEqual(['pinned', 'second', 'first'])
+  })
+
+  it('emits the reordered root projects after a drag and drop', async () => {
+    const wrapper = factory({
+      projects: [project({ dirName: 'first' }), project({ dirName: 'second' })],
+    })
+    const [first, second] = wrapper.findAll('.proj-item')
+    Object.defineProperty(second.element, 'getBoundingClientRect', {
+      value: () => ({ top: 0, height: 20 }),
+    })
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn(() => second.element),
+    })
+
+    await first.trigger('pointerenter')
+    first.find('.proj-drag-handle').element.dispatchEvent(
+      new MouseEvent('pointerdown', { button: 0, clientX: 0, clientY: 0, bubbles: true, cancelable: true }),
+    )
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 8, clientY: 18, bubbles: true, cancelable: true }))
+    await wrapper.vm.$nextTick()
+    expect(second.classes()).toContain('drop-after')
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: 8, clientY: 18, bubbles: true, cancelable: true }))
+
+    expect(wrapper.emitted('reorder-projects')![0]).toEqual([['second', 'first']])
+  })
+
+  it('renders the drag handle only while a project row is hovered', async () => {
+    const wrapper = factory({
+      projects: [project({ dirName: 'first' }), project({ dirName: 'second' })],
+    })
+    const [first, second] = wrapper.findAll('.proj-item')
+
+    expect(first.find('.proj-drag-handle').exists()).toBe(false)
+    expect(first.find('.proj-name').element.previousElementSibling).toBeNull()
+    await second.trigger('pointerenter')
+    expect(second.find('.proj-drag-handle').exists()).toBe(true)
+    expect(second.find('.proj-name').element.previousElementSibling).toBe(second.find('.proj-drag-handle').element)
+    await second.trigger('pointerleave')
+    expect(second.find('.proj-drag-handle').exists()).toBe(false)
+  })
+
+  it('keeps the insertion indicator visible while the pointer stays over a project row', async () => {
+    const wrapper = factory({
+      projects: [project({ dirName: 'first' }), project({ dirName: 'second' })],
+    })
+    const [first, second] = wrapper.findAll('.proj-item')
+    Object.defineProperty(second.element, 'getBoundingClientRect', {
+      value: () => ({ top: 0, height: 20 }),
+    })
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn(() => second.find('.proj-name').element),
+    })
+
+    await first.trigger('pointerenter')
+    first.find('.proj-drag-handle').element.dispatchEvent(
+      new MouseEvent('pointerdown', { button: 0, clientX: 0, clientY: 0, bubbles: true, cancelable: true }),
+    )
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 8, clientY: 3, bubbles: true, cancelable: true }))
+    await wrapper.vm.$nextTick()
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 10, clientY: 4, bubbles: true, cancelable: true }))
+    await wrapper.vm.$nextTick()
+
+    expect(second.classes()).toContain('drop-before')
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: 10, clientY: 4, bubbles: true, cancelable: true }))
+    expect(wrapper.emitted('reorder-projects')).toBeUndefined()
   })
 
   it('renders a pin dot only for pinned projects', () => {

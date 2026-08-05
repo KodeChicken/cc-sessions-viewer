@@ -50,9 +50,22 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .version(Some(pkg.version.to_string()))
         .copyright(Some("MIT © wuchao".to_string()))
         .build();
-    let about = PredefinedMenuItem::about(app, Some(&format!("About {}", pkg.name)), Some(about_meta))?;
-    let check_update = MenuItem::with_id(app, "check-update", "Check for Updates…", true, None::<&str>)?;
-    let prefs = MenuItem::with_id(app, "open-settings", "Preferences…", true, Some("CmdOrCtrl+,"))?;
+    let about =
+        PredefinedMenuItem::about(app, Some(&format!("About {}", pkg.name)), Some(about_meta))?;
+    let check_update = MenuItem::with_id(
+        app,
+        "check-update",
+        "Check for Updates…",
+        true,
+        None::<&str>,
+    )?;
+    let prefs = MenuItem::with_id(
+        app,
+        "open-settings",
+        "Preferences…",
+        true,
+        Some("CmdOrCtrl+,"),
+    )?;
     let services = PredefinedMenuItem::services(app, None)?;
     let hide = PredefinedMenuItem::hide(app, None)?;
     let hide_others = PredefinedMenuItem::hide_others(app, None)?;
@@ -75,12 +88,25 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .build()?;
 
     // ---------- File ----------
-    let new_session = MenuItem::with_id(app, "new-session", "New Session in Current Project", true, Some("CmdOrCtrl+N"))?;
+    let new_session = MenuItem::with_id(
+        app,
+        "new-session",
+        "New Session in Current Project",
+        true,
+        Some("CmdOrCtrl+N"),
+    )?;
     let new_tab = MenuItem::with_id(app, "new-tab", "New Tab", true, Some("CmdOrCtrl+T"))?;
     let close_tab = MenuItem::with_id(app, "close-tab", "Close Tab", true, Some("CmdOrCtrl+W"))?;
     let rename_tab = MenuItem::with_id(app, "rename-tab", "Rename Tab", true, Some("CmdOrCtrl+R"))?;
-    let add_folder = MenuItem::with_id(app, "add-folder", "Add Folder…", true, Some("CmdOrCtrl+O"))?;
-    let export = MenuItem::with_id(app, "export-session", "Export Session…", true, Some("CmdOrCtrl+E"))?;
+    let add_folder =
+        MenuItem::with_id(app, "add-folder", "Add Folder…", true, Some("CmdOrCtrl+O"))?;
+    let export = MenuItem::with_id(
+        app,
+        "export-session",
+        "Export Session…",
+        true,
+        Some("CmdOrCtrl+E"),
+    )?;
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(&new_session)
         .item(&new_tab)
@@ -104,15 +130,31 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .build()?;
 
     // ---------- View ----------
-    let toggle_sidebar = MenuItem::with_id(app, "toggle-sidebar", "Toggle Sidebar", true, Some("CmdOrCtrl+B"))?;
-    let open_stats = MenuItem::with_id(app, "open-stats", "Statistics", true, Some("CmdOrCtrl+Shift+S"))?;
+    let toggle_sidebar = MenuItem::with_id(
+        app,
+        "toggle-sidebar",
+        "Toggle Sidebar",
+        true,
+        Some("CmdOrCtrl+B"),
+    )?;
+    let open_stats = MenuItem::with_id(
+        app,
+        "open-stats",
+        "Statistics",
+        true,
+        Some("CmdOrCtrl+Shift+S"),
+    )?;
     // Theme 子菜单 —— 三选一，CheckMenuItem。默认先全不勾，setup_menu_bridge 等
     // 前端启动后会发一次 menu:sync 把当前值勾上。
-    let theme_light = CheckMenuItem::with_id(app, "theme:light", "Light", true, false, None::<&str>)?;
+    let theme_light =
+        CheckMenuItem::with_id(app, "theme:light", "Light", true, false, None::<&str>)?;
     let theme_dark = CheckMenuItem::with_id(app, "theme:dark", "Dark", true, false, None::<&str>)?;
-    let theme_system = CheckMenuItem::with_id(app, "theme:system", "System", true, false, None::<&str>)?;
-    let theme_codex = CheckMenuItem::with_id(app, "theme:codex", "Codex", true, false, None::<&str>)?;
-    let theme_dracula = CheckMenuItem::with_id(app, "theme:dracula", "Dracula", true, false, None::<&str>)?;
+    let theme_system =
+        CheckMenuItem::with_id(app, "theme:system", "System", true, false, None::<&str>)?;
+    let theme_codex =
+        CheckMenuItem::with_id(app, "theme:codex", "Codex", true, false, None::<&str>)?;
+    let theme_dracula =
+        CheckMenuItem::with_id(app, "theme:dracula", "Dracula", true, false, None::<&str>)?;
     let theme_menu = SubmenuBuilder::new(app, "Theme")
         .item(&theme_light)
         .item(&theme_dark)
@@ -123,7 +165,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // Language 子菜单 —— 四选一。
     let lang_en = CheckMenuItem::with_id(app, "lang:en", "English", true, false, None::<&str>)?;
     let lang_zh = CheckMenuItem::with_id(app, "lang:zh", "简体中文", true, false, None::<&str>)?;
-    let lang_zh_tw = CheckMenuItem::with_id(app, "lang:zh-TW", "繁體中文", true, false, None::<&str>)?;
+    let lang_zh_tw =
+        CheckMenuItem::with_id(app, "lang:zh-TW", "繁體中文", true, false, None::<&str>)?;
     let lang_ja = CheckMenuItem::with_id(app, "lang:ja", "日本語", true, false, None::<&str>)?;
     let lang_menu = SubmenuBuilder::new(app, "Language")
         .item(&lang_en)
@@ -140,10 +183,28 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .build()?;
 
     // ---------- Find ----------
-    let find_in_session = MenuItem::with_id(app, "find-in-session", "Find in Session…", true, Some("CmdOrCtrl+F"))?;
+    let find_in_session = MenuItem::with_id(
+        app,
+        "find-in-session",
+        "Find in Session…",
+        true,
+        Some("CmdOrCtrl+F"),
+    )?;
     let find_next = MenuItem::with_id(app, "find-next", "Find Next", true, Some("CmdOrCtrl+G"))?;
-    let find_prev = MenuItem::with_id(app, "find-prev", "Find Previous", true, Some("CmdOrCtrl+Shift+G"))?;
-    let find_global = MenuItem::with_id(app, "open-global-search", "Find in All Sessions…", true, Some("CmdOrCtrl+Shift+F"))?;
+    let find_prev = MenuItem::with_id(
+        app,
+        "find-prev",
+        "Find Previous",
+        true,
+        Some("CmdOrCtrl+Shift+G"),
+    )?;
+    let find_global = MenuItem::with_id(
+        app,
+        "open-global-search",
+        "Find in All Sessions…",
+        true,
+        Some("CmdOrCtrl+Shift+F"),
+    )?;
     let find_menu = SubmenuBuilder::new(app, "Find")
         .item(&find_in_session)
         .item(&find_next)

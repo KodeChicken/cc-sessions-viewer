@@ -439,7 +439,7 @@ function proceed() {
   cursor: default;
   padding: 9px 11px;
   background: color-mix(in srgb, var(--surface-hover) 72%, var(--surface));
-  border-color: color-mix(in srgb, var(--border) 72%, transparent);
+  border-color: var(--border);
 }
 .q-prompt-history .q-opt-static.selected {
   border-color: color-mix(in srgb, var(--brand) 58%, var(--border));

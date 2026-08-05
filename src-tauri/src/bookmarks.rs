@@ -6,7 +6,9 @@ use crate::types::{SessionMeta, SessionPage};
 use crate::util::{home, is_jsonl, mtime_millis};
 
 fn bookmarks_path() -> PathBuf {
-    home().join(".claude").join(".session-viewer-bookmarks.json")
+    home()
+        .join(".claude")
+        .join(".session-viewer-bookmarks.json")
 }
 
 type BookmarksMap = HashMap<String, Vec<String>>;
@@ -27,7 +29,8 @@ fn write_all(map: &BookmarksMap) -> Result<(), String> {
     if let Some(parent) = p.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let json = serde_json::to_string_pretty(map).map_err(|e| format!("Failed to serialize: {e}"))?;
+    let json =
+        serde_json::to_string_pretty(map).map_err(|e| format!("Failed to serialize: {e}"))?;
     fs::write(&p, json).map_err(|e| format!("Failed to write bookmarks: {e}"))
 }
 
@@ -61,7 +64,9 @@ pub fn count_sessions(dir: &Path) -> (usize, u64) {
             if is_jsonl(&fp) {
                 count += 1;
                 let mt = mtime_millis(&fp);
-                if mt > last { last = mt; }
+                if mt > last {
+                    last = mt;
+                }
             }
         }
     }
@@ -71,7 +76,10 @@ pub fn count_sessions(dir: &Path) -> (usize, u64) {
 pub fn list_sessions_in_dir(dir: &str, offset: usize, limit: usize) -> Result<SessionPage, String> {
     let p = Path::new(dir);
     if !p.is_dir() {
-        return Ok(SessionPage { total: 0, sessions: vec![] });
+        return Ok(SessionPage {
+            total: 0,
+            sessions: vec![],
+        });
     }
     let mut files: Vec<(PathBuf, u64)> = Vec::new();
     if let Ok(rd) = fs::read_dir(p) {
@@ -88,7 +96,11 @@ pub fn list_sessions_in_dir(dir: &str, offset: usize, limit: usize) -> Result<Se
     let window = files.into_iter().skip(offset).take(limit);
     let sessions = window
         .map(|(fp, mt)| {
-            let file_name = fp.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let file_name = fp
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             let id = file_name.trim_end_matches(".jsonl").to_string();
             let size = fp.metadata().map(|m| m.len()).unwrap_or(0);
             SessionMeta {

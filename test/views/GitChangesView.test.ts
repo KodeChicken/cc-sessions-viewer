@@ -16,12 +16,16 @@ vi.mock('../../src/api', () => ({
 }))
 
 import GitChangesView from '../../src/views/GitChangesView.vue'
+import { vTooltip } from '../../src/tooltip'
 
 enableAutoUnmount(afterEach)
 
 const factory = () => mount(GitChangesView, {
   props: { cwd: '/work/project', gitRef: 'working' },
-  global: { stubs: { DiffBlock: true } },
+  global: {
+    directives: { tooltip: vTooltip },
+    stubs: { DiffBlock: true },
+  },
 })
 
 describe('GitChangesView', () => {

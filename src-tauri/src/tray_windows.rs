@@ -39,7 +39,10 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             MENU_SHOW => show_main_window(app),
             MENU_STATS | MENU_SETTINGS => {
                 show_main_window(app);
-                let _ = app.emit("menu://action", serde_json::json!({ "id": event.id().as_ref() }));
+                let _ = app.emit(
+                    "menu://action",
+                    serde_json::json!({ "id": event.id().as_ref() }),
+                );
             }
             MENU_QUIT => app.exit(0),
             _ => {}

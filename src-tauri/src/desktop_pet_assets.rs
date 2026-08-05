@@ -671,7 +671,10 @@ mod tests {
         .unwrap();
 
         let target = find_custom_pet_directory(&directory, "porter").unwrap();
-        assert_eq!(target.file_name().and_then(|name| name.to_str()), Some("porter"));
+        assert_eq!(
+            target.file_name().and_then(|name| name.to_str()),
+            Some("porter")
+        );
         assert!(find_custom_pet_directory(&directory, "../keep-me").is_err());
 
         fs::remove_dir_all(target).unwrap();

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { convertFileSrc } from '@tauri-apps/api/core'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import type { Agent } from '../types'
 import { t } from '../i18n'
 import {
@@ -39,6 +40,13 @@ import {
   setShowToolCalls,
   chatSpacing,
   setChatSpacing,
+  backgroundImagePath,
+  backgroundImageOpacity,
+  backgroundBorderOpacity,
+  backgroundIsVideo,
+  setBackgroundImagePath,
+  setBackgroundImageOpacity,
+  setBackgroundBorderOpacity,
   type Lang,
   type Theme,
   type TerminalApp,
@@ -59,6 +67,9 @@ import {
   IconTerminal,
   IconWebhook,
   IconStar,
+  IconFileImage,
+  IconFolder,
+  IconPalette,
   agentIcons,
   terminalIcons,
 } from './icons'
@@ -105,11 +116,13 @@ import {
 import DesktopPetFallback from './DesktopPetFallback.vue'
 import PetAtlasPlayer from './PetAtlasPlayer.vue'
 
-type SettingsTab = 'general' | 'advanced' | 'hooks' | 'pet' | 'cli' | 'shortcuts' | 'updates'
+type SettingsTab = 'general' | 'theme' | 'advanced' | 'hooks' | 'pet' | 'cli' | 'shortcuts' | 'updates'
+const SETTINGS_ACTIVE_TAB_KEY = 'settingsActiveTab:v1'
 
 // 左侧导航：图标 + 文案，激活项高亮（参考 Claude 客户端设置面板）。
 const navItems = [
   { id: 'general', icon: IconSettings, key: 'settings.tab.general' },
+  { id: 'theme', icon: IconPalette, key: 'settings.tab.theme' },
   { id: 'advanced', icon: IconSliders, key: 'settings.tab.advanced' },
   { id: 'hooks', icon: IconWebhook, key: 'settings.tab.hooks' },
   { id: 'pet', icon: IconStar, key: 'settings.tab.desktopPet' },
@@ -179,10 +192,16 @@ const agentLabel = (a: Agent) =>
 const props = defineProps<{ cacheBytes: number; initialTab?: SettingsTab }>()
 const emit = defineEmits<{ close: []; clearCache: []; clearTabs: [] }>()
 
-const activeTab = ref<SettingsTab>(props.initialTab ?? 'general')
+function readLastSettingsTab(): SettingsTab {
+  const value = localStorage.getItem(SETTINGS_ACTIVE_TAB_KEY)
+  return navItems.some((item) => item.id === value) ? value as SettingsTab : 'general'
+}
+
+const activeTab = ref<SettingsTab>(props.initialTab ?? readLastSettingsTab())
 // 切换左侧导航时，右侧内容回到顶部（否则会沿用上一个 tab 的滚动位置）。
 const bodyEl = ref<HTMLElement>()
 watch(activeTab, () => {
+  localStorage.setItem(SETTINGS_ACTIVE_TAB_KEY, activeTab.value)
   if (bodyEl.value) bodyEl.value.scrollTop = 0
 })
 
@@ -452,6 +471,90 @@ function onChatSpacingSlider(e: Event) {
   setChatSpacing(Number((e.target as HTMLInputElement).value))
 }
 
+function onBackgroundImageOpacitySlider(e: Event) {
+  setBackgroundImageOpacity(Number((e.target as HTMLInputElement).value))
+}
+
+function onBackgroundBorderOpacitySlider(e: Event) {
+  setBackgroundBorderOpacity(Number((e.target as HTMLInputElement).value))
+}
+
+const backgroundImageError = ref('')
+const backgroundMedia = ref<api.BackgroundMedia[]>([])
+const backgroundMediaLoading = ref(false)
+const backgroundImageUrl = computed(() =>
+  backgroundImagePath.value ? convertFileSrc(backgroundImagePath.value) : '',
+)
+const backgroundImageName = computed(() =>
+  (backgroundImagePath.value?.split(/[\\/]/).pop() || '')
+    .replace(/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}--/i, ''),
+)
+const isSelectedBackgroundMedia = (media: api.BackgroundMedia) => media.path === backgroundImagePath.value
+const isBackgroundVideo = (media: api.BackgroundMedia) => media.path.toLowerCase().endsWith('.mp4')
+
+async function refreshBackgroundMedia() {
+  if (backgroundMediaLoading.value) return
+  backgroundMediaLoading.value = true
+  try {
+    backgroundMedia.value = await api.listBackgroundMedia()
+  } catch (error) {
+    backgroundImageError.value = t('settings.backgroundImage.loadFail', { e: String(error) })
+  } finally {
+    backgroundMediaLoading.value = false
+  }
+}
+
+async function chooseBackgroundImage() {
+  backgroundImageError.value = ''
+  try {
+    const selected = await openDialog({
+      multiple: false,
+      filters: [{ name: t('settings.backgroundImage.filter'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'mp4'] }],
+    })
+    const path = typeof selected === 'string' ? selected : selected?.[0]
+    if (!path) return
+    const media = await api.importBackgroundMedia(path)
+    setBackgroundImagePath(media.path)
+    backgroundMedia.value = [media, ...backgroundMedia.value.filter((item) => item.id !== media.id)]
+  } catch (error) {
+    backgroundImageError.value = t('settings.backgroundImage.chooseFail', { e: String(error) })
+  }
+}
+
+async function openBackgroundMediaDirectory() {
+  backgroundImageError.value = ''
+  try {
+    await api.openPathExternal(await api.backgroundMediaDirectory())
+  } catch (error) {
+    backgroundImageError.value = t('settings.backgroundImage.openDirectoryFail', { e: String(error) })
+  }
+}
+
+function removeBackgroundImage() {
+  backgroundImageError.value = ''
+  setBackgroundImagePath(null)
+}
+
+function selectBackgroundMedia(media: api.BackgroundMedia) {
+  backgroundImageError.value = ''
+  setBackgroundImagePath(media.path)
+}
+
+async function deleteBackgroundMedia(media: api.BackgroundMedia) {
+  backgroundImageError.value = ''
+  try {
+    await api.deleteBackgroundMedia(media.id)
+    backgroundMedia.value = backgroundMedia.value.filter((item) => item.id !== media.id)
+    if (isSelectedBackgroundMedia(media)) setBackgroundImagePath(null)
+  } catch (error) {
+    backgroundImageError.value = t('settings.backgroundImage.deleteFail', { e: String(error) })
+  }
+}
+
+watch(activeTab, (tab) => {
+  if (tab === 'theme') void refreshBackgroundMedia()
+}, { immediate: true })
+
 function onFontFamilyInput(e: Event) {
   setFontFamily((e.target as HTMLInputElement).value.trim())
 }
@@ -549,7 +652,7 @@ async function installTurnHooks() {
 
       <div ref="bodyEl" class="set-body">
         <template v-if="activeTab === 'general'">
-          <!-- 外观：语言 / 主题 / 字号 —— 单控件行，标题在左、控件在右 -->
+          <!-- 通用：语言及应用级偏好。外观设置独立放到 Appearance 页面。 -->
           <div class="set-group">
             <div class="set-row">
               <div class="set-row-text">
@@ -580,74 +683,6 @@ async function installTurnHooks() {
               </div>
             </div>
 
-            <div class="set-row">
-              <div class="set-row-text">
-                <div class="set-row-title">{{ t('settings.section.theme') }}</div>
-              </div>
-              <div ref="themeWrapEl" class="set-dropdown-wrap set-row-control">
-                <button
-                  class="set-dropdown-btn"
-                  :class="{ active: themeMenuOpen }"
-                  @click.stop="themeMenuOpen = !themeMenuOpen; langMenuOpen = false"
-                >
-                  <span class="theme-swatch theme-swatch-sm" :class="`theme-swatch-${theme}`">Aa</span>
-                  <span>{{ currentThemeLabel }}</span>
-                  <IconChevronDown class="set-dropdown-chev" />
-                </button>
-                <div v-if="themeMenuOpen" class="set-dropdown-menu" role="menu">
-                  <button
-                    v-for="o in themeOptions"
-                    :key="o.v"
-                    class="set-dropdown-item"
-                    :class="{ active: theme === o.v }"
-                    role="menuitem"
-                    @click.stop="pickTheme(o.v)"
-                  >
-                    <span class="set-dropdown-check"><IconCheck v-if="theme === o.v" /></span>
-                    <span class="theme-swatch theme-swatch-sm" :class="`theme-swatch-${o.v}`">Aa</span>
-                    <span>{{ t(o.key) }}</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div class="set-row">
-              <div class="set-row-text">
-                <div class="set-row-title">{{ t('settings.section.fontSize') }}</div>
-              </div>
-              <div class="set-font-slider set-row-control">
-                <span class="set-font-label set-font-label-sm">A</span>
-                <input
-                  type="range" min="12" max="18" step="1"
-                  :value="fontScale"
-                  @input="onFontSlider"
-                  class="set-slider"
-                >
-                <span class="set-font-label set-font-label-lg">A</span>
-                <span class="set-font-value">{{ fontScale }}px</span>
-              </div>
-            </div>
-            <div class="set-font-preview" :style="{ fontSize: fontScale + 'px' }">
-              {{ t('settings.fontPreview') }}
-            </div>
-
-            <div class="set-row">
-              <div class="set-row-text">
-                <div class="set-row-title">{{ t('settings.section.fontFamily') }}</div>
-              </div>
-              <div class="set-row-control">
-                <input
-                  type="text"
-                  class="set-input"
-                  :value="fontFamily"
-                  :placeholder="t('settings.fontFamilyPlaceholder')"
-                  @input="onFontFamilyInput"
-                >
-              </div>
-            </div>
-            <div class="set-font-preview" :style="{ fontSize: fontScale + 'px', fontFamily: fontFamily || undefined }">
-              {{ t('settings.fontPreview') }}
-            </div>
           </div>
 
           <!-- Agents 显隐 —— 分组标题 + desc 直接显示，下面是每个 agent 的开关 -->
@@ -733,6 +768,235 @@ async function installTurnHooks() {
                 {{ t('settings.clearTabs') }}
               </button>
             </div>
+          </div>
+        </template>
+
+        <template v-else-if="activeTab === 'theme'">
+          <div class="set-group set-appearance-theme">
+            <div class="set-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.section.theme') }}</div>
+              </div>
+              <div ref="themeWrapEl" class="set-dropdown-wrap set-row-control">
+                <button
+                  class="set-dropdown-btn"
+                  :class="{ active: themeMenuOpen }"
+                  @click.stop="themeMenuOpen = !themeMenuOpen; langMenuOpen = false"
+                >
+                  <span class="theme-swatch theme-swatch-sm" :class="`theme-swatch-${theme}`">Aa</span>
+                  <span>{{ currentThemeLabel }}</span>
+                  <IconChevronDown class="set-dropdown-chev" />
+                </button>
+                <div v-if="themeMenuOpen" class="set-dropdown-menu" role="menu">
+                  <button
+                    v-for="o in themeOptions"
+                    :key="o.v"
+                    class="set-dropdown-item"
+                    :class="{ active: theme === o.v }"
+                    role="menuitem"
+                    @click.stop="pickTheme(o.v)"
+                  >
+                    <span class="set-dropdown-check"><IconCheck v-if="theme === o.v" /></span>
+                    <span class="theme-swatch theme-swatch-sm" :class="`theme-swatch-${o.v}`">Aa</span>
+                    <span>{{ t(o.key) }}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="set-group set-appearance-font">
+            <div class="set-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.section.fontSize') }}</div>
+              </div>
+              <div class="set-font-slider set-row-control">
+                <span class="set-font-label set-font-label-sm">A</span>
+                <input
+                  type="range" min="12" max="18" step="1"
+                  :value="fontScale"
+                  @input="onFontSlider"
+                  class="set-slider"
+                >
+                <span class="set-font-label set-font-label-lg">A</span>
+                <span class="set-font-value">{{ fontScale }}px</span>
+              </div>
+            </div>
+            <div class="set-font-preview" :style="{ fontSize: fontScale + 'px' }">
+              {{ t('settings.fontPreview') }}
+            </div>
+
+            <div class="set-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.section.fontFamily') }}</div>
+              </div>
+              <div class="set-row-control">
+                <input
+                  type="text"
+                  class="set-input"
+                  :value="fontFamily"
+                  :placeholder="t('settings.fontFamilyPlaceholder')"
+                  @input="onFontFamilyInput"
+                >
+              </div>
+            </div>
+            <div class="set-font-preview" :style="{ fontSize: fontScale + 'px', fontFamily: fontFamily || undefined }">
+              {{ t('settings.fontPreview') }}
+            </div>
+          </div>
+
+          <div class="set-group set-appearance-background">
+            <div class="set-row set-background-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.section.backgroundImage') }}</div>
+                <p class="set-row-desc">{{ t('settings.backgroundImageDesc') }}</p>
+              </div>
+              <div v-if="backgroundImagePath" class="set-background-selected set-row-control">
+                <video
+                  v-if="backgroundIsVideo"
+                  class="set-background-thumb"
+                  :src="backgroundImageUrl"
+                  autoplay
+                  loop
+                  muted
+                  playsinline
+                  preload="metadata"
+                />
+                <img v-else class="set-background-thumb" :src="backgroundImageUrl" alt="">
+                <span class="set-background-name" :title="backgroundImagePath">{{ backgroundImageName }}</span>
+                <button
+                  class="btn set-background-change"
+                  type="button"
+                  data-background-image-choose
+                  @click="chooseBackgroundImage"
+                >
+                  {{ t('settings.backgroundImage.change') }}
+                </button>
+                <button
+                  class="set-background-remove"
+                  type="button"
+                  :aria-label="t('settings.backgroundImage.remove')"
+                  v-tooltip="t('settings.backgroundImage.remove')"
+                  @click="removeBackgroundImage"
+                >
+                  <IconTrash />
+                </button>
+              </div>
+              <button
+                v-else
+                class="btn set-row-control"
+                type="button"
+                data-background-image-choose
+                @click="chooseBackgroundImage"
+              >
+                <IconFileImage />
+                {{ t('settings.backgroundImage.choose') }}
+              </button>
+            </div>
+            <div v-if="backgroundImagePath" class="set-row set-background-opacity-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.backgroundImage.opacity') }}</div>
+              </div>
+              <div class="set-font-slider set-row-control">
+                <input
+                  data-background-opacity-slider
+                  type="range" min="0" max="100" step="1"
+                  :value="backgroundImageOpacity"
+                  :aria-label="t('settings.backgroundImage.opacity')"
+                  @input="onBackgroundImageOpacitySlider"
+                  class="set-slider"
+                >
+                <span class="set-font-value">{{ backgroundImageOpacity }}%</span>
+              </div>
+            </div>
+            <div v-if="backgroundImagePath" class="set-row set-background-opacity-row">
+              <div class="set-row-text">
+                <div class="set-row-title">{{ t('settings.backgroundImage.borderOpacity') }}</div>
+              </div>
+              <div class="set-font-slider set-row-control">
+                <input
+                  data-background-border-opacity-slider
+                  type="range" min="0" max="80" step="1"
+                  :value="backgroundBorderOpacity"
+                  :aria-label="t('settings.backgroundImage.borderOpacity')"
+                  @input="onBackgroundBorderOpacitySlider"
+                  class="set-slider"
+                >
+                <span class="set-font-value">{{ backgroundBorderOpacity }}%</span>
+              </div>
+            </div>
+            <div class="set-background-library">
+              <div class="set-background-library-head">
+                <span class="set-background-library-title">{{ t('settings.backgroundImage.library') }}</span>
+                <button
+                  class="set-background-library-open"
+                  type="button"
+                  data-background-media-open-folder
+                  :aria-label="t('settings.backgroundImage.openDirectory')"
+                  v-tooltip="t('settings.backgroundImage.openDirectory')"
+                  @click="openBackgroundMediaDirectory"
+                >
+                  <IconFolder />
+                  {{ t('settings.backgroundImage.openDirectory') }}
+                </button>
+                <button
+                  class="set-background-library-refresh"
+                  type="button"
+                  :class="{ spinning: backgroundMediaLoading }"
+                  :disabled="backgroundMediaLoading"
+                  :aria-label="t('settings.desktopPet.refresh')"
+                  v-tooltip="t('settings.desktopPet.refresh')"
+                  @click="refreshBackgroundMedia"
+                >
+                  <IconRefresh />
+                </button>
+              </div>
+              <div v-if="backgroundMediaLoading && backgroundMedia.length === 0" class="set-background-library-empty">
+                {{ t('common.loading') }}
+              </div>
+              <div v-else-if="backgroundMedia.length" class="set-background-media-grid">
+                <div
+                  v-for="media in backgroundMedia"
+                  :key="media.id"
+                  class="set-background-media-item"
+                  :class="{ active: isSelectedBackgroundMedia(media) }"
+                >
+                  <button
+                    class="set-background-media-select"
+                    type="button"
+                    data-background-media-select
+                    :aria-pressed="isSelectedBackgroundMedia(media)"
+                    :title="media.name"
+                    @click="selectBackgroundMedia(media)"
+                  >
+                    <video
+                      v-if="isBackgroundVideo(media)"
+                      :src="convertFileSrc(media.path)"
+                      autoplay
+                      loop
+                      muted
+                      playsinline
+                      preload="metadata"
+                    />
+                    <img v-else :src="convertFileSrc(media.path)" alt="">
+                    <span v-if="isSelectedBackgroundMedia(media)" class="set-background-media-check"><IconCheck /></span>
+                    <span class="set-background-media-name">{{ media.name }}</span>
+                  </button>
+                  <button
+                    class="set-background-media-delete"
+                    type="button"
+                    data-background-media-delete
+                    :aria-label="t('settings.backgroundImage.delete')"
+                    v-tooltip="t('settings.backgroundImage.delete')"
+                    @click.stop="deleteBackgroundMedia(media)"
+                  >
+                    <IconTrash />
+                  </button>
+                </div>
+              </div>
+              <div v-else class="set-background-library-empty">{{ t('settings.backgroundImage.empty') }}</div>
+            </div>
+            <p v-if="backgroundImageError" class="set-background-error">{{ backgroundImageError }}</p>
           </div>
         </template>
 

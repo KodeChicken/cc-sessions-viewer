@@ -2227,7 +2227,7 @@ function queuedLabel(q: QueuedMessage): string {
   text-overflow: ellipsis;
   direction: rtl;
   text-align: left;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  border-bottom: 1px solid var(--border);
   margin-bottom: 2px;
 }
 .cc-mention-list {

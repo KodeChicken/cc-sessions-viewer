@@ -4,6 +4,7 @@ import type { Agent, ProjectInfo, SessionMeta, TrashItem, Msg, UsageSummary } fr
 import * as api from './api'
 import { shortName } from './format'
 import { t } from './i18n'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import {
   clearAppCache,
   codexShowArchivedSessions,
@@ -20,6 +21,8 @@ import {
   applyTerminalDefault,
   visibleAgents,
   quickOpenTarget,
+  backgroundImagePath,
+  backgroundIsVideo,
 } from './settings'
 import { focusSearchBox, navigate as chatNavigate, resetChatToolbar } from './chatToolbar'
 import { focusTuiSearchBox } from './tuiToolbar'
@@ -196,7 +199,7 @@ const showStats = ref(false)
 const showExportHistory = ref(false)
 const showPricing = ref(false)
 const showSettings = ref(false)
-const settingsTab = ref<'general' | 'advanced' | 'hooks' | 'pet' | 'shortcuts' | 'updates'>('general')
+const settingsTab = ref<'general' | 'theme' | 'advanced' | 'hooks' | 'pet' | 'cli' | 'shortcuts' | 'updates'>()
 const sidebarOpen = ref(true)
 const refreshing = ref(false)
 const isWindows = /Win/i.test(navigator.platform)
@@ -229,6 +232,11 @@ const sidebarResizing = ref(false)
 const appStyle = computed<Record<string, string>>(() => ({
   '--sidebar-w': `${sidebarWidth.value}px`,
 }))
+const backgroundVideoUrl = computed(() =>
+  backgroundIsVideo.value && backgroundImagePath.value
+    ? convertFileSrc(backgroundImagePath.value)
+    : '',
+)
 let sidebarResizeStartX = 0
 let sidebarResizeStartWidth = 0
 
@@ -285,7 +293,7 @@ async function refreshAll() {
   // 1. 项目列表（保留 activeDir）
   tasks.push(
     api.listProjects(agent.value, sessionListOptions()).then((p) => {
-      projects.value = p
+      applyProjects(p)
     }).catch(() => {}),
   )
 
@@ -644,6 +652,7 @@ watch(activeProject, async (proj) => {
 // ---------- 项目置顶 / 沉底偏好（持久化到 localStorage）----------
 type ProjState = 'pinned' | 'sunk'
 const PREFS_KEY = 'projPrefs:v1'
+const PROJECT_ORDER_KEY = 'projectOrder:v1'
 
 function loadPrefs(): Record<string, ProjState> {
   try {
@@ -653,6 +662,28 @@ function loadPrefs(): Record<string, ProjState> {
   }
 }
 const projPrefs = ref<Record<string, ProjState>>(loadPrefs())
+
+function loadProjectOrders(): Record<string, string[]> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PROJECT_ORDER_KEY) || '{}') as Record<string, unknown>
+    const orders: Record<string, string[]> = {}
+    for (const [agentName, value] of Object.entries(parsed)) {
+      if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
+        orders[agentName] = value
+      }
+    }
+    return orders
+  } catch {
+    return {}
+  }
+}
+const projectOrders = ref<Record<string, string[]>>(loadProjectOrders())
+const currentProjectOrder = computed(() => projectOrders.value[agent.value] ?? [])
+
+function setProjectOrder(dirNames: string[]) {
+  projectOrders.value = { ...projectOrders.value, [agent.value]: dirNames }
+  localStorage.setItem(PROJECT_ORDER_KEY, JSON.stringify(projectOrders.value))
+}
 
 function prefKey(p: ProjectInfo): string {
   return `${agent.value}::${p.dirName}`
@@ -671,10 +702,10 @@ function setProjState(p: ProjectInfo, state: ProjState) {
   localStorage.setItem(PREFS_KEY, JSON.stringify(projPrefs.value))
 }
 
-// "缓存"目前只有置顶/沉底偏好这一项，字节数等于其 JSON 序列化后的 UTF-8 长度。
+// 缓存包括项目置顶/沉底和手动排序偏好，字节数等于其 JSON 序列化后的 UTF-8 长度。
 const cacheBytes = computed(() => {
-  const json = JSON.stringify(projPrefs.value)
-  if (json === '{}') return 0
+  const json = JSON.stringify({ prefs: projPrefs.value, order: projectOrders.value })
+  if (json === '{"prefs":{},"order":{}}') return 0
   return new TextEncoder().encode(json).length
 })
 
@@ -1312,14 +1343,32 @@ async function installWindowClosePrompt() {
 }
 
 // ---------- 数据加载 ----------
-async function loadProjects() {
+function keepExistingProjectOrder(next: ProjectInfo[]): ProjectInfo[] {
+  const byDirName = new Map(next.map((project) => [project.dirName, project]))
+  const retained = projects.value.flatMap((project) => {
+    const replacement = byDirName.get(project.dirName)
+    if (!replacement) return []
+    byDirName.delete(project.dirName)
+    return [replacement]
+  })
+  return [...byDirName.values(), ...retained]
+}
+
+function applyProjects(next: ProjectInfo[], preserveExistingOrder = false) {
+  projects.value = preserveExistingOrder ? keepExistingProjectOrder(next) : next
+  reconcileSyntheticKeys()
+}
+
+async function loadProjects(options: { preserveExistingOrder?: boolean } = {}) {
   try {
-    projects.value = await api.listProjects(agent.value, sessionListOptions())
+    applyProjects(
+      await api.listProjects(agent.value, sessionListOptions()),
+      options.preserveExistingOrder,
+    )
   } catch (e) {
     notify(t('toast.loadProjectsFail', { e: String(e) }), true)
     projects.value = []
   }
-  reconcileSyntheticKeys()
 }
 
 /** 合成 key（`bookmark:<path>` / `worktree:<path>`）前缀判定。 */
@@ -1406,7 +1455,7 @@ function scheduleProjectsReload() {
   projectsReloadTimer = window.setTimeout(async () => {
     projectsReloadTimer = 0
     projectsReloadStep++
-    await loadProjects()
+    await loadProjects({ preserveExistingOrder: true })
     // 计数已变化（新会话被计入 / 空 worktree 合成条目并入真实项目）→ 收工，别再空转重载。
     if (projectsCountSignature() !== projectsBaselineSig) return
     if (projectsReloadStep < PROJECTS_RELOAD_BACKOFF_MS.length) scheduleProjectsReload()
@@ -3283,6 +3332,7 @@ function onClearCache() {
     onOk: () => {
       clearAppCache()
       projPrefs.value = {}
+      projectOrders.value = {}
       api.detectTerminals().then(applyTerminalDefault).catch(() => {})
       notify(t('toast.cacheCleared'))
     },
@@ -3670,7 +3720,7 @@ onMounted(() => {
       } else if (key === 's' && e.shiftKey) {
         e.preventDefault(); openStats()
       } else if (key === ',' && !e.shiftKey) {
-        e.preventDefault(); settingsTab.value = 'general'; showSettings.value = true
+        e.preventDefault(); settingsTab.value = undefined; showSettings.value = true
       } else if (key === 't' && e.shiftKey) {
         e.preventDefault(); loadTrash()
       } else if ((key === '/' || key === '?') && !e.shiftKey) {
@@ -4046,6 +4096,16 @@ provide<PaneActions>(PaneActionsKey, {
 </script>
 
 <template>
+  <video
+    v-if="backgroundVideoUrl"
+    class="app-background-video"
+    :src="backgroundVideoUrl"
+    autoplay
+    loop
+    muted
+    playsinline
+    aria-hidden="true"
+  />
   <div
     class="app"
     :style="appStyle"
@@ -4127,14 +4187,16 @@ provide<PaneActions>(PaneActionsKey, {
       :active-dir="activeDir"
       :show-trash="showTrash"
       :proj-prefs="projPrefs"
+      :project-order="currentProjectOrder"
       :refreshing="refreshing"
       @switch-agent="switchAgent"
       @select-project="(dir) => selectProject(dir, { activateTerminal: true })"
       @context-menu="openCtxMenu"
-      @open-settings="(tab) => { settingsTab = tab ?? 'general'; showSettings = true }"
+      @open-settings="(tab) => { settingsTab = tab; showSettings = true }"
       @refresh="refreshAll"
       @add-bookmark="addBookmark"
       @batch-delete="batchDeleteProjects"
+      @reorder-projects="setProjectOrder"
       ref="sidebarRef"
     />
     <div
@@ -4244,7 +4306,7 @@ provide<PaneActions>(PaneActionsKey, {
         v-if="showSettings"
         :cache-bytes="cacheBytes"
         :initial-tab="settingsTab"
-        @close="showSettings = false; settingsTab = 'general'"
+        @close="showSettings = false; settingsTab = undefined"
         @clear-cache="onClearCache"
         @clear-tabs="onClearTabs"
       />

@@ -152,7 +152,8 @@ pub fn restore(trash_file: &str) -> Result<(), String> {
 
 pub fn permanent_delete(trash_file: &str) -> Result<(), String> {
     let td = trash_dir();
-    fs::remove_file(td.join(trash_file)).map_err(|e| format!("Failed to delete permanently: {e}"))?;
+    fs::remove_file(td.join(trash_file))
+        .map_err(|e| format!("Failed to delete permanently: {e}"))?;
     let _ = fs::remove_file(td.join(format!("{trash_file}.meta")));
     Ok(())
 }

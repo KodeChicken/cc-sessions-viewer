@@ -173,10 +173,7 @@ pub fn create(project_path: &str, name: &str) -> Result<String, String> {
     let target_str = target.to_string_lossy().to_string();
 
     // 先试 `-b`（新建分支）；分支已存在时退回「附着到既有分支」。
-    let new_branch = git_stdout(
-        project_path,
-        &["worktree", "add", &target_str, "-b", name],
-    );
+    let new_branch = git_stdout(project_path, &["worktree", "add", &target_str, "-b", name]);
     if let Err(e) = new_branch {
         let lower = e.to_lowercase();
         if lower.contains("already exists") {
@@ -294,7 +291,10 @@ pub fn remove(path: &str) -> Result<(), String> {
     // 内容已删、只剩一个被锁着的空壳目录 → 不当失败：下次扫描它无 `.git` 不会显示，纯磁盘残留而已。
     // 只有目录里确实还有内容没删掉，才把错误报给前端（那才是真·删除失败）。
     if let Some(e) = dir_err {
-        if fs::read_dir(path).map(|mut rd| rd.next().is_some()).unwrap_or(false) {
+        if fs::read_dir(path)
+            .map(|mut rd| rd.next().is_some())
+            .unwrap_or(false)
+        {
             return Err(e);
         }
     }

@@ -30,7 +30,8 @@ impl AgentCommand {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub fn to_posix_shell(&self) -> String {
-        let mut parts = Vec::with_capacity(1 + self.args.len() + usize::from(!self.extra_args.is_empty()));
+        let mut parts =
+            Vec::with_capacity(1 + self.args.len() + usize::from(!self.extra_args.is_empty()));
         parts.push(posix_quote(&self.program));
         parts.extend(self.args.iter().map(|arg| posix_quote(arg)));
         if !self.extra_args.is_empty() {
@@ -44,7 +45,9 @@ impl AgentCommand {
     #[cfg(target_os = "windows")]
     pub fn to_powershell(&self, wrapper: Option<&str>) -> String {
         let mut parts = Vec::with_capacity(
-            2 + usize::from(wrapper.is_some()) + self.args.len() + usize::from(!self.extra_args.is_empty()),
+            2 + usize::from(wrapper.is_some())
+                + self.args.len()
+                + usize::from(!self.extra_args.is_empty()),
         );
         parts.push("&".to_string());
         if let Some(wrapper) = wrapper {
@@ -72,7 +75,11 @@ pub fn powershell_quote(value: &str) -> String {
 /// `use_reclaude`：GUI 聊天 / 内嵌终端里把命令包一层 `reclaude`，走 reclaude 守护进程的
 /// 鉴权 + 代理链路（与 posix 侧一致）。外部终端 resume 传 `false`。
 #[cfg(target_os = "windows")]
-pub fn powershell_set_location_and_run(cwd: &str, command: &AgentCommand, use_reclaude: bool) -> String {
+pub fn powershell_set_location_and_run(
+    cwd: &str,
+    command: &AgentCommand,
+    use_reclaude: bool,
+) -> String {
     let cwd = powershell_quote(cwd);
     let wrapper = if use_reclaude { Some("reclaude") } else { None };
     format!(
@@ -147,6 +154,9 @@ pub fn windows_powershell_exe() -> &'static str {
 pub fn powershell_encoded_command(ps_cmd: &str) -> String {
     use base64::engine::general_purpose::STANDARD as B64;
     use base64::Engine;
-    let utf16le: Vec<u8> = ps_cmd.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+    let utf16le: Vec<u8> = ps_cmd
+        .encode_utf16()
+        .flat_map(|c| c.to_le_bytes())
+        .collect();
     B64.encode(utf16le)
 }

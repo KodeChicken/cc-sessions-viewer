@@ -18,8 +18,8 @@ fn read_json_object(path: &Path) -> Result<Value, String> {
     if raw.trim().is_empty() {
         return Ok(json!({}));
     }
-    let parsed: Value =
-        serde_json::from_str(&raw).map_err(|e| format!("Claude settings.json is not valid JSON: {e}"))?;
+    let parsed: Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("Claude settings.json is not valid JSON: {e}"))?;
     if parsed.is_object() {
         Ok(parsed)
     } else {
@@ -59,7 +59,10 @@ pub fn runtime_info() -> Result<ClaudeRuntimeInfo, String> {
 ///
 /// 优先级对齐 CLI：显式 API key（env / helper）优先于 OAuth。判不出时返回 None，
 /// 让前端保持「未知即不显示」的保守态，等 init 校正。
-fn guess_api_key_source(settings: &Value, env: Option<&serde_json::Map<String, Value>>) -> Option<String> {
+fn guess_api_key_source(
+    settings: &Value,
+    env: Option<&serde_json::Map<String, Value>>,
+) -> Option<String> {
     // 1) settings.env 或进程环境里有非空 ANTHROPIC_API_KEY → API key 计费。
     //    （GUI 启动常拿不到 shell 里的 env，故 settings.json 是更可靠的来源。）
     let settings_key = env
@@ -96,7 +99,12 @@ fn guess_api_key_source(settings: &Value, env: Option<&serde_json::Map<String, V
 #[cfg(target_os = "macos")]
 fn has_oauth_credentials() -> bool {
     let in_keychain = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);

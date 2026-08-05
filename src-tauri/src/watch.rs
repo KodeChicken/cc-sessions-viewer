@@ -54,8 +54,7 @@ static STATE: OnceLock<Mutex<Option<WatchState>>> = OnceLock::new();
 /// 每个文件路径独立维护"上次 emit 的 Msg 数量"。即使 watch 被换了又换回来，
 /// 仍能用这个 cache 接上上次的进度，避免误把整段当 append。
 /// key = 绝对路径串；value = last_msg_count
-static LAST_COUNT: OnceLock<Mutex<std::collections::HashMap<String, usize>>> =
-    OnceLock::new();
+static LAST_COUNT: OnceLock<Mutex<std::collections::HashMap<String, usize>>> = OnceLock::new();
 
 /// 真正的 debounce：每次文件事件都 bump 一次序号并延后处理；只有睡眠结束后序号仍然
 /// 是最新的那次事件才会触发整文件重读。这样既能合并 burst 写入，又不会把"唯一的一次"
@@ -81,8 +80,8 @@ fn debounce_seq_map() -> &'static Mutex<std::collections::HashMap<String, u64>> 
 static LAST_STAT: OnceLock<Mutex<std::collections::HashMap<String, (std::time::SystemTime, u64)>>> =
     OnceLock::new();
 
-fn last_stat_map(
-) -> &'static Mutex<std::collections::HashMap<String, (std::time::SystemTime, u64)>> {
+fn last_stat_map() -> &'static Mutex<std::collections::HashMap<String, (std::time::SystemTime, u64)>>
+{
     LAST_STAT.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -94,9 +93,12 @@ fn file_fingerprint(path: &str) -> Option<(std::time::SystemTime, u64)> {
 }
 
 fn watch_root_for(path: &Path) -> Result<PathBuf, String> {
-    path.parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| format!("Cannot determine parent directory: {}", path.to_string_lossy()))
+    path.parent().map(Path::to_path_buf).ok_or_else(|| {
+        format!(
+            "Cannot determine parent directory: {}",
+            path.to_string_lossy()
+        )
+    })
 }
 
 /// debounce 窗口：notify 一次写入可能拆成多条事件，攒一拨再 emit。
@@ -150,8 +152,8 @@ pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), 
     let app_handle = app.clone();
     let agent_for_cb = agent.clone();
     let path_for_cb = path.clone();
-    let mut watcher: RecommendedWatcher = notify::recommended_watcher(
-        move |res: notify::Result<Event>| {
+    let mut watcher: RecommendedWatcher =
+        notify::recommended_watcher(move |res: notify::Result<Event>| {
             let Ok(ev) = res else { return };
             if !matches!(
                 ev.kind,
@@ -182,9 +184,8 @@ pub fn watch_session(app: AppHandle, agent: String, path: String) -> Result<(), 
                 }
                 process_change(&app_for_job, &agent_for_job, &path_for_job);
             });
-        },
-    )
-    .map_err(|e| format!("notify init failed: {e}"))?;
+        })
+        .map_err(|e| format!("notify init failed: {e}"))?;
 
     watcher
         .watch(&watch_root, RecursiveMode::NonRecursive)
@@ -352,7 +353,12 @@ fn process_change(app: &AppHandle, agent: &str, path: &str) {
 pub fn check_watched_session(app: AppHandle) -> Result<(), String> {
     let active_info = {
         let slot = state().lock().map_err(|e| e.to_string())?;
-        slot.as_ref().map(|active| (active.agent.clone(), active.path.to_string_lossy().to_string()))
+        slot.as_ref().map(|active| {
+            (
+                active.agent.clone(),
+                active.path.to_string_lossy().to_string(),
+            )
+        })
     };
     if let Some((agent, path)) = active_info {
         process_change(&app, &agent, &path);

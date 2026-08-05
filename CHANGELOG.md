@@ -6,6 +6,23 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ---
 
+## [v0.3.14]
+
+### Features
+
+- **Custom appearance backgrounds** — Settings now has an Appearance section for importing PNG, JPEG, WebP, GIF, AVIF, or MP4 backgrounds. Imported media is cached in an in-app wallpaper library, so saved images and videos can be previewed, switched, opened in Finder, or removed without choosing the source file again.
+- **Background-aware interface controls** — the appearance settings include independent sliders for background opacity and border/divider opacity. Chat, terminal, Git Diff, settings, list hover states, code blocks, and statistics surfaces adapt automatically when a wallpaper is enabled while preserving the original opaque appearance when none is configured.
+- **Persistent project ordering** — projects retain the default most-recently-updated order on first load, and can then be manually reordered from the sidebar. The saved order is per agent, survives refreshes and live project updates, and keeps pinned/sunk groups and worktree families intact.
+
+### Improvements
+
+- **Project-list drag interaction** — sidebar project ordering now uses a dedicated drag handle, a pointer-driven reorder interaction, and an in-list insertion indicator. The handle appears only on hover so normal project rows do not reserve unused leading space.
+- **Wallpaper contrast consistency** — shared light/dark border and divider tokens are applied across the interface, keeping surface separation readable over custom backgrounds.
+
+### Tests
+
+- Added focused coverage for background-media preferences and library operations, background opacity settings, persisted project order, hover-only drag handles, insertion targets, and reorder events.
+
 ## [v0.3.13]
 
 ### Features

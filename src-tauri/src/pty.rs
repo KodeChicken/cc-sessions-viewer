@@ -152,7 +152,11 @@ fn build_shell_command(
     cmd.arg("-ExecutionPolicy");
     cmd.arg("Bypass");
     cmd.arg("-Command");
-    cmd.arg(crate::agent_command::powershell_set_location_and_run(cwd, command, use_reclaude));
+    cmd.arg(crate::agent_command::powershell_set_location_and_run(
+        cwd,
+        command,
+        use_reclaude,
+    ));
     // ConPTY 自己处理 VT 序列；TERM 对 Win 上的 Node CLI（claude / codex）也无害。
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
@@ -220,7 +224,12 @@ pub fn spawn(
     color_scheme: Option<&str>,
     use_reclaude: bool,
 ) -> Result<u64, String> {
-    let cmd = build_shell_command(&cwd, &command, PtyColorScheme::parse(color_scheme), use_reclaude);
+    let cmd = build_shell_command(
+        &cwd,
+        &command,
+        PtyColorScheme::parse(color_scheme),
+        use_reclaude,
+    );
     spawn_raw(app, &cwd, cmd, cols, rows)
 }
 
@@ -382,7 +391,9 @@ fn waiter_loop(app: AppHandle, id: u64) {
 pub fn write(id: u64, base64_data: &str) -> Result<(), String> {
     let arc = {
         let m = map().lock().map_err(|e| e.to_string())?;
-        m.get(&id).cloned().ok_or_else(|| "PTY not found".to_string())?
+        m.get(&id)
+            .cloned()
+            .ok_or_else(|| "PTY not found".to_string())?
     };
     let bytes = B64
         .decode(base64_data)
@@ -396,7 +407,9 @@ pub fn write(id: u64, base64_data: &str) -> Result<(), String> {
 pub fn resize(id: u64, cols: u16, rows: u16) -> Result<(), String> {
     let arc = {
         let m = map().lock().map_err(|e| e.to_string())?;
-        m.get(&id).cloned().ok_or_else(|| "PTY not found".to_string())?
+        m.get(&id)
+            .cloned()
+            .ok_or_else(|| "PTY not found".to_string())?
     };
     let master = arc.master.lock().map_err(|e| e.to_string())?;
     master

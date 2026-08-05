@@ -55,6 +55,8 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # `/fork`：克隆会话时给新 transcript 生成全新 session id / 消息 uuid（v4）。
 uuid = { version = "1", features = ["v4"] }
+# 背景素材按内容去重，避免同一图片 / 视频被重复复制到应用缓存。
+sha2 = "0.10"
 
 [features]
 default = []

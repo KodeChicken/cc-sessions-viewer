@@ -40,9 +40,7 @@ use super::SessionSource;
 use crate::agent_command::AgentCommand;
 use crate::stats::shell::{extract_first_command, extract_mcp_server};
 use crate::stats::types::{CallRecord, Turn};
-use crate::types::{
-    Block, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary,
-};
+use crate::types::{Block, Msg, ProjectInfo, SessionMeta, SessionPage, UsageSummary};
 use crate::util::{
     format_iso8601_utc, home, mtime_millis, now_millis, parse_unified_diff, text_block,
     validate_rename_name,
@@ -488,10 +486,7 @@ fn part_into_blocks(p: &Value, out: &mut Vec<Block>) {
         "text" => {
             if let Some(t) = p.get("text").and_then(Value::as_str) {
                 // opencode 在文本里内联 `[Image N]` 占位符，但图片已从 file part 渲染
-                let cleaned = IMAGE_REF_RE
-                    .replace_all(t, "")
-                    .trim()
-                    .to_string();
+                let cleaned = IMAGE_REF_RE.replace_all(t, "").trim().to_string();
                 if !cleaned.is_empty() {
                     out.push(text_block("text", &cleaned));
                 }
@@ -539,7 +534,10 @@ fn part_into_blocks(p: &Value, out: &mut Vec<Block>) {
                 .filter(|h| !h.is_empty());
             let (text, is_error) = match status {
                 "completed" => (
-                    state.get("output").and_then(Value::as_str).map(str::to_string),
+                    state
+                        .get("output")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                     false,
                 ),
                 "error" => (
@@ -557,7 +555,10 @@ fn part_into_blocks(p: &Value, out: &mut Vec<Block>) {
             } else {
                 text.map(|t| truncate_tool_output(&t))
             };
-            let has_text = result_text.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+            let has_text = result_text
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
             if has_text || diff.is_some() || is_error {
                 out.push(Block {
                     kind: "tool_result".into(),
@@ -610,7 +611,9 @@ fn truncate_tool_output(text: &str) -> String {
 /// 一个会话的所有 part，按 message_id 分组、组内时间序。
 fn load_parts(conn: &Connection, sid: &str) -> Result<HashMap<String, Vec<Value>>, String> {
     let mut stmt = conn
-        .prepare("SELECT message_id, data FROM part WHERE session_id = ?1 ORDER BY time_created, id")
+        .prepare(
+            "SELECT message_id, data FROM part WHERE session_id = ?1 ORDER BY time_created, id",
+        )
         .map_err(db_err)?;
     let rows = stmt
         .query_map(params![sid], |r| {
@@ -718,7 +721,9 @@ fn strip_read_tool_injections(text: &str) -> (String, Vec<String>) {
             Some(i) => i + "</path>".len(),
             None => break,
         };
-        let path = after["<path>".len()..pe - "</path>".len()].trim().to_string();
+        let path = after["<path>".len()..pe - "</path>".len()]
+            .trim()
+            .to_string();
         if !path.is_empty() {
             paths.push(path);
         }
@@ -732,7 +737,10 @@ fn strip_read_tool_injections(text: &str) -> (String, Vec<String>) {
 
     // 清理残留文本
     while let Some(i) = result.find("[file] ") {
-        let end = result[i..].find('\n').map(|n| i + n).unwrap_or(result.len());
+        let end = result[i..]
+            .find('\n')
+            .map(|n| i + n)
+            .unwrap_or(result.len());
         result = format!("{}{}", &result[..i], &result[end..]);
     }
     while let Some(i) = result.find("Image read successfully") {
@@ -754,11 +762,10 @@ fn extract_json_file_path(text: &str) -> Option<String> {
 }
 
 fn strip_at_file_refs(text: &str) -> String {
-    use regex_lite::Regex;
     use once_cell::sync::Lazy;
-    static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"@\[?[A-Za-z0-9_./-]+\.[A-Za-z0-9]+\]?").unwrap()
-    });
+    use regex_lite::Regex;
+    static RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"@\[?[A-Za-z0-9_./-]+\.[A-Za-z0-9]+\]?").unwrap());
     RE.replace_all(text, "").to_string()
 }
 
@@ -776,7 +783,10 @@ fn read(conn: &Connection, sid: &str) -> Result<Vec<Msg>, String> {
             .pointer("/time/created")
             .and_then(Value::as_i64)
             .unwrap_or(t_col);
-        let model = env.get("modelID").and_then(Value::as_str).map(str::to_string);
+        let model = env
+            .get("modelID")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let mut blocks: Vec<Block> = Vec::new();
         let mut system_blocks: Vec<Block> = Vec::new();
         for p in parts.remove(&mid).unwrap_or_default() {
@@ -815,37 +825,67 @@ fn read(conn: &Connection, sid: &str) -> Result<Vec<Msg>, String> {
                     if let Some(ref text) = b.text {
                         let (cleaned, paths) = strip_read_tool_injections(text);
                         if !paths.is_empty() || cleaned != *text {
-                            b.text = if cleaned.is_empty() { None } else { Some(cleaned) };
+                            b.text = if cleaned.is_empty() {
+                                None
+                            } else {
+                                Some(cleaned)
+                            };
                             all_paths.extend(paths);
                         }
                     }
                 }
             }
-            blocks.retain(|b| !(b.kind == "text" && b.text.as_deref().map(|s| s.is_empty()).unwrap_or(true) && b.image_src.is_none()));
-            let existing_images: Vec<String> = blocks.iter()
+            blocks.retain(|b| {
+                !(b.kind == "text"
+                    && b.text.as_deref().map(|s| s.is_empty()).unwrap_or(true)
+                    && b.image_src.is_none())
+            });
+            let existing_images: Vec<String> = blocks
+                .iter()
                 .filter(|b| b.kind == "image")
                 .filter_map(|b| b.image_src.clone())
                 .collect();
-            let existing_files: Vec<String> = blocks.iter()
+            let existing_files: Vec<String> = blocks
+                .iter()
                 .filter(|b| b.kind == "file")
                 .filter_map(|b| b.file_path.clone())
                 .collect();
             let mut extra: Vec<Block> = Vec::new();
             for p in all_paths {
                 let fname = p.rsplit('/').next().unwrap_or("");
-                let is_img_path = PathBuf::from(&p).extension()
-                    .map(|e| matches!(e.to_str().unwrap_or(""), "png"|"jpg"|"jpeg"|"gif"|"webp"|"bmp"|"ico"))
+                let is_img_path = PathBuf::from(&p)
+                    .extension()
+                    .map(|e| {
+                        matches!(
+                            e.to_str().unwrap_or(""),
+                            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico"
+                        )
+                    })
                     .unwrap_or(false);
                 // "file" part 已经用 data: URL 创建了图片 → 按文件名去重
-                if is_img_path && existing_images.iter().any(|_| true) { continue; }
-                let file_dup = existing_files.iter().chain(extra.iter().filter_map(|b| b.file_path.as_ref()))
+                if is_img_path && existing_images.iter().any(|_| true) {
+                    continue;
+                }
+                let file_dup = existing_files
+                    .iter()
+                    .chain(extra.iter().filter_map(|b| b.file_path.as_ref()))
                     .any(|f| f.ends_with(fname));
-                if file_dup { continue; }
+                if file_dup {
+                    continue;
+                }
                 let pb = PathBuf::from(&p);
                 if pb.exists() && !pb.is_dir() && crate::util::is_image_file(&pb) {
-                    extra.push(Block { kind: "image".into(), image_src: Some(p), ..Default::default() });
+                    extra.push(Block {
+                        kind: "image".into(),
+                        image_src: Some(p),
+                        ..Default::default()
+                    });
                 } else {
-                    extra.push(Block { kind: "file".into(), file_path: Some(p), ..Default::default() });
+                    extra.push(Block {
+                        kind: "file".into(),
+                        file_path: Some(p),
+                        ..Default::default()
+                    });
                 }
             }
             if !extra.is_empty() {
@@ -876,23 +916,29 @@ fn read(conn: &Connection, sid: &str) -> Result<Vec<Msg>, String> {
 }
 
 fn last_user_text_sql(conn: &Connection, sid: &str) -> Option<String> {
-    let mut stmt = conn.prepare(
-        "SELECT p.data FROM part p \
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.data FROM part p \
          JOIN message m ON p.message_id = m.id \
          WHERE m.session_id = ?1 \
          AND json_extract(m.data, '$.role') = 'user' \
          AND json_extract(p.data, '$.type') = 'text' \
          ORDER BY m.time_created DESC \
-         LIMIT 10"
-    ).ok()?;
+         LIMIT 10",
+        )
+        .ok()?;
     let mut rows = stmt.query(rusqlite::params![sid]).ok()?;
     while let Ok(Some(row)) = rows.next() {
         let raw: String = row.get(0).ok()?;
         let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
         let text = v.get("text").and_then(Value::as_str).unwrap_or("");
-        if is_system_text(text) || is_injected_context_text(text) { continue; }
+        if is_system_text(text) || is_injected_context_text(text) {
+            continue;
+        }
         let clean = crate::util::truncate_subtitle(text);
-        if !clean.is_empty() { return Some(clean); }
+        if !clean.is_empty() {
+            return Some(clean);
+        }
     }
     None
 }
@@ -961,10 +1007,7 @@ fn read_turns_impl(conn: &Connection, sid: &str) -> Result<Vec<Turn>, String> {
                         mcp_servers.push(server);
                     }
                 }
-                let usage = env
-                    .get("tokens")
-                    .map(usage_from_tokens)
-                    .unwrap_or_default();
+                let usage = env.get("tokens").map(usage_from_tokens).unwrap_or_default();
                 // cost 直接用库里记录的真实值 —— opencode 可挂任意模型，价目表推不出。
                 let cost_usd = env.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
                 let mode = env.get("mode").and_then(Value::as_str).unwrap_or("");
@@ -994,7 +1037,10 @@ fn read_turns_impl(conn: &Connection, sid: &str) -> Result<Vec<Turn>, String> {
     Ok(turns)
 }
 
-fn list_projects_impl(conn: &Connection, include_archived: bool) -> Result<Vec<ProjectInfo>, String> {
+fn list_projects_impl(
+    conn: &Connection,
+    include_archived: bool,
+) -> Result<Vec<ProjectInfo>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT p.id, p.worktree, COUNT(s.id), COALESCE(MAX(s.time_updated), p.time_updated) \
@@ -1086,7 +1132,9 @@ fn stats_sessions_impl(conn: &Connection, project_key: &str) -> Result<Vec<Sessi
             "SELECT {SESSION_COLS} FROM session s WHERE s.project_id = ?1 ORDER BY s.time_updated DESC"
         ))
         .map_err(db_err)?;
-    let rows = stmt.query_map(params![project_key], row_to_meta).map_err(db_err)?;
+    let rows = stmt
+        .query_map(params![project_key], row_to_meta)
+        .map_err(db_err)?;
     let mut out = Vec::new();
     for row in rows {
         out.push(row.map_err(db_err)?);
@@ -1198,7 +1246,9 @@ impl SessionSource for OpencodeSource {
     }
 
     fn resume_command(&self, session_id: &str, _path: &str) -> AgentCommand {
-        AgentCommand::new("opencode").arg("--session").arg(session_id)
+        AgentCommand::new("opencode")
+            .arg("--session")
+            .arg(session_id)
     }
 
     fn new_session_command(&self) -> AgentCommand {
@@ -1471,7 +1521,11 @@ mod tests {
         assert_eq!(a.blocks[1].kind, "text");
         assert_eq!(a.blocks[2].kind, "tool_use");
         assert_eq!(a.blocks[2].tool_name.as_deref(), Some("bash"));
-        assert!(a.blocks[2].tool_input.as_deref().unwrap().contains("git status"));
+        assert!(a.blocks[2]
+            .tool_input
+            .as_deref()
+            .unwrap()
+            .contains("git status"));
         assert_eq!(a.blocks[3].kind, "tool_result");
         assert_eq!(a.blocks[3].text.as_deref(), Some("clean"));
     }
@@ -1516,7 +1570,11 @@ mod tests {
         );
         let msgs = read(&conn, "ses_a").unwrap();
         let last = msgs.last().unwrap();
-        let result = last.blocks.iter().find(|b| b.kind == "tool_result").unwrap();
+        let result = last
+            .blocks
+            .iter()
+            .find(|b| b.kind == "tool_result")
+            .unwrap();
         assert!(result.is_error);
         assert_eq!(result.text.as_deref(), Some("exit 1"));
     }
@@ -1550,7 +1608,11 @@ mod tests {
         );
         let msgs = read(&conn, "ses_a").unwrap();
         let last = msgs.last().unwrap();
-        let result = last.blocks.iter().find(|b| b.kind == "tool_result").unwrap();
+        let result = last
+            .blocks
+            .iter()
+            .find(|b| b.kind == "tool_result")
+            .unwrap();
         assert_eq!(result.file_path.as_deref(), Some("/tmp/foo.ts"));
         let hunks = result.diff.as_ref().expect("diff parsed");
         assert_eq!(hunks.len(), 1);
@@ -1587,7 +1649,11 @@ mod tests {
         let msgs = read(&conn, "ses_a").unwrap();
         let last = msgs.last().unwrap();
         assert_eq!(last.blocks[0].kind, "image");
-        assert!(last.blocks[0].image_src.as_deref().unwrap().starts_with("data:image/png"));
+        assert!(last.blocks[0]
+            .image_src
+            .as_deref()
+            .unwrap()
+            .starts_with("data:image/png"));
         assert_eq!(last.blocks[1].kind, "text");
     }
 

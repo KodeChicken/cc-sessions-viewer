@@ -31,8 +31,8 @@ static SEARCH_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
 use crate::agent_command::AgentCommand;
 use crate::stats::types::Turn;
 use crate::types::{
-    AgentStats, DailyActivity, Msg, ProjectInfo, ProjectStats, SearchHit, SessionMeta,
-    SessionPage, UsageSummary,
+    AgentStats, DailyActivity, Msg, ProjectInfo, ProjectStats, SearchHit, SessionMeta, SessionPage,
+    UsageSummary,
 };
 use crate::util::yyyymmdd_local;
 
@@ -122,7 +122,10 @@ pub enum ChatEvent {
         api_key_source: Option<String>,
     },
     /// 一轮回答结束（如 Claude 的 `result` 事件）。`ok=false` 表示该轮出错。
-    Result { ok: bool, usage: Option<UsageSummary> },
+    Result {
+        ok: bool,
+        usage: Option<UsageSummary>,
+    },
     /// token 级流式增量（`--include-partial-messages` 的 `stream_event`）。
     /// 仅长驻 stdin 模型产出；权威 `Message` 仍会随后到达定稿。
     Delta(crate::types::ChatDelta),
@@ -350,7 +353,9 @@ pub trait SessionSource: Send + Sync {
     /// list_sessions 仍只返回顶层文件 —— 别把 sub-agent 塞进聊天列表，否则
     /// 用户的会话清单会被自动生成的小段污染。
     fn discover_stats_sessions(&self, project_key: &str) -> Result<Vec<SessionMeta>, String> {
-        Ok(self.list_sessions(project_key, 0, usize::MAX, false, false)?.sessions)
+        Ok(self
+            .list_sessions(project_key, 0, usize::MAX, false, false)?
+            .sessions)
     }
 
     /// 单会话统计时的同伴文件 —— 默认返回空，Claude 重写以返回
@@ -422,10 +427,7 @@ fn store_usage(path: String, mtime: u64, u: UsageSummary) {
 /// 命令层调用入口：先查缓存、miss 才让 agent 走 `usage_summary`。
 /// 这一层不在 trait 上是为了让具体 agent 不必感知缓存策略 —— 各 agent 只关心
 /// 「读一个文件、算出 UsageSummary」即可。
-pub fn session_usage(
-    src: &(dyn SessionSource + Sync),
-    path: &str,
-) -> Result<UsageSummary, String> {
+pub fn session_usage(src: &(dyn SessionSource + Sync), path: &str) -> Result<UsageSummary, String> {
     let mt = src.source_mtime(path);
     if let Some(u) = cached_usage(path, mt) {
         return Ok(u);
@@ -568,14 +570,20 @@ pub fn search(
             Err(_) => continue,
         };
         if !page.sessions.is_empty() {
-            all_sessions.push((proj.dir_name.clone(), proj.display_path.clone(), page.sessions));
+            all_sessions.push((
+                proj.dir_name.clone(),
+                proj.display_path.clone(),
+                page.sessions,
+            ));
         }
     }
     // 把所有项目的会话展平，跨项目并行扫描
     let flat: Vec<(String, String, SessionMeta)> = all_sessions
         .into_iter()
         .flat_map(|(key, display, sessions)| {
-            sessions.into_iter().map(move |s| (key.clone(), display.clone(), s))
+            sessions
+                .into_iter()
+                .map(move |s| (key.clone(), display.clone(), s))
         })
         .collect();
     let hits: Vec<SearchHit> = SEARCH_POOL.install(|| {
@@ -713,10 +721,7 @@ where
 }
 
 /// 在已抽取的「用户消息正文」列表里扫第一条命中。
-fn scan_user_text(
-    texts: &[(usize, Option<String>, String)],
-    q: &str,
-) -> Option<TextHit> {
+fn scan_user_text(texts: &[(usize, Option<String>, String)], q: &str) -> Option<TextHit> {
     for (idx, uuid, text) in texts {
         if let Some(snip) = match_snippet(text, q) {
             return Some(TextHit {
@@ -790,12 +795,7 @@ fn match_snippet(hay: &str, q: &str) -> Option<String> {
         .chars()
         .map(|c| if c.is_whitespace() { ' ' } else { c })
         .collect();
-    Some(
-        collapsed
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
+    Some(collapsed.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// 按 agent 名拿到一个具体的会话源。Unknown agent 返回错误，调用方应直接透传给前端。
@@ -897,7 +897,7 @@ mod tests {
         let msgs = vec![msg(vec![tool_call, tool_result])];
         let read = move |_p: &str| Ok(msgs);
         let p = unique_path("tool_blocks");
-        assert!(find_text_hit(read, &p, 0,"needle").is_none());
+        assert!(find_text_hit(read, &p, 0, "needle").is_none());
     }
 
     #[test]
@@ -905,7 +905,7 @@ mod tests {
         let msgs = vec![msg(vec![block("text", Some("hello world"))])];
         let read = move |_p: &str| Ok(msgs);
         let p = unique_path("user_text");
-        let hit = find_text_hit(read, &p, 0,"world").expect("expected a hit");
+        let hit = find_text_hit(read, &p, 0, "world").expect("expected a hit");
         assert_eq!(hit.msg_index, 0);
     }
 
@@ -917,7 +917,7 @@ mod tests {
         )];
         let read = move |_p: &str| Ok(msgs);
         let p = unique_path("assistant");
-        assert!(find_text_hit(read, &p, 0,"needle").is_none());
+        assert!(find_text_hit(read, &p, 0, "needle").is_none());
     }
 
     #[test]
@@ -925,7 +925,7 @@ mod tests {
         let msgs = vec![msg(vec![block("thinking", Some("planning carefully"))])];
         let read = move |_p: &str| Ok(msgs);
         let p = unique_path("thinking");
-        assert!(find_text_hit(read, &p, 0,"carefully").is_none());
+        assert!(find_text_hit(read, &p, 0, "carefully").is_none());
     }
 
     #[test]
@@ -936,7 +936,7 @@ mod tests {
         ];
         let read = move |_p: &str| Ok(msgs);
         let p = unique_path("first_user");
-        let hit = find_text_hit(read, &p, 0,"needle").expect("expected a hit");
+        let hit = find_text_hit(read, &p, 0, "needle").expect("expected a hit");
         assert_eq!(hit.msg_index, 1);
     }
 
@@ -986,13 +986,19 @@ mod tests {
 
     #[test]
     fn file_contains_ci_returns_false_for_missing_path() {
-        assert!(!file_contains_ci("/no/such/file/for/csv-test.txt", "anything"));
+        assert!(!file_contains_ci(
+            "/no/such/file/for/csv-test.txt",
+            "anything"
+        ));
     }
 
     #[test]
     fn cancel_token_reports_cancellation_when_gen_changes() {
         let gen = AtomicU64::new(7);
-        let c = Cancel { request_id: 7, gen: &gen };
+        let c = Cancel {
+            request_id: 7,
+            gen: &gen,
+        };
         assert!(!c.cancelled(), "fresh token should not be cancelled");
         gen.store(8, Ordering::SeqCst); // newer search took over
         assert!(c.cancelled(), "old token should now be cancelled");

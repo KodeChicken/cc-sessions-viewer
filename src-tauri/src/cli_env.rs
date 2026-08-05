@@ -109,7 +109,13 @@ fn run_in_login_shell(cmd: &str) -> Result<String, String> {
     // 免得检测吃的是 GUI 进程继承的残缺 PATH、和 resume 实际会跑的命令不一致。
     let full_cmd = format!("{}; {cmd}", crate::agent_command::powershell_refresh_path());
     let out = Command::new(crate::agent_command::windows_powershell_exe())
-        .args(["-NoLogo", "-ExecutionPolicy", "Bypass", "-Command", &full_cmd])
+        .args([
+            "-NoLogo",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &full_cmd,
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("powershell exec: {e}"))?;
@@ -200,9 +206,7 @@ fn detect_platform_key() -> String {
 }
 
 fn compare_versions(current: &str, latest: &str) -> bool {
-    let parse = |s: &str| -> Vec<u64> {
-        s.split('.').filter_map(|p| p.parse().ok()).collect()
-    };
+    let parse = |s: &str| -> Vec<u64> { s.split('.').filter_map(|p| p.parse().ok()).collect() };
     let cur = parse(current);
     let lat = parse(latest);
     for i in 0..cur.len().max(lat.len()) {
@@ -256,15 +260,17 @@ pub fn check_all_versions() -> Vec<CliVersionInfo> {
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().unwrap_or_else(|_| CliVersionInfo {
-                cli: String::new(),
-                npm_package: String::new(),
-                current_version: None,
-                latest_version: None,
-                upgradable: false,
-                installed: false,
-                error: Some("thread panic".into()),
-            }))
+            .map(|h| {
+                h.join().unwrap_or_else(|_| CliVersionInfo {
+                    cli: String::new(),
+                    npm_package: String::new(),
+                    current_version: None,
+                    latest_version: None,
+                    upgradable: false,
+                    installed: false,
+                    error: Some("thread panic".into()),
+                })
+            })
             .collect()
     })
 }
@@ -365,7 +371,9 @@ fn resolve_upgrade_cmd(spec: &CliSpec) -> String {
             }
         }
         "homebrew" => {
-            let formula = spec.brew_upgrade.unwrap_or_else(|| spec.npm_package.rsplit('/').next().unwrap_or(spec.binary));
+            let formula = spec
+                .brew_upgrade
+                .unwrap_or_else(|| spec.npm_package.rsplit('/').next().unwrap_or(spec.binary));
             return format!("HOMEBREW_NO_INSTALL_FROM_API=1 brew upgrade {formula}");
         }
         "nvm" | "fnm" | "volta" | "npm" => {
@@ -410,14 +418,10 @@ fn build_npm_upgrade(bin_path: &str, npm_package: &str) -> Option<String> {
 fn extract_fallback_cmd(output: &str) -> Option<String> {
     for line in output.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("brew upgrade ")
-            || trimmed.starts_with("brew reinstall ")
-        {
+        if trimmed.starts_with("brew upgrade ") || trimmed.starts_with("brew reinstall ") {
             return Some(format!("HOMEBREW_NO_INSTALL_FROM_API=1 {trimmed}"));
         }
-        if trimmed.starts_with("npm install ")
-            || trimmed.starts_with("npm i ")
-        {
+        if trimmed.starts_with("npm install ") || trimmed.starts_with("npm i ") {
             return Some(trimmed.to_string());
         }
     }
@@ -549,7 +553,10 @@ fn dedup_installs(paths: &[String]) -> Vec<String> {
             }
         }
     }
-    order.into_iter().filter_map(|k| best.get(&k).cloned()).collect()
+    order
+        .into_iter()
+        .filter_map(|k| best.get(&k).cloned())
+        .collect()
 }
 
 #[cfg(unix)]
@@ -568,8 +575,7 @@ fn get_version_at_path(path: &str) -> Option<String> {
     // A quoted path in PowerShell must be invoked with the call operator `&`;
     // a bare `'C:\...\x.exe' --version` is a parse error. Inside a single-quoted
     // string, a literal quote is escaped by doubling it.
-    let out =
-        run_in_login_shell(&format!("& '{}' --version", path.replace('\'', "''"))).ok()?;
+    let out = run_in_login_shell(&format!("& '{}' --version", path.replace('\'', "''"))).ok()?;
     extract_version(&out)
 }
 
@@ -698,10 +704,7 @@ mod tests {
             extract_version("2.1.187 (Claude Code)"),
             Some("2.1.187".into())
         );
-        assert_eq!(
-            extract_version("codex-cli 0.142.3"),
-            Some("0.142.3".into())
-        );
+        assert_eq!(extract_version("codex-cli 0.142.3"), Some("0.142.3".into()));
         assert_eq!(extract_version("0.43.0"), Some("0.43.0".into()));
         assert_eq!(extract_version("no version here"), None);
     }
@@ -727,10 +730,7 @@ mod tests {
             ),
             "nvm"
         );
-        assert_eq!(
-            detect_package_manager("/Users/u/.volta/bin/codex"),
-            "volta"
-        );
+        assert_eq!(detect_package_manager("/Users/u/.volta/bin/codex"), "volta");
         assert_eq!(
             detect_package_manager("/usr/local/lib/node_modules/@openai/codex/bin/codex"),
             "npm"
@@ -754,10 +754,7 @@ mod tests {
         // npm drops `foo` + `foo.cmd` in the SAME dir for one install; they must
         // collapse to a single entry, preferring the runnable `.cmd`.
         let dir = "X:\\bin";
-        let paths = vec![
-            format!("{dir}\\foo"),
-            format!("{dir}\\foo.cmd"),
-        ];
+        let paths = vec![format!("{dir}\\foo"), format!("{dir}\\foo.cmd")];
         assert_eq!(dedup_installs(&paths), vec![format!("{dir}\\foo.cmd")]);
 
         // The SAME binary name in two DIFFERENT dirs is two real installs.
